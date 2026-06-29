@@ -30,6 +30,8 @@
 //! assert_eq!(*n, 42);
 //! ```
 
+pub use rayban_macro::Rayban;
+
 /// The projection a [`Path`] uses to re-derive its focused node from the parent.
 ///
 /// `Bare` is a function pointer (what the derive emits, since its match and

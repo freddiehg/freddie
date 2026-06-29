@@ -68,9 +68,11 @@ jobs:
       - name: Set snapshot version
         run: |
           BASE=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
-          SHORT="${GITHUB_SHA::7}"
-          VERSION="${BASE}-main-${SHORT}"
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          VERSION="${BASE}-main-${GITHUB_SHA::7}"
+          # Rewrite the workspace version and the path-dependency version specifiers.
+          for f in Cargo.toml crates/*/Cargo.toml; do
+            sed -i "s|\"$BASE\"|\"$VERSION\"|g" "$f"
+          done
           echo "publishing $VERSION"
       - name: Publish to crates.io
         env:
@@ -98,8 +100,12 @@ jobs:
           toolchain: "1.96.0"
       - name: Set version from tag
         run: |
+          BASE=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
           VERSION="${GITHUB_REF_NAME#v}"
-          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+          # Rewrite the workspace version and the path-dependency version specifiers.
+          for f in Cargo.toml crates/*/Cargo.toml; do
+            sed -i "s|\"$BASE\"|\"$VERSION\"|g" "$f"
+          done
           echo "publishing $VERSION"
       - name: Publish to crates.io
         env:
