@@ -107,3 +107,23 @@ fn resolves_through_song_picks_the_song_parent() {
         },
     }
 }
+
+#[test]
+fn resolve_mutate_reresolve_round_trip() {
+    let mut media = album("a");
+    // Resolve, mutate, drop the path (releasing the borrow).
+    match <MediaType as Resolve>::resolve(&mut media) {
+        MediaResolved::Credit(mut cp) => cp.get_mut().name.push_str("bc"),
+    }
+    // Resolve again: the mutation persisted, and a fresh path works.
+    match <MediaType as Resolve>::resolve(&mut media) {
+        MediaResolved::Credit(mut cp) => {
+            assert_eq!(cp.get_mut().name, "abc");
+            cp.get_mut().name.push('!');
+        }
+    }
+    let MediaType::Album(a) = &media else {
+        unreachable!()
+    };
+    assert_eq!(a.title.credit.name, "abc!");
+}
