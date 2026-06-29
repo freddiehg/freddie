@@ -73,6 +73,11 @@ jobs:
           for f in Cargo.toml crates/*/Cargo.toml; do
             sed -i "s|\"$BASE\"|\"$VERSION\"|g" "$f"
           done
+          # Pin inter-crate dependencies to the exact version (a prerelease req is a
+          # caret range, which would otherwise match an older sibling prerelease).
+          for f in crates/*/Cargo.toml; do
+            sed -i "s|version = \"$VERSION\"|version = \"=$VERSION\"|g" "$f"
+          done
           echo "publishing $VERSION"
       - name: Publish to crates.io
         env:
@@ -105,6 +110,10 @@ jobs:
           # Rewrite the workspace version and the path-dependency version specifiers.
           for f in Cargo.toml crates/*/Cargo.toml; do
             sed -i "s|\"$BASE\"|\"$VERSION\"|g" "$f"
+          done
+          # Pin inter-crate dependencies to the exact version.
+          for f in crates/*/Cargo.toml; do
+            sed -i "s|version = \"$VERSION\"|version = \"=$VERSION\"|g" "$f"
           done
           echo "publishing $VERSION"
       - name: Publish to crates.io
