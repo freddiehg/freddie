@@ -93,8 +93,8 @@ A descending node names no child parent type. It builds a `Path` over its own pa
 ## Model rules
 
 - One value owns the tree; cursors borrow it; one live `&mut` at a time.
-- Enum: `resolve` descends the active variant (a variant projection — matches the current variant).
-- Struct: a leaf, unless it has one `#[resolve_into]` field, then descend into it (a field projection — always succeeds). At most one `#[resolve_into]` per struct.
+- Enum: every variant must be a single-field tuple variant `Foo(Bar)` whose payload `Bar` is a Rayban node. `resolve` descends into the active variant's `Bar` (a variant projection, matching the current variant). Any other variant shape (unit, struct-like, multi-field, or a non-node payload) is a compile error.
+- Struct: a leaf, unless it has one `#[resolve_into]` field, then descend into it (a field projection, always succeeds). At most one `#[resolve_into]` per struct.
 - Plain fields are state. Shared state lives on a parent struct, reached from below via the cursor. Behavioral flags are fields, not variants.
 - Exactly one active leaf, picked by a discriminator (enum variant, or a state tag/index over stored children). To keep inactive siblings across a toggle, store them as fields plus a tag, not as an enum.
 
@@ -134,7 +134,7 @@ A multi-parent node's parent enum carries its own `#[derive(Rayban)]` with a `#[
 
 The macro generates impls only:
 
-- For a node (`#[rayban]` / `#[rayban_root]`): `impl Resolve` with `type Path<'a>` (= `Path<Self, ParentType<'a>>` from `parent_type`; the root's is `&'a mut Self`), `type Resolved` (= your `resolved`), and `resolve` (the descent is `<Child as Resolve>::resolve(self_path.into())`, or at a leaf `Resolved::Self(path)`). When the node has a `#[resolve_into] f: Child`, it also gets `impl Projection<Child>` returning `&mut self.f`.
+- For a node (`#[rayban]` / `#[rayban_root]`): `impl Resolve` with `type Path<'a>` (= `Path<Self, ParentType<'a>>` from `parent_type`; the root's is `&'a mut Self`), `type Resolved` (= your `resolved`), and `resolve` (the descent is `<Child as Resolve>::resolve(self_path.into())`, or at a leaf `Resolved::Self(path)`). It also gets a `Projection` impl per edge: a struct with `#[resolve_into] f: Child` gets `impl Projection<Child>` returning `&mut self.f`; an enum gets `impl Projection<Bar>` per `Foo(Bar)` variant, a match returning that variant's payload (other arms dead by the consume invariant).
 - For a parent enum (`#[rayban_parent(child = C)]`): the projection `&mut Self -> &mut C` (a `match` whose arms call `Projection::<C>::child_mut` on each variant, so no field name appears here), plus the `From<ParentPath> for Path<C, Self>` wrappers that `.into()` selects.
 
 So the field access lives only where `#[resolve_into]` declares it; the parent enum's derive reaches it through `Projection` and never names a field. Single-parent nodes don't have a parent enum, so the edge `From` and its box are emitted directly by the node's derive.
@@ -285,7 +285,7 @@ match <MediaType as Resolve>::resolve(&mut media) {
 
 Behavior tests (`rayban/tests/`): resolve lands on the right leaf; `get_mut` mutates; `into_parent` walks up and mutates an ancestor; multi-parent resolve via each route; shared state on an intermediate read/mutated from a leaf; indexed leaf via a hand-written box; resolve/mutate/re-resolve round-trip.
 
-`trybuild` compile-fail: the two guarantees; two `#[resolve_into]` on one struct; and the attribute states the design rules out — each a macro error with a clear message:
+`trybuild` compile-fail, each a macro error with a clear message: the two guarantees; two `#[resolve_into]` on one struct; a `#[resolve_into]` field whose type is not a node; an enum variant that is not `Foo(Bar)` with `Bar` a node (unit, struct-like, multi-field, or a non-node payload); and the attribute states the design rules out:
 
 - `#[rayban]` and `#[rayban_root]` on the same type,
 - two `#[rayban]` attributes on one type,
@@ -298,10 +298,16 @@ Behavior tests (`rayban/tests/`): resolve lands on the right leaf; `get_mut` mut
 2. `rayban` runtime from the code above; tests against hand-written path types and hand-written `Resolve` impls.
 3. `rayban_macro`: parse with `deluxe`; emit the `Resolve` impls (assoc types plus `resolve` with the `.into()` descent and per-edge boxes) to match the prototype; rerun the tests with the hand-written impls replaced by `#[derive(Rayban)]`.
 
-## Deferred
+## Deferred (post-v1)
 
-- `#[resolve_into]` over a `Vec`/collection (discriminator-driven). Runtime supports a hand-written indexed box; macro support comes after the enum/struct cases.
-- A whole-tree derive to auto-generate a multi-parent node's `*_from_parent` projection and its `From`s (a per-type derive can't — it lacks each parent's edge). Until then those few are hand-written.
+- `#[resolve_into]` over a `Vec`/collection, descent driven by a stored index or discriminator. The runtime already takes a hand-written indexed box (a `Proj::Dyn`); macro support comes after the enum and struct cases.
+- `Option` and `Result`, both as a node's own type and as a `#[resolve_into]` field. Sketch below; not in v1.
+
+### Option and Result
+
+As a node's own type (a node whose type is `Option<T>` or `Result<T, E>`): these are ordinary enums, so the normal variant descent fits. `Some(T)` and `Ok(T)` descend into the payload, `None` is terminal, and `Err(E)` is terminal or descends into `E` when `E` is itself a node. The obstacle is the orphan rule, since `#[derive(Rayban)]` can't sit on `std`'s `Option`/`Result`. The macro special-cases the two types and emits their `Resolve` impls directly; a local newtype is the fallback but reads worse for callers.
+
+As a `#[resolve_into]` field, the edge becomes conditional. `#[resolve_into] child: Option<Child>` descends into `Child` when the field is `Some`, and when it is `None` the node itself is the active leaf, so `resolve` branches on the field and `Resolved` gains a variant for the node stopping there. The projection box assumes `Some`; its `None` arm is dead by the consume invariant. `#[resolve_into] child: Result<Child, E>` descends into `Child` on `Ok`, and on `Err` it either stops with the error as the leaf or descends into `E`, so `Resolved` gains a variant carrying the error. The cursor mechanics are unchanged in both: one `&mut` re-derived per level, the box sitting behind a `Some` or `Ok` pattern.
 
 ## CI / publish
 
