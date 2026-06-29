@@ -1,0 +1,7 @@
+[package]
+name = "freddie"
+description = "Phantom Kit: a typed keyboard state machine (work in progress; name reservation)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true

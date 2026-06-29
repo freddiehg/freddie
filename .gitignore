@@ -1,0 +1,16 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Node
+node_modules/
+
+# Lock files: keep pnpm, ignore the others
+package-lock.json
+yarn.lock
+npm-shrinkwrap.json
+!pnpm-lock.yaml
+
+# OS / editor
+.DS_Store
+*.swp

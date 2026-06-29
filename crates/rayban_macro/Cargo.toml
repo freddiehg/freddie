@@ -1,0 +1,10 @@
+[package]
+name = "rayban_macro"
+description = "Derive macro for rayban (work in progress; name reservation)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+proc-macro = true
