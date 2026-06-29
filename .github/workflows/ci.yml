@@ -68,7 +68,8 @@ jobs:
       - name: Set snapshot version
         run: |
           BASE=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
-          VERSION="${BASE}-main.${{ github.sha }}"
+          SHORT="${GITHUB_SHA::7}"
+          VERSION="${BASE}-main-${SHORT}"
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
           echo "publishing $VERSION"
       - name: Publish to crates.io
