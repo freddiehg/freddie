@@ -1,1 +1,1 @@
-//! rayban_macro — work in progress. Name reservation stub.
+//! Derive macro for the `rayban` crate. See `rayban` for usage.

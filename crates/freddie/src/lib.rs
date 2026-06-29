@@ -1,1 +1,1 @@
-//! freddie — work in progress. Name reservation stub.
+//! Phantom Kit: a typed keyboard state machine. Work in progress.

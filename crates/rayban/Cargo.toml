@@ -1,7 +1,11 @@
 [package]
 name = "rayban"
-description = "Mutable resolved paths (composed lenses and prisms) into a single-owner tree (work in progress; name reservation)."
+description = "Mutable resolved paths (composed lenses and prisms) into a single-owner tree."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
+
+[lints]
+workspace = true

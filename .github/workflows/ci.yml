@@ -11,7 +11,7 @@ jobs:
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: stable
+          toolchain: "1.96.0"
           components: rustfmt
       - name: Run cargo fmt
         run: cargo fmt --all -- --check
@@ -24,7 +24,7 @@ jobs:
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: stable
+          toolchain: "1.96.0"
           components: clippy
       - name: Run cargo clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
@@ -37,9 +37,9 @@ jobs:
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: stable
+          toolchain: "1.96.0"
       - name: Run cargo test
-        run: cargo test --all
+        run: cargo test --all --all-features
 
   all-checks-passed:
     name: All checks passed
@@ -64,7 +64,7 @@ jobs:
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: stable
+          toolchain: "1.96.0"
       - name: Set snapshot version
         run: |
           BASE=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
@@ -95,7 +95,7 @@ jobs:
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: stable
+          toolchain: "1.96.0"
       - name: Set version from tag
         run: |
           VERSION="${GITHUB_REF_NAME#v}"

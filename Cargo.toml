@@ -1,9 +1,24 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = ["crates/freddie", "crates/rayban", "crates/rayban_macro"]
 
 [workspace.package]
 version = "0.0.1"
-edition = "2021"
+edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/freddiehg/freddie"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+# Driven by the transitive dependency tree, not our code.
+multiple_crate_versions = "allow"
+cargo_common_metadata = "allow"
+# The root cursor is a `&mut Root`, so a projection over it is `&mut &mut Root`.
+# That double reference is intrinsic to the first level and appears in generated code.
+mut_mut = "allow"

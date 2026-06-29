@@ -1,0 +1,55 @@
+# rayban
+
+A typed, mutable cursor into a single-owner state tree. It is the mutable
+counterpart to isograph's `resolve_position`: from a `&mut Root` you resolve a
+path to the one active leaf, mutate that leaf, and walk back up to its ancestors,
+with exactly one live `&mut` at any moment. No `Rc`, no `RefCell`, no `unsafe`.
+
+Most of the work happens in `#[derive(Rayban)]` (the `rayban_macro` crate,
+re-exported here). This crate is the runtime those derives target.
+
+## What you get
+
+- `Path<Node, Parent>`, the cursor. `get_mut` borrows the focused node; `into_parent`
+  consumes the cursor and hands you the parent one level up.
+- `Resolve`, implemented per node the way isograph's `ResolvePosition` is. Calling
+  `resolve` on the root walks down the active variants and returns the path to the
+  active leaf.
+- `Projection<Child>`, a node's edge to the child it resolves into. The derive uses
+  it to assemble a node that has more than one parent.
+
+## Why one `&mut` at a time
+
+A cursor cannot store a chain of `&mut` back to the root, because that would alias.
+So `Path` keeps the parent plus a small closure that re-derives the focused node on
+demand. `get_mut(&mut self)` borrows the whole cursor, so you cannot hold the leaf
+and an ancestor together, and `into_parent(self)` consumes the cursor, so a stale
+cursor is a move error rather than a runtime bug. Both are enforced by the
+compiler; the `compile_fail` examples in the docs spell them out.
+
+## Example
+
+```rust
+use rayban::Path;
+
+enum Tree {
+    Leaf(u32),
+}
+
+let mut tree = Tree::Leaf(1);
+let mut path: Path<u32, &mut Tree> = Path::from_fn(&mut tree, |t| {
+    let Tree::Leaf(n) = t;
+    n
+});
+*path.get_mut() += 41;
+let Tree::Leaf(n) = path.into_parent();
+assert_eq!(*n, 42);
+```
+
+## Status
+
+The crate is early. The runtime and the derive work, but the API may still move.
+
+## License
+
+MIT or Apache-2.0, at your option.
