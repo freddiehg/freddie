@@ -130,13 +130,21 @@ fn node_impl(
             ));
         }
     };
+    // A non-root enum inspects its variant through `path.get_mut()`, so the
+    // parameter must be mutable; nothing else mutates it.
+    let needs_mut = !is_root && matches!(&input.data, Data::Enum(_));
+    let binding = if needs_mut {
+        quote!(mut path)
+    } else {
+        quote!(path)
+    };
     Ok(quote! {
         #[automatically_derived]
         #[allow(clippy::useless_conversion)]
         impl ::rayban::Resolve for #name {
             type Path<'a> = #path_ty;
             type Resolved<'a> = #resolved<'a>;
-            fn resolve<'a>(path: #path_ty) -> #resolved<'a>
+            fn resolve<'a>(#binding: #path_ty) -> #resolved<'a>
             where
                 Self: 'a,
             {
