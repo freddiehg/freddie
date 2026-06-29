@@ -8,6 +8,7 @@ The runtime, the path types, `get_mut`/`into_parent`, multi-parent route enums, 
 
 ```rust
 #[derive(Rayban)]
+#[rayban_root(resolved = MediaResolved)]
 enum MediaType { Album(Album), Song(Song) }
 
 let resolved = <MediaType as Resolve>::resolve(&mut media);   // -> MediaResolved, the active leaf's path
@@ -16,9 +17,9 @@ let resolved = <MediaType as Resolve>::resolve(&mut media);   // -> MediaResolve
 ## Names
 
 - Crate: `rayban` (runtime + re-exported derive); `rayban_macro` (proc-macro).
-- Derive: `#[derive(Rayban)]` implements the `Resolve` trait.
+- Derive: `#[derive(Rayban)]`, with the attribute saying which role: `#[rayban_root(resolved = ..)]` on the root, `#[rayban(parent_type = .., resolved = ..)]` on a non-root node, `#[rayban_parent(child = ..)]` on a multi-parent node's parent enum. Separate attributes rather than flags, so a contradictory combination like `rayban(root, parent_type = ..)` isn't representable. A node attribute produces an `impl Resolve` (the root's differs: its `Path` is `&mut Self`, its `resolve` does the top-level match-descent); `rayban_parent` produces the parent enum's projection and `From` wrappers.
 - Trait: `Resolve`, implemented at every layer (like isograph's `ResolvePosition`). `resolve` is a trait fn, not inherent, so it can't collide with a type's own methods.
-- Cursor struct: `Path<Node, Parent>`, with `get_mut`, `parent` (shared ref to the parent), and `into_parent`. There is no `Root` type; the root is just `&mut T`.
+- `Path<Node, Parent>`, with `get_mut`, `parent` (shared ref to the parent), and `into_parent`. There is no `Root` type; the root is just `&mut T`.
 - Entry: `<MediaType as Resolve>::resolve(&mut media)`. `resolve` takes the node's path by value (the root's path is `&mut Self`), so it isn't `&self` and there's no `value.resolve()` method form.
 - One term: a node's cursor is its "Path" everywhere (no "Route").
 
@@ -77,9 +78,17 @@ pub trait Resolve {
 }
 ```
 
-One trait, implemented at every layer (like isograph's `ResolvePosition`). `resolve` takes the node's path by value, not `&mut self` — that's what avoids the E0499 the top-down `&mut` walk hits: the `&mut` is moved into the path once, and each layer re-derives its node through `get_mut`. The root's `type Path<'a> = &'a mut Self`, so the entry is `Self::resolve(&mut value)`.
+The macro also implements, on each node that has a `#[resolve_into] f: Child`, a small projection trait:
 
-A descending node names no child parent type: it builds a `Path` over its own path and `.into()`s it into the child's path type (inferred from `<Child as Resolve>::Path`). The wrapping `From` carries the variant, and it can be a trivial wrap because the box already lives in the path being wrapped — no pattern through an associated type (which is unstable, rust#86935), and no reach into `Path`'s private fields. `get_mut`/`parent`/`into_parent` stay on `Path`, not the trait.
+```rust
+pub trait Projection<Child> {
+    fn child_mut(&mut self) -> &mut Child;
+}
+```
+
+`Resolve` is implemented at every layer (like isograph's `ResolvePosition`). `resolve` takes the node's path by value, not `&mut self`, which is what avoids the E0499 the top-down `&mut` walk hits: the `&mut` is moved into the path once, and each layer re-derives its node through `get_mut`. The root's `type Path<'a> = &'a mut Self`, so the entry is `Self::resolve(&mut value)`.
+
+A descending node names no child parent type. It builds a `Path` over its own path and `.into()`s it into the child's path type (inferred from `<Child as Resolve>::Path`). The wrapping `From` carries the variant, and it can be a trivial wrap because the box already lives in the path being wrapped, so there is no pattern through an associated type (unstable, rust#86935) and no reach into `Path`'s private fields. A multi-parent node's projection dispatches through `Projection`, so the field `#[resolve_into]` named never has to be visible to the parent enum's derive. `get_mut`/`parent`/`into_parent` stay on `Path`, not the trait.
 
 ## Model rules
 
@@ -95,92 +104,164 @@ A descending node names no child parent type: it builds a `Path` over its own pa
 
 ```rust
 #[derive(Rayban)]
-#[rayban(root, resolved = MediaResolved)]
+#[rayban_root(resolved = MediaResolved)]
 enum MediaType { Album(Album), Song(Song) }
 
 #[derive(Rayban)]
-#[rayban(path = AlbumPath, resolved = MediaResolved)]
+#[rayban(parent_type = AlbumParent, resolved = MediaResolved)]
 struct Album { #[resolve_into] title: Title, year: u32 }
 
 #[derive(Rayban)]
-#[rayban(path = SongPath, resolved = MediaResolved)]
+#[rayban(parent_type = SongParent, resolved = MediaResolved)]
 struct Song { #[resolve_into] title: Title }
 
 #[derive(Rayban)]
-#[rayban(path = TitlePath, resolved = MediaResolved)]
+#[rayban(parent_type = TitleParent, resolved = MediaResolved)]
 struct Title { text: String }
 ```
 
-`path =` names this node's own path type (the alias you declared); `resolved =` names the `Resolved` enum you declared. No parents are listed — a descending node never needs its child's parents, it just `.into()`s its own path. The macro reads these and emits impls only — it never creates a type.
+`parent_type =` names this node's parent type (also exactly what `into_parent` returns); the macro derives the node's path as `type Path<'a> = Path<Self, ParentType<'a>>`. `resolved =` names the `Resolved` enum. No child parents are listed — a descending node never needs them, it just `.into()`s its own path. The macro reads these and emits impls only — it never creates a type.
 
 ## What you write vs what the macro generates
 
 You declare every type, because other code references them:
 
 - the state types;
-- a per-node path alias: `type AlbumPath<'a> = Path<Album, &'a mut MediaType>` for a single parent; for a multi-parent node, the parent enum (`TitleParent`) plus the alias over it (`type TitlePath<'a> = Path<Title, TitleParent<'a>>`);
+- each node's parent type (named by `parent_type =`, and exactly what `into_parent` returns): a single-parent node's is its parent's path (e.g. `type AlbumParent<'a> = &'a mut MediaType`); a multi-parent node's is an enum (`TitleParent`);
 - the `Resolved` enum.
 
-For a multi-parent node you also write the projection (`title_from_parent`) and the `From` impls that `.into()` selects. A per-type derive can't write those — the projection needs each parent's edge (`Album.title`, `Song.title`), which only that parent's own item declares. Single-parent nodes need none of it: `ChildPath` is just `Path<Child, ParentPath>` and the derive writes the one box.
+A multi-parent node's parent enum carries its own `#[derive(Rayban)]` with a `#[rayban_parent(child = Title)]` attribute, so you write the enum but not its impls. You hand-write nothing for either case.
 
-The macro generates impls only, per `#[derive(Rayban)]`:
+The macro generates impls only:
 
-- `impl Resolve`: `type Path` (= your `path`), `type Resolved` (= your `resolved`), `resolve`.
-- the descent inside `resolve`: `<Child as Resolve>::resolve(self_path.into())`, or at a leaf `Resolved::Self(path)`.
-- the per-edge projection box (a bare `fn`) for each `#[resolve_into]` field or active variant.
+- For a node (`#[rayban]` / `#[rayban_root]`): `impl Resolve` with `type Path<'a>` (= `Path<Self, ParentType<'a>>` from `parent_type`; the root's is `&'a mut Self`), `type Resolved` (= your `resolved`), and `resolve` (the descent is `<Child as Resolve>::resolve(self_path.into())`, or at a leaf `Resolved::Self(path)`). When the node has a `#[resolve_into] f: Child`, it also gets `impl Projection<Child>` returning `&mut self.f`.
+- For a parent enum (`#[rayban_parent(child = C)]`): the projection `&mut Self -> &mut C` (a `match` whose arms call `Projection::<C>::child_mut` on each variant, so no field name appears here), plus the `From<ParentPath> for Path<C, Self>` wrappers that `.into()` selects.
+
+So the field access lives only where `#[resolve_into]` declares it; the parent enum's derive reaches it through `Projection` and never names a field. Single-parent nodes don't have a parent enum, so the edge `From` and its box are emitted directly by the node's derive.
 
 ## The code (you write the types; the macro writes the impls), validated
 
 ```rust
-// YOU write these types:
-type AlbumPath<'a> = Path<Album, &'a mut MediaType>;   // single parent: alias straight to Path
-type SongPath<'a>  = Path<Song, &'a mut MediaType>;
-enum TitleParent<'a> { Album(AlbumPath<'a>), Song(SongPath<'a>) }   // multi-parent: the parent enum
-type TitlePath<'a>  = Path<Title, TitleParent<'a>>;                 // ... and the path alias over it
-enum MediaResolved<'a> { Title(TitlePath<'a>) }
+// You write these types.
 
-// YOU write the multi-parent projection + the `.into()` wrappers (concrete enum -> stable match):
-fn title_from_parent<'p, 'a>(tp: &'p mut TitleParent<'a>) -> &'p mut Title {
-    match tp { TitleParent::Album(ap) => &mut ap.get_mut().title, TitleParent::Song(sp) => &mut sp.get_mut().title }
+// Single-parent nodes: parent_type is the parent's own path.
+type AlbumParent<'a> = &'a mut MediaType;
+type SongParent<'a> = &'a mut MediaType;
+type AlbumPath<'a> = Path<Album, AlbumParent<'a>>; // = the macro's `type Path` for Album
+type SongPath<'a> = Path<Song, SongParent<'a>>;
+
+// Multi-parent node: parent_type is an enum, and it carries its own derive.
+#[derive(Rayban)]
+#[rayban_parent(child = Title)]
+enum TitleParent<'a> {
+    Album(AlbumPath<'a>),
+    Song(SongPath<'a>),
 }
-impl<'a> From<AlbumPath<'a>> for TitlePath<'a> { fn from(ap: AlbumPath<'a>) -> Self { Path::from_fn(TitleParent::Album(ap), title_from_parent) } }
-impl<'a> From<SongPath<'a>>  for TitlePath<'a> { fn from(sp: SongPath<'a>)  -> Self { Path::from_fn(TitleParent::Song(sp), title_from_parent) } }
+type TitlePath<'a> = Path<Title, TitleParent<'a>>;
 
-// THE MACRO generates the Resolve impls; the descent names no parent type:
+enum MediaResolved<'a> {
+    Title(TitlePath<'a>),
+}
+
+// The macro generates everything below.
+
+// From each parent node's `#[resolve_into]` (the field is known there):
+impl Projection<Title> for Album {
+    fn child_mut(&mut self) -> &mut Title {
+        &mut self.title
+    }
+}
+
+impl Projection<Title> for Song {
+    fn child_mut(&mut self) -> &mut Title {
+        &mut self.title
+    }
+}
+
+// From the parent enum's derive. No field name appears here; it delegates to child_mut.
+fn title_from_parent<'p, 'a>(tp: &'p mut TitleParent<'a>) -> &'p mut Title {
+    match tp {
+        TitleParent::Album(ap) => ap.get_mut().child_mut(),
+        TitleParent::Song(sp) => sp.get_mut().child_mut(),
+    }
+}
+
+impl<'a> From<AlbumPath<'a>> for TitlePath<'a> {
+    fn from(ap: AlbumPath<'a>) -> Self {
+        Path::from_fn(TitleParent::Album(ap), title_from_parent)
+    }
+}
+
+impl<'a> From<SongPath<'a>> for TitlePath<'a> {
+    fn from(sp: SongPath<'a>) -> Self {
+        Path::from_fn(TitleParent::Song(sp), title_from_parent)
+    }
+}
+
+// The Resolve impls. No descent names a parent type.
 impl Resolve for MediaType {
     type Path<'a> = &'a mut MediaType;
     type Resolved<'a> = MediaResolved<'a>;
-    fn resolve<'a>(media: &'a mut MediaType) -> MediaResolved<'a> where Self: 'a {
+
+    fn resolve<'a>(media: &'a mut MediaType) -> MediaResolved<'a>
+    where
+        Self: 'a,
+    {
         match media {
-            MediaType::Album(_) => <Album as Resolve>::resolve(Path::from_fn(media,
-                |o| { let MediaType::Album(a) = &mut **o else { unreachable!() }; a })),
-            MediaType::Song(_)  => <Song as Resolve>::resolve(Path::from_fn(media,
-                |o| { let MediaType::Song(s) = &mut **o else { unreachable!() }; s })),
+            MediaType::Album(_) => <Album as Resolve>::resolve(Path::from_fn(media, |o| {
+                let MediaType::Album(a) = &mut **o else { unreachable!() };
+                a
+            })),
+            MediaType::Song(_) => <Song as Resolve>::resolve(Path::from_fn(media, |o| {
+                let MediaType::Song(s) = &mut **o else { unreachable!() };
+                s
+            })),
         }
     }
 }
+
 impl Resolve for Album {
     type Path<'a> = AlbumPath<'a>;
     type Resolved<'a> = MediaResolved<'a>;
-    fn resolve<'a>(p: AlbumPath<'a>) -> MediaResolved<'a> where Self: 'a { <Title as Resolve>::resolve(p.into()) }
+
+    fn resolve<'a>(p: AlbumPath<'a>) -> MediaResolved<'a>
+    where
+        Self: 'a,
+    {
+        <Title as Resolve>::resolve(p.into())
+    }
 }
+
 impl Resolve for Song {
     type Path<'a> = SongPath<'a>;
     type Resolved<'a> = MediaResolved<'a>;
-    fn resolve<'a>(p: SongPath<'a>) -> MediaResolved<'a> where Self: 'a { <Title as Resolve>::resolve(p.into()) }
+
+    fn resolve<'a>(p: SongPath<'a>) -> MediaResolved<'a>
+    where
+        Self: 'a,
+    {
+        <Title as Resolve>::resolve(p.into())
+    }
 }
+
 impl Resolve for Title {
     type Path<'a> = TitlePath<'a>;
     type Resolved<'a> = MediaResolved<'a>;
-    fn resolve<'a>(p: TitlePath<'a>) -> MediaResolved<'a> where Self: 'a { MediaResolved::Title(p) }
+
+    fn resolve<'a>(p: TitlePath<'a>) -> MediaResolved<'a>
+    where
+        Self: 'a,
+    {
+        MediaResolved::Title(p)
+    }
 }
 ```
 
-The descent names no parent type: each step builds a `Path` over its own incoming path and either `.into()`s it to the child's path type (inferred from `<Child as Resolve>::Path`, the `From` carrying the variant) or, at a leaf, returns `Resolved::Self(path)`. The `&mut` is moved into the path once and each layer re-derives its node through `get_mut`, which is what avoids the E0499 the naive top-down `&mut` walk hits. The root's box derefs the bare `&mut` (`&mut **o`); per-edge boxes capture nothing, so they're bare `fn`s. The one `&mut`-specific hand-written piece is a multi-parent node's `*_from_parent` projection plus its `From`s.
+The descent names no parent type. Each step builds a `Path` over its own incoming path and either `.into()`s it to the child's path type (inferred from `<Child as Resolve>::Path`, the `From` carrying the variant) or, at a leaf, returns `Resolved::Self(path)`. The `&mut` is moved into the path once and each layer re-derives its node through `get_mut`, which is what avoids the E0499 the naive top-down `&mut` walk hits. The root's box derefs the bare `&mut` (`&mut **o`); per-edge boxes capture nothing, so they're bare `fn`s. Nothing is hand-written: a multi-parent node's projection and `From`s come from the `#[rayban_parent]` derive, which reaches each parent's edge through the derived `Projection`.
 
 ## Macro deps (`rayban_macro`)
 
-`syn`, `quote`, `proc-macro2`, `deluxe` (parse `#[rayban(...)]`), `convert_case` (ident casing). One `#[proc_macro_derive(Rayban, attributes(rayban, resolve_into))]`, dispatching enum vs struct, modeled on isograph's `resolve_position_macros`.
+`syn`, `quote`, `proc-macro2`, `deluxe` (parse `#[rayban(...)]` / `#[rayban_root(...)]` / `#[rayban_parent(...)]`), `convert_case` (ident casing). One `#[proc_macro_derive(Rayban, attributes(rayban, rayban_root, rayban_parent, resolve_into))]`, dispatching on which attribute is present (`rayban_root` = root, `rayban` = non-root node, `rayban_parent` = parent enum) and on enum vs struct, modeled on isograph's `resolve_position_macros`.
 
 ## Usage
 
@@ -204,7 +285,12 @@ match <MediaType as Resolve>::resolve(&mut media) {
 
 Behavior tests (`rayban/tests/`): resolve lands on the right leaf; `get_mut` mutates; `into_parent` walks up and mutates an ancestor; multi-parent resolve via each route; shared state on an intermediate read/mutated from a leaf; indexed leaf via a hand-written box; resolve/mutate/re-resolve round-trip.
 
-`trybuild` compile-fail: the two guarantees, plus two `#[resolve_into]` on one struct → macro error.
+`trybuild` compile-fail: the two guarantees; two `#[resolve_into]` on one struct; and the attribute states the design rules out — each a macro error with a clear message:
+
+- `#[rayban]` and `#[rayban_root]` on the same type,
+- two `#[rayban]` attributes on one type,
+- two `#[rayban_root]` attributes on one type,
+- a `#[derive(Rayban)]` type with neither attribute.
 
 ## Build order
 
