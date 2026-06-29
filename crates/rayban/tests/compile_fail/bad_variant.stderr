@@ -1,0 +1,7 @@
+error: expected a single-field tuple variant `Foo(Bar)`
+ --> tests/compile_fail/bad_variant.rs:3:10
+  |
+3 | #[derive(Rayban)]
+  |          ^^^^^^
+  |
+  = note: this error originates in the derive macro `Rayban` (in Nightly builds, run with -Z macro-backtrace for more info)

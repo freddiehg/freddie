@@ -10,5 +10,8 @@ readme = "README.md"
 [dependencies]
 rayban_macro = { path = "../rayban_macro", version = "0.0.1" }
 
+[dev-dependencies]
+trybuild = "1"
+
 [lints]
 workspace = true

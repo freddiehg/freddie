@@ -1,0 +1,5 @@
+error: missing a `rayban_root`, `rayban`, or `rayban_path` attribute
+ --> tests/compile_fail/no_role.rs:4:1
+  |
+4 | struct Missing {
+  | ^^^^^^

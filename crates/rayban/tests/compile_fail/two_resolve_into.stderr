@@ -1,0 +1,5 @@
+error: at most one `#[resolve_into]` field per struct
+ --> tests/compile_fail/two_resolve_into.rs:8:5
+  |
+8 |     #[resolve_into]
+  |     ^
