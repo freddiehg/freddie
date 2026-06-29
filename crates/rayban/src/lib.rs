@@ -6,9 +6,9 @@
 //! [`Path::into_parent`], holding exactly one live `&mut` at a time. There is no
 //! `Rc`, no `RefCell`, and no `unsafe`.
 //!
-//! The [`Resolve`] trait (one per node, like isograph's `ResolvePosition`) and
-//! the [`Projection`] trait are what `#[derive(Rayban)]` implements; the running
-//! example lives in the `freddie` workspace's design notes.
+//! The [`Resolve`] trait (one per node, like isograph's `ResolvePosition`) is
+//! what `#[derive(Rayban)]` implements; the running example lives in the
+//! `freddie` workspace's design notes.
 //!
 //! # Example
 //!
@@ -154,17 +154,6 @@ pub trait Resolve {
     fn resolve<'a>(path: Self::Path<'a>) -> Self::Resolved<'a>
     where
         Self: 'a;
-}
-
-/// A node's edge to the child it resolves into.
-///
-/// `#[derive(Rayban)]` implements this on each node from its `#[resolve_into]`
-/// field (or, for an enum, its variant payload). A multi-parent node's parent
-/// enum uses it to project to the child without naming the field, so the field
-/// stays declared where it is.
-pub trait Projection<Child> {
-    /// Returns a mutable reference to the child this node resolves into.
-    fn child_mut(&mut self) -> &mut Child;
 }
 
 #[cfg(test)]
