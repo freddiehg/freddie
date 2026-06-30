@@ -2,7 +2,7 @@
 
 This doc is the implementation detail of the binding layer: the `#[binds]`/`#[bind]` attributes, the `EventHandler<M>` impls the derive generates, and how accumulation and dispatch run over a laserbeam tree. The outer loop (the merged event stream, diffing the registered set against the OS, the registrar) is in `freddie-keys-plan.md`. This doc assumes no clobbering: a trigger is bound at most once on any active path.
 
-bind is a crate within freddie: `bind` (the traits and the walks) plus `bind_macro` (the `#[derive(Bind)]`). It depends on laserbeam, because bindability follows laserbeam's descent edges (see "What is bindable"). It cannot be finished before laserbeam's `#[resolve_into]` exists.
+bind is a crate within freddie: `bind` (the traits and the walks) plus `bind_macro` (the `#[derive(Bind)]`). It depends on laserbeam: bindability follows laserbeam's descent edges (see "What is bindable"). Single `#[resolve_into]` already exists and is enough for the simple case; only the concurrent-active-children case needs multiple `#[resolve_into]` per struct (see `laserbeam-missing-features.md`), which does not yet exist.
 
 ## The marker and the two traits
 
@@ -120,5 +120,5 @@ The binding is only compared (a `Trigger` equality check) before the path is con
 - `dispatch_from` cannot be a uniform `EventHandler<M>` method, because each node's path type differs. Either a GAT `type Path<'a>` on the trait, or keep `dispatch_from` inherent and let the root entry tie the chain together. Leaning inherent plus a generated root entry.
 - `Event` threads by value down the ascend chain and moves into the matching handler; `fired` passes by reference, compared at each level.
 - The accumulate match on the active enum variant duplicates laserbeam's descent. Decide whether the derive re-emits the match or calls into laserbeam to get the active edge.
-- Depends on laserbeam's `#[resolve_into]`, including the multiple-`#[resolve_into]` feature, since the recursion edges are laserbeam's.
+- The recursion edges are laserbeam's. Single `#[resolve_into]` exists; only the concurrent-active-children case needs the not-yet-built multiple-`#[resolve_into]` feature.
 - The loop, the registrar, and the diffing live in `freddie-keys-plan.md`; this doc stops at `accumulate` (the set for a state) and `dispatch` (one fired event).
