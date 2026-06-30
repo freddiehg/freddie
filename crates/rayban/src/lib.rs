@@ -1,6 +1,6 @@
 //! Mutable resolved paths into a single-owner tree.
 //!
-//! From a `&mut Root` you resolve a typed [`Path`] to the single active leaf, mutate that leaf through [`Path::get_mut`], and walk back up with [`Path::into_parent`], holding exactly one live `&mut` at a time. The crate uses no `Rc`, `RefCell`, or `unsafe`.
+//! From a `&mut Root` you resolve a typed [`Path`] to the single active leaf, mutate that leaf through [`Path::get_mut`], and walk back up with [`Path::into_parent`], holding exactly one live `&mut` at a time.
 //!
 //! The [`Resolve`] trait, one per node, is what `#[derive(Rayban)]` implements; the running example lives in the `freddie` workspace's design notes.
 //!
@@ -168,46 +168,48 @@ pub trait Resolve {
 mod tests {
     use super::Path;
 
-    struct Outer {
-        inner: Inner,
+    // "Sheer Heart Attack".
+    struct Sheer {
+        heart: Attack,
     }
-    struct Inner {
-        value: u32,
+    struct Attack {
+        length: u32,
     }
 
     #[test]
     fn from_fn_get_mut_into_parent() {
-        let mut outer = Outer {
-            inner: Inner { value: 1 },
+        let mut album = Sheer {
+            heart: Attack { length: 1 },
         };
-        let mut path: Path<Inner, &mut Outer> = Path::from_fn(&mut outer, |o| &mut o.inner);
-        path.get_mut().value = 42;
+        let mut path: Path<Attack, &mut Sheer> = Path::from_fn(&mut album, |a| &mut a.heart);
+        path.get_mut().length = 42;
         let recovered = path.into_parent();
-        assert_eq!(recovered.inner.value, 42);
+        assert_eq!(recovered.heart.length, 42);
     }
 
     #[test]
     fn parent_reads_without_consuming() {
-        let mut outer = Outer {
-            inner: Inner { value: 7 },
+        let mut album = Sheer {
+            heart: Attack { length: 7 },
         };
-        let path: Path<Inner, &mut Outer> = Path::from_fn(&mut outer, |o| &mut o.inner);
-        assert_eq!(path.parent().inner.value, 7);
+        let path: Path<Attack, &mut Sheer> = Path::from_fn(&mut album, |a| &mut a.heart);
+        assert_eq!(path.parent().heart.length, 7);
         // Still usable afterwards because `parent` only borrows.
-        assert_eq!(path.parent().inner.value, 7);
+        assert_eq!(path.parent().heart.length, 7);
     }
 
     #[test]
     fn from_box_can_capture() {
-        let mut items = vec![10_u32, 20, 30];
+        // A setlist of track lengths.
+        let mut setlist = vec![10_u32, 20, 30];
         let index = 1_usize;
         {
             let mut path: Path<u32, &mut Vec<u32>> = Path::from_box(
-                &mut items,
+                &mut setlist,
                 Box::new(move |v: &mut &mut Vec<u32>| &mut v[index]),
             );
             *path.get_mut() += 5;
         }
-        assert_eq!(items[1], 25);
+        assert_eq!(setlist[1], 25);
     }
 }

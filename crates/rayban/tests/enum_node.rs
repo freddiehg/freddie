@@ -1,69 +1,70 @@
 //! Validates the non-root enum case: an enum node in the middle of the tree,
-//! where the macro emits the `matches!` / early-return descent.
+//! where the macro emits the `matches!` / early-return descent. Modeled on
+//! Queen II, pressed as "Side White" and "Side Black".
 
 use rayban::{Path, Rayban, Resolve};
 
 #[derive(Rayban)]
 #[rayban_root(resolved = Resolved)]
-enum Root {
-    Only(Mid),
+enum QueenII {
+    Pressing(Side),
 }
 
 #[derive(Rayban)]
-#[rayban(path = MidPath, resolved = Resolved)]
-enum Mid {
-    Left(LeftLeaf),
-    Right(RightLeaf),
+#[rayban(path = SidePath, resolved = Resolved)]
+enum Side {
+    White(WhiteQueen),
+    Black(BlackQueen),
 }
 
 #[derive(Rayban)]
-#[rayban(path = LeftPath, resolved = Resolved)]
-struct LeftLeaf {
-    value: u32,
+#[rayban(path = WhiteQueenPath, resolved = Resolved)]
+struct WhiteQueen {
+    bpm: u32,
 }
 
 #[derive(Rayban)]
-#[rayban(path = RightPath, resolved = Resolved)]
-struct RightLeaf {
-    name: String,
+#[rayban(path = BlackQueenPath, resolved = Resolved)]
+struct BlackQueen {
+    title: String,
 }
 
-type MidPath<'a> = Path<Mid, &'a mut Root>;
-type LeftPath<'a> = Path<LeftLeaf, MidPath<'a>>;
-type RightPath<'a> = Path<RightLeaf, MidPath<'a>>;
+type SidePath<'a> = Path<Side, &'a mut QueenII>;
+type WhiteQueenPath<'a> = Path<WhiteQueen, SidePath<'a>>;
+type BlackQueenPath<'a> = Path<BlackQueen, SidePath<'a>>;
 
 enum Resolved<'a> {
-    LeftLeaf(LeftPath<'a>),
-    RightLeaf(RightPath<'a>),
+    WhiteQueen(WhiteQueenPath<'a>),
+    BlackQueen(BlackQueenPath<'a>),
 }
 
 #[test]
 fn descends_through_a_non_root_enum() {
-    let mut root = Root::Only(Mid::Left(LeftLeaf { value: 1 }));
-    match <Root as Resolve>::resolve(&mut root) {
-        Resolved::LeftLeaf(mut p) => {
-            p.get_mut().value += 41;
-            let _ = p.into_parent(); // walk up one: LeftLeaf -> Mid's path
+    let mut record = QueenII::Pressing(Side::White(WhiteQueen { bpm: 1 }));
+    match <QueenII as Resolve>::resolve(&mut record) {
+        Resolved::WhiteQueen(mut p) => {
+            p.get_mut().bpm += 41;
+            let _ = p.into_parent(); // walk up one: WhiteQueen -> Side's path
         }
-        Resolved::RightLeaf(_) => unreachable!("built a Left"),
+        Resolved::BlackQueen(_) => unreachable!("pressed Side White"),
     }
-    let Root::Only(Mid::Left(leaf)) = &root else {
+    let QueenII::Pressing(Side::White(track)) = &record else {
         unreachable!()
     };
-    assert_eq!(leaf.value, 42);
+    assert_eq!(track.bpm, 42);
 }
 
 #[test]
 fn picks_the_active_variant() {
-    let mut root = Root::Only(Mid::Right(RightLeaf {
-        name: "x".to_owned(),
+    let mut record = QueenII::Pressing(Side::Black(BlackQueen {
+        title: "The March of the Black Queen".to_owned(),
     }));
-    match <Root as Resolve>::resolve(&mut root) {
-        Resolved::RightLeaf(mut p) => p.get_mut().name.push('!'),
-        Resolved::LeftLeaf(_) => unreachable!("built a Right"),
+    match <QueenII as Resolve>::resolve(&mut record) {
+        Resolved::BlackQueen(mut p) => p.get_mut().title.push('!'),
+        Resolved::WhiteQueen(_) => unreachable!("pressed Side Black"),
     }
-    let Root::Only(Mid::Right(leaf)) = &root else {
+    let QueenII::Pressing(Side::Black(track)) = &record else {
         unreachable!()
     };
-    assert_eq!(leaf.name, "x!");
+    assert_eq!(track.title, "The March of the Black Queen!");
 }

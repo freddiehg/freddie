@@ -14,14 +14,15 @@ enum MediaType {
 #[derive(Rayban)]
 #[rayban(path = AlbumPath, resolved = MediaResolved)]
 struct Album {
-    #[resolve_into]
+    year: u16,
+    #[resolve_into(parent = TitleParent)]
     title: Title,
 }
 
 #[derive(Rayban)]
 #[rayban(path = SongPath, resolved = MediaResolved)]
 struct Song {
-    #[resolve_into]
+    #[resolve_into(parent = TitleParent)]
     title: Title,
 }
 
@@ -42,14 +43,15 @@ struct Credit {
 type AlbumPath<'a> = Path<Album, &'a mut MediaType>;
 type SongPath<'a> = Path<Song, &'a mut MediaType>;
 
-// Title has two parents, so its path is a route enum the macro fills in.
-#[derive(Rayban)]
-#[rayban_path(node = Title)]
-enum TitlePath<'a> {
-    Album(Path<Title, AlbumPath<'a>>),
-    Song(Path<Title, SongPath<'a>>),
+// Title has two parents, so its parent is a plain route enum (one variant per
+// parent path) and its path is an ordinary `Path<Title, TitleParent>`. No derive
+// needed: `get_mut`/`into_parent` come from `Path`.
+enum TitleParent<'a> {
+    Album(AlbumPath<'a>),
+    Song(SongPath<'a>),
 }
 
+type TitlePath<'a> = Path<Title, TitleParent<'a>>;
 type CreditPath<'a> = Path<Credit, TitlePath<'a>>;
 
 enum MediaResolved<'a> {
@@ -58,6 +60,7 @@ enum MediaResolved<'a> {
 
 fn album(name: &str) -> MediaType {
     MediaType::Album(Album {
+        year: 1975,
         title: Title {
             credit: Credit {
                 name: name.to_owned(),
@@ -82,28 +85,30 @@ fn resolves_through_album_mutates_leaf_and_ancestor() {
     match <MediaType as Resolve>::resolve(&mut media) {
         MediaResolved::Credit(mut cp) => {
             cp.get_mut().name.push_str(" Taylor"); // mutate the leaf
-            match cp.into_parent() {
-                // up: Credit -> Title's path -> which parent
-                TitlePath::Album(p) => p.into_parent().get_mut().title.credit.name.push('!'),
-                TitlePath::Song(_) => unreachable!("resolved through an album"),
+            // up: Credit -> Title's path -> Title's parent -> which parent, then
+            // mutate the ancestor's own field.
+            match cp.into_parent().into_parent() {
+                TitleParent::Album(mut ap) => ap.get_mut().year += 1,
+                TitleParent::Song(_) => unreachable!("resolved through an album"),
             }
         }
     }
     let MediaType::Album(a) = &media else {
         unreachable!()
     };
-    assert_eq!(a.title.credit.name, "Roger Taylor!");
+    assert_eq!(a.title.credit.name, "Roger Taylor");
+    assert_eq!(a.year, 1976);
 }
 
 #[test]
 fn resolves_through_song_picks_the_song_parent() {
     let mut media = song("Freddie");
     match <MediaType as Resolve>::resolve(&mut media) {
-        MediaResolved::Credit(cp) => match cp.into_parent() {
-            TitlePath::Song(p) => {
-                assert_eq!(p.into_parent().get_mut().title.credit.name, "Freddie");
+        MediaResolved::Credit(cp) => match cp.into_parent().into_parent() {
+            TitleParent::Song(mut sp) => {
+                assert_eq!(sp.get_mut().title.credit.name, "Freddie");
             }
-            TitlePath::Album(_) => unreachable!("resolved through a song"),
+            TitleParent::Album(_) => unreachable!("resolved through a song"),
         },
     }
 }

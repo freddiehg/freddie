@@ -1,4 +1,4 @@
-error: use exactly one of `rayban_root`, `rayban`, or `rayban_path`
+error: use exactly one of `rayban_root` or `rayban`
  --> tests/compile_fail/two_rayban.rs:5:1
   |
 5 | #[rayban(path = P2, resolved = R)]

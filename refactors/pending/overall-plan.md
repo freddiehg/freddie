@@ -17,6 +17,17 @@ Non-goals, stated plainly so they stop creeping back in:
 - A Cargo workspace with a proc-macro crate (the `Phantom` derive), a core crate, and an example/daemon binary.
 - Reference domain: Phantom Kit 1 (Karabiner + Hammerspoon) in `../phantom-kit`. PK2 re-models the same keyboard behavior as a precise typed state machine instead of flat Karabiner variables.
 
+## Reusable building blocks
+
+The genericity goal is library reuse, not cross-compiling one binary. The macOS key-remapping daemon is one consumer of these libraries; a browser app is another, built from the same building blocks to do its own input -> action work. It is not the same code compiled to `wasm32`. It is a different app that reuses rayban, the `EventSource`-generic accumulation and dispatch, effects-as-data, and the derive, while bringing its own state tree, its own event sources, and its own effects.
+
+What this requires of the libraries is that they stay domain- and platform-agnostic, so a second consumer can pick them up:
+
+- The reusable parts: rayban (cursors, `resolve`, `into_parent`/`get_root`), the `EventSource`-generic binding accumulation and dispatch, effects-as-data, and the `Phantom`/`Rayban` derive. None of these name a keyboard, macOS, or Hammerspoon.
+- What each consumer brings: the state tree, the `EventSource` impls that produce events (CGEventTap/Hammerspoon for the daemon; DOM events for the browser), the sinks that perform effects, and the `Effect` set itself.
+
+This is why `Effect` is not a single global enum owned by a library. Within one consumer it is a single enum (the daemon has one `Effect`); across consumers the sets differ. The daemon's effects (emit a key, foreground an app, Hammerspoon arbitrary) mean nothing in a browser, and vice versa. So the libraries stay generic over the effect type the way they are already generic over `EventSource`, and each consumer fixes its own `Effect` and sinks. See the effects section in `freddie-keys-plan.md`.
+
 ## Core model
 
 - There is a single data structure: one root value (the base enum, call it `Layer`) that holds the entire state.
