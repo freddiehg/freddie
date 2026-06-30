@@ -6,8 +6,9 @@ When freddie runs, the user defines the application state as a data structure, a
 
 ## Names
 
-- freddie is the framework: the event bindings, accumulation, dispatch, and the `bind` derive described here.
+- freddie is the framework: the event loop, effects-as-data, and the glue over rayban and bind.
 - rayban is a library within freddie: the typed mutable path (resolve, `into_parent`, `get_root`).
+- bind is a library within freddie: the binding layer (the `#[bind]` derive, accumulation, diff, dispatch). Detailed in `bind.md`.
 - mercury is the concrete use of freddie, the keyboard-remapping application built on it. Its root state struct is `Mercury`.
 - `MercuryEvent` and `MercuryEffect` are mercury's concrete event and effect types. freddie is generic over the event and effect types; mercury fixes them to these.
 

@@ -14,7 +14,7 @@ Non-goals, stated plainly so they stop creeping back in:
 
 ## What this is
 
-- A Cargo workspace: `rayban_macro` (the `Rayban` derive), `rayban` (the typed path), the `freddie` core (bindings, accumulation, dispatch), and the mercury daemon binary.
+- A Cargo workspace: `rayban`/`rayban_macro` (the typed path and its derive), `bind`/`bind_macro` (the binding layer and its derive), the `freddie` core (the event loop and effects), and the mercury daemon binary.
 - Reference domain: an earlier Karabiner + Hammerspoon setup. mercury re-models the same keyboard behavior as a precise typed state machine instead of flat Karabiner variables.
 
 ## Reusable building blocks
@@ -221,9 +221,9 @@ v1 scope: not required to get something working. We can run the binary in the ba
 
 ## Crate sketch (provisional)
 
-- `rayban_macro` — the `Rayban` derive.
-- `rayban` — the typed path (`Path`/`Cursor`).
-- `freddie` — the `bind` derive and the `bind` machinery (the `Listener` set and the outer registration handler), helpers for the hold-pattern.
+- `rayban` / `rayban_macro` — the typed path (`Path`/`Cursor`) and its derive.
+- `bind` / `bind_macro` — the `#[bind]` derive and the binding machinery (accumulation, diff, dispatch over the `Listener` set). See `bind.md`.
+- `freddie` — the framework tying rayban and bind together: the event loop, effects-as-data, helpers for the hold-pattern.
 - mercury — the daemon binary (see `main.rs` in this folder).
 
 ## Note
