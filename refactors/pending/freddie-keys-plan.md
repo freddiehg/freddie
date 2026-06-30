@@ -33,30 +33,30 @@ A node declares bindings with an attribute:
 struct Inner {}
 ```
 
-The two arguments are a listener and a handler:
+The two arguments are a trigger and a handler:
 
-- `Keyboard::new('g')` is the listener: which event to listen for. Source and trigger are folded into one value, not two arguments. `Keyboard::new('g')` is a keyboard listener for `g`, `Keyboard::new("cmd+g")` a chord, and a different source is a different constructor (`Foreground::new("Chrome")`). The listener is pure data, `Hash + Eq`, so listeners can be set and map keys, and the value holds no reference to any registration state.
+- `Keyboard::new('g')` is the trigger: which event to listen for. The source (`Keyboard`) and the specific key (`'g'`) are folded into one value, not two arguments. `Keyboard::new('g')` is a keyboard trigger for `g`, `Keyboard::new("cmd+g")` a chord, and a different source is a different constructor (`Foreground::new("Chrome")`). The trigger is pure data, `Hash + Eq`, so triggers can be set and map keys, and the value holds no reference to any registration state.
 - `on_g` is the handler to run when it fires.
 
-The derive emits, per node, a map of listener to handler. A node can carry several bindings across several sources.
+The derive emits, per node, a map of trigger to handler. A node can carry several bindings across several sources.
 
-The attribute is `bind`, not `key`: a node binds a listener to a handler, and the mechanism is not keyboard-specific. Keyboard is one source; foregrounding an application is another; the same accumulation and dispatch serves both and anything else we route this way.
+The attribute is `bind`, not `key`: a node binds a trigger to a handler, and the mechanism is not keyboard-specific. Keyboard is one source; foregrounding an application is another; the same accumulation and dispatch serves both and anything else we route this way.
 
-### One listener enum, one outer handler
+### One trigger enum, one outer handler
 
-Listeners are unified into a single enum, one variant per source, with `From` derived per variant (`#[derive(derive_more::From)]`) so `Keyboard::new('g')` lifts in with `.into()`:
+Triggers are unified into a single enum, one variant per source, with `From` derived per variant (`#[derive(derive_more::From)]`) so `Keyboard::new('g')` lifts in with `.into()`:
 
 ```rust
-enum Listener { Keyboard(Keyboard), Foreground(Foreground), .. }
+enum Trigger { Keyboard(Keyboard), Foreground(Foreground), .. }
 ```
 
-There is conceptually one event source and one sink. The accumulated set of active bindings is a `HashSet<Listener>`. A single outer handler owns registration: it receives the listener diff (the set to register, the set to deregister) and does whatever each requires, matching the variant to its OS mechanism (a keyboard tap for `Listener::Keyboard`, a workspace observer for `Listener::Foreground`). We represent the listeners as one enum, and the outer handler breaks them apart again by variant.
+There is conceptually one event source and one sink. The accumulated set of active bindings is a `HashSet<Trigger>`. A single outer handler owns registration: it receives the trigger diff (the set to register, the set to deregister) and does whatever each requires, matching the variant to its OS mechanism (a keyboard tap for `Trigger::Keyboard`, a workspace observer for `Trigger::Foreground`). We represent the triggers as one enum, and the outer handler breaks them apart again by variant.
 
-This is why no listener value holds a reference to registration state. The taps, the watchers, and any per-listener OS handle (a hotkey id needed to unregister, say) live on the one outer handler; the listener values stay pure data. `Keyboard::new('g')` and `Keyboard::new('y')` are just two keyboard listeners the outer handler registers through the same tap; they share nothing themselves, and any per-listener handle sits in a map on the outer handler keyed by listener. That keeps listeners hashable and testable and avoids reintroducing the shared mutable state rayban exists to avoid.
+This is why no trigger value holds a reference to registration state. The taps, the watchers, and any per-trigger OS handle (a hotkey id needed to unregister, say) live on the one outer handler; the trigger values stay pure data. `Keyboard::new('g')` and `Keyboard::new('y')` are just two keyboard triggers the outer handler registers through the same tap; they share nothing themselves, and any per-trigger handle sits in a map on the outer handler keyed by trigger. That keeps triggers hashable and testable and avoids reintroducing the shared mutable state rayban exists to avoid.
 
-Events arrive as one merged stream of fired listeners; dispatch matches the fired listener to its handler. Listening is async so the loop can `select!` over the stream plus a shutdown signal and compose under tokio.
+Events arrive as one merged stream of fired triggers; dispatch matches the fired trigger to its handler. Listening is async so the loop can `select!` over the stream plus a shutdown signal and compose under tokio.
 
-A source plugs in by adding a `Listener` variant and the match arm that registers, deregisters, and listens for it; `#[bind(MyEvent::new(..), on_it)]` then works like the rest. Adding a source edits the central `Listener` enum, which is acceptable; `derive_more::From` covers the lifting boilerplate, so no macro-generated enum is needed.
+A source plugs in by adding a `Trigger` variant and the match arm that registers, deregisters, and listens for it; `#[bind(MyEvent::new(..), on_it)]` then works like the rest. Adding a source edits the central `Trigger` enum, which is acceptable; `derive_more::From` covers the lifting boilerplate, so no macro-generated enum is needed.
 
 ## Accumulating the active binding set (a runtime computation via rayban)
 
@@ -95,7 +95,7 @@ A future cannot hold a rayban path across its await, because the mutable borrow 
 
 ### Registration and diffing
 
-Between iterations we do not tear everything down and rebuild; we diff the accumulated `HashSet<Listener>`. If state A's set is `{a, b, c}` and state B's is `{a, b, d}`, the diff says deregister `c` and register `d`, and freddie hands only that delta to the outer handler, which routes each listener by variant to its source's register and deregister. Because listeners are `Hash + Eq`, the set is a `HashSet` and the diff is set subtraction. Computing the delta is freddie's job, sitting between the accumulator and the outer handler.
+Between iterations we do not tear everything down and rebuild; we diff the accumulated `HashSet<Trigger>`. If state A's set is `{a, b, c}` and state B's is `{a, b, d}`, the diff says deregister `c` and register `d`, and freddie hands only that delta to the outer handler, which routes each trigger by variant to its source's register and deregister. Because triggers are `Hash + Eq`, the set is a `HashSet` and the diff is set subtraction. Computing the delta is freddie's job, sitting between the accumulator and the outer handler.
 
 ## Handler dispatch
 
@@ -156,10 +156,10 @@ Because each path's parent chain terminates at `&mut Root`, `get_root` is a fixe
 ## Open questions
 
 1. Handler signature at the dispatch boundary. The handler conceptually wants the typed `Path<Node, Parent>`, but the loop dispatches dynamically over a heterogeneous map, so there is an erasure boundary between "accumulated map of handlers" and "typed path handed to the handler." Design how the typed path is reconstructed for the chosen handler.
-2. Listener identity across sources (resolved by the `Listener` enum). A keyboard listener wraps a key; a foreground listener wraps an application id; both are variants of the single `Listener` enum, so the accumulated set is keyed by one type and the outer handler routes by variant rather than the derive tracking a per-(source, trigger) key.
+2. Trigger identity across sources (resolved by the `Trigger` enum). A keyboard trigger wraps a key; a foreground trigger wraps an application id; both are variants of the single `Trigger` enum, so the accumulated set is keyed by one type and the outer handler routes by variant rather than the derive tracking a separate key per source and sub-key.
 3. Non-clobberable enforcement timing. Enforce during accumulation (so the error can name both the protected binding and the offending override) rather than at registration.
 4. What "register" means per source: OS key grabs versus a polled or subscribed foreground watcher, and the teardown when the active set changes between iterations.
-5. Single winner vs handler chain. Under the static model, accumulation yields one winner per (event type, trigger); under the dynamic fall-through model, it yields an ordered chain that dispatch walks. Decide which, and for the static model, what happens if two equally-specific bindings collide.
+5. Single winner vs handler chain. Under the static model, accumulation yields one winner per trigger; under the dynamic fall-through model, it yields an ordered chain that dispatch walks. Decide which, and for the static model, what happens if two equally-specific bindings collide.
 6. Relationship to the missing rayban features. Layers as an enum and upward traversal are supported today; if a layer ever holds a list of sub-states (a `Vec` of children) selected by state, that is the state-controlled-children feature scoped in `rayban-state-controlled-children.md`.
 7. Where `GetRoot` lives. It is a generalization of `into_parent` to "walk all the way up," so rayban is the natural home, and the derive can emit it from the parent chain alongside `Resolve`. But layer-switching is freddie semantics. Decide whether rayban exposes the generic `get_root` and freddie builds layer-switching on it, or freddie owns the whole trait.
 8. What `get_root` returns. A `&mut Root` is enough to replace the active layer (`*root = App::Nav(..)`), but a typed path at the root would let the handler re-descend into the new layer in the same step. Decide between the bare `&mut Root` and a root path, given that after a layer switch the next loop iteration re-resolves anyway.
