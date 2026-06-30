@@ -59,15 +59,23 @@ Bindability follows laserbeam's descent edges, nothing else:
 
 ## Accumulation
 
-`accumulate` produces the `HashSet<M::Trigger>` to register for the current state, walking the active path's descent edges. Every node, struct or enum, can carry `#[bind]`; an enum's own binds are active across all its variants. The derive generates `accumulate` per node:
+`accumulate` produces the `HashSet<M::Trigger>` to register for the current state, walking the active path's descent edges. Every node, struct or enum, can carry `#[bind]`; an enum's own binds are active across all its variants. The derive generates `accumulate` per node. The duplicate check is a free fn in `bind`:
+
+```rust
+fn insert_or_error<T: Hash + Eq>(out: &mut HashSet<T>, t: T) {
+    // a child re-bound a trigger an ancestor already bound; children cannot clobber parents
+    if !out.insert(t) { panic!("trigger bound twice on the active path") }
+}
+```
+
+Using it:
 
 ```rust
 // struct with its own binds and one #[resolve_into] child:
 impl EventHandler<MercuryStruct> for Inner {
     fn accumulate(&self, out: &mut HashSet<Trigger>) {
-        for t in [Keyboard::new('g').into(), Keyboard::new('y').into()] {
-            if !out.insert(t) { /* no clobbering: a trigger bound twice on the active path is an error */ }
-        }
+        insert_or_error(out, Keyboard::new('g').into());
+        insert_or_error(out, Keyboard::new('y').into());
         self.child.accumulate(out);   // recurse the #[resolve_into] edge; self.label is ignored
     }
 }
@@ -78,8 +86,8 @@ impl EventHandler<MercuryStruct> for Inner {
 //   enum Layer { Nav(Nav), Typing(Typing) }
 impl EventHandler<MercuryStruct> for Layer {
     fn accumulate(&self, out: &mut HashSet<Trigger>) {
-        if !out.insert(Keyboard::new("esc").into()) { /* duplicate -> error */ }  // the enum's own binds
-        match self {                                                              // then the active variant
+        insert_or_error(out, Keyboard::new("esc").into());  // the enum's own binds
+        match self {                                        // then the active variant
             Layer::Nav(n)    => n.accumulate(out),
             Layer::Typing(t) => t.accumulate(out),
         }
@@ -87,6 +95,6 @@ impl EventHandler<MercuryStruct> for Layer {
 }
 ```
 
-- No clobbering: a child cannot override a trigger an ancestor already bound. Each node inserts its own binds before recursing, so `HashSet::insert` returning `false` means the trigger is already bound by an ancestor on the active path, and it is an error raised here, not a silent override.
+- No clobbering: a child cannot override a trigger an ancestor already bound. Each node calls `insert_or_error` for its own binds before recursing, so a trigger already in the set (bound by an ancestor) errors rather than silently overriding.
 
 Entry point on the root: `root.accumulate::<MercuryStruct>()` allocates the set, calls the trait method, and returns the `HashSet<Trigger>`.
