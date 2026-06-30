@@ -72,3 +72,11 @@ So the boundaries are clear, the following all work and are covered by tests:
 - Recursive data, broken with `Box` in a struct field, an enum variant, or a route-enum variant; the macro dereferences each.
 - Multi-parent descent from a struct field, a non-root enum variant, and a root enum variant.
 - Re-resolving from a mid-tree path after mutating which branch is active.
+
+## Future: type-level enumeration of all states
+
+A mode that enumerates, at the type level, every leaf the tree can resolve to. `enum MediaType { Album(Album), Single(Single) }` yields an iterator over each reachable leaf state, derived from the types rather than walked from a runtime value.
+
+- Not v1.
+- Use: with the freddie bindings, validate every possible state (each state's accumulated bindings are well-formed, no required binding missing) and generate documentation of the full state space.
+- It does not compose with the dynamic resolve_into (state-controlled children) feature, at least not without more thought. The domain of a dynamic descent, which children can exist, is a runtime value, so the reachable leaves under it are not statically known. Type-level enumeration needs the leaf set statically determined; the enum and `#[resolve_into]` cases give that, a state-selected collection does not. See `rayban-state-controlled-children.md`.
