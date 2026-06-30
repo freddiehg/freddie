@@ -59,7 +59,7 @@ Bindability follows laserbeam's descent edges, nothing else:
 
 ## Accumulation
 
-`accumulate` produces the `HashSet<M::Trigger>` to register for the current state, walking the active path's descent edges. The derive generates it per node:
+`accumulate` produces the `HashSet<M::Trigger>` to register for the current state, walking the active path's descent edges. Every node, struct or enum, can carry `#[bind]`; an enum's own binds are active across all its variants. The derive generates `accumulate` per node:
 
 ```rust
 // struct with its own binds and one #[resolve_into] child:
@@ -72,11 +72,14 @@ impl EventHandler<MercuryStruct> for Inner {
     }
 }
 
-// enum: own (enum-level) binds, then the active variant's inner:
+// enum Layer carries an enum-level bind, active across every variant:
+//   #[derive(Laserbeam, Bind)] #[binds(MercuryStruct)]
+//   #[bind(Keyboard::new("esc"), to_nav)]
+//   enum Layer { Nav(Nav), Typing(Typing) }
 impl EventHandler<MercuryStruct> for Layer {
     fn accumulate(&self, out: &mut HashSet<Trigger>) {
-        // ... any enum-level #[bind]s ...
-        match self {
+        if !out.insert(Keyboard::new("esc").into()) { /* duplicate -> error */ }  // the enum's own binds
+        match self {                                                              // then the active variant
             Layer::Nav(n)    => n.accumulate(out),
             Layer::Typing(t) => t.accumulate(out),
         }
@@ -84,6 +87,6 @@ impl EventHandler<MercuryStruct> for Layer {
 }
 ```
 
-- No clobbering: `HashSet::insert` returning `false` means the trigger is already bound elsewhere on the active path, which is an error, raised here.
+- No clobbering: a child cannot override a trigger an ancestor already bound. Each node inserts its own binds before recursing, so `HashSet::insert` returning `false` means the trigger is already bound by an ancestor on the active path, and it is an error raised here, not a silent override.
 
 Entry point on the root: `root.accumulate::<MercuryStruct>()` allocates the set, calls the trait method, and returns the `HashSet<Trigger>`.
