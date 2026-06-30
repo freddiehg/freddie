@@ -71,7 +71,7 @@ trait EventSource: Sized {
 
 The attribute is `event_source`, not `key`, because the mechanism is not keyboard-specific. Keyboard is one source; foregrounding an application is another; the same accumulation and dispatch machinery serves both and anything else we route this way.
 
-An alternative to the two named arguments folds the source and the trigger into one value, e.g. `KeyboardSource::from("g")`: a value whose type implements the trait and carries both which source and which trigger. The attribute would then take a single expression in place of `source = .., trigger = ..`. Which form to prefer is open.
+An alternative to the two named arguments folds the source and the trigger into one value, e.g. `Keyboard::g` or `Keyboard::from("cmd+g")`, so the attribute takes a single expression in place of `source = .., trigger = ..`. The combined trigger is one hand-written enum with `#[derive(derive_more::From)]` lifting each source's trigger in via `.into()`; no macro-generated enum is needed, and writing the enum is cheap. The consequence is structural, not boilerplate: with one trigger enum, the per-source generic dispatch above collapses into a runtime `match` on the variant. Registration routes by matching the variant to its backend, and the per-source `HashSet` for diffing is recovered by partitioning the accumulated set on the variant. Adding a source edits the central enum, which is acceptable.
 
 ## Accumulating the active binding set (a runtime computation via rayban)
 
