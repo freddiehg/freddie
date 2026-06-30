@@ -2,7 +2,7 @@
 
 This doc is the implementation detail of the binding layer: the `#[binds]`/`#[bind]` attributes, the `EventHandler<M>` impls the derive generates, and how accumulation and dispatch run over a laserbeam tree. The outer loop (the merged event stream, diffing the registered set against the OS, the registrar) is in `freddie-keys-plan.md`. This doc assumes no clobbering: a trigger is bound at most once on any active path.
 
-bind is a crate within freddie: `bind` (the traits and the walks) plus `bind_macro` (the `#[derive(Bind)]`). It depends on laserbeam: bindability follows laserbeam's descent edges (see "What is bindable"). Single `#[resolve_into]` already exists and is enough for the simple case; only the concurrent-active-children case needs multiple `#[resolve_into]` per struct (see `laserbeam-missing-features.md`), which does not yet exist.
+bind is a crate within freddie: `bind` (the traits and the walks) plus `bind_macro` (the `#[derive(Bind)]`). It builds on laserbeam: bindability follows laserbeam's descent edges (see "What is bindable").
 
 ## The marker and the two traits
 
@@ -56,7 +56,7 @@ The question "is `EventHandler` implemented for everything, even a `String` fiel
 - For a struct, the only bindable children are its `#[resolve_into]` fields. Plain fields (`String`, counters, buffers) are state; they are never recursed into and never need `EventHandler`.
 - For an enum, the bindable child is the active variant's inner type. Every variant's inner type is assumed to implement `EventHandler<M>` (it derives `Bind`).
 
-So `EventHandler<M>` is implemented only on the node types the user derives `Bind` on, and the walks only ever follow `#[resolve_into]` fields and variant inners. That edge set is exactly laserbeam's resolve graph, which is why bind depends on laserbeam: the edges to recurse are the ones laserbeam already computes.
+So `EventHandler<M>` is implemented only on the node types the user derives `Bind` on, and the walks only ever follow `#[resolve_into]` fields and variant inners. That edge set is exactly laserbeam's resolve graph, which is why bind builds on laserbeam: the edges to recurse are the ones laserbeam already computes.
 
 ## Accumulation
 
@@ -85,7 +85,6 @@ impl EventHandler<MercuryStruct> for Layer {
 }
 ```
 
-- A node with several `#[resolve_into]` fields (the concurrent-active-children case) recurses into all of them and unions; that is the inclusive fork from `laserbeam-missing-features.md`.
 - No clobbering: `HashSet::insert` returning `false` means the trigger is already bound elsewhere on the active path, which is an error, raised here.
 
 Entry point on the root: `root.accumulate::<MercuryStruct>()` allocates the set, calls the trait method, and returns the `HashSet<Trigger>`. The runtime diffs it against the previous state's set and hands the delta to the registrar (keys-plan).
@@ -120,5 +119,5 @@ The binding is only compared (a `Trigger` equality check) before the path is con
 - `dispatch_from` cannot be a uniform `EventHandler<M>` method, because each node's path type differs. Either a GAT `type Path<'a>` on the trait, or keep `dispatch_from` inherent and let the root entry tie the chain together. Leaning inherent plus a generated root entry.
 - `Event` threads by value down the ascend chain and moves into the matching handler; `fired` passes by reference, compared at each level.
 - The accumulate match on the active enum variant duplicates laserbeam's descent. Decide whether the derive re-emits the match or calls into laserbeam to get the active edge.
-- The recursion edges are laserbeam's. Single `#[resolve_into]` exists; only the concurrent-active-children case needs the not-yet-built multiple-`#[resolve_into]` feature.
+- The recursion edges are laserbeam's `#[resolve_into]` fields and variant inners.
 - The loop, the registrar, and the diffing live in `freddie-keys-plan.md`; this doc stops at `accumulate` (the set for a state) and `dispatch` (one fired event).
