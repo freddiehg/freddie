@@ -4,7 +4,7 @@ Status: drafting. The model has been reworked; this is the current coherent vers
 
 ## Goal
 
-Precise modeling of a domain's state transitions. The point is that I can specify transitions exactly, in types. This is not about ergonomics, and not about being easy for other people to use. It is a low-level, precise tool. The driving use case is a keyboard state machine (the successor to Phantom Kit 1), but the core is a general "input -> action over a typed state tree" machine.
+Precise modeling of a domain's state transitions. The point is that I can specify transitions exactly, in types. This is not about ergonomics, and not about being easy for other people to use. It is a low-level, precise tool. The driving use case is a keyboard state machine (mercury, the successor to an earlier Karabiner + Hammerspoon setup), but the core is a general "input -> action over a typed state tree" machine.
 
 Non-goals, stated plainly so they stop creeping back in:
 
@@ -14,8 +14,8 @@ Non-goals, stated plainly so they stop creeping back in:
 
 ## What this is
 
-- A Cargo workspace with a proc-macro crate (the `Phantom` derive), a core crate, and an example/daemon binary.
-- Reference domain: Phantom Kit 1 (Karabiner + Hammerspoon) in `../phantom-kit`. PK2 re-models the same keyboard behavior as a precise typed state machine instead of flat Karabiner variables.
+- A Cargo workspace: `rayban_macro` (the `Rayban` derive), `rayban` (the typed path), the `freddie` core (bindings, accumulation, dispatch), and the mercury daemon binary.
+- Reference domain: an earlier Karabiner + Hammerspoon setup. mercury re-models the same keyboard behavior as a precise typed state machine instead of flat Karabiner variables.
 
 ## Reusable building blocks
 
@@ -37,7 +37,7 @@ Other consumers in the same shape, beyond the daemon (mercury) and a browser app
 
 - There is a single data structure: one root value (the base enum, call it `Layer`) that holds the entire state.
 - Variants are states. Each variant wraps exactly one struct. These are not "layers" in any meaningful sense; a variant just means "we are in the situation modeled by this struct." Keyboard modes are one application of that, not the model.
-- A struct is the end of the line for the derive's enum requirements, but it can hold arbitrary, non-trivial data, and it can itself nest a further `Phantom` enum. A struct whose data evolves (a buffer going `[a]`, `[a, b]`, ...) represents distinct logical states without needing new variants. Those are separate states, just not separate variants.
+- A struct is the end of the line for the derive's enum requirements, but it can hold arbitrary, non-trivial data, and it can itself nest a further `Rayban`-derived enum. A struct whose data evolves (a buffer going `[a]`, `[a, b]`, ...) represents distinct logical states without needing new variants. Those are separate states, just not separate variants.
 - Everything knows its parent. The whole tree is reachable from the single root. This is similar to the `ResolvedItem` stuff in the isograph LSP.
 - Two ways to express "knows its parent": generate paths that point to parents (more composable, probably not useful here), or have a single known base layer. Decision: single base layer.
 
@@ -48,7 +48,7 @@ Other consumers in the same shape, beyond the daemon (mercury) and a browser app
 - Scheduling and external event sources live in userland. The library maps inputs to actions and exposes a way to listen; wiring real sources (the keyboard, a scheduled timer, a socket) is the user's job.
 - "Special" keys are not special. `Cmd` down is a state transition `A -> B`; `Cmd` up is `B -> A`. Momentary behavior is two states and two transitions, not a primitive. The library should provide helper fns that make declaring this hold-pattern less tedious, but it is still just states and transitions.
 
-## The derive (`Phantom`)
+## The derives (`Rayban` and `bind`)
 
 What the derive enforces and generates:
 
@@ -76,25 +76,26 @@ Both:
 
 ## Actions mutate the single structure through a `Path`
 
-Actions receive a cursor into the state (a `Path`) and mutate the single data structure in place. This supersedes the earlier debate about returning `Layer` vs `Box<dyn Phantom>`: there is no boxing and nothing is returned, the action just mutates through the cursor.
+Actions receive a cursor into the state (a `Path`) and mutate the single data structure in place. This supersedes the earlier debate about returning `Layer` vs a boxed trait object: there is no boxing and nothing is returned, the action just mutates through the cursor.
 
 Shape:
 
 ```rust
-#[derive(Phantom<Layer>, Default)]
-#[phantom(parent_type = ())]
-#[phantom_bindings(F3Press => show_overlay)]
+#[derive(Rayban, Default)]
+#[rayban_root(resolved = LayerResolved)]
+#[bind(Keyboard::new("f3"), show_overlay)]
 enum Layer {
     Nav(Nav),
     Typing(Typing),
 }
 
-#[derive(Phantom<Layer>, Default)]
-#[phantom(parent_type = Layer)]
-#[phantom_bindings(SpacePress => to_typing)]
+#[derive(Rayban, Default)]
+#[rayban(path = NavPath, resolved = LayerResolved)]
+#[bind(Keyboard::new("space"), to_typing)]
 struct Nav {}
 
-#[derive(Phantom<Layer>, Default)]
+#[derive(Rayban, Default)]
+#[rayban(path = TypingPath, resolved = LayerResolved)]
 struct Typing {}
 
 // switch the parent enum to a new variant, through the cursor
@@ -103,7 +104,7 @@ fn to_typing(nav: &mut NavPath) {
 }
 ```
 
-An optional `Context` (`#[derive(Phantom<Context>)]`) lets actions close over external handles; pass it as a second argument when present.
+An optional context struct lets actions close over external handles; pass it as a second argument when present.
 
 ## The `Path` (current focus)
 
@@ -220,9 +221,10 @@ v1 scope: not required to get something working. We can run the binary in the ba
 
 ## Crate sketch (provisional)
 
-- `phantom-kit-macros` — the derives (`Phantom`, `bind`).
-- `phantom-kit` — core: `Path`/`Cursor`, the `bind` machinery (the `Listener` set and the outer registration handler), helpers for the hold-pattern.
-- `phantom-kit-example` — the daemon binary (see `main.rs` in this folder).
+- `rayban_macro` — the `Rayban` derive.
+- `rayban` — the typed path (`Path`/`Cursor`).
+- `freddie` — the `bind` derive and the `bind` machinery (the `Listener` set and the outer registration handler), helpers for the hold-pattern.
+- mercury — the daemon binary (see `main.rs` in this folder).
 
 ## Note
 
