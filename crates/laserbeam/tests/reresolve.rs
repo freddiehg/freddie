@@ -4,30 +4,30 @@
 //!
 //! Tree: `Catalog -> MediaType -> {Album, Single}`.
 
-use rayban::{Path, Rayban, Resolve};
+use laserbeam::{Path, Laserbeam, Resolve};
 
-#[derive(Rayban)]
-#[rayban_root(resolved = Resolved)]
+#[derive(Laserbeam)]
+#[laserbeam_root(resolved = Resolved)]
 struct Catalog {
     #[resolve_into]
     featured: MediaType,
 }
 
-#[derive(Rayban)]
-#[rayban(path = MediaTypePath, resolved = Resolved)]
+#[derive(Laserbeam)]
+#[laserbeam(path = MediaTypePath, resolved = Resolved)]
 enum MediaType {
     Album(Album),
     Single(Single),
 }
 
-#[derive(Rayban)]
-#[rayban(path = AlbumPath, resolved = Resolved)]
+#[derive(Laserbeam)]
+#[laserbeam(path = AlbumPath, resolved = Resolved)]
 struct Album {
     title: String,
 }
 
-#[derive(Rayban)]
-#[rayban(path = SinglePath, resolved = Resolved)]
+#[derive(Laserbeam)]
+#[laserbeam(path = SinglePath, resolved = Resolved)]
 struct Single {
     title: String,
 }

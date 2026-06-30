@@ -1,6 +1,6 @@
-# rayban: missing features
+# laserbeam: missing features
 
-What `#[derive(Rayban)]` does not handle yet, grouped by how it fails. Each entry notes whether it is a fundamental constraint or just unimplemented, so we know what is cheap to add. This reflects the macro in `crates/rayban_macro/src/lib.rs` as of now.
+What `#[derive(Laserbeam)]` does not handle yet, grouped by how it fails. Each entry notes whether it is a fundamental constraint or just unimplemented, so we know what is cheap to add. This reflects the macro in `crates/laserbeam_macro/src/lib.rs` as of now.
 
 ## Hard rejections
 
@@ -8,7 +8,7 @@ These produce a clear compile error from the macro itself.
 
 ### Generic nodes
 
-`node_impl` rejects any node with generic parameters: "rayban nodes may not be generic". The path alias is emitted as `#p<'a>`, threading exactly one lifetime and no type params, so a node like `struct Single<T> { .. }` cannot derive. The path alias also cannot carry an unused type parameter (Rust's E0091), so you cannot smuggle a type in that way either. Monomorphize the node instead.
+`node_impl` rejects any node with generic parameters: "laserbeam nodes may not be generic". The path alias is emitted as `#p<'a>`, threading exactly one lifetime and no type params, so a node like `struct Single<T> { .. }` cannot derive. The path alias also cannot carry an unused type parameter (Rust's E0091), so you cannot smuggle a type in that way either. Monomorphize the node instead.
 
 Status: fundamental to the current single-lifetime path shape. Supporting generic nodes means changing `#p<'a>` and the rejection guard together.
 
@@ -32,9 +32,9 @@ These compile, but the generated code fails to type-check, so the user gets a co
 
 The macro descends into exactly one child: for an enum, the active variant; for a struct, its one `#[resolve_into]` field. There is no "which of N children is active" or "is the child present" logic. A field typed `Vec<Child>` or `Option<Child>` is passed through as the child type (only `Box` is unwrapped), so the generated `<Vec<Child> as Resolve>::resolve(..)` does not compile.
 
-This is the biggest gap for a real tree. isograph handles it: `resolve_position_macro` recognizes `Vec<T>` and `Option<T>`, iterates, and uses `span.contains(position)` to pick the active child. rayban has no equivalent active-child selection, because mutably it would need a way to say which index/variant is live.
+This is the biggest gap for a real tree. isograph handles it: `resolve_position_macro` recognizes `Vec<T>` and `Option<T>`, iterates, and uses `span.contains(position)` to pick the active child. laserbeam has no equivalent active-child selection, because mutably it would need a way to say which index/variant is live.
 
-Status: a genuine missing feature, not a rough edge. Needs an "active child" mechanism (an index, a predicate, or an explicit cursor field) plus iteration in the generated descent. Scoped in `rayban-state-controlled-children.md`.
+Status: a genuine missing feature, not a rough edge. Needs an "active child" mechanism (an index, a predicate, or an explicit cursor field) plus iteration in the generated descent. Scoped in `laserbeam-state-controlled-children.md`.
 
 ### Indirection other than `Box`
 
@@ -79,4 +79,4 @@ A mode that enumerates, at the type level, every leaf the tree can resolve to. `
 
 - Not v1.
 - Use: with the freddie bindings, validate every possible state (each state's accumulated bindings are well-formed, no required binding missing) and generate documentation of the full state space.
-- It does not compose with the dynamic resolve_into (state-controlled children) feature, at least not without more thought. The domain of a dynamic descent, which children can exist, is a runtime value, so the reachable leaves under it are not statically known. Type-level enumeration needs the leaf set statically determined; the enum and `#[resolve_into]` cases give that, a state-selected collection does not. See `rayban-state-controlled-children.md`.
+- It does not compose with the dynamic resolve_into (state-controlled children) feature, at least not without more thought. The domain of a dynamic descent, which children can exist, is a runtime value, so the reachable leaves under it are not statically known. Type-level enumeration needs the leaf set statically determined; the enum and `#[resolve_into]` cases give that, a state-selected collection does not. See `laserbeam-state-controlled-children.md`.

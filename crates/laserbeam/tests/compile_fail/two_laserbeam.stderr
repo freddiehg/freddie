@@ -1,0 +1,5 @@
+error: use exactly one of `laserbeam_root` or `laserbeam`
+ --> tests/compile_fail/two_laserbeam.rs:5:1
+  |
+5 | #[laserbeam(path = P2, resolved = R)]
+  | ^

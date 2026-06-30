@@ -10,39 +10,39 @@
 //! field) and from `RefuseToLetGo` (an enum variant). The latter is the
 //! enum-node-to-multi-parent edge, with the recursion boxed to stay finite.
 
-use rayban::{Path, Rayban, Resolve};
+use laserbeam::{Path, Laserbeam, Resolve};
 
-#[derive(Rayban)]
-#[rayban_root(resolved = Resolved)]
+#[derive(Laserbeam)]
+#[laserbeam_root(resolved = Resolved)]
 struct Opera {
     #[resolve_into(parent = AskToLetGoParent)]
     verse: AskToLetGo,
 }
 
-#[derive(Rayban)]
-#[rayban(path = AskToLetGoPath, resolved = Resolved)]
+#[derive(Laserbeam)]
+#[laserbeam(path = AskToLetGoPath, resolved = Resolved)]
 struct AskToLetGo {
     #[resolve_into]
     plea: Bismillah,
 }
 
-#[derive(Rayban)]
-#[rayban(path = BismillahPath, resolved = Resolved)]
+#[derive(Laserbeam)]
+#[laserbeam(path = BismillahPath, resolved = Resolved)]
 struct Bismillah {
     #[resolve_into]
     refusal: RefuseToLetGo,
 }
 
-#[derive(Rayban)]
-#[rayban(path = RefuseToLetGoPath, resolved = Resolved)]
+#[derive(Laserbeam)]
+#[laserbeam(path = RefuseToLetGoPath, resolved = Resolved)]
 enum RefuseToLetGo {
     #[resolve_into(parent = AskToLetGoParent)]
     AskToLetGo(Box<AskToLetGo>), // recursion via an enum variant; boxed
     NeverLetMeGo(NeverLetMeGo),
 }
 
-#[derive(Rayban)]
-#[rayban(path = NeverLetMeGoPath, resolved = Resolved)]
+#[derive(Laserbeam)]
+#[laserbeam(path = NeverLetMeGoPath, resolved = Resolved)]
 struct NeverLetMeGo {
     cry: String,
 }

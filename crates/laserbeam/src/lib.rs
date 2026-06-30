@@ -2,28 +2,28 @@
 //!
 //! From a `&mut Root` you resolve a typed [`Path`] to the single active leaf, mutate that leaf through [`Path::get_mut`], and walk back up with [`Path::into_parent`], holding exactly one live `&mut` at a time.
 //!
-//! The [`Resolve`] trait, one per node, is what `#[derive(Rayban)]` implements; the running example lives in the `freddie` workspace's design notes.
+//! The [`Resolve`] trait, one per node, is what `#[derive(Laserbeam)]` implements; the running example lives in the `freddie` workspace's design notes.
 //!
 //! # Example
 //!
 //! ```
-//! use rayban::{Path, Rayban, Resolve};
+//! use laserbeam::{Path, Laserbeam, Resolve};
 //!
-//! #[derive(Rayban)]
-//! #[rayban_root(resolved = Resolved)]
+//! #[derive(Laserbeam)]
+//! #[laserbeam_root(resolved = Resolved)]
 //! enum MediaType {
 //!     Album(Album),
 //!     Single(Single),
 //! }
 //!
-//! #[derive(Rayban)]
-//! #[rayban(path = AlbumPath, resolved = Resolved)]
+//! #[derive(Laserbeam)]
+//! #[laserbeam(path = AlbumPath, resolved = Resolved)]
 //! struct Album {
 //!     title: String,
 //! }
 //!
-//! #[derive(Rayban)]
-//! #[rayban(path = SinglePath, resolved = Resolved)]
+//! #[derive(Laserbeam)]
+//! #[laserbeam(path = SinglePath, resolved = Resolved)]
 //! struct Single {
 //!     title: String,
 //! }
@@ -48,7 +48,7 @@
 //! assert_eq!(s.title, "Bohemian Rhapsody (Remastered)");
 //! ```
 
-pub use rayban_macro::Rayban;
+pub use laserbeam_macro::Laserbeam;
 
 /// The projection a [`Path`] uses to re-derive its focused node from the parent.
 ///
@@ -74,7 +74,7 @@ impl<Node, Parent> Proj<Node, Parent> {
 /// You cannot hold the leaf and walk up at the same time. `get_mut` borrows the whole path, so moving up while the leaf is still borrowed does not compile:
 ///
 /// ```compile_fail
-/// use rayban::Path;
+/// use laserbeam::Path;
 /// let mut root = 0_u32;
 /// let mut path: Path<u32, &mut u32> = Path::from_fn(&mut root, |r| &mut **r);
 /// let leaf = path.get_mut();
@@ -85,7 +85,7 @@ impl<Node, Parent> Proj<Node, Parent> {
 /// A path is dead once you walk up from it, so use after `into_parent` does not compile either:
 ///
 /// ```compile_fail
-/// use rayban::Path;
+/// use laserbeam::Path;
 /// let mut root = 0_u32;
 /// let mut path: Path<u32, &mut u32> = Path::from_fn(&mut root, |r| &mut **r);
 /// let _parent = path.into_parent();
@@ -95,7 +95,7 @@ impl<Node, Parent> Proj<Node, Parent> {
 /// The parent field is private; it is reachable only through the methods:
 ///
 /// ```compile_fail
-/// use rayban::Path;
+/// use laserbeam::Path;
 /// let mut root = 0_u32;
 /// let path: Path<u32, &mut u32> = Path::from_fn(&mut root, |r| &mut **r);
 /// let _ = path.parent; // private field

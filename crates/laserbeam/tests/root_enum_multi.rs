@@ -3,25 +3,25 @@
 //! field), so it is multi-parent. This exercises the is-root enum-variant
 //! multi-parent descent.
 
-use rayban::{Path, Rayban, Resolve};
+use laserbeam::{Path, Laserbeam, Resolve};
 
-#[derive(Rayban)]
-#[rayban_root(resolved = Resolved)]
+#[derive(Laserbeam)]
+#[laserbeam_root(resolved = Resolved)]
 enum Discography {
     #[resolve_into(parent = TrackParent)]
     Single(Track),
     Album(Record),
 }
 
-#[derive(Rayban)]
-#[rayban(path = RecordPath, resolved = Resolved)]
+#[derive(Laserbeam)]
+#[laserbeam(path = RecordPath, resolved = Resolved)]
 struct Record {
     #[resolve_into(parent = TrackParent)]
     opener: Track,
 }
 
-#[derive(Rayban)]
-#[rayban(path = TrackPath, resolved = Resolved)]
+#[derive(Laserbeam)]
+#[laserbeam(path = TrackPath, resolved = Resolved)]
 struct Track {
     title: String,
 }

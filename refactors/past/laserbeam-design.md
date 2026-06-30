@@ -1,6 +1,6 @@
-# Rayban — design spec
+# Laserbeam — design spec
 
-A self-contained library living in the phantom-kit-2 repo but depending on nothing else in it: the mutable counterpart to isograph's `resolve_position`. From a `&mut Root`, `resolve()` produces a typed cursor (`Rayban`) to the single active leaf of a tree; the cursor reads/mutates the leaf and walks up to ancestors, with exactly one live `&mut` at any time. No `Rc`, no `RefCell`, no `unsafe`. It provides the path types and the `resolve` derive only — no dispatch, no key bindings; those are the consumer's concern.
+A self-contained library living in the phantom-kit-2 repo but depending on nothing else in it: the mutable counterpart to isograph's `resolve_position`. From a `&mut Root`, `resolve()` produces a typed cursor (`Laserbeam`) to the single active leaf of a tree; the cursor reads/mutates the leaf and walks up to ancestors, with exactly one live `&mut` at any time. No `Rc`, no `RefCell`, no `unsafe`. It provides the path types and the `resolve` derive only — no dispatch, no key bindings; those are the consumer's concern.
 
 ## Model
 
@@ -13,7 +13,7 @@ A self-contained library living in the phantom-kit-2 repo but depending on nothi
 ## Runtime types (no trait, no bound)
 
 ```rust
-// root: holds the one &mut directly; can't be a Rayban because a project box
+// root: holds the one &mut directly; can't be a Laserbeam because a project box
 // would have to capture and return the &mut (a lending closure).
 pub struct Root<'a, T> { node: &'a mut T }
 impl<'a, T> Root<'a, T> {
@@ -24,13 +24,13 @@ impl<'a, T> Root<'a, T> {
 
 // every non-root level. `parent` is PRIVATE (see Staleness). `project` is a lens
 // (struct field) or prism (enum variant); it captures any per-level info.
-pub struct Rayban<Node, Parent> {
+pub struct Laserbeam<Node, Parent> {
     parent: Parent,
     project: Box<dyn for<'p> Fn(&'p mut Parent) -> &'p mut Node>,
 }
-impl<Node, Parent> Rayban<Node, Parent> {
+impl<Node, Parent> Laserbeam<Node, Parent> {
     pub fn new(parent: Parent, project: Box<dyn for<'p> Fn(&'p mut Parent) -> &'p mut Node>) -> Self {
-        Rayban { parent, project }
+        Laserbeam { parent, project }
     }
     pub fn get_mut(&mut self) -> &mut Node { (self.project)(&mut self.parent) }
     pub fn into_parent(self) -> Parent { self.parent }
@@ -40,7 +40,7 @@ impl<Node, Parent> Rayban<Node, Parent> {
 A multi-parent node is a route enum the user writes, with its own inherent `get_mut`/`into_parent` matching the route.
 
 - Aliasing is prevented statically: `get_mut(&mut self)` borrows the whole cursor, so the leaf `&mut` and an ancestor `&mut` can't be held at once.
-- Staleness (reassign an ancestor, then a stale `get_mut` hits the prism's dead arm) is prevented by `parent` being private and `into_parent` consuming: the only way up moves the cursor, so a stale cursor can't be reused. `Rayban::new` is public so the macro can construct it; `parent` is never readable.
+- Staleness (reassign an ancestor, then a stale `get_mut` hits the prism's dead arm) is prevented by `parent` being private and `into_parent` consuming: the only way up moves the cursor, so a stale cursor can't be reused. `Laserbeam::new` is public so the macro can construct it; `parent` is never readable.
 
 ## Resolve (needs a minimal trait)
 

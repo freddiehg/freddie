@@ -1,7 +1,7 @@
-use rayban::Rayban;
+use laserbeam::Laserbeam;
 
-#[derive(Rayban)]
-#[rayban(path = P, resolved = R)]
+#[derive(Laserbeam)]
+#[laserbeam(path = P, resolved = R)]
 struct TwoFields {
     #[resolve_into]
     a: u32,

@@ -14,16 +14,16 @@ Non-goals, stated plainly so they stop creeping back in:
 
 ## What this is
 
-- A Cargo workspace: `rayban`/`rayban_macro` (the typed path and its derive), `bind`/`bind_macro` (the binding layer and its derive), the `freddie` core (the event loop and effects), and the mercury daemon binary.
+- A Cargo workspace: `laserbeam`/`laserbeam_macro` (the typed path and its derive), `bind`/`bind_macro` (the binding layer and its derive), the `freddie` core (the event loop and effects), and the mercury daemon binary.
 - Reference domain: an earlier Karabiner + Hammerspoon setup. mercury re-models the same keyboard behavior as a precise typed state machine instead of flat Karabiner variables.
 
 ## Reusable building blocks
 
-The genericity goal is library reuse, not cross-compiling one binary. The macOS key-remapping daemon is one consumer of these libraries; a browser app is another, built from the same building blocks to do its own input -> action work. It is not the same code compiled to `wasm32`. It is a different app that reuses rayban, the `bind` accumulation and dispatch, effects-as-data, and the derives, while bringing its own state tree, its own inputs, and its own effects.
+The genericity goal is library reuse, not cross-compiling one binary. The macOS key-remapping daemon is one consumer of these libraries; a browser app is another, built from the same building blocks to do its own input -> action work. It is not the same code compiled to `wasm32`. It is a different app that reuses laserbeam, the `bind` accumulation and dispatch, effects-as-data, and the derives, while bringing its own state tree, its own inputs, and its own effects.
 
 What this requires of the libraries is that they stay domain- and platform-agnostic, so a second consumer can pick them up:
 
-- The reusable parts: rayban (cursors, `resolve`, `into_parent`/`get_root`), the `bind` accumulation and dispatch (the `Trigger` set, the diff, the outer registration handler), effects-as-data, and the derives. None of these name a keyboard, macOS, or Hammerspoon.
+- The reusable parts: laserbeam (cursors, `resolve`, `into_parent`/`get_root`), the `bind` accumulation and dispatch (the `Trigger` set, the diff, the outer registration handler), effects-as-data, and the derives. None of these name a keyboard, macOS, or Hammerspoon.
 - What each consumer brings: the state tree, its own `Trigger` enum and the outer handler that registers its variants (CGEventTap/Hammerspoon for the daemon; DOM events for the browser), the sinks that perform effects, and the `Effect` set itself.
 
 This is why neither `Trigger` nor `Effect` is a single global enum owned by a library. Within one consumer each is a single enum (the daemon has one `Trigger` and one `Effect`); across consumers the sets differ. The daemon's effects (emit a key, foreground an app, Hammerspoon arbitrary) mean nothing in a browser, and vice versa. The libraries provide the accumulate, diff, and dispatch machinery over whatever those enums are, and each consumer fixes its own. See `freddie-keys-plan.md`.
@@ -37,7 +37,7 @@ Other consumers in the same shape, beyond the daemon (mercury) and a browser app
 
 - There is a single data structure: one root value (the base enum, call it `Layer`) that holds the entire state.
 - Variants are states. Each variant wraps exactly one struct. These are not "layers" in any meaningful sense; a variant just means "we are in the situation modeled by this struct." Keyboard modes are one application of that, not the model.
-- A struct is the end of the line for the derive's enum requirements, but it can hold arbitrary, non-trivial data, and it can itself nest a further `Rayban`-derived enum. A struct whose data evolves (a buffer going `[a]`, `[a, b]`, ...) represents distinct logical states without needing new variants. Those are separate states, just not separate variants.
+- A struct is the end of the line for the derive's enum requirements, but it can hold arbitrary, non-trivial data, and it can itself nest a further `Laserbeam`-derived enum. A struct whose data evolves (a buffer going `[a]`, `[a, b]`, ...) represents distinct logical states without needing new variants. Those are separate states, just not separate variants.
 - Everything knows its parent. The whole tree is reachable from the single root. This is similar to the `ResolvedItem` stuff in the isograph LSP.
 - Two ways to express "knows its parent": generate paths that point to parents (more composable, probably not useful here), or have a single known base layer. Decision: single base layer.
 
@@ -48,7 +48,7 @@ Other consumers in the same shape, beyond the daemon (mercury) and a browser app
 - Scheduling and external event sources live in userland. The library maps inputs to actions and exposes a way to listen; wiring real sources (the keyboard, a scheduled timer, a socket) is the user's job.
 - "Special" keys are not special. `Cmd` down is a state transition `A -> B`; `Cmd` up is `B -> A`. Momentary behavior is two states and two transitions, not a primitive. The library should provide helper fns that make declaring this hold-pattern less tedious, but it is still just states and transitions.
 
-## The derives (`Rayban` and `bind`)
+## The derives (`Laserbeam` and `bind`)
 
 What the derive enforces and generates:
 
@@ -81,21 +81,21 @@ Actions receive a cursor into the state (a `Path`) and mutate the single data st
 Shape:
 
 ```rust
-#[derive(Rayban, Default)]
-#[rayban_root(resolved = LayerResolved)]
+#[derive(Laserbeam, Default)]
+#[laserbeam_root(resolved = LayerResolved)]
 #[bind(Keyboard::new("f3"), show_overlay)]
 enum Layer {
     Nav(Nav),
     Typing(Typing),
 }
 
-#[derive(Rayban, Default)]
-#[rayban(path = NavPath, resolved = LayerResolved)]
+#[derive(Laserbeam, Default)]
+#[laserbeam(path = NavPath, resolved = LayerResolved)]
 #[bind(Keyboard::new("space"), to_typing)]
 struct Nav {}
 
-#[derive(Rayban, Default)]
-#[rayban(path = TypingPath, resolved = LayerResolved)]
+#[derive(Laserbeam, Default)]
+#[laserbeam(path = TypingPath, resolved = LayerResolved)]
 struct Typing {}
 
 // switch the parent enum to a new variant, through the cursor
@@ -221,9 +221,9 @@ v1 scope: not required to get something working. We can run the binary in the ba
 
 ## Crate sketch (provisional)
 
-- `rayban` / `rayban_macro` — the typed path (`Path`/`Cursor`) and its derive.
+- `laserbeam` / `laserbeam_macro` — the typed path (`Path`/`Cursor`) and its derive.
 - `bind` / `bind_macro` — the `#[bind]` derive and the binding machinery (accumulation, diff, dispatch over the `Trigger` set). See `bind.md`.
-- `freddie` — the framework tying rayban and bind together: the event loop, effects-as-data, helpers for the hold-pattern.
+- `freddie` — the framework tying laserbeam and bind together: the event loop, effects-as-data, helpers for the hold-pattern.
 - mercury — the daemon binary (see `main.rs` in this folder).
 
 ## Note

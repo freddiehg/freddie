@@ -1,6 +1,6 @@
-use rayban::Rayban;
+use laserbeam::Laserbeam;
 
-#[derive(Rayban)]
+#[derive(Laserbeam)]
 struct Missing {
     value: u32,
 }

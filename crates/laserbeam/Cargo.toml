@@ -1,5 +1,5 @@
 [package]
-name = "rayban"
+name = "laserbeam"
 description = "Mutable resolved paths (composed lenses and prisms) into a single-owner tree."
 version.workspace = true
 edition.workspace = true
@@ -8,7 +8,7 @@ repository.workspace = true
 readme = "README.md"
 
 [dependencies]
-rayban_macro = { path = "../rayban_macro", version = "0.0.1" }
+laserbeam_macro = { path = "../laserbeam_macro", version = "0.0.1" }
 
 [dev-dependencies]
 trybuild = "1"

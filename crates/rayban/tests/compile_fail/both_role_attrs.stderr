@@ -1,5 +1,0 @@
-error: use exactly one of `rayban_root` or `rayban`
- --> tests/compile_fail/both_role_attrs.rs:5:1
-  |
-5 | #[rayban(path = P, resolved = R)]
-  | ^

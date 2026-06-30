@@ -1,40 +1,40 @@
-//! The same tree as `tree.rs`, but built with `#[derive(Rayban)]`. This proves
+//! The same tree as `tree.rs`, but built with `#[derive(Laserbeam)]`. This proves
 //! the macro emits the impls the hand-written test spells out, and compiles in a
-//! separate crate from `rayban` (so the generated `From` impls are orphan-safe).
+//! separate crate from `laserbeam` (so the generated `From` impls are orphan-safe).
 
-use rayban::{Path, Rayban, Resolve};
+use laserbeam::{Path, Laserbeam, Resolve};
 
-#[derive(Rayban)]
-#[rayban_root(resolved = MediaResolved)]
+#[derive(Laserbeam)]
+#[laserbeam_root(resolved = MediaResolved)]
 enum MediaType {
     Album(Album),
     Song(Song),
 }
 
-#[derive(Rayban)]
-#[rayban(path = AlbumPath, resolved = MediaResolved)]
+#[derive(Laserbeam)]
+#[laserbeam(path = AlbumPath, resolved = MediaResolved)]
 struct Album {
     year: u16,
     #[resolve_into(parent = TitleParent)]
     title: Title,
 }
 
-#[derive(Rayban)]
-#[rayban(path = SongPath, resolved = MediaResolved)]
+#[derive(Laserbeam)]
+#[laserbeam(path = SongPath, resolved = MediaResolved)]
 struct Song {
     #[resolve_into(parent = TitleParent)]
     title: Title,
 }
 
-#[derive(Rayban)]
-#[rayban(path = TitlePath, resolved = MediaResolved)]
+#[derive(Laserbeam)]
+#[laserbeam(path = TitlePath, resolved = MediaResolved)]
 struct Title {
     #[resolve_into]
     credit: Credit,
 }
 
-#[derive(Rayban)]
-#[rayban(path = CreditPath, resolved = MediaResolved)]
+#[derive(Laserbeam)]
+#[laserbeam(path = CreditPath, resolved = MediaResolved)]
 struct Credit {
     name: String,
 }

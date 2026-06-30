@@ -65,15 +65,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "rayban"
+name = "laserbeam"
 version = "0.0.1"
 dependencies = [
- "rayban_macro",
+ "laserbeam_macro",
  "trybuild",
 ]
 
 [[package]]
-name = "rayban_macro"
+name = "laserbeam_macro"
 version = "0.0.1"
 dependencies = [
  "proc-macro2",

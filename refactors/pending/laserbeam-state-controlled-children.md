@@ -1,8 +1,8 @@
-# rayban: state-controlled children
+# laserbeam: state-controlled children
 
 ## The realization
 
-"What is focused" is state, not always an enum variant. rayban picks the active child two ways today: an enum's active variant, or a struct's single `#[resolve_into]` field. Both are static in shape, with the type tag as the discriminator. The general case is that the discriminator is ordinary state: a browser's focused element is an id held in state, not a distinct type per element. The design already names this case ("a state tag/index over stored children" picks the active leaf); this makes it real. The enum-variant descent is the special case where the selector happens to be the type discriminant.
+"What is focused" is state, not always an enum variant. laserbeam picks the active child two ways today: an enum's active variant, or a struct's single `#[resolve_into]` field. Both are static in shape, with the type tag as the discriminator. The general case is that the discriminator is ordinary state: a browser's focused element is an id held in state, not a distinct type per element. The design already names this case ("a state tag/index over stored children" picks the active leaf); this makes it real. The enum-variant descent is the special case where the selector happens to be the type discriminant.
 
 ## The runtime already supports it
 
@@ -12,7 +12,7 @@
 Path::from_box(parent, Box::new(move |w: &mut Workspace| &mut w.panes[idx]))
 ```
 
-rayban-plan.md's "Deferred (post-v1)" already records this: the runtime takes the indexed box, only macro support is missing. So this feature is a derive change plus a semantics decision, not a runtime change. And because the child type is uniform, the path type is unchanged: `PanePath<'a> = Path<Pane, WorkspacePath<'a>>`, with the index living in the box, not the type.
+laserbeam-plan.md's "Deferred (post-v1)" already records this: the runtime takes the indexed box, only macro support is missing. So this feature is a derive change plus a semantics decision, not a runtime change. And because the child type is uniform, the path type is unchanged: `PanePath<'a> = Path<Pane, WorkspacePath<'a>>`, with the index living in the box, not the type.
 
 ## Scope: homogeneous, state-selected
 
@@ -42,7 +42,7 @@ Consequences:
 - A node can be interior and a leaf at once. `Resolved` gains a variant for this node-as-leaf alongside its descend paths. The generated descent has two arms: `Some` builds the capturing `Path::from_box` and recurses into `<Child as Resolve>::resolve`; `None` returns `Resolved::<Self>(path)`.
 - None-focused is a normal outcome, not an error; the node handles events itself.
 
-This generalizes the `Option`/`Result` deferred note in rayban-plan.md: an empty `#[resolve_into]` and a none-focused collection are the same shape, a conditional edge with `Resolved` gaining a terminal variant for the empty case.
+This generalizes the `Option`/`Result` deferred note in laserbeam-plan.md: an empty `#[resolve_into]` and a none-focused collection are the same shape, a conditional edge with `Resolved` gaining a terminal variant for the empty case.
 
 ## Projection is snapshotted, not re-read
 

@@ -1,9 +1,9 @@
-//! Derive macro for the `rayban` crate. See `rayban` for usage.
+//! Derive macro for the `laserbeam` crate. See `laserbeam` for usage.
 //!
-//! `#[derive(Rayban)]` reads one of two attributes and emits impls only:
+//! `#[derive(Laserbeam)]` reads one of two attributes and emits impls only:
 //!
-//! - `#[rayban_root(resolved = R)]` on the root node.
-//! - `#[rayban(path = P, resolved = R)]` on a non-root node.
+//! - `#[laserbeam_root(resolved = R)]` on the root node.
+//! - `#[laserbeam(path = P, resolved = R)]` on a non-root node.
 //!
 //! A node with multiple parents declares its parent as a plain enum, one variant
 //! per parent path, and each parent points at the variant to wrap into via
@@ -17,8 +17,8 @@ use quote::quote;
 use syn::spanned::Spanned;
 use syn::{Data, DataEnum, DataStruct, DeriveInput, Fields, Ident, Path, Type, parse_macro_input};
 
-#[proc_macro_derive(Rayban, attributes(rayban, rayban_root, resolve_into))]
-pub fn derive_rayban(input: TokenStream) -> TokenStream {
+#[proc_macro_derive(Laserbeam, attributes(laserbeam, laserbeam_root, resolve_into))]
+pub fn derive_laserbeam(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     expand(&input)
         .unwrap_or_else(syn::Error::into_compile_error)
@@ -41,7 +41,7 @@ fn role_of(input: &DeriveInput) -> syn::Result<Role> {
     let mut found: Option<(Role, proc_macro2::Span)> = None;
     for attr in &input.attrs {
         let span = attr.span();
-        let role = if attr.path().is_ident("rayban_root") {
+        let role = if attr.path().is_ident("laserbeam_root") {
             let mut resolved = None;
             attr.parse_nested_meta(|m| {
                 if m.path.is_ident("resolved") {
@@ -52,9 +52,9 @@ fn role_of(input: &DeriveInput) -> syn::Result<Role> {
                 }
             })?;
             Role::Root {
-                resolved: required(resolved, span, "rayban_root needs `resolved = ..`")?,
+                resolved: required(resolved, span, "laserbeam_root needs `resolved = ..`")?,
             }
-        } else if attr.path().is_ident("rayban") {
+        } else if attr.path().is_ident("laserbeam") {
             let mut path = None;
             let mut resolved = None;
             attr.parse_nested_meta(|m| {
@@ -69,8 +69,8 @@ fn role_of(input: &DeriveInput) -> syn::Result<Role> {
                 }
             })?;
             Role::Node {
-                path: required(path, span, "rayban needs `path = ..`")?,
-                resolved: required(resolved, span, "rayban needs `resolved = ..`")?,
+                path: required(path, span, "laserbeam needs `path = ..`")?,
+                resolved: required(resolved, span, "laserbeam needs `resolved = ..`")?,
             }
         } else {
             continue;
@@ -78,7 +78,7 @@ fn role_of(input: &DeriveInput) -> syn::Result<Role> {
         if found.is_some() {
             return Err(syn::Error::new(
                 span,
-                "use exactly one of `rayban_root` or `rayban`",
+                "use exactly one of `laserbeam_root` or `laserbeam`",
             ));
         }
         found = Some((role, span));
@@ -86,7 +86,7 @@ fn role_of(input: &DeriveInput) -> syn::Result<Role> {
     found.map(|(role, _)| role).ok_or_else(|| {
         syn::Error::new(
             input.span(),
-            "missing a `rayban_root` or `rayban` attribute",
+            "missing a `laserbeam_root` or `laserbeam` attribute",
         )
     })
 }
@@ -104,7 +104,7 @@ fn node_impl(
     if !input.generics.params.is_empty() {
         return Err(syn::Error::new(
             input.generics.span(),
-            "rayban nodes may not be generic",
+            "laserbeam nodes may not be generic",
         ));
     }
     let name = &input.ident;
@@ -116,7 +116,7 @@ fn node_impl(
         Data::Union(_) => {
             return Err(syn::Error::new(
                 input.span(),
-                "rayban does not support unions",
+                "laserbeam does not support unions",
             ));
         }
     };
@@ -131,7 +131,7 @@ fn node_impl(
     Ok(quote! {
         #[automatically_derived]
         #[allow(clippy::useless_conversion)]
-        impl ::rayban::Resolve for #name {
+        impl ::laserbeam::Resolve for #name {
             type Path<'a> = #path_ty;
             type Resolved<'a> = #resolved<'a>;
             fn resolve<'a>(#binding: #path_ty) -> #resolved<'a>
@@ -176,8 +176,8 @@ fn struct_body(
                         quote!(|np| &mut #deref np.get_mut().#field)
                     };
                     Ok(quote! {
-                        <#child as ::rayban::Resolve>::resolve(
-                            ::rayban::Path::from_fn(path, #project).into()
+                        <#child as ::laserbeam::Resolve>::resolve(
+                            ::laserbeam::Path::from_fn(path, #project).into()
                         )
                     })
                 }
@@ -204,8 +204,8 @@ fn struct_body(
                     // chain breaks its own size with `Album(Box<AlbumPath>)`, the
                     // way isograph does.
                     Ok(quote! {
-                        <#child as ::rayban::Resolve>::resolve(
-                            ::rayban::Path::from_fn(#variant(path.into()), #project)
+                        <#child as ::laserbeam::Resolve>::resolve(
+                            ::laserbeam::Path::from_fn(#variant(path.into()), #project)
                         )
                     })
                 }
@@ -232,7 +232,7 @@ fn enum_body(is_root: bool, name: &Ident, e: &DataEnum) -> syn::Result<TokenStre
     if variants.is_empty() {
         return Err(syn::Error::new(
             e.variants.span(),
-            "a rayban enum needs at least one variant",
+            "a laserbeam enum needs at least one variant",
         ));
     }
     // A `Box<Child>` variant (recursive data) is dereferenced; the resolved
@@ -245,8 +245,8 @@ fn enum_body(is_root: bool, name: &Ident, e: &DataEnum) -> syn::Result<TokenStre
                 None => {
                     let access = if boxed { quote!(&mut **c) } else { quote!(c) };
                     quote! {
-                        Self::#vi(_) => <#child as ::rayban::Resolve>::resolve(
-                            ::rayban::Path::from_fn(path, |o| {
+                        Self::#vi(_) => <#child as ::laserbeam::Resolve>::resolve(
+                            ::laserbeam::Path::from_fn(path, |o| {
                                 let Self::#vi(c) = &mut **o else { ::core::unreachable!() };
                                 #access
                             }).into()
@@ -259,8 +259,8 @@ fn enum_body(is_root: bool, name: &Ident, e: &DataEnum) -> syn::Result<TokenStre
                 Some(route) => {
                     let inner = if boxed { quote!(&mut **inner) } else { quote!(inner) };
                     quote! {
-                        Self::#vi(_) => <#child as ::rayban::Resolve>::resolve(
-                            ::rayban::Path::from_fn(#route::#name(path.into()), |p| {
+                        Self::#vi(_) => <#child as ::laserbeam::Resolve>::resolve(
+                            ::laserbeam::Path::from_fn(#route::#name(path.into()), |p| {
                                 let #route::#name(pp) = p else { ::core::unreachable!() };
                                 let Self::#vi(inner) = &mut **pp else { ::core::unreachable!() };
                                 #inner
@@ -280,8 +280,8 @@ fn enum_body(is_root: bool, name: &Ident, e: &DataEnum) -> syn::Result<TokenStre
                     let access = if boxed { quote!(&mut **c) } else { quote!(c) };
                     quote! {
                         if ::core::matches!(path.get_mut(), Self::#vi(_)) {
-                            return <#child as ::rayban::Resolve>::resolve(
-                                ::rayban::Path::from_fn(path, |np| {
+                            return <#child as ::laserbeam::Resolve>::resolve(
+                                ::laserbeam::Path::from_fn(path, |np| {
                                     let Self::#vi(c) = np.get_mut() else { ::core::unreachable!() };
                                     #access
                                 }).into()
@@ -296,8 +296,8 @@ fn enum_body(is_root: bool, name: &Ident, e: &DataEnum) -> syn::Result<TokenStre
                     let inner = if boxed { quote!(&mut **inner) } else { quote!(inner) };
                     quote! {
                         if ::core::matches!(path.get_mut(), Self::#vi(_)) {
-                            return <#child as ::rayban::Resolve>::resolve(
-                                ::rayban::Path::from_fn(#route::#name(path.into()), |p| {
+                            return <#child as ::laserbeam::Resolve>::resolve(
+                                ::laserbeam::Path::from_fn(#route::#name(path.into()), |p| {
                                     let #route::#name(pp) = p else { ::core::unreachable!() };
                                     let Self::#vi(inner) = pp.get_mut() else { ::core::unreachable!() };
                                     #inner

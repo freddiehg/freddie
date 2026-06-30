@@ -6,7 +6,7 @@ bind is a crate within freddie: `bind` (the runtime traits) plus `bind_macro` (t
 
 ## The attribute
 
-`#[bind(trigger, handler, ...)]` on a node (a state struct or enum), repeatable:
+`#[bind(trigger, handler)]` on a node (a state struct or enum), repeatable:
 
 ```rust
 #[bind(Keyboard::new('g'), on_g)]
@@ -16,26 +16,22 @@ struct Inner {}
 
 - `trigger`: an expression that lifts into the consumer's `Trigger` enum via `Into` (`derive_more::From`). The derive wraps it with `.into()`. It is pure data, `Hash + Eq`.
 - `handler`: a function, `fn(Event, Path<ThisNode, Parent>) -> Output` (below).
-- A third argument is likely needed (see "The third argument").
 
 ## What the derive emits
 
-Per node, one thing: that node's own bindings. For each `#[bind]` the derive emits a `(Trigger, thunk)` pair into the node's binding set. A node contributes only its own bindings and nothing about its place in the tree; the runtime assembles the active set by walking the resolved path.
+Per node, the macro emits two things over that node's `#[bind]`s, both generic over `T: From<each source the node uses>` (so the per-source trigger values lift into one enum; see below):
 
-The handler wants the typed `Path<ThisNode, Parent>`, but bindings are stored and dispatched dynamically keyed by `Trigger`, so each thunk is the erasure boundary: given `&mut Root` and the fired event, it reconstructs the typed path to this node (the descent rayban already walks) and calls the typed handler. The thunk is `Fn(&mut Root, Event) -> Output`.
+- the node's triggers, each lifted with `.into()` to `T`, for the active-set accumulation (keys only);
+- a dispatch hook: given a fired `T` and the node's live path, if one of the node's triggers matches, it calls that handler with the path and returns the `Output`.
 
-The trigger is an ordinary expression of the `Trigger` type, not restricted to a literal, evaluated when the binding set is built. It is owned and moved in, so it needs no `'static` bound.
+Because dispatch runs the handler while the node's path is live, there is no stored handler map, no type erasure, and no path reconstruction. A node contributes only its own bindings; walking the active path to accumulate the set and to find the handler is the runtime's job (`freddie-keys-plan.md`).
+
+The trigger is an ordinary expression, not restricted to a literal, evaluated when the set is built; it is owned and moved in, so it needs no `'static` bound.
 
 ## The handler
 
 `fn(Event, Path<ThisNode, Parent>) -> Output`. It mutates state through the path (`get_mut`, `into_parent`, `get_root`) and returns effect data; it performs no I/O. `bind` is generic over `Event` and `Output` (mercury uses `MercuryEvent` and `Option<Vec<MercuryEffect>>`); it passes them through and does not interpret them.
 
-## The third argument
+## Combining per-source triggers into one enum
 
-`#[bind(trigger, handler)]` probably needs a third parameter. Candidates:
-
-- A description: a human-readable label for the binding, for a which-key-style overlay and generated documentation of the state space. Independent of v1 scoping, and the project already wants overlays and docs (the type-level state enumeration in `rayban-missing-features.md`).
-- A clobber or precedence policy: whether this binding is clobberable, or a priority, per `freddie-dispatch-precedence.md`. v1 is uniformly non-clobberable, so this is not needed until that lands.
-- A guard: a predicate gating the binding beyond the trigger. Probably unnecessary, since conditions are better expressed as state (the active node already encodes the condition).
-
-Leaning toward the description. Open: which one, and whether it is positional or named (`#[bind(trigger, handler, desc = "..")]`).
+`Keyboard::from('g')` and `Foreground::from("chrome")` are different types, so a node that binds across sources needs them in one `Trigger` enum to accumulate. The macro emits `.into()` on each trigger expression and makes the node's generated code generic over `T: From<Keyboard> + From<Foreground> + ..` (one `From` bound per source the node uses). The consumer's `Trigger` enum (with `derive_more::From`) is the concrete `T`. The enum is named once, by the consumer, and carried in through the `From` bounds; it is not a third argument on each `#[bind]`.

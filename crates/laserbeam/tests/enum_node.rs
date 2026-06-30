@@ -2,29 +2,29 @@
 //! where the macro emits the `matches!` / early-return descent. Modeled on
 //! Queen II, pressed as "Side White" and "Side Black".
 
-use rayban::{Path, Rayban, Resolve};
+use laserbeam::{Path, Laserbeam, Resolve};
 
-#[derive(Rayban)]
-#[rayban_root(resolved = Resolved)]
+#[derive(Laserbeam)]
+#[laserbeam_root(resolved = Resolved)]
 enum QueenII {
     Pressing(Side),
 }
 
-#[derive(Rayban)]
-#[rayban(path = SidePath, resolved = Resolved)]
+#[derive(Laserbeam)]
+#[laserbeam(path = SidePath, resolved = Resolved)]
 enum Side {
     White(WhiteQueen),
     Black(BlackQueen),
 }
 
-#[derive(Rayban)]
-#[rayban(path = WhiteQueenPath, resolved = Resolved)]
+#[derive(Laserbeam)]
+#[laserbeam(path = WhiteQueenPath, resolved = Resolved)]
 struct WhiteQueen {
     bpm: u32,
 }
 
-#[derive(Rayban)]
-#[rayban(path = BlackQueenPath, resolved = Resolved)]
+#[derive(Laserbeam)]
+#[laserbeam(path = BlackQueenPath, resolved = Resolved)]
 struct BlackQueen {
     title: String,
 }
