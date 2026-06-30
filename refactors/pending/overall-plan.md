@@ -60,7 +60,7 @@ On an enum:
 
 On a struct:
 
-- Build the struct's own key -> action map. No delegation; it is the end of the line.
+- Build the struct's own listener -> handler map. No delegation; it is the end of the line.
 
 Both:
 
@@ -220,7 +220,7 @@ v1 scope: not required to get something working. We can run the binary in the ba
 
 ## Crate sketch (provisional)
 
-- `phantom-kit-macros` — the derives (`Phantom`, `KeySource`).
+- `phantom-kit-macros` — the derives (`Phantom`, `bind`).
 - `phantom-kit` — core: `Path`/`Cursor`, the `bind` machinery (the `Listener` set and the outer registration handler), helpers for the hold-pattern.
 - `phantom-kit-example` — the daemon binary (see `main.rs` in this folder).
 
