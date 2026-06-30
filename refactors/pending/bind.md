@@ -43,7 +43,9 @@ The active binding set for a state is computed at runtime; it cannot be known st
 2. Walk rootward via `into_parent`, collecting each node's bindings.
 3. Coalesce into one map keyed by `L`.
 
-Output: the active binding map `HashMap<L, Thunk>`, whose key set is the active listener set `HashSet<L>` used for registration.
+Output: the active binding map `HashMap<L, Thunk>`, whose key set is the active set `HashSet<L>` used for registration.
+
+A node can have several concurrently-active children (multiple `#[resolve_into]`, required; see `rayban-missing-features.md`), so `resolve` is multi-valued: there are several active leaves, and accumulation unions bindings across all of them. The single-active-leaf wording here generalizes to a set of active leaves.
 
 v1 is static and non-clobberable: a listener bound at two levels of the active path is a collision and an error raised here, during accumulation, naming both bindings. The fuller space (leafward-clobbers-rootward precedence, clobberable bindings, dynamic fall-through) is in `freddie-dispatch-precedence.md` and is not in v1.
 

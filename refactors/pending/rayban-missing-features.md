@@ -22,7 +22,7 @@ Status: easy to extend for struct/multi-field variants if a use case appears; un
 
 A struct descends into exactly one child. Two `#[resolve_into]` fields error with "at most one `#[resolve_into]` field per struct". Branching is expressed through enums, not through a struct with multiple children.
 
-Status: deliberate. A struct is a linear pass-through; an enum is the fork.
+Status: this restriction must be lifted. We absolutely need multiple `#[resolve_into]` per struct, because a node can have several concurrently-active children, not one. The reactive-UI case forces it: a page showing a blog and an open dropdown has both active and subscribed at once. mercury needs it directly too: a laptop-keyboard layer and an external-keyboard layer are active simultaneously and not necessarily in the same state (the laptop in nav while the external is in typing). This drops the single-active-leaf assumption, so `resolve` becomes multi-valued (a set of active leaves), accumulation unions bindings across all of them, and only dispatch of a single fired event is still one path. The distinction from enums: an enum is an exclusive fork (one active variant), multiple `#[resolve_into]` is an inclusive fork (all marked children active at once).
 
 ## Silent gaps
 
