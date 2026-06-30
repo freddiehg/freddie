@@ -35,7 +35,7 @@ struct Inner {}
 
 The two arguments are a trigger and a handler:
 
-- `Keyboard::new('g')` is the trigger: which event to listen for. The source (`Keyboard`) and the specific key (`'g'`) are folded into one value, not two arguments. `Keyboard::new('g')` is a keyboard trigger for `g`, `Keyboard::new("cmd+g")` a chord, and a different source is a different constructor (`Foreground::new("Chrome")`). The trigger is pure data, `Hash + Eq`, so triggers can be set and map keys, and the value holds no reference to any registration state.
+- `Keyboard::new('g')` is the trigger: which event to listen for. The source (`Keyboard`) and the specific key (`'g'`) are folded into one value, not two arguments. `Keyboard::new('g')` is a keyboard trigger for `g`, and a different source is a different constructor (`Foreground::new("Chrome")`). The trigger is pure data, `Hash + Eq`, so triggers can be set and map keys, and the value holds no reference to any registration state. Modifiers are not chords baked into the trigger; they are modeled as state (see `modifier-keys.md`).
 - `on_g` is the handler to run when it fires.
 
 The derive emits, per node, a map of trigger to handler. A node can carry several bindings across several sources.

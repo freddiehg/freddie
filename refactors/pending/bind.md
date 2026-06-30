@@ -13,7 +13,7 @@
 
 ```rust
 #[bind(Keyboard::new('g'), on_g)]
-#[bind(Keyboard::new("cmd+g"), on_cmd_g)]
+#[bind(Keyboard::new('y'), on_y)]
 struct Inner {}
 ```
 
