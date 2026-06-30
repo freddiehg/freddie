@@ -1,1 +1,1 @@
-//! Phantom Kit: a typed keyboard state machine. Work in progress.
+//! freddie: a framework for typed event-to-state machines. Work in progress.
