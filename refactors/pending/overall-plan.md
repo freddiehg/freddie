@@ -19,19 +19,19 @@ Non-goals, stated plainly so they stop creeping back in:
 
 ## Reusable building blocks
 
-The genericity goal is library reuse, not cross-compiling one binary. The macOS key-remapping daemon is one consumer of these libraries; a browser app is another, built from the same building blocks to do its own input -> action work. It is not the same code compiled to `wasm32`. It is a different app that reuses rayban, the `EventSource`-generic accumulation and dispatch, effects-as-data, and the derive, while bringing its own state tree, its own event sources, and its own effects.
+The genericity goal is library reuse, not cross-compiling one binary. The macOS key-remapping daemon is one consumer of these libraries; a browser app is another, built from the same building blocks to do its own input -> action work. It is not the same code compiled to `wasm32`. It is a different app that reuses rayban, the `bind` accumulation and dispatch, effects-as-data, and the derives, while bringing its own state tree, its own inputs, and its own effects.
 
 What this requires of the libraries is that they stay domain- and platform-agnostic, so a second consumer can pick them up:
 
-- The reusable parts: rayban (cursors, `resolve`, `into_parent`/`get_root`), the `EventSource`-generic binding accumulation and dispatch, effects-as-data, and the `Phantom`/`Rayban` derive. None of these name a keyboard, macOS, or Hammerspoon.
-- What each consumer brings: the state tree, the `EventSource` impls that produce events (CGEventTap/Hammerspoon for the daemon; DOM events for the browser), the sinks that perform effects, and the `Effect` set itself.
+- The reusable parts: rayban (cursors, `resolve`, `into_parent`/`get_root`), the `bind` accumulation and dispatch (the `Listener` set, the diff, the outer registration handler), effects-as-data, and the derives. None of these name a keyboard, macOS, or Hammerspoon.
+- What each consumer brings: the state tree, its own `Listener` enum and the outer handler that registers its variants (CGEventTap/Hammerspoon for the daemon; DOM events for the browser), the sinks that perform effects, and the `Effect` set itself.
 
-This is why `Effect` is not a single global enum owned by a library. Within one consumer it is a single enum (the daemon has one `Effect`); across consumers the sets differ. The daemon's effects (emit a key, foreground an app, Hammerspoon arbitrary) mean nothing in a browser, and vice versa. So the libraries stay generic over the effect type the way they are already generic over `EventSource`, and each consumer fixes its own `Effect` and sinks. See the effects section in `freddie-keys-plan.md`.
+This is why neither `Listener` nor `Effect` is a single global enum owned by a library. Within one consumer each is a single enum (the daemon has one `Listener` and one `Effect`); across consumers the sets differ. The daemon's effects (emit a key, foreground an app, Hammerspoon arbitrary) mean nothing in a browser, and vice versa. The libraries provide the accumulate, diff, and dispatch machinery over whatever those enums are, and each consumer fixes its own. See `freddie-keys-plan.md`.
 
 Other consumers in the same shape, beyond the daemon (mercury) and a browser app:
 
 - A router. The active route is the state tree, resolving picks the active page, navigating switches a variant, and route params are fields rather than variants.
-- The state of a reactive UI. The UI is in some state, e.g. looking at `/blog/:id`, on the blog-detail page, with a dropdown open. The pieces of data the current view reads (the blog, whatever the dropdown shows) are the active event sources: we accumulate exactly the data the current state looks at, the way mercury accumulates the active bindings. When a datum changes we propagate to the UI and re-render, so a blog change re-renders the detail page. Deleting the blog moves us to a 404 page, where there is no dropdown, so the dropdown's data source drops out of the accumulated set and is deregistered, exactly like a key binding the new state no longer wants. Realtime updates fall out of treating the viewed data as subscribed event sources tied to the current state.
+- The state of a reactive UI. The UI is in some state, e.g. looking at `/blog/:id`, on the blog-detail page, with a dropdown open. The pieces of data the current view reads (the blog, whatever the dropdown shows) are the active listeners: we accumulate exactly the data the current state looks at, the way mercury accumulates the active bindings. When a datum changes we propagate to the UI and re-render, so a blog change re-renders the detail page. Deleting the blog moves us to a 404 page, where there is no dropdown, so the dropdown's subscription drops out of the accumulated set and is deregistered, exactly like a key binding the new state no longer wants. Realtime updates fall out of treating the viewed data as subscribed inputs tied to the current state.
 
 ## Core model
 
@@ -64,22 +64,15 @@ On a struct:
 
 Both:
 
-- One trait method that returns the key bindings (a map of key -> action).
-- A separate, non-trait fn that takes those bindings and connects them, i.e. registers the event sources and listens. Connecting is deliberately outside the trait.
+- One trait method that returns the bindings (a map of listener -> handler).
+- A separate, non-trait fn that takes those bindings and connects them: it hands the accumulated listeners to the outer handler, which registers them and listens. Connecting is deliberately outside the trait.
 
-## Keys, bindings, input sources
+## Bindings and input sources
 
-- The `Keys` trait solely creates a map: key -> action. Nothing more.
-- Generic over input. Keys are one kind of input; arbitrary other events should work the same way. Real sources beyond keys are punted to userland.
-- Per-input structs, not one shared `Key`. We want `F3Press`, `SpacePress`, etc., each a distinct type implementing an `EventSource` trait. Distinct types make double-binding detectable at the type level; a single `Key` value carrying a runtime discriminant would not. The per-key structs are themselves derived:
-
-```rust
-#[derive(KeySource)]
-#[key_source(key = f3, action = press)]
-struct F3Press {}
-```
-
-- Open question on `EventSource`: does it carry context like which physical keyboard? Presumably yes, because you cannot have a separate struct per physical keyboard.
+- A node declares bindings with `#[bind(listener, handler)]`; the derive emits a map of listener to handler. The bindings model is detailed in `freddie-keys-plan.md`.
+- Generic over input. Keys are one kind of input; arbitrary other events work the same way. Real sources beyond keys are punted to userland.
+- One `Listener` enum, not per-input distinct types. A listener is a value like `Keyboard::new('g')` or `Foreground::new("Chrome")`, unified into a single `Listener` enum (one variant per source, `derive_more::From` for the `.into()` lift). This reverses an earlier plan that wanted a distinct type per input (`F3Press`, `SpacePress`) so double-binding was a type error: with one enum the discriminant is a runtime variant, so a double-binding is caught at runtime during accumulation rather than at the type level. The tradeoff is accepted, and adding a source edits the central enum, which is cheap.
+- One outer handler owns registration. It receives the accumulated `Listener` diff and routes each variant to its OS mechanism (a keyboard tap, a workspace observer). Listener values stay pure data and hold no reference to that state; per-listener OS handles live on the handler keyed by listener. Connecting is deliberately outside the trait.
 
 ## Actions mutate the single structure through a `Path`
 
@@ -221,14 +214,14 @@ v1 scope: not required to get something working. We can run the binary in the ba
 - Enum bindings: when both the enum and an active sub-state bind the same key, does the enum override, or must it be resolved explicitly?
 - How is validity encoded in types (valid by construction) rather than checked at runtime?
 - `Path` projection: fallible (`Option`) vs `unreachable!` panic on a stale cursor.
-- `EventSource`: how is per-keyboard identity represented?
+- `Listener`: how is per-keyboard identity represented within the `Keyboard` variant?
 - Constructing a target variant on transition: `Default` vs carrying fields over from the old state. We own the data through the cursor, so carry-over is possible.
 - Crate layout and final names.
 
 ## Crate sketch (provisional)
 
 - `phantom-kit-macros` — the derives (`Phantom`, `KeySource`).
-- `phantom-kit` — core: `Path`/`Cursor`, the `Keys`/`EventSource` traits, helpers for the hold-pattern.
+- `phantom-kit` — core: `Path`/`Cursor`, the `bind` machinery (the `Listener` set and the outer registration handler), helpers for the hold-pattern.
 - `phantom-kit-example` — the daemon binary (see `main.rs` in this folder).
 
 ## Note
