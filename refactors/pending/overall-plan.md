@@ -28,6 +28,11 @@ What this requires of the libraries is that they stay domain- and platform-agnos
 
 This is why `Effect` is not a single global enum owned by a library. Within one consumer it is a single enum (the daemon has one `Effect`); across consumers the sets differ. The daemon's effects (emit a key, foreground an app, Hammerspoon arbitrary) mean nothing in a browser, and vice versa. So the libraries stay generic over the effect type the way they are already generic over `EventSource`, and each consumer fixes its own `Effect` and sinks. See the effects section in `freddie-keys-plan.md`.
 
+Other consumers in the same shape, beyond the daemon (mercury) and a browser app:
+
+- A router. The active route is the state tree, resolving picks the active page, navigating switches a variant, and route params are fields rather than variants.
+- The state of a reactive UI. The UI is in some state, e.g. looking at `/blog/:id`, on the blog-detail page, with a dropdown open. The pieces of data the current view reads (the blog, whatever the dropdown shows) are the active event sources: we accumulate exactly the data the current state looks at, the way mercury accumulates the active bindings. When a datum changes we propagate to the UI and re-render, so a blog change re-renders the detail page. Deleting the blog moves us to a 404 page, where there is no dropdown, so the dropdown's data source drops out of the accumulated set and is deregistered, exactly like a key binding the new state no longer wants. Realtime updates fall out of treating the viewed data as subscribed event sources tied to the current state.
+
 ## Core model
 
 - There is a single data structure: one root value (the base enum, call it `Layer`) that holds the entire state.
