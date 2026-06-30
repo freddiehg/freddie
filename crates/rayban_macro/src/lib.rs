@@ -163,6 +163,9 @@ fn struct_body(
     resolved: &Path,
 ) -> syn::Result<TokenStream2> {
     match find_resolve_into(&s.fields)? {
+        // POTENTIAL: emit `path.into()` instead of hardcoding the
+        // `#resolved::#name(..)` variant constructor, so `resolved` could be a
+        // plain struct (with a `From<LeafPath>` impl), not only an enum.
         None => Ok(quote!(#resolved::#name(path))),
         Some((field, child)) => {
             let project = if is_root {

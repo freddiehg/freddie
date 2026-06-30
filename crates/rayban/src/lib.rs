@@ -1,43 +1,58 @@
 //! Mutable resolved paths into a single-owner tree.
 //!
-//! This is the mutable counterpart to isograph's `resolve_position`. From a
-//! `&mut Root` you resolve a typed [`Path`] to the single active leaf, mutate
-//! that leaf through [`Path::get_mut`], and walk back up with
-//! [`Path::into_parent`], holding exactly one live `&mut` at a time. There is no
-//! `Rc`, no `RefCell`, and no `unsafe`.
+//! From a `&mut Root` you resolve a typed [`Path`] to the single active leaf, mutate that leaf through [`Path::get_mut`], and walk back up with [`Path::into_parent`], holding exactly one live `&mut` at a time. The crate uses no `Rc`, `RefCell`, or `unsafe`.
 //!
-//! The [`Resolve`] trait (one per node, like isograph's `ResolvePosition`) is
-//! what `#[derive(Rayban)]` implements; the running example lives in the
-//! `freddie` workspace's design notes.
+//! The [`Resolve`] trait, one per node, is what `#[derive(Rayban)]` implements; the running example lives in the `freddie` workspace's design notes.
 //!
 //! # Example
 //!
 //! ```
-//! use rayban::Path;
+//! use rayban::{Path, Rayban, Resolve};
 //!
-//! enum Tree {
-//!     Leaf(u32),
+//! #[derive(Rayban)]
+//! #[rayban_root(resolved = Resolved)]
+//! enum MediaType {
+//!     Album(Album),
+//!     Single(Single),
 //! }
 //!
-//! let mut tree = Tree::Leaf(1);
-//! // A path that re-derives the `u32` inside `Tree::Leaf` from a `&mut Tree`.
-//! let mut path: Path<u32, &mut Tree> = Path::from_fn(&mut tree, |t| {
-//!     let Tree::Leaf(n) = t;
-//!     n
-//! });
-//! *path.get_mut() += 41;
-//! let Tree::Leaf(n) = path.into_parent();
-//! assert_eq!(*n, 42);
+//! #[derive(Rayban)]
+//! #[rayban(path = AlbumPath, resolved = Resolved)]
+//! struct Album {
+//!     title: String,
+//! }
+//!
+//! #[derive(Rayban)]
+//! #[rayban(path = SinglePath, resolved = Resolved)]
+//! struct Single {
+//!     title: String,
+//! }
+//!
+//! type AlbumPath<'a> = Path<Album, &'a mut MediaType>;
+//! type SinglePath<'a> = Path<Single, &'a mut MediaType>;
+//!
+//! enum Resolved<'a> {
+//!     Album(AlbumPath<'a>),
+//!     Single(SinglePath<'a>),
+//! }
+//!
+//! let mut media = MediaType::Single(Single { title: "Bohemian Rhapsody".to_string() });
+//!
+//! // Resolve to the active leaf, mutate it.
+//! match <MediaType as Resolve>::resolve(&mut media) {
+//!     Resolved::Single(mut path) => path.get_mut().title.push_str(" (Remastered)"),
+//!     Resolved::Album(_) => unreachable!("built a single"),
+//! }
+//!
+//! let MediaType::Single(s) = &media else { unreachable!() };
+//! assert_eq!(s.title, "Bohemian Rhapsody (Remastered)");
 //! ```
 
 pub use rayban_macro::Rayban;
 
 /// The projection a [`Path`] uses to re-derive its focused node from the parent.
 ///
-/// `Bare` is a function pointer (what the derive emits, since its match and
-/// field projections capture nothing). `Dyn` is a boxed closure, for a
-/// hand-written projection that closes over data the derive cannot see, such as
-/// an externally supplied index.
+/// `Bare` is a function pointer (what the derive emits, since its match and field projections capture nothing). `Dyn` is a boxed closure, for a hand-written projection that closes over data the derive cannot see, such as an externally supplied index.
 enum Proj<Node, Parent> {
     Bare(fn(&mut Parent) -> &mut Node),
     Dyn(Box<dyn for<'p> Fn(&'p mut Parent) -> &'p mut Node>),
@@ -52,15 +67,11 @@ impl<Node, Parent> Proj<Node, Parent> {
     }
 }
 
-/// A typed, mutable path to a `Node`: its owned `Parent` plus the projection
-/// that re-derives the `Node` from that parent.
+/// A typed, mutable path to a `Node`: its owned `Parent` plus the projection that re-derives the `Node` from that parent.
 ///
-/// The `Parent` is private, so the only way up is [`into_parent`](Path::into_parent),
-/// which consumes the path. That, together with [`get_mut`](Path::get_mut)
-/// borrowing the whole path, keeps a stale or aliasing reference from compiling.
+/// The `Parent` is private, so the only way up is [`into_parent`](Path::into_parent), which consumes the path. That, together with [`get_mut`](Path::get_mut) borrowing the whole path, keeps a stale or aliasing reference from compiling.
 ///
-/// You cannot hold the leaf and walk up at the same time. `get_mut` borrows the
-/// whole path, so moving up while the leaf is still borrowed does not compile:
+/// You cannot hold the leaf and walk up at the same time. `get_mut` borrows the whole path, so moving up while the leaf is still borrowed does not compile:
 ///
 /// ```compile_fail
 /// use rayban::Path;
@@ -71,8 +82,7 @@ impl<Node, Parent> Proj<Node, Parent> {
 /// let _ = (leaf, parent);
 /// ```
 ///
-/// A path is dead once you walk up from it, so use after `into_parent` does not
-/// compile either:
+/// A path is dead once you walk up from it, so use after `into_parent` does not compile either:
 ///
 /// ```compile_fail
 /// use rayban::Path;
@@ -136,13 +146,9 @@ impl<Node, Parent> Path<Node, Parent> {
     }
 }
 
-/// Resolves the active leaf of a node, given that node's [`Path`]. Implemented
-/// at every layer of the tree, the way isograph's `ResolvePosition` is.
+/// Resolves the active leaf of a node, given that node's [`Path`]. Implemented at every layer of the tree.
 ///
-/// The root's `Path<'a>` is `&'a mut Self`; every other node's is a
-/// [`Path`] whose parent is the node's declared parent type. `resolve` takes the
-/// path by value rather than `&mut self`, which is what lets the `&mut` move down
-/// the tree without two live borrows existing at once.
+/// The root's `Path<'a>` is `&'a mut Self`; every other node's is a [`Path`] whose parent is the node's declared parent type. `resolve` takes the path by value rather than `&mut self`, which is what lets the `&mut` move down the tree without two live borrows existing at once.
 pub trait Resolve {
     /// This node's path type. The root's is `&'a mut Self`.
     type Path<'a>
