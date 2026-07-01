@@ -279,7 +279,7 @@ let effects: Option<Vec<MercuryEffect>> =
 
 A boxed `#[resolve_into]` field changes only the projection: the closure derefs the `Box`, `|np| &mut *np.get_mut().field` instead of `|np| &mut np.get_mut().field`. Same as `resolve`.
 
-Multi-parent: the descent wraps the path in the route enum, and the miss unwraps it back. If `Nav` also carried `#[resolve_into(parent = CursorParent)] cursor: Cursor`, reached from both `Nav` and `Typing` through `enum CursorParent { Nav(Path<Cursor, NavPath>), Typing(Path<Cursor, TypingPath>) }`, then `Nav`'s dispatch tries `cursor` before its own `"g"` bind:
+Multi-parent: the descent wraps the path in the route enum, and the miss unwraps it back. If `Nav` also carried `#[resolve_into(parent = CursorParent)] cursor: Cursor`, reached from both `Nav` and `Typing` through `enum CursorParent { Nav(NavPath), Typing(TypingPath) }` (one variant per parent path, so `Cursor`'s path is `Path<Cursor, CursorParent>`), then `Nav`'s dispatch tries `cursor` before its own `"g"` bind:
 
 ```rust
         let child = <Cursor as ::bind::Dispatch<MercuryStruct>>::dispatch(
