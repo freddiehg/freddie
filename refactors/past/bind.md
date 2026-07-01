@@ -83,13 +83,13 @@ The app calls `bind::accumulate::<MercuryStruct, _>(&root)` to get the `HashSet<
 #[derive(Laserbeam, Bind)]
 #[laserbeam(path = NavPath, resolved = Resolved)]   // laserbeam reads these
 #[binds(MercuryStruct)]                              // names the marker M
-#[bind(Keyboard::new("g"), open_chrome)]            // binds a trigger to a handler
+#[bind(Keyboard::new("g") => open_chrome)]          // binds a trigger to a handler
 struct Nav {}
 ```
 
 `#[binds(MercuryStruct)]` names the marker, so the derive emits `impl EventHandler<MercuryStruct> for Nav`. Because `M` is the concrete `MercuryStruct`, `M::Trigger` resolves to the concrete `MercuryTrigger`, `out` is `&mut HashSet<MercuryTrigger>`, and `.into()` lifts each trigger into `MercuryTrigger`.
 
-`#[bind(trigger, handler)]` repeats per binding. The `trigger` is any expression that lifts into `MercuryTrigger` via `Into`, and accumulation uses it. The `handler` is recorded for dispatch and stays unused here.
+`#[bind(trigger => handler, ..)]` lists the node's bindings in one attribute. Each `trigger` is any expression that lifts into `MercuryTrigger` via `Into`, and accumulation uses it. Each `handler` is recorded for dispatch and stays unused here.
 
 ## What is bindable
 
@@ -112,7 +112,7 @@ The state tree is a root struct holding the active layer, an enum of two layers,
 #[derive(Laserbeam, Bind)]
 #[laserbeam_root(resolved = Resolved)]
 #[binds(MercuryStruct)]
-#[bind(Keyboard::new("esc"), to_nav)]        // esc returns to nav from anywhere
+#[bind(Keyboard::new("esc") => to_nav)]      // esc returns to nav from anywhere
 struct Mercury {
     #[resolve_into] layer: Layer,            // accumulation descends into this field
 }
@@ -120,7 +120,7 @@ struct Mercury {
 #[derive(Laserbeam, Bind)]
 #[laserbeam(path = LayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
-#[bind(Keyboard::new("f1"), show_help)]      // f1 fires in any layer
+#[bind(Keyboard::new("f1") => show_help)]    // f1 fires in any layer
 enum Layer {
     Nav(Nav),
     Typing(Typing),
@@ -129,15 +129,13 @@ enum Layer {
 #[derive(Laserbeam, Bind)]
 #[laserbeam(path = NavPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
-#[bind(Keyboard::new("g"), open_chrome)]
-#[bind(Keyboard::new("j"), focus_down)]
-#[bind(Foreground::new("Slack"), on_slack)]
+#[bind(Keyboard::new("g") => open_chrome, Keyboard::new("j") => focus_down, Foreground::new("Slack") => on_slack)]
 struct Nav {}
 
 #[derive(Laserbeam, Bind)]
 #[laserbeam(path = TypingPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
-#[bind(Keyboard::new("backspace"), delete_char)]
+#[bind(Keyboard::new("backspace") => delete_char)]
 struct Typing {}
 ```
 
@@ -213,7 +211,7 @@ Ok({ Keyboard("esc"), Keyboard("f1"), Keyboard("backspace") })
 Suppose `Typing` instead binds `esc`.
 
 ```rust
-#[bind(Keyboard::new("esc"), stop_typing)]
+#[bind(Keyboard::new("esc") => stop_typing)]
 struct Typing {}
 ```
 
