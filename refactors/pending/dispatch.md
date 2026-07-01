@@ -123,40 +123,39 @@ The root's `Path<'a>` is `&'a mut Self`, so the entry is `<Root as Dispatch<M>>:
 A concrete tree. The state, with both derives and the binds at each level:
 
 ```rust
-#[derive(Laserbeam, Dispatch)]
+#[derive(Laserbeam, Bind)]
 #[laserbeam_root(resolved = Resolved)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard::new("esc") => to_nav)]
-struct Mercury { #[resolve_into] layer: Layer }
+struct Mercury {
+    #[resolve_into]
+    layer: Layer,
+}
 
-#[derive(Laserbeam, Dispatch)]
+#[derive(Laserbeam, Bind)]
 #[laserbeam(path = LayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard::new("f1") => show_help)]
-enum Layer { Nav(Nav), Typing(Typing) }
+enum Layer {
+    Nav(Nav),
+    Typing(Typing),
+}
 
-#[derive(Laserbeam, Dispatch)]
+#[derive(Laserbeam, Bind)]
 #[laserbeam(path = NavPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard::new("g") => on_g)]
 struct Nav {}
 
-#[derive(Laserbeam, Dispatch)]
+#[derive(Laserbeam, Bind)]
 #[laserbeam(path = TypingPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard::new("bksp") => on_bksp)]
-struct Typing { #[resolve_into] deep: Box<Deep> }
-
-#[derive(Laserbeam, Dispatch)]
-#[laserbeam(path = DeepPath, resolved = Resolved)]
-#[binds(MercuryStruct)]
-#[bind(Keyboard::new("d") => on_d)]
-struct Deep {}
+struct Typing {}
 
 type LayerPath<'a> = Path<Layer, &'a mut Mercury>;
 type NavPath<'a> = Path<Nav, LayerPath<'a>>;
 type TypingPath<'a> = Path<Typing, LayerPath<'a>>;
-type DeepPath<'a> = Path<Deep, TypingPath<'a>>;
 ```
 
 The handlers the user writes, each taking its node's path type:
@@ -166,10 +165,9 @@ fn to_nav(ev: &KeyboardEvent, path: &mut Mercury) -> Vec<MercuryEffect> { .. }
 fn show_help(ev: &KeyboardEvent, path: LayerPath) -> Vec<MercuryEffect> { .. }
 fn on_g(ev: &KeyboardEvent, path: NavPath) -> Vec<MercuryEffect> { .. }
 fn on_bksp(ev: &KeyboardEvent, path: TypingPath) -> Vec<MercuryEffect> { .. }
-fn on_d(ev: &KeyboardEvent, path: DeepPath) -> Vec<MercuryEffect> { .. }
 ```
 
-What `#[derive(Dispatch)]` emits, per node. Cross-crate paths are qualified; `<MercuryStruct as Bindings>::Event` is `MercuryEvent` and `::Output` is `Vec<MercuryEffect>`; std paths (`Result`, `Ok`, `matches!`) are left unqualified for readability.
+The `Bind` derive emits the `Dispatch` impl alongside the `EventHandler` (accumulate) impl. What it emits for `Dispatch`, per node. Cross-crate paths are qualified; `<MercuryStruct as Bindings>::Event` is `MercuryEvent` and `::Output` is `Vec<MercuryEffect>`; std paths (`Result`, `Ok`, `matches!`) are left unqualified for readability.
 
 Root struct: a bind, then descent into `#[resolve_into] layer`.
 
@@ -265,34 +263,9 @@ impl ::bind::Dispatch<MercuryStruct> for Nav {
 }
 ```
 
-Struct with a boxed `#[resolve_into]`: a bind, then descent through the `Box`.
+`Typing` is another leaf, `Nav`-shaped: its `"bksp"` bind, then `Err(::bind::NoHandler)`.
 
-```rust
-#[automatically_derived]
-#[allow(clippy::useless_conversion)]
-impl ::bind::Dispatch<MercuryStruct> for Typing {
-    fn dispatch<'a>(
-        path: TypingPath<'a>,
-        event: &<MercuryStruct as ::bind::Bindings>::Event,
-    ) -> Result<<MercuryStruct as ::bind::Bindings>::Output, ::bind::NoHandler>
-    where
-        Self: 'a,
-    {
-        if let Some(ev) = ::bind::FromEvent::from_event(event) {
-            let trigger = Keyboard::new("bksp");
-            if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                return Ok(on_bksp(ev, path));
-            }
-        }
-        <Deep as ::bind::Dispatch<MercuryStruct>>::dispatch(
-            ::laserbeam::Path::from_fn(path, |np| &mut *np.get_mut().deep).into(),
-            event,
-        )
-    }
-}
-```
-
-`Deep` is `Nav`-shaped: the `"d"` bind, then `Err(::bind::NoHandler)`.
+[A boxed `#[resolve_into]` field changes only the projection: the closure derefs the `Box`, `|np| &mut *np.get_mut().field` instead of `|np| &mut np.get_mut().field`. Same for `resolve`.]
 
 Multi-parent: the descent wraps the path in the route enum, as `resolve` does. If `Nav` also carried `#[resolve_into(parent = CursorParent)] cursor: Cursor`, reached from both `Nav` and `Typing` through `enum CursorParent { Nav(Path<Cursor, NavPath>), Typing(Path<Cursor, TypingPath>) }`, then `Nav`'s descent (in place of its `Err(NoHandler)`) is:
 
