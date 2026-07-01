@@ -40,17 +40,15 @@ impl EventTrigger for Keyboard {
 
 The `MercuryTrigger` enum stays a plain `Eq + Hash` key; `EventTrigger` lives on the source types. The generated dispatch requires it the way accumulate requires `Into<MercuryTrigger>`.
 
-The source event is pulled out of `MercuryEvent`, which the app provides (derivable) per source:
+The source event is pulled out of `MercuryEvent` by a borrowing `TryFrom<&MercuryEvent> for &SourceEvent`, one per source, which the app derives. It is the by-reference inverse of the `From` that lifts triggers; `&T` is `#[fundamental]`, so the impl is orphan-legal in the source's crate. `Error` is `()`:
 
 ```rust
-trait FromEvent<E> {
-    fn from_event(event: &E) -> Option<&Self>;
-}
-impl FromEvent<MercuryEvent> for KeyboardEvent {
-    fn from_event(e: &MercuryEvent) -> Option<&Self> {
+impl<'a> TryFrom<&'a MercuryEvent> for &'a KeyboardEvent {
+    type Error = ();
+    fn try_from(e: &'a MercuryEvent) -> Result<Self, ()> {
         match e {
-            MercuryEvent::Keyboard(k) => Some(k),
-            _ => None,
+            MercuryEvent::Keyboard(k) => Ok(k),
+            _ => Err(()),
         }
     }
 }
@@ -60,13 +58,13 @@ impl FromEvent<MercuryEvent> for KeyboardEvent {
 
 A binding `Keyboard::new("g") => on_g` matches on two levels, and both must hold:
 
-- Source: is the fired event a keyboard event at all? `FromEvent::from_event(event)` returns `Some(&KeyboardEvent)` or `None`. This is the type match.
+- Source: is the fired event a keyboard event at all? `TryFrom::try_from(event).ok()` returns `Some(&KeyboardEvent)` or `None`. This is the type match.
 - Key: is it the `g` key? `is_matching(&trigger, ev)`. This is the value match.
 
-The source event type, the trigger's `Event`, and `on_g`'s parameter are the same type, so inference pins all three and the derive names none of them. The trigger is built into a local, and the calls are UFCS because the traits are not imported in the consumer's crate:
+The source event type, the trigger's `Event`, and `on_g`'s parameter are the same type, so inference pins all three and the derive names none of them. The trigger is built into a local, and `EventTrigger::is_matching` is called UFCS since the consumer does not import the trait (`TryFrom` is in the prelude):
 
 ```rust
-if let Some(ev) = ::bind::FromEvent::from_event(event) {   // source/type match
+if let Some(ev) = TryFrom::try_from(event).ok() {   // source/type match
     let trigger = Keyboard::new("g");
     if ::bind::EventTrigger::is_matching(&trigger, ev) {    // key/value match
         return ControlFlow::Break(on_g(ev, path));
@@ -180,7 +178,7 @@ impl ::bind::Dispatch<MercuryStruct> for Nav {
     where
         Self: 'a,
     {
-        if let Some(ev) = ::bind::FromEvent::from_event(event) {
+        if let Some(ev) = TryFrom::try_from(event).ok() {
             let trigger = Keyboard::new("g");
             if ::bind::EventTrigger::is_matching(&trigger, ev) {
                 return ControlFlow::Break(on_g(ev, path));
@@ -209,7 +207,7 @@ impl ::bind::Dispatch<MercuryStruct> for Mercury {
             event,
         )?;
         path = child.into_parent();
-        if let Some(ev) = ::bind::FromEvent::from_event(event) {
+        if let Some(ev) = TryFrom::try_from(event).ok() {
             let trigger = Keyboard::new("esc");
             if ::bind::EventTrigger::is_matching(&trigger, ev) {
                 return ControlFlow::Break(to_nav(ev, path));
@@ -257,7 +255,7 @@ impl ::bind::Dispatch<MercuryStruct> for Layer {
                 path = child.into_parent();
             }
         }
-        if let Some(ev) = ::bind::FromEvent::from_event(event) {
+        if let Some(ev) = TryFrom::try_from(event).ok() {
             let trigger = Keyboard::new("f1");
             if ::bind::EventTrigger::is_matching(&trigger, ev) {
                 return ControlFlow::Break(show_help(ev, path));
