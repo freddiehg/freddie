@@ -166,7 +166,7 @@ fn on_g(ev: &KeyboardEvent, path: NavPath) -> Vec<MercuryEffect> { .. }
 fn on_bksp(ev: &KeyboardEvent, path: TypingPath) -> Vec<MercuryEffect> { .. }
 ```
 
-What the derive emits for `Dispatch`. Cross-crate paths are qualified; `<MercuryStruct as Bindings>::Event` is `MercuryEvent` and `::Output` is `Vec<MercuryEffect>`; `ControlFlow` is `::core::ops::ControlFlow`, and `matches!` is left unqualified, for readability.
+What the derive emits for `Dispatch`. Cross-crate paths are qualified; `<MercuryStruct as Bindings>::Event` is `MercuryEvent` and `::Output` is `Vec<MercuryEffect>`; `ControlFlow` is `::core::ops::ControlFlow`, left unqualified for readability.
 
 Leaf: no child to try, so check the node's binds, else hand the path back.
 
@@ -233,26 +233,29 @@ impl ::bind::Dispatch<MercuryStruct> for Layer {
     where
         Self: 'a,
     {
-        if matches!(path.get_mut(), Self::Nav(_)) {
-            let child = <Nav as ::bind::Dispatch<MercuryStruct>>::dispatch(
-                ::laserbeam::Path::from_fn(path, |np| {
-                    let Self::Nav(c) = np.get_mut() else { unreachable!() };
-                    c
-                })
-                .into(),
-                event,
-            )?;
-            path = child.into_parent();
-        } else if matches!(path.get_mut(), Self::Typing(_)) {
-            let child = <Typing as ::bind::Dispatch<MercuryStruct>>::dispatch(
-                ::laserbeam::Path::from_fn(path, |np| {
-                    let Self::Typing(c) = np.get_mut() else { unreachable!() };
-                    c
-                })
-                .into(),
-                event,
-            )?;
-            path = child.into_parent();
+        match path.get_mut() {
+            Self::Nav(_) => {
+                let child = <Nav as ::bind::Dispatch<MercuryStruct>>::dispatch(
+                    ::laserbeam::Path::from_fn(path, |np| {
+                        let Self::Nav(c) = np.get_mut() else { unreachable!() };
+                        c
+                    })
+                    .into(),
+                    event,
+                )?;
+                path = child.into_parent();
+            }
+            Self::Typing(_) => {
+                let child = <Typing as ::bind::Dispatch<MercuryStruct>>::dispatch(
+                    ::laserbeam::Path::from_fn(path, |np| {
+                        let Self::Typing(c) = np.get_mut() else { unreachable!() };
+                        c
+                    })
+                    .into(),
+                    event,
+                )?;
+                path = child.into_parent();
+            }
         }
         if let Some(ev) = ::bind::FromEvent::from_event(event) {
             let trigger = Keyboard::new("f1");
@@ -274,7 +277,7 @@ let effects: Option<Vec<MercuryEffect>> =
     ::bind::dispatch::<MercuryStruct, _>(&mut mercury, &event);
 ```
 
-[A boxed `#[resolve_into]` field changes only the projection: the closure derefs the `Box`, `|np| &mut *np.get_mut().field` instead of `|np| &mut np.get_mut().field`. Same as `resolve`.]
+A boxed `#[resolve_into]` field changes only the projection: the closure derefs the `Box`, `|np| &mut *np.get_mut().field` instead of `|np| &mut np.get_mut().field`. Same as `resolve`.
 
 Multi-parent: the descent wraps the path in the route enum, and the miss unwraps it back. If `Nav` also carried `#[resolve_into(parent = CursorParent)] cursor: Cursor`, reached from both `Nav` and `Typing` through `enum CursorParent { Nav(Path<Cursor, NavPath>), Typing(Path<Cursor, TypingPath>) }`, then `Nav`'s dispatch tries `cursor` before its own `"g"` bind:
 
