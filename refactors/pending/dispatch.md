@@ -1,20 +1,10 @@
 # dispatch (design)
 
-Dispatch takes a fired event and runs the one handler the current state binds for its trigger, or errors when none does. It builds on the accumulate tree and on laserbeam paths. Only accumulate is implemented so far; this is the design for the other half.
+Dispatch takes a fired event and runs the one handler the current state binds for it, or errors when none does. It builds on the accumulate tree and on laserbeam paths. Only accumulate is implemented so far; this is the design for the other half.
 
-## The event enum mirrors the trigger enum
+## Types
 
-Each source has an event type (`KeyboardEvent`, `ForegroundEvent`). `MercuryEvent` unifies them, one variant per source, and `derive_more::TryInto` projects it back to a source event:
-
-```rust
-#[derive(derive_more::TryInto)]
-enum MercuryEvent {
-    Keyboard(KeyboardEvent),
-    Foreground(ForegroundEvent),
-}
-```
-
-Dispatch needs two associated types accumulate did not, so `Bindings` grows them:
+Each source has an event type (`KeyboardEvent`, `ForegroundEvent`). `MercuryEvent` unifies them, one variant per source. `Bindings` grows the two associated types accumulate did not need:
 
 ```rust
 trait Bindings {
@@ -30,62 +20,97 @@ impl Bindings for MercuryStruct {
 }
 ```
 
-## Calling on_g
-
-`on_g` takes a `KeyboardEvent`; dispatch holds a `MercuryEvent`. It extracts with `TryInto` and lets inference pick the target from `on_g`'s parameter, so the derive never names `KeyboardEvent`:
+A trigger already serves as a `Hash + Eq` key in the accumulate set. At dispatch it also matches events, so each source's trigger type matches against that source's event:
 
 ```rust
-on_g(event.try_into()?, path)
+trait EventTrigger {
+    type Event;
+    fn is_matching(&self, event: &Self::Event) -> bool;
+}
+
+impl EventTrigger for Keyboard {
+    type Event = KeyboardEvent;
+    fn is_matching(&self, ev: &KeyboardEvent) -> bool {
+        self.key == ev.key && self.mods == ev.mods
+    }
+}
+impl EventTrigger for Foreground {
+    type Event = ForegroundEvent;
+    fn is_matching(&self, ev: &ForegroundEvent) -> bool {
+        self.app == ev.app
+    }
+}
 ```
 
-This is the event-side mirror of the trigger lift. A trigger goes source to unified through `From` (`Keyboard -> MercuryTrigger`); an event goes unified to source through `TryInto` (`MercuryEvent -> KeyboardEvent`). mercury derives both: `derive_more::From` on `MercuryTrigger`, `derive_more::TryInto` on `MercuryEvent`. The extraction fails only when the event's variant disagrees with the matched trigger's source, which the loop should never deliver, so dispatch reports it rather than trusting it.
+The source event is pulled out of `MercuryEvent`, which the app provides (derivable) per source:
+
+```rust
+trait FromEvent<E> {
+    fn from_event(event: &E) -> Option<&Self>;
+}
+impl FromEvent<MercuryEvent> for KeyboardEvent {
+    fn from_event(e: &MercuryEvent) -> Option<&Self> {
+        match e {
+            MercuryEvent::Keyboard(k) => Some(k),
+            _ => None,
+        }
+    }
+}
+```
+
+## Matching a binding
+
+A binding `Keyboard::new("g") => on_g` matches on two levels, and both must hold:
+
+- Source: is the fired event a keyboard event at all? `FromEvent::from_event(&event)` returns `Some(&KeyboardEvent)` or `None`. This is the type match.
+- Key: is it the `g` key? `Keyboard::new("g").is_matching(ev)`. This is the value match.
+
+The source event type, the trigger's `Event`, and `on_g`'s parameter are the same type, so inference pins all three and the derive names none of them:
+
+```rust
+// generated for `Keyboard::new("g") => on_g`:
+if let Some(ev) = FromEvent::from_event(event) {   // source/type match
+    if Keyboard::new("g").is_matching(ev) {        // key/value match
+        return Ok(on_g(ev, path));
+    }
+}
+```
+
+## Why not type-level
+
+A type per key would make the key match pure type dispatch, with no runtime predicate, and keyboard keys are a finite set you could enumerate and register in advance. Foreground app identifiers are open: any string is a valid app, so you cannot mint a type per app, and that match has to be a runtime predicate. One mechanism covers both, so matching is the runtime `is_matching`, and type-level matching is a non-goal.
 
 ## The traversal
 
-The loop hands dispatch the fired trigger and the event. The trigger says which binding to run; the event is the payload.
+The loop hands dispatch the event. Dispatch descends the active path from the root, the same path `resolve` walks. At each node it tries that node's binds with the two-level match above. The first binding that matches calls its handler with the node's path and returns. On no match it descends into the active child. Reaching a leaf with nothing matched returns `NoHandler`.
 
-Dispatch descends the active path from the root, the same path `resolve` walks. At each node it compares the fired trigger to that node's binds. On a match it extracts the event, calls that node's handler with the node's path, and returns. On no match it descends into the active child. Reaching a leaf with nothing matched returns `DispatchError::NoHandler`.
-
-With no clobbering, at most one node on the active path binds the trigger, so the first match is the only one and the descent order does not change the result; the descent only has to visit every node on the path. There is no upward pass.
+With no clobbering, at most one binding on the active path matches, so descent order does not change the result; the descent only has to visit every node on the path.
 
 ```rust
-// generated on the Nav leaf:
-fn dispatch(path: Path<Nav, ParentPath>, fired: &MercuryTrigger, event: MercuryEvent)
-    -> Result<MercuryOutput, DispatchError>
+// generated on the Layer enum (Layer has one bind, then two variants):
+fn dispatch(mut path: Path<Layer, ParentPath>, event: &MercuryEvent)
+    -> Result<MercuryOutput, NoHandler>
 {
-    if *fired == Keyboard::new("g").into() {
-        let ev = event.try_into().map_err(|_| DispatchError::WrongEvent)?;
-        return Ok(on_g(ev, path));
-    }
-    Err(DispatchError::NoHandler) // a leaf with no match
-}
-
-// generated on the Layer enum:
-fn dispatch(mut path: Path<Layer, ParentPath>, fired: &MercuryTrigger, event: MercuryEvent)
-    -> Result<MercuryOutput, DispatchError>
-{
-    if *fired == Keyboard::new("f1").into() {
-        let ev = event.try_into().map_err(|_| DispatchError::WrongEvent)?;
-        return Ok(show_help(ev, path));
+    if let Some(ev) = FromEvent::from_event(event) {
+        if Keyboard::new("f1").is_matching(ev) {
+            return Ok(show_help(ev, path));
+        }
     }
     match path.get_mut() {               // descend into the active variant
-        Layer::Nav(_)    => Nav::dispatch(nav_child(path), fired, event),
-        Layer::Typing(_) => Typing::dispatch(typing_child(path), fired, event),
+        Layer::Nav(_)    => Nav::dispatch(nav_child(path), event),
+        Layer::Typing(_) => Typing::dispatch(typing_child(path), event),
     }
 }
 ```
 
-`nav_child` and `typing_child` build the child path with laserbeam's `Path::from_fn`, as `resolve` does.
+`nav_child` and `typing_child` build the child path with laserbeam's `Path::from_fn`, as `resolve` does. A leaf with no matching bind returns `Err(NoHandler)`.
 
 ## The path
 
-The handler needs its node's typed `Path<Node, Parent>`. Dispatch builds it while descending, the same construction `resolve` performs, and hands the matching node its path. So dispatch, unlike accumulate, constructs paths, and the descent duplicates laserbeam's resolve walk. The bind derive either reuses laserbeam's descent or regenerates it, the same open choice accumulate has for the active-variant match.
+The handler needs its node's typed `Path<Node, Parent>`. Dispatch builds it while descending, the same construction `resolve` performs, and hands the matching node its path. So dispatch, unlike accumulate, constructs paths, and the descent duplicates laserbeam's resolve walk. The bind derive either reuses laserbeam's descent or regenerates it.
 
-## Errors
+## Error
 
 ```rust
-enum DispatchError {
-    NoHandler,  // no node on the active path binds the fired trigger
-    WrongEvent, // the event's variant did not match the trigger's source
-}
+struct NoHandler; // no binding on the active path matched the event
 ```
