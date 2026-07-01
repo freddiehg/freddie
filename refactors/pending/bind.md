@@ -14,7 +14,7 @@ The app defines its source types, one unified `Trigger` enum over them, and a ma
 use std::collections::HashSet;
 use std::hash::Hash;
 
-// one type per source. Each is a plain, hashable value: pure data, no handles.
+// one struct per source. They are used as set keys, so they derive Hash and Eq.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Keyboard(String);
 impl Keyboard { fn new(k: &str) -> Self { Keyboard(k.to_owned()) } }
