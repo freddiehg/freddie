@@ -63,3 +63,24 @@ where
     root.accumulate(&mut out)?;
     Ok(out)
 }
+
+/// A trigger matches its source's event. Extracting the source event from the
+/// unified event is the type match; this is the key match on it.
+pub trait EventTrigger {
+    /// The source event this trigger matches against.
+    type Event;
+    /// Whether the trigger matches `event`.
+    #[must_use]
+    fn is_matching(&self, event: &Self::Event) -> bool;
+}
+
+/// Extracts a source event from a unified event enum `E`.
+pub trait FromEvent<E> {
+    /// The source event, if `event` belongs to this source.
+    #[must_use]
+    fn from_event(event: &E) -> Option<&Self>;
+}
+
+/// Dispatch found no handler for the fired event on the active path.
+#[derive(Debug, PartialEq, Eq)]
+pub struct NoHandler;
