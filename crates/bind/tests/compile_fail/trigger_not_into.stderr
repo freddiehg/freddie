@@ -1,0 +1,15 @@
+error[E0277]: the trait bound `Trig: From<Weird>` is not satisfied
+  --> tests/compile_fail/trigger_not_into.rs:17:8
+   |
+15 | #[derive(Bind)]
+   |          ---- required by a bound introduced by this call
+16 | #[binds(M)]
+17 | #[bind(Weird, noop)]
+   |        ^^^^^ unsatisfied trait bound
+   |
+help: the trait `From<Weird>` is not implemented for `Trig`
+  --> tests/compile_fail/trigger_not_into.rs:5:1
+   |
+ 5 | struct Trig;
+   | ^^^^^^^^^^^
+   = note: required for `Weird` to implement `Into<Trig>`

@@ -1,0 +1,30 @@
+error[E0277]: the trait bound `NotBindings: Bindings` is not satisfied
+ --> tests/compile_fail/marker_not_bindings.rs:6:10
+  |
+6 | #[derive(Bind)]
+  |          ^^^^ unsatisfied trait bound
+  |
+help: the trait `Bindings` is not implemented for `NotBindings`
+ --> tests/compile_fail/marker_not_bindings.rs:4:1
+  |
+4 | struct NotBindings;
+  | ^^^^^^^^^^^^^^^^^^
+  = note: this error originates in the derive macro `Bind` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0277]: the trait bound `NotBindings: Bindings` is not satisfied
+ --> tests/compile_fail/marker_not_bindings.rs:6:10
+  |
+6 | #[derive(Bind)]
+  |          ^^^^ unsatisfied trait bound
+  |
+help: the trait `Bindings` is not implemented for `NotBindings`
+ --> tests/compile_fail/marker_not_bindings.rs:4:1
+  |
+4 | struct NotBindings;
+  | ^^^^^^^^^^^^^^^^^^
+note: required by a bound in `EventHandler`
+ --> src/lib.rs
+  |
+  | pub trait EventHandler<M: Bindings> {
+  |                           ^^^^^^^^ required by this bound in `EventHandler`
+  = note: this error originates in the derive macro `Bind` (in Nightly builds, run with -Z macro-backtrace for more info)

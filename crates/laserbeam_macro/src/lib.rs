@@ -11,11 +11,12 @@
 //! node's path is `Path<Node, ParentEnum>`, so `get_mut`/`into_parent` come from
 //! `Path` itself.
 
+use derive_support::{find_resolve_into, parent_route, single_field_ty, unbox};
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::spanned::Spanned;
-use syn::{Data, DataEnum, DataStruct, DeriveInput, Fields, Ident, Path, Type, parse_macro_input};
+use syn::{Data, DataEnum, DataStruct, DeriveInput, Ident, Path, parse_macro_input};
 
 #[proc_macro_derive(Laserbeam, attributes(laserbeam, laserbeam_root, resolve_into))]
 pub fn derive_laserbeam(input: TokenStream) -> TokenStream {
@@ -316,72 +317,5 @@ fn enum_body(is_root: bool, name: &Ident, e: &DataEnum) -> syn::Result<TokenStre
     }
 }
 
-/// The `#[resolve_into]` field of a struct: its name, child type, and, when the
-/// child has multiple parents, the route-enum variant to wrap this node into.
-type ResolveInto = (Ident, Type, Option<Path>);
-
-fn find_resolve_into(fields: &Fields) -> syn::Result<Option<ResolveInto>> {
-    let mut found: Option<ResolveInto> = None;
-    if let Fields::Named(named) = fields {
-        for f in &named.named {
-            if !f.attrs.iter().any(|a| a.path().is_ident("resolve_into")) {
-                continue;
-            }
-            if found.is_some() {
-                return Err(syn::Error::new(
-                    f.span(),
-                    "at most one `#[resolve_into]` field per struct",
-                ));
-            }
-            let ident = f.ident.clone().expect("named field has an ident");
-            found = Some((ident, f.ty.clone(), parent_route(&f.attrs)?));
-        }
-    }
-    Ok(found)
-}
-
-/// The route enum named by `#[resolve_into(parent = Enum)]`, if present. A bare
-/// `#[resolve_into]` (or no attribute) is a single-parent child; the `parent`
-/// form marks a child reached through a multi-parent route enum.
-fn parent_route(attrs: &[syn::Attribute]) -> syn::Result<Option<Path>> {
-    let Some(attr) = attrs.iter().find(|a| a.path().is_ident("resolve_into")) else {
-        return Ok(None);
-    };
-    let mut parent = None;
-    if matches!(attr.meta, syn::Meta::List(_)) {
-        attr.parse_nested_meta(|m| {
-            if m.path.is_ident("parent") {
-                parent = Some(m.value()?.parse()?);
-                Ok(())
-            } else {
-                Err(m.error("expected `parent`"))
-            }
-        })?;
-    }
-    Ok(parent)
-}
-
-fn single_field_ty(fields: &Fields) -> syn::Result<Type> {
-    match fields {
-        Fields::Unnamed(u) if u.unnamed.len() == 1 => Ok(u.unnamed[0].ty.clone()),
-        _ => Err(syn::Error::new(
-            fields.span(),
-            "expected a single-field tuple variant `Foo(Bar)`",
-        )),
-    }
-}
-
-/// If `ty` is `Box<T>`, returns `(T, true)`; otherwise `(ty, false)`. Recursive
-/// data structures break their own size with `Box`, and the projection through
-/// such a field or variant has to dereference it.
-fn unbox(ty: &Type) -> (&Type, bool) {
-    if let Type::Path(tp) = ty
-        && let Some(seg) = tp.path.segments.last()
-        && seg.ident == "Box"
-        && let syn::PathArguments::AngleBracketed(args) = &seg.arguments
-        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
-    {
-        return (inner, true);
-    }
-    (ty, false)
-}
+// The `#[resolve_into]`, single-field-variant, and `Box` helpers live in
+// `derive_support`, shared with the bind derive.

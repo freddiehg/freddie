@@ -3,6 +3,31 @@
 version = 4
 
 [[package]]
+name = "bind"
+version = "0.0.1"
+dependencies = [
+ "bind_macro",
+ "trybuild",
+]
+
+[[package]]
+name = "bind_macro"
+version = "0.0.1"
+dependencies = [
+ "derive_support",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "derive_support"
+version = "0.0.1"
+dependencies = [
+ "syn",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -52,6 +77,7 @@ dependencies = [
 name = "laserbeam_macro"
 version = "0.0.1"
 dependencies = [
+ "derive_support",
  "proc-macro2",
  "quote",
  "syn",

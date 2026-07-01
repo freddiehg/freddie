@@ -1,0 +1,16 @@
+[package]
+name = "bind"
+description = "Accumulate the active trigger set for a laserbeam state tree."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bind_macro = { path = "../bind_macro", version = "0.0.1" }
+
+[dev-dependencies]
+trybuild = "1"
+
+[lints]
+workspace = true

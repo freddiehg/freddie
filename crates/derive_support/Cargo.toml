@@ -1,0 +1,13 @@
+[package]
+name = "derive_support"
+description = "Shared syn helpers for the laserbeam and bind derives: node-shape parsing."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+syn = "2"
+
+[lints]
+workspace = true
