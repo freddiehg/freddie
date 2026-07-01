@@ -115,18 +115,97 @@ Per node, the derive generates a `dispatch` that checks the node's binds (the tw
 
 That descent is what `resolve` already generates: the `Path::from_fn` projection, the active-variant `match`, `Box` unwrap, and the multi-parent route enums. But `resolve` runs it only to reach the leaf and return `Resolved`; it does not check anything at intermediate nodes or expose their paths, so dispatch cannot reuse it as-is. And it must be a descent, not an ascent: a node's attributes name its children (`#[resolve_into]`, variants), never its parent, so a node cannot generate "call my parent's dispatch."
 
-So the dispatch derive needs the same descent codegen `resolve` has, plus a per-node bind-check. The open question is where that descent codegen lives:
+So the dispatch derive needs the same descent codegen `resolve` has, plus a per-node bind-check. Multi-parent nodes (route enums) are core to the tree, and they are the bulk of that descent's complexity, so duplicating it in `bind_macro` is out. The descent generation gets factored into a shared generator that both `resolve` and `dispatch` drive.
 
-1. Duplicate it in `bind_macro`. Fastest to start, but it re-implements the projections, the route-enum wrapping, and `Box` unwrap, and drifts from laserbeam.
-2. Factor the descent generation into a shared generator that both laserbeam (`resolve`) and bind (`dispatch`) call, parameterized by the per-node action: `resolve` builds `Resolved`, dispatch checks binds and recurses.
-3. One derive emits both `resolve` and `dispatch` from a single descent, since they sit on the same node.
+The generator emits the descent — the `Path::from_fn` projections, `Box` unwrap, the active-variant `match`, and the route-enum wrapping — and takes three hooks that `resolve` and `dispatch` fill differently:
 
-Smaller open points, once the descent is settled:
+- `prefix(path)`: tokens run at each node before it descends. `resolve` emits nothing. `dispatch` emits the bind-check, which may `return handler(ev, path)` on a hit and otherwise falls through, leaving `path` for the descent.
+- `recurse(child, child_path)`: the call into the child. `resolve` emits `<child>::resolve(child_path)`. `dispatch` emits `<child>::dispatch(child_path, event)`.
+- `leaf(path)`: what a leaf yields when it does not descend. `resolve` emits `Resolved::Name(path)`. `dispatch` emits `NoHandler`.
 
-- `Event` and `Output`: accumulate kept `Bindings` to `Trigger` only. Dispatch needs `Event` and `Output`. Extend `Bindings`, or add a dispatch-only trait so accumulate-only apps stay lean.
-- Entry point: `Root::dispatch::<M>(&mut root, &event) -> Result<M::Output, NoHandler>`.
-- The handler's path type must be its node's laserbeam path type, since the derive builds exactly that and passes it. They have to agree.
-- Multi-parent nodes (route enums): the descent must handle them the way `resolve` does.
+The projections, the `Box` handling, and the route-enum wrapping stay in the generator, written once. This means refactoring `laserbeam_macro`'s `struct_body`/`enum_body` into the generator plus `resolve`'s three hooks, then `bind_macro` supplies dispatch's three hooks. The generator lives beside the parsing helpers in `derive_support`, or a codegen sibling.
+
+### What dispatch generates per node
+
+The generator emits `prefix`, then the descent (or the leaf terminal). `dispatch`'s `prefix` is the bind-check, its `recurse` calls `Dispatch`, and its `leaf` is `NoHandler`. `path` is the node's laserbeam path; `event` is `&M::Event`, in scope from the fn signature.
+
+A struct leaf (no `#[resolve_into]`): prefix, then the leaf terminal.
+
+```rust
+fn dispatch(path: Self::Path<'_>, event: &M::Event) -> Result<M::Output, NoHandler> {
+    if let Some(ev) = FromEvent::from_event(event)
+        && Keyboard::new("g").is_matching(ev)
+    {
+        return Ok(on_g(ev, path));
+    }
+    Err(NoHandler)
+}
+```
+
+A struct with one single-parent `#[resolve_into] child: Child`: prefix, then recurse. The `Path::from_fn(path, projection).into()` is byte-for-byte what the generator builds for `resolve`; dispatch only swaps the trailing call.
+
+```rust
+fn dispatch(path: Self::Path<'_>, event: &M::Event) -> Result<M::Output, NoHandler> {
+    // prefix: this node's own binds, as above
+    <Child as Dispatch<M>>::dispatch(
+        Path::from_fn(path, |np| &mut np.get_mut().child).into(),
+        event,
+    )
+}
+```
+
+A multi-parent `#[resolve_into(parent = Route)]` child: the generator wraps the path in the route variant, exactly as `resolve` does, and dispatch recurses through it. This is the case that must be shared rather than duplicated.
+
+```rust
+    // prefix ...
+    <Child as Dispatch<M>>::dispatch(
+        Path::from_fn(Route::ThisNode(path.into()), |p| {
+            let Route::ThisNode(pp) = p else { unreachable!() };
+            &mut pp.get_mut().child
+        }),
+        event,
+    )
+```
+
+An enum: prefix (the enum's own binds), then one arm per variant, each recursing into that variant's inner with the projection the generator emits (single- or multi-parent, `Box`-unwrapped). The active variant always matches one arm and returns, so the fallthrough is `unreachable!()` for both `resolve` and `dispatch`; the enum has no leaf terminal.
+
+```rust
+fn dispatch(mut path: Self::Path<'_>, event: &M::Event) -> Result<M::Output, NoHandler> {
+    // prefix: the enum's own binds ...
+    if matches!(path.get_mut(), Self::Nav(_)) {
+        return <Nav as Dispatch<M>>::dispatch(
+            Path::from_fn(path, |np| {
+                let Self::Nav(c) = np.get_mut() else { unreachable!() };
+                c
+            })
+            .into(),
+            event,
+        );
+    }
+    // ... one arm per remaining variant ...
+    unreachable!()
+}
+```
+
+`NoHandler` propagates up: an interior node returns the child's `dispatch` result, so an unmatched active leaf's `NoHandler` travels back through every ancestor whose own binds also missed.
+
+### The Dispatch trait and entry
+
+`dispatch` is a trait method, mirroring `Resolve`, parameterized by the marker so it can name `M::Event` and `M::Output`. The node's path type is its `Resolve::Path`. One shape binds `Dispatch` on `Resolve` and reuses that path type:
+
+```rust
+trait Dispatch<M: Bindings>: Resolve {
+    fn dispatch(path: Self::Path<'_>, event: &M::Event) -> Result<M::Output, NoHandler>;
+}
+```
+
+`Bindings` carries all three associated types (`Trigger`, `Event`, `Output`); accumulate reads `Trigger`, dispatch reads all three. The root's `Path<'a>` is `&'a mut Self`, so the entry is `<Root as Dispatch<M>>::dispatch(&mut root, &event)`.
+
+### Open design points
+
+- Whether `Dispatch: Resolve` (reuse `Resolve::Path`) or a standalone `Dispatch` with its own `type Path<'a>`.
+- The generator's hook interface: `prefix`/`recurse`/`leaf` as `Fn(..) -> TokenStream` closures the two macros pass in, versus a trait the generator is generic over.
+- Whether the root's `&mut Self` path needs a special `prefix` shape, since its handler paths are `&mut Root` rather than a `Path`.
 
 ## Error
 
