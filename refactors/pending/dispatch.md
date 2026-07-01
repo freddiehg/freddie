@@ -69,22 +69,23 @@ The source event type, the trigger's `Event`, and `on_g`'s parameter are the sam
 if let Some(ev) = ::bind::FromEvent::from_event(event) {   // source/type match
     let trigger = Keyboard::new("g");
     if ::bind::EventTrigger::is_matching(&trigger, ev) {    // key/value match
-        return Ok(on_g(ev, path));
+        return ControlFlow::Break(on_g(ev, path));
     }
 }
 ```
 
 ## The traversal
 
-The loop hands dispatch the event. Each node first tries its active child, and checks its own binds only when the child subtree returns nothing, so a child's binding beats an ancestor's. A node returns `Ok(effects)` when it or a descendant handles the event, or `Err(path)` when nothing at or below it matched, handing the path back so the parent can take its turn. The root's `Err(path)` becomes `None` at the entry.
+The loop hands dispatch the event. Each node first tries its active child, and checks its own binds only when the child subtree returns nothing, so a child's binding beats an ancestor's. A node returns `Break(effects)` when it or a descendant handles the event, or `Continue(path)` when nothing at or below it matched, handing the path back so the parent can walk up and take its turn. The root's `Continue` becomes `None` at the entry.
 
 ## The Dispatch trait and entry
 
-`dispatch` is a trait method, mirroring `Resolve`. It is the recursive form. A `Path` is single-owner: building the child path consumes this node's path, so when the child subtree misses, the child hands the path back and the parent recovers it (`into_parent`) to check its own binds. An `Option`'s `None` carries nothing, so it could not return the path; the miss case is `Err(Self::Path)`:
+`dispatch` is a trait method, mirroring `Resolve`. It is the recursive form, and it returns `ControlFlow`: `Break(output)` when the event is handled (stop), `Continue(path)` when it is not. A `Path` is single-owner, so building the child path consumes this node's path; on a miss the child hands the path back in `Continue`, and the parent recovers it (`into_parent`) to check its own binds. An `Option`'s `None` could not carry the path.
 
 ```rust
 trait Dispatch<M: Bindings>: Resolve {
-    fn dispatch<'a>(path: Self::Path<'a>, event: &M::Event) -> Result<M::Output, Self::Path<'a>>
+    fn dispatch<'a>(path: Self::Path<'a>, event: &M::Event)
+        -> ControlFlow<M::Output, Self::Path<'a>>
     where
         Self: 'a;
 }
@@ -98,7 +99,7 @@ where
     M: Bindings,
     N: Dispatch<M>,
 {
-    <N as Dispatch<M>>::dispatch(root, event).ok()
+    <N as Dispatch<M>>::dispatch(root, event).break_value()
 }
 ```
 
@@ -110,9 +111,9 @@ Per node, `#[derive(Bind)]` emits the `Dispatch` impl alongside the `EventHandle
 
 The child-path construction — the `Path::from_fn` projection, `Box` unwrap, the active-variant `match`, and the route-enum wrapping — is what `resolve` already generates, and it is the shared, complex part. `resolve` tail-calls the child's `resolve` on the constructed path. dispatch consumes the same construction with different control flow:
 
-- recurse into the child: `match <child>::dispatch(child_path, event) { Ok(out) => return Ok(out), Err(child) => path = child.into_parent() }`. Through a route enum, `into_parent` yields the route enum, so it is matched back to this node's path.
-- then the node's own binds (the two-level match), returning `Ok(handler(ev, path))` on a hit.
-- then `Err(path)`, handing the path back up.
+- recurse into the child: `let child = <child>::dispatch(child_path, event)?; path = child.into_parent();`. The `?` propagates `Break` (handled) up and yields the child path on `Continue`. Through a route enum, `into_parent` yields the route enum, so it is matched back to this node's path.
+- then the node's own binds (the two-level match), returning `ControlFlow::Break(handler(ev, path))` on a hit.
+- then `ControlFlow::Continue(path)`, handing the path back up.
 
 So the projection construction is shared with `resolve`; the control flow around it is per-derive. The work is refactoring `laserbeam_macro`'s projection generation into a shared piece both derives call.
 
@@ -165,7 +166,7 @@ fn on_g(ev: &KeyboardEvent, path: NavPath) -> Vec<MercuryEffect> { .. }
 fn on_bksp(ev: &KeyboardEvent, path: TypingPath) -> Vec<MercuryEffect> { .. }
 ```
 
-What the derive emits for `Dispatch`. Cross-crate paths are qualified; `<MercuryStruct as Bindings>::Event` is `MercuryEvent` and `::Output` is `Vec<MercuryEffect>`; std paths (`Result`, `Ok`, `matches!`) are left unqualified for readability.
+What the derive emits for `Dispatch`. Cross-crate paths are qualified; `<MercuryStruct as Bindings>::Event` is `MercuryEvent` and `::Output` is `Vec<MercuryEffect>`; `ControlFlow` is `::core::ops::ControlFlow`, and `matches!` is left unqualified, for readability.
 
 Leaf: no child to try, so check the node's binds, else hand the path back.
 
@@ -175,17 +176,17 @@ impl ::bind::Dispatch<MercuryStruct> for Nav {
     fn dispatch<'a>(
         path: NavPath<'a>,
         event: &<MercuryStruct as ::bind::Bindings>::Event,
-    ) -> Result<<MercuryStruct as ::bind::Bindings>::Output, NavPath<'a>>
+    ) -> ControlFlow<<MercuryStruct as ::bind::Bindings>::Output, NavPath<'a>>
     where
         Self: 'a,
     {
         if let Some(ev) = ::bind::FromEvent::from_event(event) {
             let trigger = Keyboard::new("g");
             if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                return Ok(on_g(ev, path));
+                return ControlFlow::Break(on_g(ev, path));
             }
         }
-        Err(path)
+        ControlFlow::Continue(path)
     }
 }
 ```
@@ -199,24 +200,22 @@ impl ::bind::Dispatch<MercuryStruct> for Mercury {
     fn dispatch<'a>(
         mut path: &'a mut Mercury,
         event: &<MercuryStruct as ::bind::Bindings>::Event,
-    ) -> Result<<MercuryStruct as ::bind::Bindings>::Output, &'a mut Mercury>
+    ) -> ControlFlow<<MercuryStruct as ::bind::Bindings>::Output, &'a mut Mercury>
     where
         Self: 'a,
     {
-        match <Layer as ::bind::Dispatch<MercuryStruct>>::dispatch(
+        let child = <Layer as ::bind::Dispatch<MercuryStruct>>::dispatch(
             ::laserbeam::Path::from_fn(path, |o| &mut o.layer).into(),
             event,
-        ) {
-            Ok(out) => return Ok(out),
-            Err(child) => path = child.into_parent(),
-        }
+        )?;
+        path = child.into_parent();
         if let Some(ev) = ::bind::FromEvent::from_event(event) {
             let trigger = Keyboard::new("esc");
             if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                return Ok(to_nav(ev, path));
+                return ControlFlow::Break(to_nav(ev, path));
             }
         }
-        Err(path)
+        ControlFlow::Continue(path)
     }
 }
 ```
@@ -230,47 +229,43 @@ impl ::bind::Dispatch<MercuryStruct> for Layer {
     fn dispatch<'a>(
         mut path: LayerPath<'a>,
         event: &<MercuryStruct as ::bind::Bindings>::Event,
-    ) -> Result<<MercuryStruct as ::bind::Bindings>::Output, LayerPath<'a>>
+    ) -> ControlFlow<<MercuryStruct as ::bind::Bindings>::Output, LayerPath<'a>>
     where
         Self: 'a,
     {
         if matches!(path.get_mut(), Self::Nav(_)) {
-            match <Nav as ::bind::Dispatch<MercuryStruct>>::dispatch(
+            let child = <Nav as ::bind::Dispatch<MercuryStruct>>::dispatch(
                 ::laserbeam::Path::from_fn(path, |np| {
                     let Self::Nav(c) = np.get_mut() else { unreachable!() };
                     c
                 })
                 .into(),
                 event,
-            ) {
-                Ok(out) => return Ok(out),
-                Err(child) => path = child.into_parent(),
-            }
+            )?;
+            path = child.into_parent();
         } else if matches!(path.get_mut(), Self::Typing(_)) {
-            match <Typing as ::bind::Dispatch<MercuryStruct>>::dispatch(
+            let child = <Typing as ::bind::Dispatch<MercuryStruct>>::dispatch(
                 ::laserbeam::Path::from_fn(path, |np| {
                     let Self::Typing(c) = np.get_mut() else { unreachable!() };
                     c
                 })
                 .into(),
                 event,
-            ) {
-                Ok(out) => return Ok(out),
-                Err(child) => path = child.into_parent(),
-            }
+            )?;
+            path = child.into_parent();
         }
         if let Some(ev) = ::bind::FromEvent::from_event(event) {
             let trigger = Keyboard::new("f1");
             if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                return Ok(show_help(ev, path));
+                return ControlFlow::Break(show_help(ev, path));
             }
         }
-        Err(path)
+        ControlFlow::Continue(path)
     }
 }
 ```
 
-`Typing` is another leaf, `Nav`-shaped: its `"bksp"` bind, then `Err(path)`.
+`Typing` is another leaf, `Nav`-shaped: its `"bksp"` bind, then `ControlFlow::Continue(path)`.
 
 The loop dispatches through the public entry:
 
@@ -284,20 +279,16 @@ let effects: Option<Vec<MercuryEffect>> =
 Multi-parent: the descent wraps the path in the route enum, and the miss unwraps it back. If `Nav` also carried `#[resolve_into(parent = CursorParent)] cursor: Cursor`, reached from both `Nav` and `Typing` through `enum CursorParent { Nav(Path<Cursor, NavPath>), Typing(Path<Cursor, TypingPath>) }`, then `Nav`'s dispatch tries `cursor` before its own `"g"` bind:
 
 ```rust
-        match <Cursor as ::bind::Dispatch<MercuryStruct>>::dispatch(
+        let child = <Cursor as ::bind::Dispatch<MercuryStruct>>::dispatch(
             ::laserbeam::Path::from_fn(CursorParent::Nav(path.into()), |p| {
                 let CursorParent::Nav(pp) = p else { unreachable!() };
                 &mut pp.get_mut().cursor
             }),
             event,
-        ) {
-            Ok(out) => return Ok(out),
-            Err(child) => {
-                // into_parent gives the route enum; match it back to Nav's path
-                let CursorParent::Nav(nav_path) = child.into_parent() else { unreachable!() };
-                path = nav_path;
-            }
-        }
+        )?;
+        // into_parent gives the route enum; match it back to Nav's path
+        let CursorParent::Nav(nav_path) = child.into_parent() else { unreachable!() };
+        path = nav_path;
 ```
 
 ### Open design point
