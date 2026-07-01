@@ -78,9 +78,9 @@ if let Some(ev) = ::bind::FromEvent::from_event(event) {   // source/type match
 
 The loop hands dispatch the event. Each node first tries its active child, and checks its own binds only when the child subtree returns nothing, so a child's binding beats an ancestor's. A node returns `Ok(effects)` when it or a descendant handles the event, or `Err(path)` when nothing at or below it matched, handing the path back so the parent can take its turn. The root's `Err(path)` becomes `None` at the entry.
 
-## The Dispatch trait
+## The Dispatch trait and entry
 
-`dispatch` is a trait method, mirroring `Resolve`, parameterized by the marker so it can name `M::Event` and `M::Output`. On a miss it returns the node's path, so the caller can walk up, so the error type is `Self::Path`:
+`dispatch` is a trait method, mirroring `Resolve`. It is the recursive form. A `Path` is single-owner: building the child path consumes this node's path, so when the child subtree misses, the child hands the path back and the parent recovers it (`into_parent`) to check its own binds. An `Option`'s `None` carries nothing, so it could not return the path; the miss case is `Err(Self::Path)`:
 
 ```rust
 trait Dispatch<M: Bindings>: Resolve {
@@ -90,7 +90,19 @@ trait Dispatch<M: Bindings>: Resolve {
 }
 ```
 
-The root's `Path<'a>` is `&'a mut Self`, so the loop calls `<Root as Dispatch<M>>::dispatch(&mut root, &event).ok()` for an `Option<M::Output>`.
+Consumers do not want the path. A public entry drops it and returns `Option<M::Output>`:
+
+```rust
+fn dispatch<M, N>(root: &mut N, event: &M::Event) -> Option<M::Output>
+where
+    M: Bindings,
+    N: Dispatch<M>,
+{
+    <N as Dispatch<M>>::dispatch(root, event).ok()
+}
+```
+
+The root's `Path<'a>` is `&'a mut Self`, so `root: &mut N` is the root's path, and the loop calls `bind::dispatch::<MercuryStruct, _>(&mut mercury, &event)`.
 
 ## The dispatch derive
 
@@ -260,11 +272,11 @@ impl ::bind::Dispatch<MercuryStruct> for Layer {
 
 `Typing` is another leaf, `Nav`-shaped: its `"bksp"` bind, then `Err(path)`.
 
-The loop dispatches with `.ok()`:
+The loop dispatches through the public entry:
 
 ```rust
 let effects: Option<Vec<MercuryEffect>> =
-    <Mercury as ::bind::Dispatch<MercuryStruct>>::dispatch(&mut mercury, &event).ok();
+    ::bind::dispatch::<MercuryStruct, _>(&mut mercury, &event);
 ```
 
 [A boxed `#[resolve_into]` field changes only the projection: the closure derefs the `Box`, `|np| &mut *np.get_mut().field` instead of `|np| &mut np.get_mut().field`. Same as `resolve`.]
