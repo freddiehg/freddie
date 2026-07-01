@@ -14,7 +14,7 @@ struct Weird;
 
 #[derive(Bind)]
 #[binds(M)]
-#[bind(Weird, noop)]
+#[bind(Weird => noop)]
 struct Nav {}
 
 fn main() {}

@@ -1,5 +1,5 @@
 error: missing `#[binds(Marker)]`
  --> tests/compile_fail/missing_binds.rs:5:1
   |
-5 | #[bind(Keyboard("g"), noop)]
+5 | #[bind(Keyboard("g") => noop)]
   | ^

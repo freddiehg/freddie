@@ -2,7 +2,7 @@
 use bind::Bind;
 
 #[derive(Bind)]
-#[bind(Keyboard("g"), noop)]
+#[bind(Keyboard("g") => noop)]
 struct Nav {}
 
 fn main() {}

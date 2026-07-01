@@ -1,7 +1,7 @@
 //! Derive macro for `bind`: implements `EventHandler<M>::accumulate`.
 //!
-//! `#[derive(Bind)]` reads `#[binds(Marker)]` for the marker and each
-//! `#[bind(trigger, handler)]` for a binding, and generates an `accumulate` that
+//! `#[derive(Bind)]` reads `#[binds(Marker)]` for the marker and the
+//! `#[bind(trigger => handler, ..)]` pairs, and generates an `accumulate` that
 //! inserts the node's triggers and recurses into its `#[resolve_into]` fields and
 //! active enum variant. The `handler` is recorded for dispatch and unused here.
 
@@ -116,17 +116,29 @@ fn marker_of(input: &DeriveInput) -> syn::Result<Path> {
     found.ok_or_else(|| syn::Error::new(input.span(), "missing `#[binds(Marker)]`"))
 }
 
-/// The trigger expression of each `#[bind(trigger, handler)]`. The handler is
-/// parsed and dropped; accumulation does not use it.
+/// One `trigger => handler` pair. The handler is parsed and dropped; accumulation
+/// uses only the trigger.
+struct Binding {
+    trigger: Expr,
+}
+
+impl syn::parse::Parse for Binding {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let trigger = input.parse()?;
+        input.parse::<Token![=>]>()?;
+        input.parse::<Expr>()?; // handler, parsed and dropped
+        Ok(Self { trigger })
+    }
+}
+
+/// The trigger of every `trigger => handler` pair across the node's `#[bind(..)]`.
 fn trigger_exprs(attrs: &[syn::Attribute]) -> syn::Result<Vec<Expr>> {
     let mut triggers = Vec::new();
     for attr in attrs {
         if attr.path().is_ident("bind") {
-            let args = attr.parse_args_with(Punctuated::<Expr, Token![,]>::parse_terminated)?;
-            let trigger = args.into_iter().next().ok_or_else(|| {
-                syn::Error::new(attr.span(), "expected `#[bind(trigger, handler)]`")
-            })?;
-            triggers.push(trigger);
+            let bindings =
+                attr.parse_args_with(Punctuated::<Binding, Token![,]>::parse_terminated)?;
+            triggers.extend(bindings.into_iter().map(|b| b.trigger));
         }
     }
     Ok(triggers)

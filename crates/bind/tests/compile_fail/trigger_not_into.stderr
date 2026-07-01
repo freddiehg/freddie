@@ -4,7 +4,7 @@ error[E0277]: the trait bound `Trig: From<Weird>` is not satisfied
 15 | #[derive(Bind)]
    |          ---- required by a bound introduced by this call
 16 | #[binds(M)]
-17 | #[bind(Weird, noop)]
+17 | #[bind(Weird => noop)]
    |        ^^^^^ unsatisfied trait bound
    |
 help: the trait `From<Weird>` is not implemented for `Trig`

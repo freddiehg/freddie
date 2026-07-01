@@ -1,6 +1,5 @@
 //! Accumulation over a state tree: through an enum, through a `#[resolve_into]`
 //! field (boxed and non-boxed), and the duplicate-trigger error.
-#![allow(clippy::duplicated_attributes)] // a node may carry several `#[bind(..)]`
 
 use std::collections::HashSet;
 
@@ -39,7 +38,7 @@ const fn noop() {}
 // App -> Layer (enum) -> { Nav (leaf), Typing -> Box<Deep> (leaf) }.
 #[derive(Bind)]
 #[binds(MercuryStruct)]
-#[bind(Keyboard("esc"), noop)]
+#[bind(Keyboard("esc") => noop)]
 struct App {
     #[resolve_into]
     layer: Layer,
@@ -47,7 +46,7 @@ struct App {
 
 #[derive(Bind)]
 #[binds(MercuryStruct)]
-#[bind(Keyboard("f1"), noop)]
+#[bind(Keyboard("f1") => noop)]
 enum Layer {
     Nav(Nav),
     Typing(Typing),
@@ -55,13 +54,12 @@ enum Layer {
 
 #[derive(Bind)]
 #[binds(MercuryStruct)]
-#[bind(Keyboard("g"), noop)]
-#[bind(Foreground("Slack"), noop)]
+#[bind(Keyboard("g") => noop, Foreground("Slack") => noop)]
 struct Nav {}
 
 #[derive(Bind)]
 #[binds(MercuryStruct)]
-#[bind(Keyboard("bksp"), noop)]
+#[bind(Keyboard("bksp") => noop)]
 struct Typing {
     #[resolve_into]
     deep: Box<Deep>,
@@ -69,7 +67,7 @@ struct Typing {
 
 #[derive(Bind)]
 #[binds(MercuryStruct)]
-#[bind(Keyboard("d"), noop)]
+#[bind(Keyboard("d") => noop)]
 struct Deep {}
 
 const fn kb(s: &'static str) -> MercuryTrigger {
@@ -110,7 +108,7 @@ fn through_boxed_resolve_into() {
 // A child rebinding an ancestor's trigger is an error.
 #[derive(Bind)]
 #[binds(MercuryStruct)]
-#[bind(Keyboard("dup"), noop)]
+#[bind(Keyboard("dup") => noop)]
 struct Clash {
     #[resolve_into]
     child: ClashChild,
@@ -118,7 +116,7 @@ struct Clash {
 
 #[derive(Bind)]
 #[binds(MercuryStruct)]
-#[bind(Keyboard("dup"), noop)]
+#[bind(Keyboard("dup") => noop)]
 struct ClashChild {}
 
 #[test]
