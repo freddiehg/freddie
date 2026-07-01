@@ -109,6 +109,25 @@ fn dispatch(mut path: Path<Layer, ParentPath>, event: &MercuryEvent)
 
 The handler needs its node's typed `Path<Node, Parent>`. Dispatch builds it while descending, the same construction `resolve` performs, and hands the matching node its path. So dispatch, unlike accumulate, constructs paths, and the descent duplicates laserbeam's resolve walk. The bind derive either reuses laserbeam's descent or regenerates it.
 
+## The dispatch derive
+
+Per node, the derive generates a `dispatch` that checks the node's binds (the two-level match above, calling the handler with the node's path on a hit), then descends into the active child and recurses. The descent is the hard part, because it must build each node's laserbeam `Path`.
+
+That descent is what `resolve` already generates: the `Path::from_fn` projection, the active-variant `match`, `Box` unwrap, and the multi-parent route enums. But `resolve` runs it only to reach the leaf and return `Resolved`; it does not check anything at intermediate nodes or expose their paths, so dispatch cannot reuse it as-is. And it must be a descent, not an ascent: a node's attributes name its children (`#[resolve_into]`, variants), never its parent, so a node cannot generate "call my parent's dispatch."
+
+So the dispatch derive needs the same descent codegen `resolve` has, plus a per-node bind-check. The open question is where that descent codegen lives:
+
+1. Duplicate it in `bind_macro`. Fastest to start, but it re-implements the projections, the route-enum wrapping, and `Box` unwrap, and drifts from laserbeam.
+2. Factor the descent generation into a shared generator that both laserbeam (`resolve`) and bind (`dispatch`) call, parameterized by the per-node action: `resolve` builds `Resolved`, dispatch checks binds and recurses.
+3. One derive emits both `resolve` and `dispatch` from a single descent, since they sit on the same node.
+
+Smaller open points, once the descent is settled:
+
+- `Event` and `Output`: accumulate kept `Bindings` to `Trigger` only. Dispatch needs `Event` and `Output`. Extend `Bindings`, or add a dispatch-only trait so accumulate-only apps stay lean.
+- Entry point: `Root::dispatch::<M>(&mut root, &event) -> Result<M::Output, NoHandler>`.
+- The handler's path type must be its node's laserbeam path type, since the derive builds exactly that and passes it. They have to agree.
+- Multi-parent nodes (route enums): the descent must handle them the way `resolve` does.
+
 ## Error
 
 ```rust
