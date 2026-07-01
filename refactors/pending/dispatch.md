@@ -16,9 +16,11 @@ trait Bindings {
 impl Bindings for MercuryStruct {
     type Trigger = MercuryTrigger;
     type Event = MercuryEvent;
-    type Output = Option<Vec<MercuryEffect>>;
+    type Output = Vec<MercuryEffect>;
 }
 ```
+
+`Output` is the handler's return, the effect data. It is not wrapped in `Option`: with no clobbering there is no fall-through decline to signal, and handled-vs-not already lives in dispatch's `Result` (`Ok(effects)` vs `Err(NoHandler)`). bind returns this value and nothing more; performing the effects is the consumer's own code.
 
 A trigger already serves as a `Hash + Eq` key in the accumulate set. At dispatch it also matches events, so each source's trigger type matches against that source's event:
 
