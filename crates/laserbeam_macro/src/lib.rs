@@ -257,7 +257,11 @@ fn enum_body(is_root: bool, name: &Ident, e: &DataEnum) -> syn::Result<TokenStre
                 // route variant named after this enum. The root has no `get_mut`,
                 // so the projection dereferences instead.
                 Some(route) => {
-                    let inner = if boxed { quote!(&mut **inner) } else { quote!(inner) };
+                    let inner = if boxed {
+                        quote!(&mut **inner)
+                    } else {
+                        quote!(inner)
+                    };
                     quote! {
                         Self::#vi(_) => <#child as ::laserbeam::Resolve>::resolve(
                             ::laserbeam::Path::from_fn(#route::#name(path.into()), |p| {

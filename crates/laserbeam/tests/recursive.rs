@@ -10,7 +10,7 @@
 //! field) and from `RefuseToLetGo` (an enum variant). The latter is the
 //! enum-node-to-multi-parent edge, with the recursion boxed to stay finite.
 
-use laserbeam::{Path, Laserbeam, Resolve};
+use laserbeam::{Laserbeam, Path, Resolve};
 
 #[derive(Laserbeam)]
 #[laserbeam_root(resolved = Resolved)]

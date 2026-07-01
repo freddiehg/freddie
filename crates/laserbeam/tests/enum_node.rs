@@ -2,7 +2,7 @@
 //! where the macro emits the `matches!` / early-return descent. Modeled on
 //! Queen II, pressed as "Side White" and "Side Black".
 
-use laserbeam::{Path, Laserbeam, Resolve};
+use laserbeam::{Laserbeam, Path, Resolve};
 
 #[derive(Laserbeam)]
 #[laserbeam_root(resolved = Resolved)]

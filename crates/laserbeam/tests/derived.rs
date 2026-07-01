@@ -2,7 +2,7 @@
 //! the macro emits the impls the hand-written test spells out, and compiles in a
 //! separate crate from `laserbeam` (so the generated `From` impls are orphan-safe).
 
-use laserbeam::{Path, Laserbeam, Resolve};
+use laserbeam::{Laserbeam, Path, Resolve};
 
 #[derive(Laserbeam)]
 #[laserbeam_root(resolved = MediaResolved)]

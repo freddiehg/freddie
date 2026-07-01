@@ -4,7 +4,7 @@
 //!
 //! Tree: `Catalog -> MediaType -> {Album, Single}`.
 
-use laserbeam::{Path, Laserbeam, Resolve};
+use laserbeam::{Laserbeam, Path, Resolve};
 
 #[derive(Laserbeam)]
 #[laserbeam_root(resolved = Resolved)]

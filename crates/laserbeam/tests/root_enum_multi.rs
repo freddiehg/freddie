@@ -3,7 +3,7 @@
 //! field), so it is multi-parent. This exercises the is-root enum-variant
 //! multi-parent descent.
 
-use laserbeam::{Path, Laserbeam, Resolve};
+use laserbeam::{Laserbeam, Path, Resolve};
 
 #[derive(Laserbeam)]
 #[laserbeam_root(resolved = Resolved)]
@@ -46,7 +46,9 @@ fn root_enum_into_multi_parent_via_single() {
     match <Discography as Resolve>::resolve(&mut disco) {
         Resolved::Track(mut p) => p.get_mut().title.push_str(" (Remastered)"),
     }
-    let Discography::Single(t) = &disco else { unreachable!() };
+    let Discography::Single(t) = &disco else {
+        unreachable!()
+    };
     assert_eq!(t.title, "Bohemian Rhapsody (Remastered)");
 }
 
@@ -60,6 +62,8 @@ fn root_enum_into_multi_parent_via_album_opener() {
     match <Discography as Resolve>::resolve(&mut disco) {
         Resolved::Track(mut p) => p.get_mut().title.push('!'),
     }
-    let Discography::Album(r) = &disco else { unreachable!() };
+    let Discography::Album(r) = &disco else {
+        unreachable!()
+    };
     assert_eq!(r.opener.title, "Death on Two Legs!");
 }
