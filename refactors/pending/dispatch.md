@@ -1,6 +1,6 @@
 # dispatch (design)
 
-Dispatch takes a fired event and runs the one handler the current state binds for it, or errors when none does. It builds on the accumulate tree and on laserbeam paths. Only accumulate is implemented so far; this is the design for the other half.
+Dispatch takes a fired event and runs the handler the current state binds for it. It tries the leafward subtree first, so a child's binding takes priority over an ancestor's (which is what clobbering will need), and falls back to the node's own binds. It builds on the accumulate tree and on laserbeam paths. Only accumulate is implemented so far; this is the design for the other half.
 
 ## Types
 
@@ -22,7 +22,7 @@ impl Bindings for MercuryStruct {
 
 `Output` is the handler's return, the effect data. bind returns it and nothing more; performing the effects is the consumer's own code.
 
-A binding's trigger expression is a per-source value, e.g. `Keyboard::new("g")`. It plays two roles. Accumulate lifts it into `Bindings::Trigger` via `Into`. Dispatch matches it against events, so the per-source trigger type implements `EventTrigger`:
+A binding's trigger expression is a per-source value, e.g. `Keyboard::new("g")`. It plays two roles: accumulate lifts it into `Bindings::Trigger` via `Into`, and dispatch matches it against events, so the per-source trigger type implements `EventTrigger`:
 
 ```rust
 trait EventTrigger {
@@ -33,13 +33,7 @@ trait EventTrigger {
 impl EventTrigger for Keyboard {
     type Event = KeyboardEvent;
     fn is_matching(&self, ev: &KeyboardEvent) -> bool {
-        self.key == ev.key && self.mods == ev.mods
-    }
-}
-impl EventTrigger for Foreground {
-    type Event = ForegroundEvent;
-    fn is_matching(&self, ev: &ForegroundEvent) -> bool {
-        self.app == ev.app
+        self.key == ev.key
     }
 }
 ```
@@ -67,14 +61,14 @@ impl FromEvent<MercuryEvent> for KeyboardEvent {
 A binding `Keyboard::new("g") => on_g` matches on two levels, and both must hold:
 
 - Source: is the fired event a keyboard event at all? `FromEvent::from_event(event)` returns `Some(&KeyboardEvent)` or `None`. This is the type match.
-- Key: is it the `g` key? `Keyboard::new("g").is_matching(ev)`. This is the value match.
+- Key: is it the `g` key? `is_matching(&trigger, ev)`. This is the value match.
 
-The source event type, the trigger's `Event`, and `on_g`'s parameter are the same type, so inference pins all three and the derive names none of them:
+The source event type, the trigger's `Event`, and `on_g`'s parameter are the same type, so inference pins all three and the derive names none of them. The trigger is built into a local, and the calls are UFCS because the traits are not imported in the consumer's crate:
 
 ```rust
-if let Some(ev) = ::bind::FromEvent::from_event(event) {     // source/type match
+if let Some(ev) = ::bind::FromEvent::from_event(event) {   // source/type match
     let trigger = Keyboard::new("g");
-    if ::bind::EventTrigger::is_matching(&trigger, ev) {     // key/value match
+    if ::bind::EventTrigger::is_matching(&trigger, ev) {    // key/value match
         return Ok(on_g(ev, path));
     }
 }
@@ -82,45 +76,37 @@ if let Some(ev) = ::bind::FromEvent::from_event(event) {     // source/type matc
 
 ## The traversal
 
-The loop hands dispatch the event as `&M::Event`. Dispatch descends the active path from the root, the same path `resolve` walks. At each node it tries that node's binds with the two-level match. The first binding that matches calls its handler with the node's path and returns. On no match it descends into the active child, and reaching a leaf with nothing matched returns `NoHandler`.
+The loop hands dispatch the event. Each node first tries its active child, and checks its own binds only when the child subtree returns nothing, so a child's binding beats an ancestor's. A node returns `Ok(effects)` when it or a descendant handles the event, or `Err(path)` when nothing at or below it matched, handing the path back so the parent can take its turn. The root's `Err(path)` becomes `None` at the entry.
 
-With no clobbering, at most one binding on the active path matches, so descent order does not change the result. `NoHandler` propagates up: an interior node returns its child's `dispatch` result, so an unmatched active leaf's `NoHandler` travels back through every ancestor whose own binds also missed.
+## The Dispatch trait
 
-## The path
-
-The handler needs its node's typed `Path<Node, Parent>`. Dispatch builds it while descending, the same construction `resolve` performs, and hands the matching node its path.
-
-## The dispatch derive
-
-Per node, the derive generates a `dispatch` that checks the node's binds (the two-level match, calling the handler with the node's path on a hit), then descends into the active child and recurses, building each node's laserbeam `Path` as it goes.
-
-That descent — the `Path::from_fn` projections, the active-variant `match`, `Box` unwrap, and the multi-parent route enums — is shared with `resolve`: a single generator drives both, and `bind_macro` supplies the per-node bind-check on top.
-
-The generator emits the descent and takes three hooks that `resolve` and `dispatch` fill differently:
-
-- `prefix(path)`: tokens run at each node before it descends. `resolve` emits nothing. `dispatch` emits the bind-check, which may `return Ok(handler(ev, path))` on a hit and otherwise falls through, leaving `path` for the descent.
-- `recurse(child, child_path)`: the call into the child. `resolve` emits `<child>::resolve(child_path)`. `dispatch` emits `<child>::dispatch(child_path, event)`.
-- `leaf(path)`: what a leaf yields when it does not descend. `resolve` emits `Resolved::Name(path)`. `dispatch` emits `Err(NoHandler)`.
-
-Refactoring `laserbeam_macro`'s `struct_body`/`enum_body` into the generator plus `resolve`'s hooks, then `bind_macro` supplies dispatch's hooks. The generator lives beside the parsing helpers in `derive_support`, or a codegen sibling.
-
-### The Dispatch trait
-
-`dispatch` is a trait method, mirroring `Resolve`: parameterized by the marker so it can name `M::Event` and `M::Output`, with the node's path as its `Resolve::Path`.
+`dispatch` is a trait method, mirroring `Resolve`, parameterized by the marker so it can name `M::Event` and `M::Output`. On a miss it returns the node's path, so the caller can walk up, so the error type is `Self::Path`:
 
 ```rust
 trait Dispatch<M: Bindings>: Resolve {
-    fn dispatch<'a>(path: Self::Path<'a>, event: &M::Event) -> Result<M::Output, NoHandler>
+    fn dispatch<'a>(path: Self::Path<'a>, event: &M::Event) -> Result<M::Output, Self::Path<'a>>
     where
         Self: 'a;
 }
 ```
 
-The root's `Path<'a>` is `&'a mut Self`, so the entry is `<Root as Dispatch<M>>::dispatch(&mut root, &event)`.
+The root's `Path<'a>` is `&'a mut Self`, so the loop calls `<Root as Dispatch<M>>::dispatch(&mut root, &event).ok()` for an `Option<M::Output>`.
+
+## The dispatch derive
+
+Per node, `#[derive(Bind)]` emits the `Dispatch` impl alongside the `EventHandler` (accumulate) impl.
+
+The child-path construction — the `Path::from_fn` projection, `Box` unwrap, the active-variant `match`, and the route-enum wrapping — is what `resolve` already generates, and it is the shared, complex part. `resolve` tail-calls the child's `resolve` on the constructed path. dispatch consumes the same construction with different control flow:
+
+- recurse into the child: `match <child>::dispatch(child_path, event) { Ok(out) => return Ok(out), Err(child) => path = child.into_parent() }`. Through a route enum, `into_parent` yields the route enum, so it is matched back to this node's path.
+- then the node's own binds (the two-level match), returning `Ok(handler(ev, path))` on a hit.
+- then `Err(path)`, handing the path back up.
+
+So the projection construction is shared with `resolve`; the control flow around it is per-derive. The work is refactoring `laserbeam_macro`'s projection generation into a shared piece both derives call.
 
 ### The generated code, spelled out
 
-A concrete tree. The state, with both derives and the binds at each level:
+A concrete tree. `esc` is bound at the root (lowest priority), `f1` at the layer, `g` on nav:
 
 ```rust
 #[derive(Laserbeam, Bind)]
@@ -158,7 +144,7 @@ type NavPath<'a> = Path<Nav, LayerPath<'a>>;
 type TypingPath<'a> = Path<Typing, LayerPath<'a>>;
 ```
 
-The handlers the user writes, each taking its node's path type:
+The handlers, each taking its node's path type. The root's is `&mut Mercury`, since laserbeam's root path is `&mut Self`:
 
 ```rust
 fn to_nav(ev: &KeyboardEvent, path: &mut Mercury) -> Vec<MercuryEffect> { .. }
@@ -167,80 +153,9 @@ fn on_g(ev: &KeyboardEvent, path: NavPath) -> Vec<MercuryEffect> { .. }
 fn on_bksp(ev: &KeyboardEvent, path: TypingPath) -> Vec<MercuryEffect> { .. }
 ```
 
-The `Bind` derive emits the `Dispatch` impl alongside the `EventHandler` (accumulate) impl. What it emits for `Dispatch`, per node. Cross-crate paths are qualified; `<MercuryStruct as Bindings>::Event` is `MercuryEvent` and `::Output` is `Vec<MercuryEffect>`; std paths (`Result`, `Ok`, `matches!`) are left unqualified for readability.
+What the derive emits for `Dispatch`. Cross-crate paths are qualified; `<MercuryStruct as Bindings>::Event` is `MercuryEvent` and `::Output` is `Vec<MercuryEffect>`; std paths (`Result`, `Ok`, `matches!`) are left unqualified for readability.
 
-Root struct: a bind, then descent into `#[resolve_into] layer`.
-
-```rust
-#[automatically_derived]
-#[allow(clippy::useless_conversion)]
-impl ::bind::Dispatch<MercuryStruct> for Mercury {
-    fn dispatch<'a>(
-        path: &'a mut Mercury,
-        event: &<MercuryStruct as ::bind::Bindings>::Event,
-    ) -> Result<<MercuryStruct as ::bind::Bindings>::Output, ::bind::NoHandler>
-    where
-        Self: 'a,
-    {
-        if let Some(ev) = ::bind::FromEvent::from_event(event) {
-            let trigger = Keyboard::new("esc");
-            if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                return Ok(to_nav(ev, path));
-            }
-        }
-        <Layer as ::bind::Dispatch<MercuryStruct>>::dispatch(
-            ::laserbeam::Path::from_fn(path, |o| &mut o.layer).into(),
-            event,
-        )
-    }
-}
-```
-
-Enum: a bind, then a match on the active variant.
-
-```rust
-#[automatically_derived]
-#[allow(clippy::useless_conversion)]
-impl ::bind::Dispatch<MercuryStruct> for Layer {
-    fn dispatch<'a>(
-        mut path: LayerPath<'a>,
-        event: &<MercuryStruct as ::bind::Bindings>::Event,
-    ) -> Result<<MercuryStruct as ::bind::Bindings>::Output, ::bind::NoHandler>
-    where
-        Self: 'a,
-    {
-        if let Some(ev) = ::bind::FromEvent::from_event(event) {
-            let trigger = Keyboard::new("f1");
-            if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                return Ok(show_help(ev, path));
-            }
-        }
-        if matches!(path.get_mut(), Self::Nav(_)) {
-            return <Nav as ::bind::Dispatch<MercuryStruct>>::dispatch(
-                ::laserbeam::Path::from_fn(path, |np| {
-                    let Self::Nav(c) = np.get_mut() else { unreachable!() };
-                    c
-                })
-                .into(),
-                event,
-            );
-        }
-        if matches!(path.get_mut(), Self::Typing(_)) {
-            return <Typing as ::bind::Dispatch<MercuryStruct>>::dispatch(
-                ::laserbeam::Path::from_fn(path, |np| {
-                    let Self::Typing(c) = np.get_mut() else { unreachable!() };
-                    c
-                })
-                .into(),
-                event,
-            );
-        }
-        unreachable!()
-    }
-}
-```
-
-Leaf struct: a bind, then `NoHandler`.
+Leaf: no child to try, so check the node's binds, else hand the path back.
 
 ```rust
 #[automatically_derived]
@@ -248,7 +163,7 @@ impl ::bind::Dispatch<MercuryStruct> for Nav {
     fn dispatch<'a>(
         path: NavPath<'a>,
         event: &<MercuryStruct as ::bind::Bindings>::Event,
-    ) -> Result<<MercuryStruct as ::bind::Bindings>::Output, ::bind::NoHandler>
+    ) -> Result<<MercuryStruct as ::bind::Bindings>::Output, NavPath<'a>>
     where
         Self: 'a,
     {
@@ -258,35 +173,121 @@ impl ::bind::Dispatch<MercuryStruct> for Nav {
                 return Ok(on_g(ev, path));
             }
         }
-        Err(::bind::NoHandler)
+        Err(path)
     }
 }
 ```
 
-`Typing` is another leaf, `Nav`-shaped: its `"bksp"` bind, then `Err(::bind::NoHandler)`.
-
-[A boxed `#[resolve_into]` field changes only the projection: the closure derefs the `Box`, `|np| &mut *np.get_mut().field` instead of `|np| &mut np.get_mut().field`. Same for `resolve`.]
-
-Multi-parent: the descent wraps the path in the route enum, as `resolve` does. If `Nav` also carried `#[resolve_into(parent = CursorParent)] cursor: Cursor`, reached from both `Nav` and `Typing` through `enum CursorParent { Nav(Path<Cursor, NavPath>), Typing(Path<Cursor, TypingPath>) }`, then `Nav`'s descent (in place of its `Err(NoHandler)`) is:
+Root struct: try the child first, then this node's binds (`esc`, lowest priority).
 
 ```rust
-        <Cursor as ::bind::Dispatch<MercuryStruct>>::dispatch(
+#[automatically_derived]
+#[allow(clippy::useless_conversion)]
+impl ::bind::Dispatch<MercuryStruct> for Mercury {
+    fn dispatch<'a>(
+        mut path: &'a mut Mercury,
+        event: &<MercuryStruct as ::bind::Bindings>::Event,
+    ) -> Result<<MercuryStruct as ::bind::Bindings>::Output, &'a mut Mercury>
+    where
+        Self: 'a,
+    {
+        match <Layer as ::bind::Dispatch<MercuryStruct>>::dispatch(
+            ::laserbeam::Path::from_fn(path, |o| &mut o.layer).into(),
+            event,
+        ) {
+            Ok(out) => return Ok(out),
+            Err(child) => path = child.into_parent(),
+        }
+        if let Some(ev) = ::bind::FromEvent::from_event(event) {
+            let trigger = Keyboard::new("esc");
+            if ::bind::EventTrigger::is_matching(&trigger, ev) {
+                return Ok(to_nav(ev, path));
+            }
+        }
+        Err(path)
+    }
+}
+```
+
+Enum: try the active variant first, then the enum's own binds.
+
+```rust
+#[automatically_derived]
+#[allow(clippy::useless_conversion)]
+impl ::bind::Dispatch<MercuryStruct> for Layer {
+    fn dispatch<'a>(
+        mut path: LayerPath<'a>,
+        event: &<MercuryStruct as ::bind::Bindings>::Event,
+    ) -> Result<<MercuryStruct as ::bind::Bindings>::Output, LayerPath<'a>>
+    where
+        Self: 'a,
+    {
+        if matches!(path.get_mut(), Self::Nav(_)) {
+            match <Nav as ::bind::Dispatch<MercuryStruct>>::dispatch(
+                ::laserbeam::Path::from_fn(path, |np| {
+                    let Self::Nav(c) = np.get_mut() else { unreachable!() };
+                    c
+                })
+                .into(),
+                event,
+            ) {
+                Ok(out) => return Ok(out),
+                Err(child) => path = child.into_parent(),
+            }
+        } else if matches!(path.get_mut(), Self::Typing(_)) {
+            match <Typing as ::bind::Dispatch<MercuryStruct>>::dispatch(
+                ::laserbeam::Path::from_fn(path, |np| {
+                    let Self::Typing(c) = np.get_mut() else { unreachable!() };
+                    c
+                })
+                .into(),
+                event,
+            ) {
+                Ok(out) => return Ok(out),
+                Err(child) => path = child.into_parent(),
+            }
+        }
+        if let Some(ev) = ::bind::FromEvent::from_event(event) {
+            let trigger = Keyboard::new("f1");
+            if ::bind::EventTrigger::is_matching(&trigger, ev) {
+                return Ok(show_help(ev, path));
+            }
+        }
+        Err(path)
+    }
+}
+```
+
+`Typing` is another leaf, `Nav`-shaped: its `"bksp"` bind, then `Err(path)`.
+
+The loop dispatches with `.ok()`:
+
+```rust
+let effects: Option<Vec<MercuryEffect>> =
+    <Mercury as ::bind::Dispatch<MercuryStruct>>::dispatch(&mut mercury, &event).ok();
+```
+
+[A boxed `#[resolve_into]` field changes only the projection: the closure derefs the `Box`, `|np| &mut *np.get_mut().field` instead of `|np| &mut np.get_mut().field`. Same as `resolve`.]
+
+Multi-parent: the descent wraps the path in the route enum, and the miss unwraps it back. If `Nav` also carried `#[resolve_into(parent = CursorParent)] cursor: Cursor`, reached from both `Nav` and `Typing` through `enum CursorParent { Nav(Path<Cursor, NavPath>), Typing(Path<Cursor, TypingPath>) }`, then `Nav`'s dispatch tries `cursor` before its own `"g"` bind:
+
+```rust
+        match <Cursor as ::bind::Dispatch<MercuryStruct>>::dispatch(
             ::laserbeam::Path::from_fn(CursorParent::Nav(path.into()), |p| {
                 let CursorParent::Nav(pp) = p else { unreachable!() };
                 &mut pp.get_mut().cursor
             }),
             event,
-        )
+        ) {
+            Ok(out) => return Ok(out),
+            Err(child) => {
+                // into_parent gives the route enum; match it back to Nav's path
+                let CursorParent::Nav(nav_path) = child.into_parent() else { unreachable!() };
+                path = nav_path;
+            }
+        }
 ```
 
-### Open design points
+### Open design point
 
-- Whether `Dispatch: Resolve` (reuse `Resolve::Path`) or a standalone `Dispatch` with its own `type Path<'a>`.
-- The generator's hook interface: `prefix`/`recurse`/`leaf` as `Fn(..) -> TokenStream` closures the two macros pass in, versus a trait the generator is generic over.
-- Whether the root's `&mut Self` path needs a distinct `prefix` shape, since its handler paths are `&mut Root` rather than a `Path`.
-
-## Error
-
-```rust
-struct NoHandler; // no binding on the active path matched the event
-```
+The root handler's path is `&mut Root`, not a `Path`, because laserbeam's root `Path<'a>` is `&'a mut Self`. `Path<Root, ()>` is impossible: a `Path` reborrows its node out of its parent, and `()` holds no `Root`. Handlers could be made uniform by wrapping the root as `Path<Root, &mut Root>` (identity projection), whose parent is `&mut Root` rather than `()`; whether to do that is open.
