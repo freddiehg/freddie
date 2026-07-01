@@ -144,14 +144,14 @@ The derive generates these four impls.
 ```rust
 impl EventHandler<MercuryStruct> for Mercury {
     fn accumulate(&self, out: &mut HashSet<MercuryTrigger>) -> Result<(), BindError> {
-        insert_or_error(out, Keyboard::new("esc").into())?;
+        insert_or_error(out, ::core::convert::Into::into(Keyboard::new("esc")))?;
         self.layer.accumulate(out)                            // recurses into the layer
     }
 }
 
 impl EventHandler<MercuryStruct> for Layer {
     fn accumulate(&self, out: &mut HashSet<MercuryTrigger>) -> Result<(), BindError> {
-        insert_or_error(out, Keyboard::new("f1").into())?;
+        insert_or_error(out, ::core::convert::Into::into(Keyboard::new("f1")))?;
         match self {                                          // recurses into the active variant
             Layer::Nav(inner)    => inner.accumulate(out),
             Layer::Typing(inner) => inner.accumulate(out),
@@ -161,16 +161,16 @@ impl EventHandler<MercuryStruct> for Layer {
 
 impl EventHandler<MercuryStruct> for Nav {
     fn accumulate(&self, out: &mut HashSet<MercuryTrigger>) -> Result<(), BindError> {
-        insert_or_error(out, Keyboard::new("g").into())?;
-        insert_or_error(out, Keyboard::new("j").into())?;
-        insert_or_error(out, Foreground::new("Slack").into())?;
+        insert_or_error(out, ::core::convert::Into::into(Keyboard::new("g")))?;
+        insert_or_error(out, ::core::convert::Into::into(Keyboard::new("j")))?;
+        insert_or_error(out, ::core::convert::Into::into(Foreground::new("Slack")))?;
         Ok(())                                                // a leaf ends the recursion
     }
 }
 
 impl EventHandler<MercuryStruct> for Typing {
     fn accumulate(&self, out: &mut HashSet<MercuryTrigger>) -> Result<(), BindError> {
-        insert_or_error(out, Keyboard::new("backspace").into())?;
+        insert_or_error(out, ::core::convert::Into::into(Keyboard::new("backspace")))?;
         Ok(())
     }
 }
