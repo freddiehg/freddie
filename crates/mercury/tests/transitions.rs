@@ -23,11 +23,24 @@ fn home_t_enters_typing() {
 }
 
 #[test]
-fn typing_types_the_letter() {
+fn typing_passes_any_key_through() {
     let mut m = Mercury::default();
     m.handle(&key("t"));
     assert_eq!(m.handle(&key("a")), Some(vec![MercuryEffect::Type("a")]));
-    assert_eq!(m.handle(&key("f")), Some(vec![MercuryEffect::Type("f")]));
+    // Not just a/s/d/f now: any key passes through.
+    assert_eq!(m.handle(&key("q")), Some(vec![MercuryEffect::Type("q")]));
+}
+
+#[test]
+fn typing_still_quits_and_goes_home() {
+    let mut m = Mercury::default();
+    m.handle(&key("t"));
+    assert_eq!(m.handle(&key("return")), Some(vec![]));
+    assert!(matches!(m.layer, Layer::Home(_)));
+
+    let mut m = Mercury::default();
+    m.handle(&key("t"));
+    assert_eq!(m.handle(&key("escape")), Some(vec![MercuryEffect::Kill]));
 }
 
 #[test]

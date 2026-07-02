@@ -7,7 +7,7 @@
 //! - [`HomeLayer`] (the default): `n` enters nav, `t` enters typing, `i` enters
 //!   the in-app layer for whatever app is foregrounded.
 //! - [`NavLayer`]: `c`/`g`/`z` foreground Chrome/Ghostty/Zed.
-//! - [`TypingLayer`]: `a`/`s`/`d`/`f` type themselves.
+//! - [`TypingLayer`]: any key passes through as a typed key.
 //! - [`AppLayer`] (in-app): [`ChromeApp`] binds `r` to a refresh; every other app
 //!   is [`OtherApp`], which binds nothing.
 //!
@@ -43,6 +43,17 @@ impl EventTrigger for Key {
     }
 }
 
+/// A keyboard trigger that matches any key except the global ones (`escape` and
+/// `return`), so a catch-all binding still lets those bubble up to quit / go home.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct AnyKey;
+impl EventTrigger for AnyKey {
+    type Event = KeyEvent;
+    fn is_matching(&self, ev: &KeyEvent) -> bool {
+        !matches!(ev.key, "escape" | "return")
+    }
+}
+
 /// A trigger that matches any app-foregrounded event, whichever app it is.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Foregrounded;
@@ -74,11 +85,17 @@ pub enum App {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum MercuryTrigger {
     Key(Key),
+    AnyKey(AnyKey),
     Foregrounded(Foregrounded),
 }
 impl From<Key> for MercuryTrigger {
     fn from(k: Key) -> Self {
         Self::Key(k)
+    }
+}
+impl From<AnyKey> for MercuryTrigger {
+    fn from(a: AnyKey) -> Self {
+        Self::AnyKey(a)
     }
 }
 impl From<Foregrounded> for MercuryTrigger {
@@ -178,16 +195,11 @@ pub struct HomeLayer {}
 )]
 pub struct NavLayer {}
 
-/// The typing layer: `a`/`s`/`d`/`f` type themselves.
+/// The typing layer: any key passes through as a typed key.
 #[derive(Laserbeam, Bind)]
 #[laserbeam(path = TypingLayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
-#[bind(
-    Key("a") => type_char,
-    Key("s") => type_char,
-    Key("d") => type_char,
-    Key("f") => type_char,
-)]
+#[bind(AnyKey => passthru)]
 pub struct TypingLayer {}
 
 /// The in-app layer: Chrome has bindings, everything else is ignored.
@@ -323,8 +335,8 @@ fn open_zed(_ev: &KeyEvent, _path: NavLayerPath) -> Vec<MercuryEffect> {
     vec![MercuryEffect::Foreground(App::Zed)]
 }
 
-/// `a`/`s`/`d`/`f` in typing: type the key.
-fn type_char(ev: &KeyEvent, _path: TypingLayerPath) -> Vec<MercuryEffect> {
+/// Any key in typing (except the global ones): pass it through as a typed key.
+fn passthru(ev: &KeyEvent, _path: TypingLayerPath) -> Vec<MercuryEffect> {
     vec![MercuryEffect::Type(ev.key)]
 }
 
