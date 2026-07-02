@@ -6,7 +6,7 @@ Dispatch turns one event into effects. A runner feeds it events and performs the
 
 The framework is synchronous up to the handoff. Dispatch is one event to an output, and the runner hands each output to the handler synchronously, in the order the events were dispatched. Nothing in the framework knows about threads or async.
 
-Performing the output is the handler's business, and it can be async. A handler is meant to be quick, so it schedules the real work (later, on a worker pool) and returns. Keeping that work ordered — typed characters must not come out of order — is the handler's responsibility, in user land; the framework only guarantees that it hands the outputs over in order.
+Performing the output is the handler's business. The framework handles effects in order, so typed characters do not come out of order by default; a handler is free to impose its own policy on top, for example a higher-priority path for typing. Handling can also be async: a quick handler schedules the real work (later, on a worker pool) and returns.
 
 The async also lives at ingestion. Several sources (the keyboard tap, the foreground watcher) produce events concurrently, write into one queue without blocking, and the runner reads from it separately. Getting an event, queueing it, and reading it are decoupled, and as many can queue as arrive.
 
