@@ -17,8 +17,8 @@
 //! transitions) or return inert [`MercuryEffect`]s (typing a letter, opening an
 //! app, sending a command). Dispatch is opaque to what an effect does. Driving
 //! effects — and turning `Foreground(app)` into the follow-up foreground event,
-//! which can fail if the app is missing — is the caller's job, via `bind::run`
-//! and a handler function (see the CLI and the tests).
+//! which can fail if the app is missing — is the caller's job, via an event loop
+//! and handler functions (see the CLI and the tests).
 //!
 //! Run it with `cargo run -p mercury` (one key per line), or the tests with
 //! `cargo test -p mercury`.
@@ -122,6 +122,9 @@ pub enum MercuryEffect {
     Type(&'static str),
     /// Send `cmd` + this key.
     Command(&'static str),
+    /// Exit the program. The effect handler performs this by exiting; a
+    /// killswitch (a timer now, a key later) asks for it.
+    Kill,
 }
 
 /// The marker tying the trigger, event, and output types together.

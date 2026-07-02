@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 laserbeam = { path = "../laserbeam", version = "0.0.1" }
 bind = { path = "../bind", version = "0.0.1" }
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 
 [dev-dependencies]
 bind = { path = "../bind", version = "0.0.1" }
