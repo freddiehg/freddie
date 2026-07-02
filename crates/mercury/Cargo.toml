@@ -1,0 +1,14 @@
+[package]
+name = "mercury"
+description = "A small demo keyboard-remapping model built on freddie (laserbeam + bind)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+laserbeam = { path = "../laserbeam", version = "0.0.1" }
+bind = { path = "../bind", version = "0.0.1" }
+
+[lints]
+workspace = true
