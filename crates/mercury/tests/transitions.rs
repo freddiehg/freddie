@@ -5,7 +5,7 @@
 //! follow-up), then queue the next key — the way the real machine sees "press c,
 //! Chrome comes up, press r".
 
-use bind::{Runner, Step};
+use bind::Runner;
 use mercury::{App, AppLayer, Layer, Mercury, MercuryEffect, MercuryStruct, foreground, key};
 
 // ---- per-event: send an event, assert the effect ----
@@ -92,19 +92,15 @@ fn settle(
     performed: &mut Vec<MercuryEffect>,
     installed: &[App],
 ) {
-    loop {
-        match runner.next() {
-            Step::Empty => break,
-            Step::Unhandled => {}
-            Step::Output(output) => {
-                for effect in output {
-                    if let MercuryEffect::Foreground(app) = &effect
-                        && installed.contains(app)
-                    {
-                        runner.queue_event(foreground(*app));
-                    }
-                    performed.push(effect);
+    while let Some(dispatched) = runner.next() {
+        if let Some(output) = dispatched {
+            for effect in output {
+                if let MercuryEffect::Foreground(app) = &effect
+                    && installed.contains(app)
+                {
+                    runner.queue_event(foreground(*app));
                 }
+                performed.push(effect);
             }
         }
     }

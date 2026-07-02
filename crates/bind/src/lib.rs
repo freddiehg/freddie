@@ -121,22 +121,12 @@ where
 // synchronous driver for tests: process one queued event at a time, and queue
 // more (a handler's follow-ups) as you go.
 
-/// The outcome of one [`Runner::next`].
-pub enum Step<O> {
-    /// The queue was empty; nothing was processed.
-    Empty,
-    /// An event was processed but no binding matched it.
-    Unhandled,
-    /// An event was processed and its handler produced this output.
-    Output(O),
-}
-
 /// A synchronous event runner for tests.
 ///
 /// Queue events, process them one at a time with [`next`](Self::next), and queue
 /// more between or during steps (for a handler's follow-up events). It drains
-/// rather than waits: an empty queue is [`Step::Empty`], not a block. The real
-/// loop is the consumer's; this one exists to drive the tree in a test.
+/// rather than waits: an empty queue returns `None`, not a block. The real loop
+/// is the consumer's; this one exists to drive the tree in a test.
 pub struct Runner<'a, M: Bindings, N> {
     root: &'a mut N,
     queue: VecDeque<M::Event>,
@@ -160,12 +150,48 @@ where
         self.queue.push_back(event);
     }
 
-    /// Processes exactly one queued event.
+    /// Processes exactly one queued event. The outer `None` means the queue was
+    /// empty; the inner is what [`dispatch`] returned for the event (`None` when
+    /// no binding matched, `Some` with the output otherwise).
     #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> Step<M::Output> {
-        let Some(event) = self.queue.pop_front() else {
-            return Step::Empty;
-        };
-        dispatch::<M, N>(&mut *self.root, &event).map_or(Step::Unhandled, Step::Output)
+    pub fn next(&mut self) -> Option<Option<M::Output>> {
+        let event = self.queue.pop_front()?;
+        Some(dispatch::<M, N>(&mut *self.root, &event))
+    }
+
+    /// Queues `event` and processes one event, returning its output (`None` when
+    /// no binding matched). There is no empty case: the queue is non-empty after
+    /// queueing, so there is always an event to process.
+    ///
+    /// The event processed is the front of the queue, which is `event` only when
+    /// the queue was empty; if earlier follow-ups are still queued, one of them
+    /// runs first.
+    ///
+    /// # Panics
+    ///
+    /// Never: the queue is non-empty after queueing; the `expect` asserts it.
+    pub fn process_event(&mut self, event: M::Event) -> Option<M::Output> {
+        // Field ops inlined rather than calling `queue_event`/`next`, which the
+        // impl's HRTB bound would otherwise force to `'static`.
+        self.queue.push_back(event);
+        let event = self
+            .queue
+            .pop_front()
+            .expect("the queue is non-empty: an event was just queued");
+        dispatch::<M, N>(&mut *self.root, &event)
+    }
+}
+
+impl<M: Bindings, N> Runner<'_, M, N> {
+    /// The number of queued events not yet processed.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// Whether the queue is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
     }
 }
