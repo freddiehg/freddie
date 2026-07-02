@@ -92,16 +92,19 @@ trait Dispatch<M: Bindings>: Resolve {
 Consumers do not want the path. A public entry drops it and returns `Option<M::Output>`:
 
 ```rust
-fn dispatch<M, N>(root: &mut N, event: &M::Event) -> Option<M::Output>
+fn dispatch<'a, M, N>(path: N::Path<'a>, event: &M::Event) -> Option<M::Output>
 where
     M: Bindings,
-    N: Dispatch<M>,
+    N: Dispatch<M> + 'a,
 {
-    <N as Dispatch<M>>::dispatch(root, event).break_value()
+    match <N as Dispatch<M>>::dispatch(path, event) {
+        ControlFlow::Break(out) => Some(out),
+        ControlFlow::Continue(_) => None,
+    }
 }
 ```
 
-The root's `Path<'a>` is `&'a mut Self`, so `root: &mut N` is the root's path, and the loop calls `bind::dispatch::<MercuryStruct, _>(&mut mercury, &event)`.
+The root's `Path<'a>` is `&'a mut Self`, so the loop calls `bind::dispatch::<MercuryStruct, Mercury>(&mut mercury, &event)`. Taking `path: N::Path` rather than `&mut N` avoids a `for<'a> N::Path<'a> = &'a mut N` bound, at the cost of naming the root type in the turbofish.
 
 ## The dispatch derive
 
