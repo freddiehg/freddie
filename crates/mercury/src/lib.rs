@@ -11,7 +11,8 @@
 //! - [`AppLayer`] (in-app): [`ChromeApp`] binds `r` to a refresh; every other app
 //!   is [`OtherApp`], which binds nothing.
 //!
-//! `escape` quits from anywhere (a [`MercuryEffect::Kill`]).
+//! `escape` quits from anywhere (a [`MercuryEffect::Kill`]); `return` (Enter)
+//! goes back to the home layer from anywhere.
 //!
 //! A foreground event only records which app is frontmost; it does not change the
 //! layer. Handlers either mutate the state through the path they are handed (the
@@ -147,11 +148,11 @@ pub struct Mercury {
     pub layer: Layer,
 }
 
-/// The active layer. `escape` quits from anywhere.
+/// The active layer. `escape` quits from anywhere; `return` (Enter) goes home.
 #[derive(Laserbeam, Bind)]
 #[laserbeam(path = LayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
-#[bind(Key("escape") => kill)]
+#[bind(Key("escape") => kill, Key("return") => to_home)]
 pub enum Layer {
     Home(HomeLayer),
     Nav(NavLayer),
@@ -282,6 +283,12 @@ const fn on_foregrounded(ev: &ForegroundEvent, root: &mut Mercury) -> Vec<Mercur
 /// `escape`: quit, from any layer.
 fn kill(_ev: &KeyEvent, _path: LayerPath) -> Vec<MercuryEffect> {
     vec![MercuryEffect::Kill]
+}
+
+/// `return`: go back to the home layer, from any layer.
+fn to_home(_ev: &KeyEvent, mut path: LayerPath) -> Vec<MercuryEffect> {
+    *path.get_mut() = Layer::Home(HomeLayer {});
+    Vec::new()
 }
 
 /// `n` in home: enter the nav layer.

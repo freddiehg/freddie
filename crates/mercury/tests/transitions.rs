@@ -77,6 +77,15 @@ fn inapp_other_app_ignores_keys() {
 }
 
 #[test]
+fn return_goes_home_from_anywhere() {
+    let mut m = Mercury::default();
+    m.handle(&key("n"));
+    assert!(matches!(m.layer, Layer::Nav(_)));
+    assert_eq!(m.handle(&key("return")), Some(vec![]));
+    assert!(matches!(m.layer, Layer::Home(_)));
+}
+
+#[test]
 fn escape_quits_from_anywhere() {
     let mut m = Mercury::default();
     m.handle(&key("n"));
