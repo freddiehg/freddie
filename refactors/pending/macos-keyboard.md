@@ -2,7 +2,7 @@
 
 How the real build (figaro) fills the stubs in event-loop.md: the keyboard source is a `CGEventTap`, the `Type`/`Command` effects are synthesized `CGEvent`s, and the foreground source is an `NSWorkspace` observer. None of it is research-hard; the work is permissions, not locking yourself out, and not feeding your own synthesized events back into your tap.
 
-Rust crates: `core-graphics` (`CGEvent`, `CGEventTap`, `CGEventSource`, the field/flag enums), `core-foundation` (`CFRunLoop`), and `objc2` + `objc2-app-kit` + `objc2-foundation` for `NSWorkspace` (or the older `cocoa`/`objc`). The exact binding names drift between crate versions, so check them; the CoreGraphics/AppKit calls below are the stable ground truth.
+mercury uses `rdev` (Rust), which wraps the keyboard tap and synthesis below cross-platform (macOS and Windows, Linux with caveats); this doc is the underlying reference for what happens and where the sharp edges are. `rdev` does not tag its synthesized events, so self-feedback is guarded with a flag rather than the `kCGEventSourceUserData` shown here. Going raw instead (figaro may) means `core-graphics` (`CGEvent`, `CGEventTap`, `CGEventSource`), `core-foundation` (`CFRunLoop`), and `objc2` + `objc2-app-kit` for `NSWorkspace`, whose binding names drift between versions. The snippets below are C (CoreGraphics) and Swift-ish (AppKit) pseudocode, the stable ground truth underneath.
 
 ## Keyboard hijacking (CGEventTap)
 
@@ -10,7 +10,7 @@ A tap sees every key event before the focused app does, and can pass it through 
 
 Setup, on its own thread that owns a run loop (this is the keyboard source of event-loop.md):
 
-```
+```c
 tap = CGEventTapCreate(
     kCGSessionEventTap,          // session level; kCGHIDEventTap is lower still
     kCGHeadInsertEventTap,
@@ -29,7 +29,7 @@ CFRunLoopRun();                  // blocks this thread; the callback fires here
 
 The callback must be fast: it forwards a `KeyEvent` into the event channel and returns. Do not dispatch or synthesize inside it.
 
-```
+```c
 callback(proxy, type, event, user_info) -> CGEventRef {
     // Re-enable if the OS disabled us (see timeouts below).
     if type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput {
@@ -61,7 +61,7 @@ Footguns:
 
 The `Type` and `Command` effects post synthetic key events. Create one `CGEventSource` and reuse it.
 
-```
+```c
 source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
 
 // A keystroke: down then up.
@@ -87,14 +87,14 @@ Permission: posting events needs Accessibility.
 
 Events you post are delivered to your own tap, so without a mark you would re-dispatch and re-emit them forever. Tag every synthesized event and skip tagged events in the callback.
 
-```
-const MINE: i64 = 0x6672_6564; // "fred"
+```c
+static const int64_t MINE = 0x66726564; // "fred"
 
-fn tag(event) {
+void tag(CGEventRef event) {
     CGEventSetIntegerValueField(event, kCGEventSourceUserData, MINE);
 }
-fn is_ours(event) -> bool {
-    CGEventGetIntegerValueField(event, kCGEventSourceUserData) == MINE
+bool is_ours(CGEventRef event) {
+    return CGEventGetIntegerValueField(event, kCGEventSourceUserData) == MINE;
 }
 ```
 
@@ -104,7 +104,7 @@ fn is_ours(event) -> bool {
 
 Which app is frontmost, and a notification when it changes. No special permission; it needs a run loop, which the tap thread already has (or use the main thread).
 
-```
+```swift
 // Current:
 let app = NSWorkspace.sharedWorkspace().frontmostApplication(); // NSRunningApplication
 
@@ -123,7 +123,7 @@ NSWorkspace.sharedWorkspace()
 
 The `Foreground` effect activates or launches an app; the observer above then reports it coming up as a normal event (the decoupling in event-loop.md), so nothing here mutates state.
 
-```
+```swift
 // Already running: bring it up.
 NSRunningApplication.runningApplicationsWithBundleIdentifier(id).first?.activate(options);
 
