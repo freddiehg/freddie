@@ -94,6 +94,15 @@ pub fn unbox(ty: &Type) -> (&Type, bool) {
     (ty, false)
 }
 
+/// True when a node is the tree root: it carries `#[laserbeam_root]` rather than
+/// `#[laserbeam(..)]`, and its path is `&mut Self` instead of a [`Path`].
+///
+/// [`Path`]: laserbeam::Path
+#[must_use]
+pub fn is_root(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|a| a.path().is_ident("laserbeam_root"))
+}
+
 /// How a child hangs off its parent node, for building the descent projection.
 pub enum Via<'a> {
     /// A struct `#[resolve_into]` field.
