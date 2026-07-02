@@ -1,8 +1,8 @@
 //! Two kinds of test. The per-event ones send one event and assert the effect
 //! (and resulting state) straight from `handle`. The loop ones go through a
-//! little `drive` loop (the kind a consumer writes; freddie has no generic one)
-//! with a handler that performs effects and — only for apps it "has installed" —
-//! pushes the foreground follow-up onto the queue, the way the real machine would.
+//! little `drive` loop (a synchronous drain loop for the tests; the real CLI's
+//! loop is different) with a handler that performs effects and — only for apps it
+//! "has installed" — pushes the foreground follow-up, the way the real machine would.
 
 use std::collections::VecDeque;
 
@@ -85,8 +85,9 @@ fn unbound_key_is_none() {
 // ---- loop: the little event loop a consumer writes ----
 
 /// Drain `events`, and for each effect call `handle`, which may push follow-up
-/// events onto the queue. This is the loop the CLI writes too; freddie has no
-/// generic version, only `Mercury::handle` (dispatch) underneath.
+/// events onto the queue. This is the synchronous loop the tests use; the real
+/// CLI runs a different one, fed by OS listeners and blocking when idle. freddie
+/// has no generic version; `Mercury::handle` (dispatch) is the piece underneath.
 fn drive(
     m: &mut Mercury,
     events: impl IntoIterator<Item = MercuryEvent>,
