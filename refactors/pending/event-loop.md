@@ -28,7 +28,7 @@ Single-threaded: the OS delivers input on one thread (`CGEventTap` and the works
 
 `bind::SimpleRunner` is the synchronous driver: `queue_event` to push, `next` to process one event (`Option<Option<Output>>`: outer `None` is an empty queue, the inner is dispatch's result), `process_event` to queue-and-process one, plus `len`/`is_empty`. It drains rather than blocks, and an empty queue is resumable (queue more, get output again), so it is not an `Iterator`. It is enough for the unit tests and the stdin demo.
 
-The real Mercury runner is the same synchronous core with async ingestion in front: the sources feed a queue, the runner reads it and blocks when idle. Later it grows event prioritization and keyboard-typing handling. `SimpleRunner` is named to leave room for it. There is no generic `run` in freddie: the loop is small, its queue and its wait-when-empty differ per consumer, and a generic root drags in an awkward `Resolve<Path<'a> = &'a mut N>` bound. `dispatch` and `accumulate` are the pieces.
+The real Mercury runner is the same synchronous core with async ingestion in front: the sources feed a queue, the runner reads it and blocks when idle. Later it grows event prioritization. `SimpleRunner` is named to leave room for it. There is no generic `run` in freddie: the loop is small, its queue and its wait-when-empty differ per consumer, and a generic root drags in an awkward `Resolve<Path<'a> = &'a mut N>` bound. `dispatch` and `accumulate` are the pieces.
 
 ## Tests
 
@@ -36,6 +36,6 @@ The per-event tests dispatch one event and assert the output; they do not need a
 
 ## Open
 
-- Event prioritization and keyboard-typing handling: the reason `SimpleRunner` is not just `Runner`.
+- Event prioritization: the reason `SimpleRunner` is not just `Runner`.
 - How an effect handler hands long work to a worker pool while staying synchronous to the framework.
 - Whether the real runner's ingestion is single-threaded (run-loop sources, no `'static`) or multi-threaded (a channel, `Send + 'static`).
