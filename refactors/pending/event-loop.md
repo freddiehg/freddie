@@ -8,10 +8,10 @@ The framework is fully synchronous and never blocks. It dispatches an event to a
 
 All async lives in user land, on both edges, always as "enqueue now (synchronous), handle later (separate)":
 
-- Effects out. The framework hands each output to the handler in order, and the handler performs it. Because the loop processes one event fully before the next, inline handling keeps effects in the order events arrived (typing included) for free. The one reason to offload an effect is back pressure: a slow effect handler would otherwise block the handling of later events. Even then a smart handler keeps keyboard synthesis synchronous (it is fast and wants to be immediate) and offloads only the slow effects to a pool. v1 does none of this and handles every effect inline. A result that is itself an event (Chrome foregrounded) is pushed back onto the event queue and dispatched like any other input.
+- Effects out. Dispatch returns the effects, and the event loop hands each one to an effect channel and moves on. Enqueuing never blocks, so a slow effect never back-pressures event handling. A separate effect loop reads that channel in order and performs each effect; v1 performs them synchronously, and later a slow effect can be offloaded to a pool there (keyboard synthesis staying synchronous) without the event loop noticing. A performed effect whose result is itself an event (Chrome foregrounded) reaches the event channel like any other input.
 - Events in. Something outside the framework (a run loop, OS callbacks, a channel) receives inputs and hands them to dispatch as they arrive. Blocking when idle is that layer's job.
 
-So there are two queues, and the framework touches only one synchronously: the event queue it drains, and the worker queue on the far side of the handler that user land drains asynchronously.
+So there are two channels, and the framework's dispatch touches only the first: the event channel the event loop drains, and the effect channel the effect loop drains.
 
 ## The queue
 
@@ -33,44 +33,53 @@ The real Mercury runner is the same synchronous dispatch with user land around i
 
 ## Mercury, concretely
 
-Mercury's real loop is a `select!` over channels, the way isograph's language server does it (tokio preferred here; a `crossbeam` or std `mpsc` with a blocking `select!` is the same shape). Each macOS source runs on a thread that owns a `CFRunLoop` and forwards into one `mpsc<MercuryEvent>`: a `CGEventTap` for keys, an `NSWorkspace` observer for the frontmost app. The framework part stays synchronous; `handle` (dispatch) is a plain call inside the loop, and `select!` is only the user-land ingestion, the async wait for the next event or a timer.
+Mercury runs two loops joined by two tokio channels (tokio from day one). Each macOS source runs on a thread that owns a `CFRunLoop` and forwards into the event channel: a `CGEventTap` for keys, an `NSWorkspace` observer for the frontmost app. The event loop reads that channel, dispatches (which mutates state synchronously and returns effects), and hands each effect to the effect channel; a separate effect loop reads the effect channel and performs them. `dispatch` stays synchronous inside the event loop, and this is the same shape as isograph's language server.
 
 ```rust
 #[tokio::main]
 async fn main() {
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<MercuryEvent>(256);
-    spawn_key_tap(tx.clone());            // its own CFRunLoop thread; forwards key events
-    spawn_foreground_watcher(tx.clone()); // forwards Foreground events
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<MercuryEvent>();
+    let (effect_tx, mut effect_rx) = tokio::sync::mpsc::unbounded_channel::<MercuryEffect>();
 
+    spawn_key_tap(event_tx.clone());            // its own CFRunLoop thread; forwards key events
+    spawn_foreground_watcher(event_tx.clone()); // forwards Foreground events
+
+    // Effect loop: read the effect channel and perform, in order. Sync for now;
+    // a slow effect could later be spawned onto a pool here instead.
+    tokio::spawn(async move {
+        while let Some(effect) = effect_rx.recv().await {
+            match effect {
+                MercuryEffect::Foreground(app) => activate_app(app), // fire-and-forget; watcher reports back
+                MercuryEffect::Type(k) => synthesize_type(k),        // fast CGEventPost
+                MercuryEffect::Command(k) => synthesize_command(k),
+            }
+        }
+    });
+
+    // Event loop: read the event channel, dispatch, and enqueue the effects.
     let mut state = Mercury::default();
     let graceful = tokio::time::sleep(Duration::from_secs(5)); // dev killswitch
     let hard = tokio::time::sleep(Duration::from_secs(10));    // dev killswitch
     tokio::pin!(graceful, hard);
-
     loop {
         let event = tokio::select! {
-            Some(event) = rx.recv() => event,
-            () = &mut graceful => MercuryEvent::Kill, // 5s: graceful, dispatched below
-            () = &mut hard => libc::_exit(1),         // 10s: hard, bypasses everything
+            Some(event) = event_rx.recv() => event,
+            () = &mut graceful => MercuryEvent::Kill, // 5s: graceful
+            () = &mut hard => libc::_exit(1),         // 10s: hard
         };
         if matches!(event, MercuryEvent::Kill) {
             break; // clean exit: drop the tap, keyboard restored
         }
-        // dispatch is synchronous: it mutates state and returns the effects
+        // dispatch mutates state synchronously and returns the effects
         let Some(output) = state.handle(&event) else { continue };
         for effect in output {
-            match effect {
-                // v1 handles every effect inline; all are fast, so no pool.
-                MercuryEffect::Foreground(app) => activate_app(app), // fire-and-forget; watcher reports back
-                MercuryEffect::Type(k) => synthesize_type(k),        // fast CGEventPost, in loop order
-                MercuryEffect::Command(k) => synthesize_command(k),
-            }
+            let _ = effect_tx.send(effect); // the sync handler just enqueues
         }
     }
 }
 ```
 
-`select!` is the wait; `handle` never blocks. State is mutated directly inside `handle` (the fast path). The effect handler does exactly two outward things: send keyboard events (`Type`, `Command`) and foreground apps (`Foreground`, fire-and-forget; the observer reports the app coming up as a normal event). Both are fast, so v1 does them inline, in the loop's order. If a later effect were slow, a smart handler would keep keyboard synthesis synchronous and offload that effect to a pool, purely to avoid back pressure on event handling; v1 needs none of that. Events cross threads, so `MercuryEvent` is `Send + 'static`, the cost of the channel shape and the same trade isograph makes. The `CGEventTap` / `NSWorkspace` / synthesis / activation calls are the unverified macOS FFI and belong to figaro.
+`select!` is the wait; `handle` never blocks. Dispatch mutates state directly (the fast path) and returns the effects; the event loop only enqueues them (unbounded, so the send never blocks), so it never waits on an effect. The effect loop performs the two outward things: send keyboard events (`Type`, `Command`) and foreground apps (`Foreground`, fire-and-forget; the observer reports the app coming up as a normal event). v1 performs them synchronously and in order (one consumer, FIFO); later a slow effect can be offloaded to a pool inside the effect loop, keyboard synthesis staying synchronous, without the event loop noticing. Events and effects cross threads, so both are `Send + 'static`. The `CGEventTap` / `NSWorkspace` / synthesis / activation calls are the unverified macOS FFI and belong to figaro.
 
 ### Killswitches while developing
 
