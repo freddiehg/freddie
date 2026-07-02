@@ -11,7 +11,7 @@
 //! node's path is `Path<Node, ParentEnum>`, so `get_mut`/`into_parent` come from
 //! `Path` itself.
 
-use derive_support::{find_resolve_into, parent_route, single_field_ty, unbox};
+use derive_support::{Edge, Via, find_resolve_into, parent_route, single_field_ty, unbox};
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
@@ -166,51 +166,17 @@ fn struct_body(
             // own size) is dereferenced in the projection; the resolved child is
             // the inner `T`.
             let (child, boxed) = unbox(&child_ty);
-            let deref = if boxed { quote!(*) } else { quote!() };
-            match route {
-                // Single-parent child: its path is `Path<Child, ThisPath>`,
-                // exactly what `from_fn` builds, so `.into()` is identity.
-                None => {
-                    let project = if is_root {
-                        quote!(|o| &mut #deref o.#field)
-                    } else {
-                        quote!(|np| &mut #deref np.get_mut().#field)
-                    };
-                    Ok(quote! {
-                        <#child as ::laserbeam::Resolve>::resolve(
-                            ::laserbeam::Path::from_fn(path, #project).into()
-                        )
-                    })
-                }
-                // Multi-parent child: wrap this node's path in the route enum and
-                // re-derive the child through that variant. The variant is named
-                // after this node (the parent), the way isograph uses
-                // `<Child>::Parent::#name`. The projection is total over the enum;
-                // only this variant is ever live, hence the `unreachable!()`.
-                Some(parent_enum) => {
-                    let variant = quote!(#parent_enum::#name);
-                    let project = if is_root {
-                        quote!(|p| {
-                            let #variant(pp) = p else { ::core::unreachable!() };
-                            &mut #deref pp.#field
-                        })
-                    } else {
-                        quote!(|p| {
-                            let #variant(pp) = p else { ::core::unreachable!() };
-                            &mut #deref pp.get_mut().#field
-                        })
-                    };
-                    // `path.into()` is identity for an unboxed variant and
-                    // `From<T> for Box<T>` for a boxed one, so a recursive parent
-                    // chain breaks its own size with `Album(Box<AlbumPath>)`, the
-                    // way isograph does.
-                    Ok(quote! {
-                        <#child as ::laserbeam::Resolve>::resolve(
-                            ::laserbeam::Path::from_fn(#variant(path.into()), #project)
-                        )
-                    })
-                }
-            }
+            let edge = Edge {
+                parent: name,
+                is_root,
+                route: route.as_ref(),
+                boxed,
+                via: Via::Field(&field),
+            };
+            let child_path = edge.child_path(&quote!(path));
+            Ok(quote! {
+                <#child as ::laserbeam::Resolve>::resolve(#child_path)
+            })
         }
     }
 }
@@ -225,7 +191,7 @@ fn enum_body(is_root: bool, name: &Ident, e: &DataEnum) -> syn::Result<TokenStre
     let mut variants = Vec::new();
     for v in &e.variants {
         variants.push((
-            &v.ident,
+            v.ident.clone(),
             single_field_ty(&v.fields)?,
             parent_route(&v.attrs)?,
         ));
@@ -236,83 +202,34 @@ fn enum_body(is_root: bool, name: &Ident, e: &DataEnum) -> syn::Result<TokenStre
             "a laserbeam enum needs at least one variant",
         ));
     }
-    // A `Box<Child>` variant (recursive data) is dereferenced; the resolved
-    // child is the inner `T`.
-    if is_root {
-        let arms = variants.iter().map(|(vi, ty, route)| {
+    let arms = variants
+        .iter()
+        .map(|(vi, ty, route)| {
             let (child, boxed) = unbox(ty);
-            match route {
-                // Single-parent child: descend straight into the variant payload.
-                None => {
-                    let access = if boxed { quote!(&mut **c) } else { quote!(c) };
-                    quote! {
-                        Self::#vi(_) => <#child as ::laserbeam::Resolve>::resolve(
-                            ::laserbeam::Path::from_fn(path, |o| {
-                                let Self::#vi(c) = &mut **o else { ::core::unreachable!() };
-                                #access
-                            }).into()
-                        ),
-                    }
+            let edge = Edge {
+                parent: name,
+                is_root,
+                route: route.as_ref(),
+                boxed,
+                via: Via::Variant(vi),
+            };
+            let child_path = edge.child_path(&quote!(path));
+            if is_root {
+                quote! {
+                    Self::#vi(_) => <#child as ::laserbeam::Resolve>::resolve(#child_path),
                 }
-                // Multi-parent child: wrap the root path (`&mut Self`) in the
-                // route variant named after this enum. The root has no `get_mut`,
-                // so the projection dereferences instead.
-                Some(route) => {
-                    let inner = if boxed {
-                        quote!(&mut **inner)
-                    } else {
-                        quote!(inner)
-                    };
-                    quote! {
-                        Self::#vi(_) => <#child as ::laserbeam::Resolve>::resolve(
-                            ::laserbeam::Path::from_fn(#route::#name(path.into()), |p| {
-                                let #route::#name(pp) = p else { ::core::unreachable!() };
-                                let Self::#vi(inner) = &mut **pp else { ::core::unreachable!() };
-                                #inner
-                            })
-                        ),
+            } else {
+                quote! {
+                    if ::core::matches!(path.get_mut(), Self::#vi(_)) {
+                        return <#child as ::laserbeam::Resolve>::resolve(#child_path);
                     }
                 }
             }
-        });
+        })
+        .collect::<Vec<_>>();
+    if is_root {
         Ok(quote!(match path { #(#arms)* }))
     } else {
-        let arms = variants.iter().map(|(vi, ty, route)| {
-            let (child, boxed) = unbox(ty);
-            match route {
-                // Single-parent child: descend straight into the variant payload.
-                None => {
-                    let access = if boxed { quote!(&mut **c) } else { quote!(c) };
-                    quote! {
-                        if ::core::matches!(path.get_mut(), Self::#vi(_)) {
-                            return <#child as ::laserbeam::Resolve>::resolve(
-                                ::laserbeam::Path::from_fn(path, |np| {
-                                    let Self::#vi(c) = np.get_mut() else { ::core::unreachable!() };
-                                    #access
-                                }).into()
-                            );
-                        }
-                    }
-                }
-                // Multi-parent child reached via this variant: wrap this enum's
-                // path in the route variant named after this enum, then re-derive
-                // the child by matching its way back out.
-                Some(route) => {
-                    let inner = if boxed { quote!(&mut **inner) } else { quote!(inner) };
-                    quote! {
-                        if ::core::matches!(path.get_mut(), Self::#vi(_)) {
-                            return <#child as ::laserbeam::Resolve>::resolve(
-                                ::laserbeam::Path::from_fn(#route::#name(path.into()), |p| {
-                                    let #route::#name(pp) = p else { ::core::unreachable!() };
-                                    let Self::#vi(inner) = pp.get_mut() else { ::core::unreachable!() };
-                                    #inner
-                                })
-                            );
-                        }
-                    }
-                }
-            }
-        });
         Ok(quote!({ #(#arms)* ::core::unreachable!() }))
     }
 }
