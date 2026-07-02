@@ -1,12 +1,11 @@
 //! Two kinds of test. The per-event ones send one event and assert the effect
 //! (and resulting state) straight from `handle`. The loop ones go through
-//! `drive` with a `Recorder` effect handler, which performs effects and — only
-//! for apps it "has installed" — re-dispatches the foreground follow-up, the way
-//! the real machine would.
+//! `bind::run` with a handler closure that performs effects and — only for apps
+//! it "has installed" — returns the foreground follow-up event, the way the real
+//! machine would.
 
-use mercury::{
-    App, AppLayer, EffectHandler, Layer, Mercury, MercuryEffect, drive, foreground, key,
-};
+use bind::run;
+use mercury::{App, Layer, Mercury, MercuryEffect, MercuryStruct, foreground, key};
 
 // ---- per-event: send an event, assert the effect ----
 
@@ -43,7 +42,7 @@ fn foreground_event_records_the_app_and_enters_in_app() {
     let mut m = Mercury::default();
     assert_eq!(m.handle(&foreground(App::Zed)), Some(vec![]));
     assert_eq!(m.foregrounded, App::Zed);
-    assert!(matches!(m.layer, Layer::InApp(AppLayer::Zed(_))));
+    assert!(matches!(m.layer, Layer::InApp(mercury::AppLayer::Zed(_))));
 }
 
 #[test]
@@ -72,7 +71,7 @@ fn escape_returns_home() {
 fn unknown_app_has_no_in_app_bindings() {
     let mut m = Mercury::default();
     m.handle(&foreground(App::Other));
-    assert!(matches!(m.layer, Layer::InApp(AppLayer::Other(_))));
+    assert!(matches!(m.layer, Layer::InApp(mercury::AppLayer::Other(_))));
     assert_eq!(m.handle(&key("d")), None);
 }
 
@@ -82,58 +81,42 @@ fn unbound_key_is_none() {
     assert_eq!(m.handle(&key("q")), None);
 }
 
-// ---- loop: drive through a fallible effect handler ----
+// ---- loop: bind::run with a handler closure ----
 
-/// Records every effect it performs. A `Foreground` effect only produces the
-/// follow-up foreground event when the app is installed; opening a missing app
-/// records the attempt and stops there, so the state never enters that in-app
-/// layer.
-struct Recorder {
-    performed: Vec<MercuryEffect>,
-    installed: Vec<App>,
-}
-
-impl Recorder {
-    fn new(installed: &[App]) -> Self {
-        Self {
-            performed: Vec::new(),
-            installed: installed.to_vec(),
-        }
-    }
-}
-
-impl EffectHandler for Recorder {
-    fn handle(&mut self, effect: &MercuryEffect, state: &mut Mercury) -> Vec<MercuryEffect> {
-        self.performed.push(effect.clone());
-        if let MercuryEffect::Foreground(app) = effect
-            && self.installed.contains(app)
-        {
-            return state.handle(&foreground(*app)).unwrap_or_default();
-        }
-        Vec::new()
-    }
-}
-
-fn run(state: &mut Mercury, rec: &mut Recorder, keys: &[&'static str]) {
-    for k in keys {
-        drive(state, &key(k), rec);
-    }
-}
-
-// Everything in tandem: home -> n (nav) -> c (open Chrome; the app comes up and
-// its foreground event re-enters, moving to the in-app layer) -> r (restart) ->
-// escape (home) -> space (typing) -> a (typed).
+// The whole flow in tandem: home -> n (nav) -> c (open Chrome; the app comes up,
+// its foreground event re-enters and moves to the in-app layer) -> r (restart)
+// -> escape (home) -> space (typing) -> a (typed). Chrome is "installed", so the
+// open produces the foreground follow-up.
 #[test]
 fn kitchen_sink() {
     let mut m = Mercury::default();
-    let mut rec = Recorder::new(&[App::Chrome]);
-    run(
+    let installed = [App::Chrome];
+    let mut performed = Vec::new();
+    run::<MercuryStruct, _, _>(
         &mut m,
-        &mut rec,
-        &["n", "c", "r", "escape", "space", "a"],
+        [
+            key("n"),
+            key("c"),
+            key("r"),
+            key("escape"),
+            key("space"),
+            key("a"),
+        ],
+        |effects| {
+            let mut follow = Vec::new();
+            for effect in effects {
+                if let MercuryEffect::Foreground(app) = &effect
+                    && installed.contains(app)
+                {
+                    follow.push(foreground(*app));
+                }
+                performed.push(effect);
+            }
+            follow
+        },
     );
     assert_eq!(
-        rec.performed,
+        performed,
         vec![
             MercuryEffect::Foreground(App::Chrome),
             MercuryEffect::Command("r"),
@@ -144,14 +127,17 @@ fn kitchen_sink() {
     assert_eq!(m.foregrounded, App::Chrome);
 }
 
-// If the handler cannot open the app, there is no foreground follow-up: the
-// state stays in nav, and the app's in-app key does nothing.
+// If the handler cannot open the app, it returns no follow-up, so there is no
+// foreground event: the state stays in nav and the app's in-app key does nothing.
 #[test]
 fn opening_a_missing_app_does_not_enter_in_app() {
     let mut m = Mercury::default();
-    let mut rec = Recorder::new(&[]); // nothing installed
-    run(&mut m, &mut rec, &["n", "c", "r"]);
-    assert_eq!(rec.performed, vec![MercuryEffect::Foreground(App::Chrome)]);
+    let mut performed = Vec::new();
+    run::<MercuryStruct, _, _>(&mut m, [key("n"), key("c"), key("r")], |effects| {
+        performed.extend(effects);
+        Vec::new() // nothing installed: never a follow-up
+    });
+    assert_eq!(performed, vec![MercuryEffect::Foreground(App::Chrome)]);
     assert!(matches!(m.layer, Layer::Nav(_)));
     assert_eq!(m.foregrounded, App::Other);
 }

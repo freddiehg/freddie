@@ -1,50 +1,20 @@
 //! A foreground CLI for the Mercury demo.
 //!
 //! Type one key per line (`n`, `c`, `r`, `space`, `a`, `escape`, ...). Each key
-//! is dispatched against the state and its effects are handled by a printing
-//! [`EffectHandler`], which describes what it would do rather than touching the
-//! real machine, so it is safe to run while other apps are actually foregrounded.
-//! After each key it shows the active layer and the keys currently bound (from
-//! `bind::accumulate`).
+//! is driven through `bind::run` with a handler that prints what each effect
+//! would do rather than touching the real machine, so it is safe to run while
+//! other apps are actually foregrounded. A `Foreground` effect returns the
+//! follow-up foreground event (the demo assumes the app opened). After each key
+//! it shows the active layer and the keys currently bound (from `bind::accumulate`).
 //!
 //! `cargo run -p mercury`   (or pipe keys: `printf 'n\nc\nr\n' | cargo run -p mercury`)
 
 use std::io::{self, BufRead};
 
-use mercury::{
-    EffectHandler, Key, Layer, Mercury, MercuryEffect, MercuryStruct, MercuryTrigger, drive,
-    foreground, key,
-};
-
-/// Prints each effect. Foregrounding an app is where the demo would call the OS;
-/// here it just reports success and lets the follow-up foreground event through.
-struct Printer;
-
-impl EffectHandler for Printer {
-    fn handle(&mut self, effect: &MercuryEffect, state: &mut Mercury) -> Vec<MercuryEffect> {
-        match effect {
-            MercuryEffect::Foreground(app) => {
-                println!("  foreground {app:?}");
-                // A real build would open the app here and only continue on
-                // success; the demo always succeeds. See the `Recorder` in the
-                // tests for the failure path (no app, so no follow-up).
-                state.handle(&foreground(*app)).unwrap_or_default()
-            }
-            MercuryEffect::Type(s) => {
-                println!("  type {s}");
-                Vec::new()
-            }
-            MercuryEffect::Command(k) => {
-                println!("  send cmd+{k}");
-                Vec::new()
-            }
-        }
-    }
-}
+use mercury::{Key, Layer, Mercury, MercuryEffect, MercuryStruct, MercuryTrigger, foreground, key};
 
 fn main() {
     let mut state = Mercury::default();
-    let mut printer = Printer;
     println!("mercury — one key per line (Ctrl-D to quit)");
     print_status(&state);
 
@@ -58,8 +28,27 @@ fn main() {
         // a short-lived CLI.
         let name: &'static str = Box::leak(name.to_owned().into_boxed_str());
         println!("> {name}");
-        drive(&mut state, &key(name), &mut printer);
+        bind::run::<MercuryStruct, _, _>(&mut state, [key(name)], |effects| {
+            let mut follow = Vec::new();
+            for effect in effects {
+                println!("  {}", render(&effect));
+                if let MercuryEffect::Foreground(app) = effect {
+                    // A real build would open the app and only continue on
+                    // success; the demo assumes it did.
+                    follow.push(foreground(app));
+                }
+            }
+            follow
+        });
         print_status(&state);
+    }
+}
+
+fn render(effect: &MercuryEffect) -> String {
+    match effect {
+        MercuryEffect::Foreground(app) => format!("foreground {app:?}"),
+        MercuryEffect::Type(s) => format!("type {s}"),
+        MercuryEffect::Command(k) => format!("send cmd+{k}"),
     }
 }
 

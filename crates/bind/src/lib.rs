@@ -11,7 +11,7 @@
 //!   active state binds for a fired event. [`dispatch()`] runs it from the root.
 #![allow(clippy::implicit_hasher)]
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::hash::Hash;
 use std::ops::ControlFlow;
 
@@ -112,5 +112,30 @@ where
     match <N as Dispatch<M>>::dispatch(path, event) {
         ControlFlow::Break(out) => Some(out),
         ControlFlow::Continue(_) => None,
+    }
+}
+
+/// Runs `events` against the root `root`: dispatch each event, hand its output to
+/// `handle`, and dispatch whatever follow-up events `handle` returns before the
+/// rest of the queue, until it drains.
+///
+/// Follow-ups run immediately, so an output that causes an event (opening an app
+/// makes it foreground, say) is handled right after, not after later inputs.
+/// Whether an output causes follow-up events is entirely `handle`'s business;
+/// dispatch and this loop stay opaque to it. `root` is the tree root, whose path
+/// is `&mut Self`.
+pub fn run<M, N, H>(root: &mut N, events: impl IntoIterator<Item = M::Event>, mut handle: H)
+where
+    M: Bindings,
+    N: Dispatch<M> + for<'a> ::laserbeam::Resolve<Path<'a> = &'a mut N>,
+    H: FnMut(M::Output) -> Vec<M::Event>,
+{
+    let mut queue: VecDeque<M::Event> = events.into_iter().collect();
+    while let Some(event) = queue.pop_front() {
+        if let Some(output) = dispatch::<M, N>(&mut *root, &event) {
+            for follow_up in handle(output).into_iter().rev() {
+                queue.push_front(follow_up);
+            }
+        }
     }
 }
