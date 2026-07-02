@@ -7,6 +7,7 @@ members = [
     "crates/derive_support",
     "crates/bind",
     "crates/bind_macro",
+    "crates/freddie_keyboard",
     "crates/mercury",
 ]
 

@@ -1,0 +1,13 @@
+[package]
+name = "freddie_keyboard"
+description = "Keyboard interception and emission for freddie, wrapping rdev."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rdev = { version = "0.5", features = ["unstable_grab"] }
+
+[lints]
+workspace = true
