@@ -196,6 +196,58 @@ pub enum EmptyResolved<'a> {
     Empty(&'a mut Empty),
 }
 
+// A multi-parent tree: `Title` is reached from both `Album` and `Song` through
+// the `TitleParent` route enum.
+#[derive(Laserbeam, Bind)]
+#[laserbeam_root(resolved = MediaResolved)]
+#[binds(MercuryStruct)]
+pub enum Media {
+    Album(Album),
+    Song(Song),
+}
+
+#[derive(Laserbeam, Bind)]
+#[laserbeam(path = AlbumPath, resolved = MediaResolved)]
+#[binds(MercuryStruct)]
+#[bind(Keyboard("a") => ignore)]
+pub struct Album {
+    #[resolve_into(parent = TitleParent)]
+    pub title: Title,
+}
+
+#[derive(Laserbeam, Bind)]
+#[laserbeam(path = SongPath, resolved = MediaResolved)]
+#[binds(MercuryStruct)]
+#[bind(Keyboard("s") => ignore)]
+pub struct Song {
+    #[resolve_into(parent = TitleParent)]
+    pub title: Title,
+}
+
+#[derive(Laserbeam, Bind)]
+#[laserbeam(path = TitlePath, resolved = MediaResolved)]
+#[binds(MercuryStruct)]
+#[bind(Keyboard("t") => on_title)]
+pub struct Title {
+    pub hits: u32,
+}
+
+pub type AlbumPath<'a> = Path<Album, &'a mut Media>;
+pub type SongPath<'a> = Path<Song, &'a mut Media>;
+pub enum TitleParent<'a> {
+    Album(AlbumPath<'a>),
+    Song(SongPath<'a>),
+}
+pub type TitlePath<'a> = Path<Title, TitleParent<'a>>;
+pub enum MediaResolved<'a> {
+    Title(TitlePath<'a>),
+}
+
+pub fn on_title(ev: &KeyEvent, mut path: TitlePath) -> usize {
+    path.get_mut().hits += 1;
+    ev.key.len()
+}
+
 /// A keyboard trigger, for accumulate assertions.
 pub const fn kb(s: &'static str) -> MercuryTrigger {
     MercuryTrigger::Keyboard(Keyboard(s))

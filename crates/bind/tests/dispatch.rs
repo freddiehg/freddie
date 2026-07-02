@@ -5,7 +5,9 @@
 
 mod common;
 
-use common::{App, Deep, Layer, MercuryStruct, Nav, Typing, foreground, key};
+use common::{
+    Album, App, Deep, Layer, Media, MercuryStruct, Nav, Song, Title, Typing, foreground, key,
+};
 
 const fn nav_app() -> App {
     App {
@@ -118,4 +120,46 @@ fn unmatched_foreground_is_none() {
     let mut app = nav_app();
     let out = bind::dispatch::<MercuryStruct, App>(&mut app, &foreground("Other"));
     assert_eq!(out, None);
+}
+
+// The multi-parent leaf `Title` fires whether reached through `Album` or `Song`.
+#[test]
+fn multi_parent_leaf_via_album() {
+    let mut media = Media::Album(Album {
+        title: Title { hits: 0 },
+    });
+    let out = bind::dispatch::<MercuryStruct, Media>(&mut media, &key("t"));
+    assert_eq!(out, Some(1)); // "t"
+    let Media::Album(a) = &media else {
+        unreachable!()
+    };
+    assert_eq!(a.title.hits, 1);
+}
+
+#[test]
+fn multi_parent_leaf_via_song() {
+    let mut media = Media::Song(Song {
+        title: Title { hits: 0 },
+    });
+    let out = bind::dispatch::<MercuryStruct, Media>(&mut media, &key("t"));
+    assert_eq!(out, Some(1)); // "t"
+    let Media::Song(s) = &media else {
+        unreachable!()
+    };
+    assert_eq!(s.title.hits, 1);
+}
+
+// The multi-parent ancestor `Album` fires only after `Title` misses, which means
+// its path was recovered from the route enum on the way back up.
+#[test]
+fn multi_parent_ancestor_recover() {
+    let mut media = Media::Album(Album {
+        title: Title { hits: 0 },
+    });
+    let out = bind::dispatch::<MercuryStruct, Media>(&mut media, &key("a"));
+    assert_eq!(out, Some(1)); // "a"
+    let Media::Album(a) = &media else {
+        unreachable!()
+    };
+    assert_eq!(a.title.hits, 0);
 }
