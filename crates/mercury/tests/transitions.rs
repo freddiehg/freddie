@@ -53,9 +53,9 @@ fn chrome_rebinds_r_to_command() {
 }
 
 #[test]
-fn terminals_rebind_d_to_command() {
+fn ghostty_rebinds_d_to_command() {
     let mut m = Mercury::default();
-    m.handle(&foreground(App::Tty));
+    m.handle(&foreground(App::Ghostty));
     assert_eq!(m.handle(&key("d")), Some(vec![MercuryEffect::Command("d")]));
 }
 

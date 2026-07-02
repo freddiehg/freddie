@@ -5,10 +5,11 @@
 //! foregrounded app and a [`Layer`] it resolves into:
 //!
 //! - [`HomeLayer`] (the default): `n` enters nav, `space` enters typing.
-//! - [`NavLayer`]: `c`/`g`/`t`/`z` open Chrome/Ghostty/TTY/Zed.
+//! - [`NavLayer`]: `c`/`g`/`z` open Chrome/Ghostty/Zed.
 //! - [`TypingLayer`]: `a`/`s`/`d`/`f` type themselves.
 //! - [`AppLayer`] (in-app): one variant per app. [`ChromeApp`] rebinds `r` to
-//!   `cmd`+`r`; the terminals rebind `d` to `cmd`+`d`; [`OtherApp`] binds nothing.
+//!   `cmd`+`r`; [`GhosttyApp`] and [`ZedApp`] rebind `d` to `cmd`+`d`;
+//!   [`OtherApp`] binds nothing.
 //!
 //! `escape` returns to home from anywhere.
 //!
@@ -61,8 +62,7 @@ impl EventTrigger for Foregrounded {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum App {
     Chrome,
-    Ghost,
-    Tty,
+    Ghostty,
     Zed,
     Other,
 }
@@ -172,8 +172,7 @@ pub struct HomeLayer {}
 #[binds(MercuryStruct)]
 #[bind(
     Key("c") => open_chrome,
-    Key("g") => open_ghost,
-    Key("t") => open_tty,
+    Key("g") => open_ghostty,
     Key("z") => open_zed,
 )]
 pub struct NavLayer {}
@@ -196,8 +195,7 @@ pub struct TypingLayer {}
 #[binds(MercuryStruct)]
 pub enum AppLayer {
     Chrome(ChromeApp),
-    Ghost(GhostApp),
-    Tty(TtyApp),
+    Ghostty(GhosttyApp),
     Zed(ZedApp),
     Other(OtherApp),
 }
@@ -208,8 +206,7 @@ impl AppLayer {
     pub const fn for_app(app: App) -> Self {
         match app {
             App::Chrome => Self::Chrome(ChromeApp {}),
-            App::Ghost => Self::Ghost(GhostApp {}),
-            App::Tty => Self::Tty(TtyApp {}),
+            App::Ghostty => Self::Ghostty(GhosttyApp {}),
             App::Zed => Self::Zed(ZedApp {}),
             App::Other => Self::Other(OtherApp {}),
         }
@@ -223,16 +220,10 @@ impl AppLayer {
 pub struct ChromeApp {}
 
 #[derive(Laserbeam, Bind)]
-#[laserbeam(path = GhostAppPath, resolved = Resolved)]
+#[laserbeam(path = GhosttyAppPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
 #[bind(Key("d") => command)]
-pub struct GhostApp {}
-
-#[derive(Laserbeam, Bind)]
-#[laserbeam(path = TtyAppPath, resolved = Resolved)]
-#[binds(MercuryStruct)]
-#[bind(Key("d") => command)]
-pub struct TtyApp {}
+pub struct GhosttyApp {}
 
 #[derive(Laserbeam, Bind)]
 #[laserbeam(path = ZedAppPath, resolved = Resolved)]
@@ -252,8 +243,7 @@ pub type NavLayerPath<'a> = Path<NavLayer, LayerPath<'a>>;
 pub type TypingLayerPath<'a> = Path<TypingLayer, LayerPath<'a>>;
 pub type AppLayerPath<'a> = Path<AppLayer, LayerPath<'a>>;
 pub type ChromeAppPath<'a> = Path<ChromeApp, AppLayerPath<'a>>;
-pub type GhostAppPath<'a> = Path<GhostApp, AppLayerPath<'a>>;
-pub type TtyAppPath<'a> = Path<TtyApp, AppLayerPath<'a>>;
+pub type GhosttyAppPath<'a> = Path<GhosttyApp, AppLayerPath<'a>>;
 pub type ZedAppPath<'a> = Path<ZedApp, AppLayerPath<'a>>;
 pub type OtherAppPath<'a> = Path<OtherApp, AppLayerPath<'a>>;
 
@@ -263,8 +253,7 @@ pub enum Resolved<'a> {
     NavLayer(NavLayerPath<'a>),
     TypingLayer(TypingLayerPath<'a>),
     ChromeApp(ChromeAppPath<'a>),
-    GhostApp(GhostAppPath<'a>),
-    TtyApp(TtyAppPath<'a>),
+    GhosttyApp(GhosttyAppPath<'a>),
     ZedApp(ZedAppPath<'a>),
     OtherApp(OtherAppPath<'a>),
 }
@@ -335,11 +324,8 @@ fn to_typing(_ev: &KeyEvent, path: HomeLayerPath) -> Vec<MercuryEffect> {
 fn open_chrome(_ev: &KeyEvent, _path: NavLayerPath) -> Vec<MercuryEffect> {
     vec![MercuryEffect::Foreground(App::Chrome)]
 }
-fn open_ghost(_ev: &KeyEvent, _path: NavLayerPath) -> Vec<MercuryEffect> {
-    vec![MercuryEffect::Foreground(App::Ghost)]
-}
-fn open_tty(_ev: &KeyEvent, _path: NavLayerPath) -> Vec<MercuryEffect> {
-    vec![MercuryEffect::Foreground(App::Tty)]
+fn open_ghostty(_ev: &KeyEvent, _path: NavLayerPath) -> Vec<MercuryEffect> {
+    vec![MercuryEffect::Foreground(App::Ghostty)]
 }
 fn open_zed(_ev: &KeyEvent, _path: NavLayerPath) -> Vec<MercuryEffect> {
     vec![MercuryEffect::Foreground(App::Zed)]
