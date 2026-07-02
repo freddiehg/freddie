@@ -1,52 +1,40 @@
 # the event loop
 
-Dispatch turns one event into effects. The loop feeds it events and performs the effects. The effects and the events they cause are decoupled: opening Chrome is one action, and Chrome coming to the foreground is a separate event that arrives later. A handler does not return the follow-up event; it triggers the effect, and the resulting event is delivered like any other input.
+Dispatch turns one event into effects. A runner feeds it events and performs the effects. The effects and the events they cause are decoupled: opening Chrome is one action, and Chrome coming to the foreground is a separate event that arrives later. A handler does not return the follow-up event; it triggers the effect, and the resulting event is delivered like any other input.
+
+## Sync core, async edges
+
+The framework is synchronous. Dispatch is one event to an output, and the outputs are handled synchronously and in order; nothing here knows about threads or async. The async lives only at the edges:
+
+- Ingestion. Several sources (the keyboard tap, the foreground watcher) produce events concurrently. They write into one queue without blocking, and the runner reads from it separately. Getting an event, queueing it, and reading it are decoupled, and there can be as many queued as arrive.
+- Effect handlers. Handling an effect should be quick. Long work (later) is handed to a worker pool: the handler schedules it and returns, so the framework still sees a synchronous handler.
+
+So the runner's job is small: read the next event, dispatch it, hand the output to the handler. It never waits on an effect and never knows an effect is async.
 
 ## The queue
 
-Events land in one queue. The loop drains it, and everything that produces events pushes to it:
+Everything that produces events pushes to one queue, and the runner drains it:
 
 - the keyboard source,
 - the foreground watcher,
 - the effect handler, for an event it knows synchronously.
 
-The loop pops an event, dispatches it, and hands the output to the handler, which performs the effects and pushes whatever events it can. When the queue is empty the loop waits for the next event.
-
 Opening Chrome: the handler tells the OS to open Chrome and returns. The foreground watcher, seeing Chrome come up, pushes `Foreground(Chrome)`. Nothing synchronously ties the two.
 
-## Single thread vs threads
+Single-threaded: the OS delivers input on one thread (`CGEventTap` and the workspace notifications are run-loop sources), so the queue is a local `VecDeque` on that thread, needing neither `Send` nor `'static`. Multi-threaded: the queue is a channel (`mpsc`), the sources hold `Sender`s, the runner holds the `Receiver`, and events must be `Send + 'static`. The `'static` is only forced by threads.
 
-Single-threaded: the OS delivers input on one thread. A `CGEventTap` and the workspace foreground notifications are run-loop sources, so the queue is a plain local `VecDeque` pushed and popped on that one thread. Events stay local, so they need neither `Send` nor `'static`.
+## SimpleRunner and the real runner
 
-Multi-threaded: the queue is a channel (`mpsc`). Sources on other threads hold `Sender`s and the loop holds the `Receiver`. Events cross threads, so they must be `Send + 'static`.
+`bind::SimpleRunner` is the synchronous driver: `queue_event` to push, `next` to process one event (`Option<Option<Output>>`: outer `None` is an empty queue, the inner is dispatch's result), `process_event` to queue-and-process one, plus `len`/`is_empty`. It drains rather than blocks, and an empty queue is resumable (queue more, get output again), so it is not an `Iterator`. It is enough for the unit tests and the stdin demo.
 
-The `'static` is only forced by threads. A remapper's inputs are already run-loop sources on one thread, so the single-threaded queue avoids it, and it is the natural macOS shape.
-
-## Shape
-
-There is no generic `run` in freddie. The loop is a handful of lines, the queue and the wait-when-empty differ per consumer, and dispatching a generic root needs an awkward `Resolve<Path<'a> = &'a mut N>` bound that an inline loop over a concrete root avoids. So each consumer writes its own loop; `bind::dispatch` (event to output) and `bind::accumulate` (the active triggers) are the pieces.
-
-The loop pops an event, dispatches it, and for each effect lets a handler perform it and push any synchronously known follow-up onto the queue:
-
-```rust
-let mut queue: VecDeque<Event> = ...;
-while let Some(event) = queue.pop_front() {
-    if let Some(output) = state.handle(&event) {
-        for effect in output {
-            // perform the effect; push a follow-up event if one is known now
-        }
-    }
-}
-```
-
-The tests use exactly this drain-and-re-queue form, with no waiting: a `Foreground` effect pushes its follow-up onto the same `VecDeque`. The real CLI uses the same shape, but its queue is fed by the OS listeners and it waits when the queue is empty.
+The real Mercury runner is the same synchronous core with async ingestion in front: the sources feed a queue, the runner reads it and blocks when idle. Later it grows event prioritization and keyboard-typing handling. `SimpleRunner` is named to leave room for it. There is no generic `run` in freddie: the loop is small, its queue and its wait-when-empty differ per consumer, and a generic root drags in an awkward `Resolve<Path<'a> = &'a mut N>` bound. `dispatch` and `accumulate` are the pieces.
 
 ## Tests
 
-The per-event tests dispatch one event and assert the output; they do not need the loop. A whole-sequence test drains a local `VecDeque`: push the keys, run, and the handler pushes the foreground follow-up to the same queue.
+The per-event tests dispatch one event and assert the output; they do not need a runner. The whole-sequence test drives a `SimpleRunner`: queue a key, drain it (recording effects and queueing an installed app's foreground follow-up), then queue the next key, so it sees "press c, Chrome comes up, press r".
 
 ## Open
 
-- Whether `run` is generic over a `Queue` trait (a `VecDeque` and a channel both implement it) or has a single-threaded form and a threaded form.
-- Where a synchronously pushed follow-up goes relative to pending input (front, for the immediate case) and whether that is fixed by the loop or chosen by the caller.
-- How the blocking wait when the queue is empty is expressed without tying the generic loop to a run loop.
+- Event prioritization and keyboard-typing handling: the reason `SimpleRunner` is not just `Runner`.
+- How an effect handler hands long work to a worker pool while staying synchronous to the framework.
+- Whether the real runner's ingestion is single-threaded (run-loop sources, no `'static`) or multi-threaded (a channel, `Send + 'static`).
