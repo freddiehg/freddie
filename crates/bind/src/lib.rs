@@ -11,7 +11,7 @@
 //!   active state binds for a fired event. [`dispatch()`] runs it from the root.
 #![allow(clippy::implicit_hasher)]
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::hash::Hash;
 use std::ops::ControlFlow;
 
@@ -115,9 +115,57 @@ where
     }
 }
 
-// There is no generic event loop here on purpose: it is ~5 lines (pop an event,
-// `dispatch`, let a handler perform the output and push any follow-ups), the
-// queue and the wait-when-empty differ per consumer, and dispatching against a
-// generic root needs an awkward `Resolve<Path<'a> = &'a mut N>` bound that an
-// inline loop over a concrete root avoids. Consumers write the loop; `dispatch`
-// and `accumulate` are the pieces.
+// The real event loop is bespoke: its queue and its wait-when-empty differ per
+// consumer (a run loop, a channel), so each writes its own; `dispatch` and
+// `accumulate` are the pieces. `Runner` below is not that loop. It is a
+// synchronous driver for tests: process one queued event at a time, and queue
+// more (a handler's follow-ups) as you go.
+
+/// The outcome of one [`Runner::next`].
+pub enum Step<O> {
+    /// The queue was empty; nothing was processed.
+    Empty,
+    /// An event was processed but no binding matched it.
+    Unhandled,
+    /// An event was processed and its handler produced this output.
+    Output(O),
+}
+
+/// A synchronous event runner for tests.
+///
+/// Queue events, process them one at a time with [`next`](Self::next), and queue
+/// more between or during steps (for a handler's follow-up events). It drains
+/// rather than waits: an empty queue is [`Step::Empty`], not a block. The real
+/// loop is the consumer's; this one exists to drive the tree in a test.
+pub struct Runner<'a, M: Bindings, N> {
+    root: &'a mut N,
+    queue: VecDeque<M::Event>,
+}
+
+impl<'a, M, N> Runner<'a, M, N>
+where
+    M: Bindings,
+    N: Dispatch<M> + for<'b> ::laserbeam::Resolve<Path<'b> = &'b mut N>,
+{
+    /// A runner over the tree rooted at `root`, with an empty queue.
+    pub const fn new(root: &'a mut N) -> Self {
+        Self {
+            root,
+            queue: VecDeque::new(),
+        }
+    }
+
+    /// Queues an event to be processed by a later [`next`](Self::next).
+    pub fn queue_event(&mut self, event: M::Event) {
+        self.queue.push_back(event);
+    }
+
+    /// Processes exactly one queued event.
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Step<M::Output> {
+        let Some(event) = self.queue.pop_front() else {
+            return Step::Empty;
+        };
+        dispatch::<M, N>(&mut *self.root, &event).map_or(Step::Unhandled, Step::Output)
+    }
+}

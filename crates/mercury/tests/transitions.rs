@@ -1,12 +1,12 @@
 //! Two kinds of test. The per-event ones send one event and assert the effect
-//! (and resulting state) straight from `handle`. The loop ones go through a
-//! little `drive` loop (a synchronous drain loop for the tests; the real CLI's
-//! loop is different) with a handler that performs effects and — only for apps it
-//! "has installed" — pushes the foreground follow-up, the way the real machine would.
+//! (and resulting state) straight from `handle`. The loop ones drive a
+//! `bind::Runner` one event at a time: queue a key, let its effects settle
+//! (recording them and, for an "installed" app, queueing the foreground
+//! follow-up), then queue the next key — the way the real machine sees "press c,
+//! Chrome comes up, press r".
 
-use std::collections::VecDeque;
-
-use mercury::{App, AppLayer, Layer, Mercury, MercuryEffect, MercuryEvent, foreground, key};
+use bind::{Runner, Step};
+use mercury::{App, AppLayer, Layer, Mercury, MercuryEffect, MercuryStruct, foreground, key};
 
 // ---- per-event: send an event, assert the effect ----
 
@@ -82,55 +82,49 @@ fn unbound_key_is_none() {
     assert_eq!(m.handle(&key("q")), None);
 }
 
-// ---- loop: the little event loop a consumer writes ----
+// ---- loop: driving a bind::Runner one event at a time ----
 
-/// Drain `events`, and for each effect call `handle`, which may push follow-up
-/// events onto the queue. This is the synchronous loop the tests use; the real
-/// CLI runs a different one, fed by OS listeners and blocking when idle. freddie
-/// has no generic version; `Mercury::handle` (dispatch) is the piece underneath.
-fn drive(
-    m: &mut Mercury,
-    events: impl IntoIterator<Item = MercuryEvent>,
-    mut handle: impl FnMut(MercuryEffect, &mut VecDeque<MercuryEvent>),
+/// Process everything queued: record each effect, and for an installed app queue
+/// the foreground follow-up (the way the OS reports it coming up). Returns when
+/// the queue drains.
+fn settle(
+    runner: &mut Runner<'_, MercuryStruct, Mercury>,
+    performed: &mut Vec<MercuryEffect>,
+    installed: &[App],
 ) {
-    let mut queue: VecDeque<MercuryEvent> = events.into_iter().collect();
-    while let Some(event) = queue.pop_front() {
-        if let Some(output) = m.handle(&event) {
-            for effect in output {
-                handle(effect, &mut queue);
+    loop {
+        match runner.next() {
+            Step::Empty => break,
+            Step::Unhandled => {}
+            Step::Output(output) => {
+                for effect in output {
+                    if let MercuryEffect::Foreground(app) = &effect
+                        && installed.contains(app)
+                    {
+                        runner.queue_event(foreground(*app));
+                    }
+                    performed.push(effect);
+                }
             }
         }
     }
 }
 
-// The whole flow in tandem: home -> n (nav) -> c (open Chrome; the app comes up,
-// its foreground event is pushed and moves to the in-app layer) -> r (restart)
-// -> escape (home) -> space (typing) -> a (typed). Chrome is "installed", so the
-// open produces the foreground follow-up.
+// The whole flow in tandem: press n (nav), c (open Chrome; it comes up and the
+// foreground event moves us to its in-app layer), r (restart), escape (home),
+// space (typing), a (typed). Each key settles before the next, so `r` sees the
+// in-app layer. Chrome is "installed", so opening it produces the follow-up.
 #[test]
 fn kitchen_sink() {
     let mut m = Mercury::default();
-    let installed = [App::Chrome];
     let mut performed = Vec::new();
-    drive(
-        &mut m,
-        [
-            key("n"),
-            key("c"),
-            key("r"),
-            key("escape"),
-            key("space"),
-            key("a"),
-        ],
-        |effect, queue| {
-            if let MercuryEffect::Foreground(app) = &effect
-                && installed.contains(app)
-            {
-                queue.push_front(foreground(*app));
-            }
-            performed.push(effect);
-        },
-    );
+    {
+        let mut runner = Runner::<MercuryStruct, _>::new(&mut m);
+        for k in ["n", "c", "r", "escape", "space", "a"] {
+            runner.queue_event(key(k));
+            settle(&mut runner, &mut performed, &[App::Chrome]);
+        }
+    }
     assert_eq!(
         performed,
         vec![
@@ -143,15 +137,19 @@ fn kitchen_sink() {
     assert_eq!(m.foregrounded, App::Chrome);
 }
 
-// If the handler cannot open the app, it pushes no follow-up, so there is no
-// foreground event: the state stays in nav and the app's in-app key does nothing.
+// If the app is not installed, `settle` queues no follow-up, so there is no
+// foreground event: the state stays in nav and `r` there is unhandled.
 #[test]
 fn opening_a_missing_app_does_not_enter_in_app() {
     let mut m = Mercury::default();
     let mut performed = Vec::new();
-    drive(&mut m, [key("n"), key("c"), key("r")], |effect, _queue| {
-        performed.push(effect); // nothing installed: never a follow-up
-    });
+    {
+        let mut runner = Runner::<MercuryStruct, _>::new(&mut m);
+        for k in ["n", "c", "r"] {
+            runner.queue_event(key(k));
+            settle(&mut runner, &mut performed, &[]);
+        }
+    }
     assert_eq!(performed, vec![MercuryEffect::Foreground(App::Chrome)]);
     assert!(matches!(m.layer, Layer::Nav(_)));
     assert_eq!(m.foregrounded, App::Other);
