@@ -1,17 +1,18 @@
 //! A foreground CLI for the Mercury demo.
 //!
 //! Type one key per line (`n`, `c`, `r`, `space`, `a`, `escape`, ...). Each key
-//! is driven through `bind::run` with a handler that prints what each effect
-//! would do rather than touching the real machine, so it is safe to run while
-//! other apps are actually foregrounded. A `Foreground` effect returns the
-//! follow-up foreground event (the demo assumes the app opened). After each key
-//! it shows the active layer and the keys currently bound (from `bind::accumulate`).
+//! is run through the little event loop below: dispatch it, print the effects,
+//! and push a `Foreground` effect's follow-up event (assuming the app opened).
+//! Nothing touches the real machine, so it is safe to run while other apps are
+//! foregrounded. After each key it shows the active layer and the keys currently
+//! bound (from `bind::accumulate`).
 //!
 //! `cargo run -p mercury`   (or pipe keys: `printf 'n\nc\nr\n' | cargo run -p mercury`)
 
+use std::collections::VecDeque;
 use std::io::{self, BufRead};
 
-use mercury::{Key, Layer, Mercury, MercuryEffect, MercuryStruct, MercuryTrigger, foreground, key};
+use mercury::{Key, Layer, Mercury, MercuryEffect, MercuryEvent, MercuryStruct, MercuryTrigger, foreground, key};
 
 fn main() {
     let mut state = Mercury::default();
@@ -28,18 +29,20 @@ fn main() {
         // a short-lived CLI.
         let name: &'static str = Box::leak(name.to_owned().into_boxed_str());
         println!("> {name}");
-        bind::run::<MercuryStruct, _, _>(&mut state, [key(name)], |effects| {
-            let mut follow = Vec::new();
-            for effect in effects {
-                println!("  {}", render(&effect));
-                if let MercuryEffect::Foreground(app) = effect {
-                    // A real build would open the app and only continue on
-                    // success; the demo assumes it did.
-                    follow.push(foreground(app));
+
+        // The event loop, written inline: drain the queue, and a `Foreground`
+        // effect pushes its follow-up event (the app coming up).
+        let mut queue: VecDeque<MercuryEvent> = VecDeque::from([key(name)]);
+        while let Some(event) = queue.pop_front() {
+            if let Some(output) = state.handle(&event) {
+                for effect in output {
+                    println!("  {}", render(&effect));
+                    if let MercuryEffect::Foreground(app) = effect {
+                        queue.push_front(foreground(app));
+                    }
                 }
             }
-            follow
-        });
+        }
         print_status(&state);
     }
 }

@@ -24,15 +24,22 @@ The `'static` is only forced by threads. A remapper's inputs are already run-loo
 
 ## Shape
 
-`run` takes the root, the queue, and the handler:
+There is no generic `run` in freddie. The loop is a handful of lines, the queue and the wait-when-empty differ per consumer, and dispatching a generic root needs an awkward `Resolve<Path<'a> = &'a mut N>` bound that an inline loop over a concrete root avoids. So each consumer writes its own loop; `bind::dispatch` (event to output) and `bind::accumulate` (the active triggers) are the pieces.
+
+The loop pops an event, dispatches it, and for each effect lets a handler perform it and push any synchronously known follow-up onto the queue:
 
 ```rust
-fn run<M, N>(root: &mut N, queue: &mut Queue<M::Event>, handle: impl FnMut(M::Output, &Queue<M::Event>))
+let mut queue: VecDeque<Event> = ...;
+while let Some(event) = queue.pop_front() {
+    if let Some(output) = state.handle(&event) {
+        for effect in output {
+            // perform the effect; push a follow-up event if one is known now
+        }
+    }
+}
 ```
 
-The handler performs the effects and pushes events; it does not return them. `Queue` is a local `VecDeque` (single thread, and the tests) or a channel (threads); the ordering discipline (a synchronously known follow-up jumps ahead of later input) is the queue's, not the handler's.
-
-This replaces the current `bind::run(root, events, handle)`, whose handler returned follow-up events synchronously.
+The tests use exactly this drain-and-re-queue form, with no waiting: a `Foreground` effect pushes its follow-up onto the same `VecDeque`. The real CLI uses the same shape, but its queue is fed by the OS listeners and it waits when the queue is empty.
 
 ## Tests
 
