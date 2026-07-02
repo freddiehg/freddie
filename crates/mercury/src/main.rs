@@ -1,16 +1,21 @@
-//! Mercury's CLI: stand up the event and effect loops and a kill timer, then run.
+//! Mercury's runnable v1: watch the keyboard (no hijack) and drive the model.
 //!
-//! It does not hijack the keyboard yet. The keyboard source is a stub (the real
-//! `CGEventTap`, and the foreground watcher, go there later), so nothing feeds the
-//! event channel and the run just holds the loops open. A 5-second timer sends a
-//! `Kill` effect, which the effect loop performs as a clean exit; a 10-second
-//! timer hard-exits, the backstop.
+//! `freddie_keyboard::listen` observes keys without swallowing them, so this is
+//! safe to run: every key still works normally, and a copy drives Mercury's
+//! layers. Three loops over two tokio channels: the keyboard source forwards key
+//! events; the event loop dispatches (mutating state, producing effects); the
+//! effect loop performs them (v1 prints, and a `Foreground` reports itself back,
+//! standing in for the OS foreground watcher). `escape` quits; a 5-second timer
+//! also quits (10-second hard backstop).
+//!
+//! On macOS this needs Input Monitoring granted to the terminal (or the built
+//! app).
 //!
 //! `cargo run -p mercury`
 
 use std::time::Duration;
 
-use mercury::{Mercury, MercuryEffect, MercuryEvent};
+use mercury::{Mercury, MercuryEffect, MercuryEvent, foreground, key};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 #[tokio::main(flavor = "current_thread")]
@@ -18,21 +23,29 @@ async fn main() {
     let (event_tx, event_rx) = unbounded_channel::<MercuryEvent>();
     let (effect_tx, effect_rx) = unbounded_channel::<MercuryEffect>();
 
-    spawn_keyboard_source(event_tx);
+    spawn_keyboard_source(event_tx.clone());
     spawn_killswitch(effect_tx.clone());
-    tokio::spawn(run_effect_loop(effect_rx));
+    tokio::spawn(run_effect_loop(effect_rx, event_tx.clone()));
 
-    println!("mercury: loops up, keyboard not hijacked; killing in 5s");
+    println!("mercury: watching the keyboard (not hijacked); escape or 5s quits");
     run_event_loop(Mercury::default(), event_rx, effect_tx).await;
 }
 
-/// The keyboard source. TODO: a real `CGEventTap` run loop goes here (and the
-/// `NSWorkspace` foreground watcher alongside it). It must not hijack the keyboard
-/// yet, so for now the thread just holds the sender open and forwards nothing.
+/// Source: watch the keyboard on its own thread and forward each key-down as a
+/// Mercury key event. Observing only (no swallow), so the keyboard still works.
 fn spawn_keyboard_source(event_tx: UnboundedSender<MercuryEvent>) {
     std::thread::spawn(move || {
-        let _event_tx = event_tx;
-        std::thread::park();
+        let listened = freddie_keyboard::listen(move |ev| {
+            if !ev.press {
+                return; // v1 dispatches on key-down
+            }
+            if let Some(name) = freddie_keyboard::name(ev.key) {
+                let _ = event_tx.send(key(name));
+            }
+        });
+        if let Err(e) = listened {
+            eprintln!("keyboard: {e}"); // usually Input Monitoring is not granted
+        }
     });
 }
 
@@ -73,17 +86,23 @@ fn dispatch_event(
 }
 
 /// The effect loop: read the effect channel and perform each effect.
-async fn run_effect_loop(mut effect_rx: UnboundedReceiver<MercuryEffect>) {
+async fn run_effect_loop(
+    mut effect_rx: UnboundedReceiver<MercuryEffect>,
+    event_tx: UnboundedSender<MercuryEvent>,
+) {
     while let Some(effect) = effect_rx.recv().await {
-        perform_effect(&effect);
+        perform_effect(&effect, &event_tx);
     }
 }
 
-/// Perform one effect. v1 prints; `Kill` exits. The real build synthesizes keys
-/// and activates apps here.
-fn perform_effect(effect: &MercuryEffect) {
+/// Perform one effect. v1 prints; `Kill` exits; a `Foreground` also reports the
+/// app back as an event, standing in for the OS foreground watcher.
+fn perform_effect(effect: &MercuryEffect, event_tx: &UnboundedSender<MercuryEvent>) {
     match effect {
-        MercuryEffect::Foreground(app) => println!("foreground {app:?}"),
+        MercuryEffect::Foreground(app) => {
+            println!("foreground {app:?}");
+            let _ = event_tx.send(foreground(*app));
+        }
         MercuryEffect::Type(s) => println!("type {s}"),
         MercuryEffect::Command(k) => println!("send cmd+{k}"),
         MercuryEffect::Kill => {
