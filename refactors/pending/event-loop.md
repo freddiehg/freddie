@@ -1,34 +1,41 @@
 # the event loop
 
-Dispatch turns one event into effects. A runner feeds it events and performs the effects. The effects and the events they cause are decoupled: opening Chrome is one action, and Chrome coming to the foreground is a separate event that arrives later. A handler does not return the follow-up event; it triggers the effect, and the resulting event is delivered like any other input.
+Dispatch turns one event into effects. The effects and the events they cause are decoupled: opening Chrome is one action, and Chrome coming to the foreground is a separate event that arrives later. A handler does not return the follow-up event; it triggers the effect, and the resulting event is delivered like any other input.
 
 ## Sync core, async edges
 
-The framework is synchronous up to the handoff. Dispatch is one event to an output, and the runner hands each output to the handler synchronously, in the order the events were dispatched. Nothing in the framework knows about threads or async.
+The framework is fully synchronous and never blocks. It dispatches an event to an output and hands that output to the effect handler, both synchronously and in the order events arrived. It knows nothing about threads or async: `next` returns `None` on an empty queue rather than waiting.
 
-Performing the output is the handler's business. The framework handles effects in order, so typed characters do not come out of order by default; a handler is free to impose its own policy on top, for example a higher-priority path for typing. Handling can also be async: a quick handler schedules the real work (later, on a worker pool) and returns.
+All async lives in user land, on both edges, always as "enqueue now (synchronous), handle later (separate)":
 
-The async also lives at ingestion. Several sources (the keyboard tap, the foreground watcher) produce events concurrently, write into one queue without blocking, and the runner reads from it separately. Getting an event, queueing it, and reading it are decoupled, and as many can queue as arrive.
+- Effects out. The framework hands each output to the handler in order. The handler is thin: it puts the real work on its own queue and returns, and separate workers drain that queue and perform it asynchronously. A worker result that is itself an event (Chrome foregrounded) is pushed back onto the event queue and dispatched like any other input. Ordering is the framework's by default (effects handled in order); the handler may override it, for example a higher-priority path for typing.
+- Events in. Something outside the framework (a run loop, OS callbacks, a channel) receives inputs and calls `queue_event` as they arrive. Blocking when idle is that layer's job.
 
-So the runner's job is small: read the next event, dispatch it, hand the output to the handler in order. It never waits on the effect being performed and never knows an effect is async.
+So there are two queues, and the framework touches only one synchronously: the event queue it drains, and the worker queue on the far side of the handler that user land drains asynchronously.
 
 ## The queue
 
-Everything that produces events pushes to one queue, and the runner drains it:
+Everything that produces events pushes to the event queue, and the framework drains it:
 
 - the keyboard source,
 - the foreground watcher,
-- the effect handler, for an event it knows synchronously.
+- a worker, when the async work behind an effect produces an event.
 
-Opening Chrome: the handler tells the OS to open Chrome and returns. The foreground watcher, seeing Chrome come up, pushes `Foreground(Chrome)`. Nothing synchronously ties the two.
+Opening Chrome: the handler schedules "open Chrome" and returns; the foreground watcher, seeing Chrome come up, pushes `Foreground(Chrome)`. Nothing synchronously ties the two.
 
-Single-threaded: the OS delivers input on one thread (`CGEventTap` and the workspace notifications are run-loop sources), so the queue is a local `VecDeque` on that thread, needing neither `Send` nor `'static`. Multi-threaded: the queue is a channel (`mpsc`), the sources hold `Sender`s, the runner holds the `Receiver`, and events must be `Send + 'static`. The `'static` is only forced by threads.
+Single-threaded: the OS delivers input on one thread (`CGEventTap` and the workspace notifications are run-loop sources), so the event queue is a local `VecDeque` on that thread, needing neither `Send` nor `'static`. Multi-threaded: it is a channel (`mpsc`), the sources hold `Sender`s and the loop holds the `Receiver`, and events must be `Send + 'static`. The `'static` is only forced by threads.
 
 ## SimpleRunner and the real runner
 
-`bind::SimpleRunner` is the synchronous driver: `queue_event` to push, `next` to process one event (`Option<Option<Output>>`: outer `None` is an empty queue, the inner is dispatch's result), `process_event` to queue-and-process one, plus `len`/`is_empty`. It drains rather than blocks, and an empty queue is resumable (queue more, get output again), so it is not an `Iterator`. It is enough for the unit tests and the stdin demo.
+`bind::SimpleRunner` is the synchronous driver: `queue_event` to push, `next` to process one event (`Option<Option<Output>>`: outer `None` is an empty queue, the inner is dispatch's result), `process_event` to queue-and-process one, plus `len`/`is_empty`. It drains rather than blocks, and an empty queue is resumable (queue more, get output again), so it is not an `Iterator`. It is a convenience, not load-bearing: the framework only needs `dispatch` and `accumulate`, and a consumer can pop-dispatch-hand-off in a handful of lines over its own queue. It is enough for the unit tests and the stdin demo.
 
-The real Mercury runner is the same synchronous core with async ingestion in front: the sources feed a queue, the runner reads it and blocks when idle. Later it grows event prioritization. `SimpleRunner` is named to leave room for it. There is no generic `run` in freddie: the loop is small, its queue and its wait-when-empty differ per consumer, and a generic root drags in an awkward `Resolve<Path<'a> = &'a mut N>` bound. `dispatch` and `accumulate` are the pieces.
+The real Mercury runner is the same synchronous dispatch with user land around it: the sources feed the event queue and block when idle (a run loop, or a channel `recv`), the handler schedules work on a worker queue, and worker results that are events feed back in. The framework part never blocks. Later the queue can grow event prioritization; `SimpleRunner` is named to leave room for that. There is no generic `run` in freddie: the loop is small, the queue and the wait-when-empty are user land's, and a generic root drags in an awkward `Resolve<Path<'a> = &'a mut N>` bound. `dispatch` and `accumulate` are the pieces.
+
+## Prior art
+
+isograph's language server is the same loop: several sources bridged into one `mpsc`, one event popped and dispatched per iteration, and dispatch is a `ControlFlow` chain (Break on the first matching handler, Continue otherwise), just like freddie's. It has no effect-as-data layer; handlers send LSP messages inline.
+
+barnum is the same deferred-effect shape one step further: its `advance` queues effects rather than performing them, an async scheduler runs handlers off that queue, and completions trampoline back as more effects. Its scheduler is our worker layer. The distinguishing difference is state: a freddie handler mutates state directly during dispatch (it holds `&mut` via the path), while a barnum handler never touches engine state and can only return a value the engine writes back.
 
 ## Tests
 
@@ -36,6 +43,6 @@ The per-event tests dispatch one event and assert the output; they do not need a
 
 ## Open
 
-- Event prioritization: the reason `SimpleRunner` is not just `Runner`.
-- How an effect handler hands long work to a worker pool while staying synchronous to the framework.
-- Whether the real runner's ingestion is single-threaded (run-loop sources, no `'static`) or multi-threaded (a channel, `Send + 'static`).
+- Event prioritization: the reason `SimpleRunner` is not just `Runner`. See prioritization.md.
+- The concrete shape of the worker queue and how a worker's result re-enters as an event.
+- Whether ingestion is single-threaded (run-loop sources, no `'static`) or multi-threaded (a channel, `Send + 'static`).
