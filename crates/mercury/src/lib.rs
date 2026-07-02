@@ -1,17 +1,29 @@
-//! Mercury: a small demo keyboard-remapping model built on freddie.
+//! Mercury: a small, runnable demo of freddie (laserbeam + bind).
 //!
-//! The state is an outer [`Mercury`] holding the currently foregrounded app and a
-//! [`Layer`] it resolves into. The layers are `Nav` (the default), `Typing`, and
-//! `InApp`; `InApp` carries a per-app [`AppLayer`] chosen from the foregrounded
-//! app when the layer is entered.
+//! It models a layered keyboard remapper. The state is an outer [`Mercury`]
+//! holding the currently foregrounded app and a [`Layer`] it resolves into:
 //!
-//! Handlers do two kinds of thing. Layer transitions mutate the state through the
-//! path they are handed (walking up to the parent layer, or to the root to read
-//! the foregrounded app). App actions return [`MercuryEffect`]s and mutate
-//! nothing: opening Chrome emits `Foreground(Chrome)`, and the realistic follow-up
-//! is a separate `Foreground` event dispatched back in, which is what actually
-//! updates `Mercury::foregrounded`. Nothing here touches the outside world; the
-//! effects are inert data a consumer would perform.
+//! - `Home` (the default): `n` enters nav, `space` enters typing.
+//! - `Nav`: `c`/`g`/`t`/`z` open Chrome/Ghostty/TTY/Zed.
+//! - `Typing`: `a`/`s`/`d`/`f` type themselves.
+//! - `InApp`: a per-app [`AppLayer`]. Chrome rebinds `r` to `cmd`+`r`; the
+//!   terminals rebind `d` to `cmd`+`d`; an unknown app binds nothing.
+//!
+//! `escape` returns to `Home` from anywhere.
+//!
+//! Handlers either mutate the state through the path they are handed (the layer
+//! transitions) or return inert [`MercuryEffect`]s (typing a letter, opening an
+//! app, sending a command). Opening an app emits `Foreground(app)` and mutates
+//! nothing; the app coming up is a separate `Foreground` event, which is the only
+//! thing that records the foregrounded app and enters its in-app layer. Turning
+//! the effect into that event is the effect handler's job, and it can fail (you
+//! might not have the app), so dispatch stays oblivious to it. See [`drive`] and
+//! [`EffectHandler`].
+//!
+//! Run it with `cargo run -p mercury` (one key per line), or the tests with
+//! `cargo test -p mercury`.
+
+use std::collections::VecDeque;
 
 use bind::{Bind, Bindings, EventTrigger};
 use laserbeam::{Laserbeam, Path};
@@ -109,7 +121,7 @@ impl<'a> TryFrom<&'a MercuryEvent> for &'a ForegroundEvent {
 pub enum MercuryEffect {
     /// Bring an app to the foreground.
     Foreground(App),
-    /// Type these characters.
+    /// A letter was typed.
     Type(&'static str),
     /// Send `cmd` + this key.
     Command(&'static str),
@@ -138,28 +150,34 @@ pub struct Mercury {
     pub layer: Layer,
 }
 
-/// The active layer. `escape` returns to `Nav` from anywhere.
+/// The active layer. `escape` returns to `Home` from anywhere.
 #[derive(Laserbeam, Bind)]
 #[laserbeam(path = LayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
-#[bind(Key("escape") => to_nav)]
+#[bind(Key("escape") => to_home)]
 pub enum Layer {
+    Home(Home),
     Nav(Nav),
     Typing(Typing),
     InApp(AppLayer),
 }
 
-/// The navigation layer: switch layers and open apps.
+/// The home layer: enter nav or typing.
+#[derive(Laserbeam, Bind)]
+#[laserbeam(path = HomePath, resolved = Resolved)]
+#[binds(MercuryStruct)]
+#[bind(Key("n") => to_nav, Key("space") => to_typing)]
+pub struct Home {}
+
+/// The nav layer: open apps.
 #[derive(Laserbeam, Bind)]
 #[laserbeam(path = NavPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
 #[bind(
-    Key("space") => to_typing,
-    Key("i") => to_inapp,
-    Key("C") => open_chrome,
-    Key("G") => open_ghost,
-    Key("T") => open_tty,
-    Key("Z") => open_zed,
+    Key("c") => open_chrome,
+    Key("g") => open_ghost,
+    Key("t") => open_tty,
+    Key("z") => open_zed,
 )]
 pub struct Nav {}
 
@@ -232,6 +250,7 @@ pub struct Zed {}
 pub struct Other {}
 
 pub type LayerPath<'a> = Path<Layer, &'a mut Mercury>;
+pub type HomePath<'a> = Path<Home, LayerPath<'a>>;
 pub type NavPath<'a> = Path<Nav, LayerPath<'a>>;
 pub type TypingPath<'a> = Path<Typing, LayerPath<'a>>;
 pub type AppLayerPath<'a> = Path<AppLayer, LayerPath<'a>>;
@@ -243,6 +262,7 @@ pub type OtherPath<'a> = Path<Other, AppLayerPath<'a>>;
 
 /// The active leaf the tree resolves to.
 pub enum Resolved<'a> {
+    Home(HomePath<'a>),
     Nav(NavPath<'a>),
     Typing(TypingPath<'a>),
     Chrome(ChromePath<'a>),
@@ -256,13 +276,13 @@ impl Default for Mercury {
     fn default() -> Self {
         Self {
             foregrounded: App::Other,
-            layer: Layer::Nav(Nav {}),
+            layer: Layer::Home(Home {}),
         }
     }
 }
 
 impl Mercury {
-    /// Dispatches an event, returning the handler's effects, or `None` when the
+    /// Dispatches one event, returning the handler's effects, or `None` when the
     /// active state binds nothing for it.
     #[must_use]
     pub fn handle(&mut self, event: &MercuryEvent) -> Option<Vec<MercuryEffect>> {
@@ -270,34 +290,75 @@ impl Mercury {
     }
 }
 
+/// A keyboard event for `key`.
+#[must_use]
+pub const fn key(key: &'static str) -> MercuryEvent {
+    MercuryEvent::Key(KeyEvent { key })
+}
+
+/// An app-foregrounded event for `app`.
+#[must_use]
+pub const fn foreground(app: App) -> MercuryEvent {
+    MercuryEvent::Foreground(ForegroundEvent { app })
+}
+
+/// Performs the effects a dispatch produces.
+///
+/// What an effect does is entirely the handler's business; dispatch is opaque to
+/// it. Performing an effect may cause more effects — foregrounding an app makes
+/// it the foreground app, which the handler turns into a follow-up event whose
+/// effects come back here. [`drive`] feeds those back in turn.
+pub trait EffectHandler {
+    /// Perform `effect`, returning any further effects it causes. It may dispatch
+    /// follow-up events on `state` and return the effects they produce.
+    fn handle(&mut self, effect: &MercuryEffect, state: &mut Mercury) -> Vec<MercuryEffect>;
+}
+
+/// Dispatch `event`, then drain the effects it produces through `handler`,
+/// handling whatever further effects those cause, until none remain.
+///
+/// Dispatch never knows that an effect can cause an event; that lives entirely in
+/// the handler. This loop only pops effects and feeds back what the handler adds.
+pub fn drive(state: &mut Mercury, event: &MercuryEvent, handler: &mut impl EffectHandler) {
+    let Some(effects) = state.handle(event) else {
+        return;
+    };
+    let mut pending: VecDeque<MercuryEffect> = effects.into();
+    while let Some(effect) = pending.pop_front() {
+        pending.extend(handler.handle(&effect, state));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Handlers.
 // ---------------------------------------------------------------------------
 
-/// An app was foregrounded: record it. This is the follow-up to a `Foreground`
-/// effect, and the only thing that changes `foregrounded`.
+/// An app was foregrounded: record it and enter its in-app layer. This is the
+/// follow-up to a `Foreground` effect, and the only thing that changes
+/// `foregrounded`.
 const fn on_foregrounded(ev: &ForegroundEvent, root: &mut Mercury) -> Vec<MercuryEffect> {
     root.foregrounded = ev.app;
+    root.layer = Layer::InApp(AppLayer::for_app(ev.app));
     Vec::new()
 }
 
-/// `escape`: back to the nav layer, from any layer.
-fn to_nav(_ev: &KeyEvent, mut path: LayerPath) -> Vec<MercuryEffect> {
-    *path.get_mut() = Layer::Nav(Nav {});
+/// `escape`: back to the home layer, from any layer.
+fn to_home(_ev: &KeyEvent, mut path: LayerPath) -> Vec<MercuryEffect> {
+    *path.get_mut() = Layer::Home(Home {});
     Vec::new()
 }
 
-/// `space` in nav: enter the typing layer.
-fn to_typing(_ev: &KeyEvent, path: NavPath) -> Vec<MercuryEffect> {
+/// `n` in home: enter the nav layer.
+fn to_nav(_ev: &KeyEvent, path: HomePath) -> Vec<MercuryEffect> {
+    let mut layer = path.into_parent();
+    *layer.get_mut() = Layer::Nav(Nav {});
+    Vec::new()
+}
+
+/// `space` in home: enter the typing layer.
+fn to_typing(_ev: &KeyEvent, path: HomePath) -> Vec<MercuryEffect> {
     let mut layer = path.into_parent();
     *layer.get_mut() = Layer::Typing(Typing {});
-    Vec::new()
-}
-
-/// `i` in nav: enter the in-app layer for the currently foregrounded app.
-fn to_inapp(_ev: &KeyEvent, path: NavPath) -> Vec<MercuryEffect> {
-    let mercury = path.into_parent().into_parent();
-    mercury.layer = Layer::InApp(AppLayer::for_app(mercury.foregrounded));
     Vec::new()
 }
 
@@ -322,144 +383,4 @@ fn type_char(ev: &KeyEvent, _path: TypingPath) -> Vec<MercuryEffect> {
 /// A per-app key: send `cmd` + the key. Generic over the app's path.
 fn command<P>(ev: &KeyEvent, _path: P) -> Vec<MercuryEffect> {
     vec![MercuryEffect::Command(ev.key)]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{App, KeyEvent, Layer, Mercury, MercuryEffect, MercuryEvent, ForegroundEvent, AppLayer};
-
-    fn key(k: &'static str) -> MercuryEvent {
-        MercuryEvent::Key(KeyEvent { key: k })
-    }
-    fn foreground(app: App) -> MercuryEvent {
-        MercuryEvent::Foreground(ForegroundEvent { app })
-    }
-
-    #[test]
-    fn starts_in_nav() {
-        let m = Mercury::default();
-        assert!(matches!(m.layer, Layer::Nav(_)));
-        assert_eq!(m.foregrounded, App::Other);
-    }
-
-    #[test]
-    fn space_enters_typing_with_no_effect() {
-        let mut m = Mercury::default();
-        assert_eq!(m.handle(&key("space")), Some(vec![]));
-        assert!(matches!(m.layer, Layer::Typing(_)));
-    }
-
-    #[test]
-    fn typing_types_characters() {
-        let mut m = Mercury::default();
-        m.handle(&key("space"));
-        assert_eq!(m.handle(&key("a")), Some(vec![MercuryEffect::Type("a")]));
-        assert_eq!(m.handle(&key("f")), Some(vec![MercuryEffect::Type("f")]));
-    }
-
-    #[test]
-    fn escape_returns_to_nav() {
-        let mut m = Mercury::default();
-        m.handle(&key("space"));
-        assert!(matches!(m.layer, Layer::Typing(_)));
-        assert_eq!(m.handle(&key("escape")), Some(vec![]));
-        assert!(matches!(m.layer, Layer::Nav(_)));
-    }
-
-    #[test]
-    fn opening_an_app_emits_an_effect_but_does_not_mutate_state() {
-        let mut m = Mercury::default();
-        assert_eq!(
-            m.handle(&key("C")),
-            Some(vec![MercuryEffect::Foreground(App::Chrome)])
-        );
-        // The effect is inert: still in nav, still foregrounding nothing known.
-        assert!(matches!(m.layer, Layer::Nav(_)));
-        assert_eq!(m.foregrounded, App::Other);
-    }
-
-    #[test]
-    fn foreground_event_updates_the_foregrounded_app() {
-        let mut m = Mercury::default();
-        assert_eq!(m.handle(&foreground(App::Chrome)), Some(vec![]));
-        assert_eq!(m.foregrounded, App::Chrome);
-        // Handled at the root regardless of layer.
-        assert!(matches!(m.layer, Layer::Nav(_)));
-    }
-
-    #[test]
-    fn in_app_uses_the_foregrounded_app() {
-        let mut m = Mercury::default();
-        m.handle(&foreground(App::Zed));
-        m.handle(&key("i"));
-        assert!(matches!(m.layer, Layer::InApp(AppLayer::Zed(_))));
-        assert_eq!(m.handle(&key("d")), Some(vec![MercuryEffect::Command("d")]));
-    }
-
-    #[test]
-    fn chrome_rebinds_r_to_command_r() {
-        let mut m = Mercury::default();
-        m.handle(&foreground(App::Chrome));
-        m.handle(&key("i"));
-        assert_eq!(m.handle(&key("r")), Some(vec![MercuryEffect::Command("r")]));
-    }
-
-    // The realistic loop: open Chrome (effect only), the OS reports it foregrounded
-    // (a separate event, which updates state), then the in-app layer reflects it.
-    #[test]
-    fn open_then_foreground_then_in_app() {
-        let mut m = Mercury::default();
-
-        assert_eq!(
-            m.handle(&key("C")),
-            Some(vec![MercuryEffect::Foreground(App::Chrome)])
-        );
-        assert_eq!(m.foregrounded, App::Other); // the effect did not mutate state
-
-        assert_eq!(m.handle(&foreground(App::Chrome)), Some(vec![]));
-        assert_eq!(m.foregrounded, App::Chrome);
-
-        assert_eq!(m.handle(&key("i")), Some(vec![]));
-        assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
-
-        assert_eq!(m.handle(&key("r")), Some(vec![MercuryEffect::Command("r")]));
-    }
-
-    #[test]
-    fn unrelated_foregrounded_app_has_no_in_app_bindings() {
-        let mut m = Mercury::default();
-        m.handle(&foreground(App::Other));
-        m.handle(&key("i"));
-        assert!(matches!(m.layer, Layer::InApp(AppLayer::Other(_))));
-        // Other binds nothing, and no ancestor binds `d`.
-        assert_eq!(m.handle(&key("d")), None);
-    }
-
-    #[test]
-    fn unbound_key_returns_none() {
-        let mut m = Mercury::default();
-        assert_eq!(m.handle(&key("x")), None);
-    }
-
-    #[test]
-    fn accumulate_gathers_the_active_nav_triggers() {
-        use super::{Foregrounded, Key, MercuryStruct, MercuryTrigger};
-        use std::collections::HashSet;
-
-        let m = Mercury::default();
-        let set = bind::accumulate::<MercuryStruct, _>(&m).unwrap();
-        assert_eq!(
-            set,
-            HashSet::from([
-                MercuryTrigger::Foregrounded(Foregrounded),
-                MercuryTrigger::Key(Key("escape")),
-                MercuryTrigger::Key(Key("space")),
-                MercuryTrigger::Key(Key("i")),
-                MercuryTrigger::Key(Key("C")),
-                MercuryTrigger::Key(Key("G")),
-                MercuryTrigger::Key(Key("T")),
-                MercuryTrigger::Key(Key("Z")),
-            ])
-        );
-    }
 }
