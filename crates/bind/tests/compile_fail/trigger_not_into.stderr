@@ -1,15 +1,15 @@
 error[E0277]: the trait bound `Trig: From<Weird>` is not satisfied
-  --> tests/compile_fail/trigger_not_into.rs:19:8
+  --> tests/compile_fail/trigger_not_into.rs:40:8
    |
-17 | #[derive(Bind)]
-   |          ---- required by a bound introduced by this call
-18 | #[binds(M)]
-19 | #[bind(Weird => noop)]
+37 | #[derive(Laserbeam, Bind)]
+   |                     ---- required by a bound introduced by this call
+...
+40 | #[bind(Weird => handler)]
    |        ^^^^^ unsatisfied trait bound
    |
 help: the trait `From<Weird>` is not implemented for `Trig`
-  --> tests/compile_fail/trigger_not_into.rs:5:1
+  --> tests/compile_fail/trigger_not_into.rs:8:1
    |
- 5 | struct Trig;
+ 8 | struct Trig;
    | ^^^^^^^^^^^
    = note: required for `Weird` to implement `Into<Trig>`

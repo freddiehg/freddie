@@ -1,17 +1,20 @@
-//! Derive macro for `bind`: implements `EventHandler<M>::accumulate`.
+//! Derive macro for `bind`: implements `EventHandler<M>` (accumulate) and
+//! `Dispatch<M>` (dispatch).
 //!
 //! `#[derive(Bind)]` reads `#[binds(Marker)]` for the marker and the
-//! `#[bind(trigger => handler, ..)]` pairs, and generates an `accumulate` that
-//! inserts the node's triggers and recurses into its `#[resolve_into]` fields and
-//! active enum variant. The `handler` is recorded for dispatch and unused here.
+//! `#[bind(trigger => handler, ..)]` pairs. `accumulate` inserts the node's
+//! triggers and recurses into its `#[resolve_into]` fields and active enum
+//! variant. `dispatch` tries the active child first (leafward, so a child's
+//! binding beats an ancestor's), then the node's own binds, building each node's
+//! laserbeam `Path` through the shared `derive_support::Edge`.
 
-use derive_support::{find_resolve_into, single_field_ty, unbox};
+use derive_support::{Edge, Via, find_resolve_into, is_root, parent_route, single_field_ty, unbox};
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::{Data, DeriveInput, Expr, Path, Token, Type, parse_macro_input};
+use syn::{Data, DeriveInput, Expr, Ident, Path, Token, Type, parse_macro_input};
 
 #[proc_macro_derive(Bind, attributes(binds, bind, resolve_into))]
 pub fn derive_bind(input: TokenStream) -> TokenStream {
@@ -30,15 +33,30 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     }
     let name = &input.ident;
     let marker = marker_of(input)?;
-    let triggers = trigger_exprs(&input.attrs)?;
-    let (recurse, children) = body(input, &marker)?;
+    let binds = binds(&input.attrs)?;
 
+    let accumulate = accumulate_impl(input, name, &marker, &binds)?;
+    let dispatch = dispatch_impl(input, name, &marker, &binds)?;
+    Ok(quote! {
+        #accumulate
+        #dispatch
+    })
+}
+
+/// Emits `impl EventHandler<M>`: insert this node's triggers, then recurse.
+fn accumulate_impl(
+    input: &DeriveInput,
+    name: &Ident,
+    marker: &Path,
+    binds: &[Binding],
+) -> syn::Result<TokenStream2> {
+    let (recurse, children) = accumulate_body(input, marker)?;
     let where_clause = if children.is_empty() {
         quote!()
     } else {
         quote!(where #(#children: ::bind::EventHandler<#marker>,)*)
     };
-
+    let triggers = binds.iter().map(|b| &b.trigger);
     Ok(quote! {
         #[automatically_derived]
         #[allow(clippy::useless_conversion, clippy::implicit_hasher)]
@@ -56,9 +74,9 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     })
 }
 
-/// The recursion tail and the child types to bound, by node kind.
+/// The accumulate recursion tail and the child types to bound, by node kind.
 #[allow(clippy::option_if_let_else)]
-fn body(input: &DeriveInput, marker: &Path) -> syn::Result<(TokenStream2, Vec<Type>)> {
+fn accumulate_body(input: &DeriveInput, marker: &Path) -> syn::Result<(TokenStream2, Vec<Type>)> {
     match &input.data {
         Data::Struct(s) => match find_resolve_into(&s.fields)? {
             None => Ok((quote!(::core::result::Result::Ok(())), Vec::new())),
@@ -102,6 +120,132 @@ fn body(input: &DeriveInput, marker: &Path) -> syn::Result<(TokenStream2, Vec<Ty
     }
 }
 
+/// Emits `impl Dispatch<M>`: try the active child first, then this node's binds.
+fn dispatch_impl(
+    input: &DeriveInput,
+    name: &Ident,
+    marker: &Path,
+    binds: &[Binding],
+) -> syn::Result<TokenStream2> {
+    let root = is_root(&input.attrs);
+    let (recurse, children, needs_mut) = dispatch_body(input, name, marker, root)?;
+    let where_clause = if children.is_empty() {
+        quote!()
+    } else {
+        quote!(where #(#children: ::bind::Dispatch<#marker>,)*)
+    };
+    let binding = if needs_mut { quote!(mut path) } else { quote!(path) };
+    // Each bind: extract this source's event (the type match), then `is_matching`
+    // (the key match). The trigger is built once into a local; `TryFrom` and the
+    // handler pin the source-event type by inference.
+    let checks = binds.iter().map(|b| {
+        let trigger = &b.trigger;
+        let handler = &b.handler;
+        quote! {
+            if let ::core::option::Option::Some(ev) =
+                ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
+            {
+                let trigger = #trigger;
+                if ::bind::EventTrigger::is_matching(&trigger, ev) {
+                    return ::core::ops::ControlFlow::Break(#handler(ev, path));
+                }
+            }
+        }
+    });
+    Ok(quote! {
+        #[automatically_derived]
+        #[allow(clippy::useless_conversion)]
+        impl ::bind::Dispatch<#marker> for #name #where_clause {
+            fn dispatch<'a>(
+                #binding: <Self as ::laserbeam::Resolve>::Path<'a>,
+                event: &<#marker as ::bind::Bindings>::Event,
+            ) -> ::core::ops::ControlFlow<
+                <#marker as ::bind::Bindings>::Output,
+                <Self as ::laserbeam::Resolve>::Path<'a>,
+            >
+            where
+                Self: 'a,
+            {
+                #recurse
+                #(#checks)*
+                ::core::ops::ControlFlow::Continue(path)
+            }
+        }
+    })
+}
+
+/// The dispatch recursion into the active child, the child types to bound, and
+/// whether the path binding needs `mut` (any node that descends reassigns it).
+#[allow(clippy::option_if_let_else)]
+fn dispatch_body(
+    input: &DeriveInput,
+    name: &Ident,
+    marker: &Path,
+    root: bool,
+) -> syn::Result<(TokenStream2, Vec<Type>, bool)> {
+    match &input.data {
+        Data::Struct(s) => match find_resolve_into(&s.fields)? {
+            // A leaf descends into nothing; its path is never reassigned.
+            None => Ok((quote!(), Vec::new(), false)),
+            Some((field, child_ty, route)) => {
+                let (child, boxed) = unbox(&child_ty);
+                let edge = Edge {
+                    parent: name,
+                    is_root: root,
+                    route: route.as_ref(),
+                    boxed,
+                    via: Via::Field(&field),
+                };
+                let child_path = edge.child_path(&quote!(path));
+                let recover = edge.recover_parent(&quote!(child));
+                let recurse = quote! {
+                    let child = <#child as ::bind::Dispatch<#marker>>::dispatch(#child_path, event)?;
+                    path = #recover;
+                };
+                Ok((recurse, vec![child.clone()], true))
+            }
+        },
+        Data::Enum(e) => {
+            let mut arms = Vec::new();
+            let mut children = Vec::new();
+            for v in &e.variants {
+                let vi = &v.ident;
+                let ty = single_field_ty(&v.fields)?;
+                let route = parent_route(&v.attrs)?;
+                let (child, boxed) = unbox(&ty);
+                children.push(child.clone());
+                let edge = Edge {
+                    parent: name,
+                    is_root: root,
+                    route: route.as_ref(),
+                    boxed,
+                    via: Via::Variant(vi),
+                };
+                let child_path = edge.child_path(&quote!(path));
+                let recover = edge.recover_parent(&quote!(child));
+                arms.push(quote! {
+                    Self::#vi(_) => {
+                        let child = <#child as ::bind::Dispatch<#marker>>::dispatch(#child_path, event)?;
+                        path = #recover;
+                    }
+                });
+            }
+            // The root enum matches `&mut Self` directly; a non-root enum reaches
+            // its variant through the path's `get_mut`.
+            let scrutinee = if root {
+                quote!(path)
+            } else {
+                quote!(path.get_mut())
+            };
+            Ok((quote!(match #scrutinee { #(#arms)* }), children, true))
+        }
+        Data::Union(_) => Err(syn::Error::new(
+            input.span(),
+            "bind does not support unions",
+        )),
+    }
+}
+
 /// The marker named by the one required `#[binds(Marker)]`.
 fn marker_of(input: &DeriveInput) -> syn::Result<Path> {
     let mut found = None;
@@ -116,30 +260,30 @@ fn marker_of(input: &DeriveInput) -> syn::Result<Path> {
     found.ok_or_else(|| syn::Error::new(input.span(), "missing `#[binds(Marker)]`"))
 }
 
-/// One `trigger => handler` pair. The handler is parsed and dropped; accumulation
-/// uses only the trigger.
+/// One `trigger => handler` pair. `accumulate` uses the trigger; `dispatch` uses
+/// both.
 struct Binding {
     trigger: Expr,
+    handler: Expr,
 }
 
 impl syn::parse::Parse for Binding {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let trigger = input.parse()?;
         input.parse::<Token![=>]>()?;
-        input.parse::<Expr>()?; // handler, parsed and dropped
-        Ok(Self { trigger })
+        let handler = input.parse()?;
+        Ok(Self { trigger, handler })
     }
 }
 
-/// The trigger of every `trigger => handler` pair across the node's `#[bind(..)]`.
-fn trigger_exprs(attrs: &[syn::Attribute]) -> syn::Result<Vec<Expr>> {
-    let mut triggers = Vec::new();
+/// Every `trigger => handler` pair across the node's `#[bind(..)]` attributes.
+fn binds(attrs: &[syn::Attribute]) -> syn::Result<Vec<Binding>> {
+    let mut out = Vec::new();
     for attr in attrs {
         if attr.path().is_ident("bind") {
-            let bindings =
-                attr.parse_args_with(Punctuated::<Binding, Token![,]>::parse_terminated)?;
-            triggers.extend(bindings.into_iter().map(|b| b.trigger));
+            let parsed = attr.parse_args_with(Punctuated::<Binding, Token![,]>::parse_terminated)?;
+            out.extend(parsed);
         }
     }
-    Ok(triggers)
+    Ok(out)
 }

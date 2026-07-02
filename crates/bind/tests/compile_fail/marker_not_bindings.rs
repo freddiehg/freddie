@@ -1,10 +1,17 @@
-// The `#[binds(..)]` type must implement `Bindings`.
+// The `#[binds(..)]` type must implement `Bindings`. The node is a full laserbeam
+// node, so the only failure is the missing `Bindings` impl.
 use bind::Bind;
+use laserbeam::Laserbeam;
 
 struct NotBindings;
 
-#[derive(Bind)]
+#[derive(Laserbeam, Bind)]
+#[laserbeam_root(resolved = R)]
 #[binds(NotBindings)]
 struct Nav {}
+
+enum R<'a> {
+    Nav(&'a mut Nav),
+}
 
 fn main() {}
