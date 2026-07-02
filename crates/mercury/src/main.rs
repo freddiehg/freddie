@@ -27,7 +27,7 @@ async fn main() {
     spawn_killswitch(effect_tx.clone());
     tokio::spawn(run_effect_loop(effect_rx, event_tx.clone()));
 
-    println!("mercury: watching the keyboard (not hijacked); escape or 5s quits");
+    println!("mercury: watching the keyboard (not hijacked); q in home or 5s quits");
     run_event_loop(Mercury::default(), event_rx, effect_tx).await;
 }
 
@@ -124,7 +124,7 @@ fn perform_effect(effect: &MercuryEffect, event_tx: &UnboundedSender<MercuryEven
             println!("foreground {app:?}");
             let _ = event_tx.send(foreground(*app));
         }
-        MercuryEffect::Type(s) => println!("type {s}"),
+        MercuryEffect::Type(s) => println!("printed {s}"),
         MercuryEffect::Command(k) => println!("send cmd+{k}"),
         MercuryEffect::Kill => {
             println!("kill: exiting");

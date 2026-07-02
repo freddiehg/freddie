@@ -43,14 +43,14 @@ impl EventTrigger for Key {
     }
 }
 
-/// A keyboard trigger that matches any key except the global ones (`escape` and
-/// `return`), so a catch-all binding still lets those bubble up to quit / go home.
+/// A keyboard trigger that matches any key except `escape`, so a catch-all
+/// binding still lets `escape` bubble up (to go home from a sub-layer).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct AnyKey;
 impl EventTrigger for AnyKey {
     type Event = KeyEvent;
     fn is_matching(&self, ev: &KeyEvent) -> bool {
-        !matches!(ev.key, "escape" | "return")
+        ev.key != "escape"
     }
 }
 
@@ -165,11 +165,11 @@ pub struct Mercury {
     pub layer: Layer,
 }
 
-/// The active layer. `escape` quits from anywhere; `return` (Enter) goes home.
+/// The active layer. `escape` goes home from a sub-layer (home passes it through).
 #[derive(Laserbeam, Bind)]
 #[laserbeam(path = LayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
-#[bind(Key("escape") => kill, Key("return") => to_home)]
+#[bind(Key("escape") => to_home)]
 pub enum Layer {
     Home(HomeLayer),
     Nav(NavLayer),
@@ -177,11 +177,17 @@ pub enum Layer {
     InApp(AppLayer),
 }
 
-/// The home layer: enter nav, typing, or the in-app layer.
+/// The home layer: enter a layer, quit with `q`, or pass `escape` through.
 #[derive(Laserbeam, Bind)]
 #[laserbeam(path = HomeLayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
-#[bind(Key("n") => to_nav, Key("t") => to_typing, Key("i") => to_inapp)]
+#[bind(
+    Key("n") => to_nav,
+    Key("t") => to_typing,
+    Key("i") => to_inapp,
+    Key("q") => quit,
+    Key("escape") => passthru,
+)]
 pub struct HomeLayer {}
 
 /// The nav layer: foreground apps.
@@ -292,12 +298,12 @@ const fn on_foregrounded(ev: &ForegroundEvent, root: &mut Mercury) -> Vec<Mercur
     Vec::new()
 }
 
-/// `escape`: quit, from any layer.
-fn kill(_ev: &KeyEvent, _path: LayerPath) -> Vec<MercuryEffect> {
+/// `q` in home: quit.
+fn quit(_ev: &KeyEvent, _path: HomeLayerPath) -> Vec<MercuryEffect> {
     vec![MercuryEffect::Kill]
 }
 
-/// `return`: go back to the home layer, from any layer.
+/// `escape` in a sub-layer: go back to the home layer.
 fn to_home(_ev: &KeyEvent, mut path: LayerPath) -> Vec<MercuryEffect> {
     *path.get_mut() = Layer::Home(HomeLayer {});
     Vec::new()
@@ -335,8 +341,10 @@ fn open_zed(_ev: &KeyEvent, _path: NavLayerPath) -> Vec<MercuryEffect> {
     vec![MercuryEffect::Foreground(App::Zed)]
 }
 
-/// Any key in typing (except the global ones): pass it through as a typed key.
-fn passthru(ev: &KeyEvent, _path: TypingLayerPath) -> Vec<MercuryEffect> {
+/// Pass a key through, emitting it as a [`MercuryEffect::Type`] so the runner can
+/// log it (and, later, re-emit it). Used for typing and for `escape` in home.
+/// Generic over the layer's path.
+fn passthru<P>(ev: &KeyEvent, _path: P) -> Vec<MercuryEffect> {
     vec![MercuryEffect::Type(ev.key)]
 }
 

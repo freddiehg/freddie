@@ -23,24 +23,46 @@ fn home_t_enters_typing() {
 }
 
 #[test]
-fn typing_passes_any_key_through() {
+fn home_q_quits() {
     let mut m = Mercury::default();
-    m.handle(&key("t"));
-    assert_eq!(m.handle(&key("a")), Some(vec![MercuryEffect::Type("a")]));
-    // Not just a/s/d/f now: any key passes through.
-    assert_eq!(m.handle(&key("q")), Some(vec![MercuryEffect::Type("q")]));
+    assert_eq!(m.handle(&key("q")), Some(vec![MercuryEffect::Kill]));
 }
 
 #[test]
-fn typing_still_quits_and_goes_home() {
+fn home_escape_passes_through() {
     let mut m = Mercury::default();
-    m.handle(&key("t"));
-    assert_eq!(m.handle(&key("return")), Some(vec![]));
+    assert_eq!(
+        m.handle(&key("escape")),
+        Some(vec![MercuryEffect::Type("escape")])
+    );
     assert!(matches!(m.layer, Layer::Home(_)));
+}
 
+#[test]
+fn escape_goes_home_from_a_sublayer() {
+    let mut m = Mercury::default();
+    m.handle(&key("n"));
+    assert!(matches!(m.layer, Layer::Nav(_)));
+    assert_eq!(m.handle(&key("escape")), Some(vec![]));
+    assert!(matches!(m.layer, Layer::Home(_)));
+}
+
+#[test]
+fn typing_passes_any_key_through() {
     let mut m = Mercury::default();
     m.handle(&key("t"));
-    assert_eq!(m.handle(&key("escape")), Some(vec![MercuryEffect::Kill]));
+    // Any key passes through, emitting itself so the runner can log it.
+    assert_eq!(m.handle(&key("a")), Some(vec![MercuryEffect::Type("a")]));
+    assert_eq!(m.handle(&key("z")), Some(vec![MercuryEffect::Type("z")]));
+    assert!(matches!(m.layer, Layer::Typing(_)));
+}
+
+#[test]
+fn typing_escape_goes_home() {
+    let mut m = Mercury::default();
+    m.handle(&key("t"));
+    assert_eq!(m.handle(&key("escape")), Some(vec![]));
+    assert!(matches!(m.layer, Layer::Home(_)));
 }
 
 #[test]
@@ -90,25 +112,9 @@ fn inapp_other_app_ignores_keys() {
 }
 
 #[test]
-fn return_goes_home_from_anywhere() {
-    let mut m = Mercury::default();
-    m.handle(&key("n"));
-    assert!(matches!(m.layer, Layer::Nav(_)));
-    assert_eq!(m.handle(&key("return")), Some(vec![]));
-    assert!(matches!(m.layer, Layer::Home(_)));
-}
-
-#[test]
-fn escape_quits_from_anywhere() {
-    let mut m = Mercury::default();
-    m.handle(&key("n"));
-    assert_eq!(m.handle(&key("escape")), Some(vec![MercuryEffect::Kill]));
-}
-
-#[test]
 fn unbound_key_is_none() {
     let mut m = Mercury::default();
-    assert_eq!(m.handle(&key("q")), None);
+    assert_eq!(m.handle(&key("x")), None);
 }
 
 // ---- loop: driving a bind::SimpleRunner ----
