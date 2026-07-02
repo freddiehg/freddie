@@ -8,7 +8,7 @@ The framework is fully synchronous and never blocks. It dispatches an event to a
 
 All async lives in user land, on both edges, always as "enqueue now (synchronous), handle later (separate)":
 
-- Effects out. The framework hands each output to the handler in order. The handler is thin: it puts the real work on its own queue and returns, and separate workers drain that queue and perform it asynchronously. A worker result that is itself an event (Chrome foregrounded) is pushed back onto the event queue and dispatched like any other input. Ordering is the framework's by default (effects handled in order); the handler may override it, for example a higher-priority path for typing.
+- Effects out. The framework hands each output to the handler in order, and the handler performs it. Because the loop processes one event fully before the next, inline handling keeps effects in the order events arrived (typing included) for free. The one reason to offload an effect is back pressure: a slow effect handler would otherwise block the handling of later events. Even then a smart handler keeps keyboard synthesis synchronous (it is fast and wants to be immediate) and offloads only the slow effects to a pool. v1 does none of this and handles every effect inline. A result that is itself an event (Chrome foregrounded) is pushed back onto the event queue and dispatched like any other input.
 - Events in. Something outside the framework (a run loop, OS callbacks, a channel) receives inputs and hands them to dispatch as they arrive. Blocking when idle is that layer's job.
 
 So there are two queues, and the framework touches only one synchronously: the event queue it drains, and the worker queue on the far side of the handler that user land drains asynchronously.
@@ -41,7 +41,6 @@ async fn main() {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<MercuryEvent>(256);
     spawn_key_tap(tx.clone());            // its own CFRunLoop thread; forwards key events
     spawn_foreground_watcher(tx.clone()); // forwards Foreground events
-    let typing = spawn_typing_worker();   // performs Type/Command in order, off the hot path
 
     let mut state = Mercury::default();
     let graceful = tokio::time::sleep(Duration::from_secs(5)); // dev killswitch
@@ -61,16 +60,17 @@ async fn main() {
         let Some(output) = state.handle(&event) else { continue };
         for effect in output {
             match effect {
-                MercuryEffect::Foreground(app) => activate_app(app), // watcher reports back
-                MercuryEffect::Type(k) => typing.send(Synth::Type(k)),
-                MercuryEffect::Command(k) => typing.send(Synth::Command(k)),
+                // v1 handles every effect inline; all are fast, so no pool.
+                MercuryEffect::Foreground(app) => activate_app(app), // fire-and-forget; watcher reports back
+                MercuryEffect::Type(k) => synthesize_type(k),        // fast CGEventPost, in loop order
+                MercuryEffect::Command(k) => synthesize_command(k),
             }
         }
     }
 }
 ```
 
-`select!` is the wait; `handle` never blocks. State is mutated directly inside `handle` (the fast path). The effect handler does exactly two outward things: send keyboard events (`Type`, `Command`, via the worker so the loop stays responsive) and foreground apps (`Foreground`, fire-and-forget; the observer reports the app coming up as a normal event). Events cross threads, so `MercuryEvent` is `Send + 'static`, the cost of the channel shape and the same trade isograph makes. The `CGEventTap` / `NSWorkspace` / synthesis / activation calls are the unverified macOS FFI and belong to figaro.
+`select!` is the wait; `handle` never blocks. State is mutated directly inside `handle` (the fast path). The effect handler does exactly two outward things: send keyboard events (`Type`, `Command`) and foreground apps (`Foreground`, fire-and-forget; the observer reports the app coming up as a normal event). Both are fast, so v1 does them inline, in the loop's order. If a later effect were slow, a smart handler would keep keyboard synthesis synchronous and offload that effect to a pool, purely to avoid back pressure on event handling; v1 needs none of that. Events cross threads, so `MercuryEvent` is `Send + 'static`, the cost of the channel shape and the same trade isograph makes. The `CGEventTap` / `NSWorkspace` / synthesis / activation calls are the unverified macOS FFI and belong to figaro.
 
 ### Killswitches while developing
 
@@ -95,5 +95,5 @@ The per-event tests dispatch one event and assert the output; they do not need a
 ## Open
 
 - Event prioritization: the reason `SimpleRunner` is not just `Runner`. See prioritization.md.
-- The concrete shape of the worker queue and how a worker's result re-enters as an event.
+- Post-v1: a pool for slow effects (keyboard synthesis stays synchronous, only slow effects offload), purely to avoid back pressure on event handling.
 - macOS FFI feasibility (figaro): keyboard tap + swallow (Accessibility and Input Monitoring, plus the self-lockout footgun), synthesizing keys (Accessibility, and tagging events so the tap ignores its own), foreground watching (easy, no permission), activating apps (easy).
