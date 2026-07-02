@@ -15,7 +15,7 @@
 
 use std::time::Duration;
 
-use mercury::{Mercury, MercuryEffect, MercuryEvent, foreground, key};
+use mercury::{AppLayer, Layer, Mercury, MercuryEffect, MercuryEvent, foreground, key};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 #[tokio::main(flavor = "current_thread")]
@@ -66,6 +66,7 @@ async fn run_event_loop(
     mut event_rx: UnboundedReceiver<MercuryEvent>,
     effect_tx: UnboundedSender<MercuryEffect>,
 ) {
+    log_state(&state);
     while let Some(event) = event_rx.recv().await {
         dispatch_event(&mut state, &event, &effect_tx);
     }
@@ -78,10 +79,30 @@ fn dispatch_event(
     effect_tx: &UnboundedSender<MercuryEffect>,
 ) {
     let Some(effects) = state.handle(event) else {
-        return;
+        return; // unbound: no state change
     };
     for effect in effects {
         let _ = effect_tx.send(effect);
+    }
+    log_state(state);
+}
+
+/// Print the current layer and foregrounded app.
+fn log_state(state: &Mercury) {
+    println!(
+        "state: {} | foregrounded {:?}",
+        layer_name(&state.layer),
+        state.foregrounded
+    );
+}
+
+const fn layer_name(layer: &Layer) -> &'static str {
+    match layer {
+        Layer::Home(_) => "home",
+        Layer::Nav(_) => "nav",
+        Layer::Typing(_) => "typing",
+        Layer::InApp(AppLayer::Chrome(_)) => "in-app:chrome",
+        Layer::InApp(AppLayer::Other(_)) => "in-app:other",
     }
 }
 
