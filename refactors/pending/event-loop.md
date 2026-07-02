@@ -31,6 +31,58 @@ Single-threaded: the OS delivers input on one thread (`CGEventTap` and the works
 
 The real Mercury runner is the same synchronous dispatch with user land around it: the sources feed the event queue and block when idle (a run loop, or a channel `recv`), the handler schedules work on a worker queue, and worker results that are events feed back in. The framework part never blocks. Later the queue can grow event prioritization; `SimpleRunner` is named to leave room for that. There is no generic `run` in freddie: the loop is small, the queue and the wait-when-empty are user land's, and a generic root drags in an awkward `Resolve<Path<'a> = &'a mut N>` bound. `dispatch` and `accumulate` are the pieces.
 
+## Mercury, concretely
+
+Mercury's two sources are macOS run-loop callbacks: a `CGEventTap` for keys and an `NSWorkspace` observer for the frontmost app. Both fire on the run-loop thread, so the event queue is a plain `VecDeque` behind a `RefCell` (one thread, no `Send`, no `'static`). The one thread boundary is a typing worker: keystroke synthesis is pushed to it over a channel and performed in order, off the hot path, so the tap callback stays fast. Nothing comes back from that worker; the only feedback is the OS foregrounding an app, which the observer reports as a normal event.
+
+```rust
+let state = RefCell::new(Mercury::default());
+let events = RefCell::new(VecDeque::<MercuryEvent>::new());
+let typing = spawn_typing_worker(); // owns the far end of a channel; synthesizes in order
+
+// The key tap is the hot path: quit on escape, else queue the key, drain, and
+// tell the OS whether to swallow it. (The tap swallows Ctrl-C, so escape quits.)
+on_key(|key_event| {
+    if key_event.key == "escape" {
+        std::process::exit(0);
+    }
+    events.borrow_mut().push_back(key(key_event.key));
+    if drain(&state, &events, &typing) { Suppress } else { PassThrough }
+});
+
+// The frontmost-app observer feeds the same queue.
+on_foreground_change(|app| {
+    events.borrow_mut().push_back(foreground(app));
+    drain(&state, &events, &typing);
+});
+
+// The loop: drain the event queue, dispatching each event and handing its effects
+// to the handler. Returns whether anything was handled (for the tap's choice).
+fn drain(state: &RefCell<Mercury>, events: &RefCell<VecDeque<MercuryEvent>>, typing: &Typing) -> bool {
+    let mut handled = false;
+    while let Some(event) = events.borrow_mut().pop_front() {
+        // dispatch mutates state (layer, foregrounded) and returns the effects
+        let Some(output) = state.borrow_mut().handle(&event) else {
+            continue;
+        };
+        handled = true;
+        for effect in output {
+            match effect {
+                // Fire-and-forget: the OS activates the app, and the observer
+                // pushes `Foreground` when it actually comes up.
+                MercuryEffect::Foreground(app) => activate_app(app),
+                // Off the hot path, performed in order by the worker.
+                MercuryEffect::Type(k) => typing.send(Synth::Type(k)),
+                MercuryEffect::Command(k) => typing.send(Synth::Command(k)),
+            }
+        }
+    }
+    handled
+}
+```
+
+`drain` never blocks; `CFRunLoopRun` does the waiting and fires the callbacks. State is mutated directly inside `handle` (the fast path); the two effects that reach the world are either fire-and-forget with feedback (`Foreground`) or handed to the worker (`Type`, `Command`). The `CGEventTap` / `NSWorkspace` / synthesis calls are the unverified macOS FFI, and belong to figaro.
+
 ## Prior art
 
 isograph's language server is the same loop: several sources bridged into one `mpsc`, one event popped and dispatched per iteration, and dispatch is a `ControlFlow` chain (Break on the first matching handler, Continue otherwise), just like freddie's. It has no effect-as-data layer; handlers send LSP messages inline.
