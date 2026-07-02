@@ -1,24 +1,34 @@
-//! The binding layer: accumulate the active trigger set over a laserbeam tree.
+//! The binding layer over a laserbeam state tree.
 //!
-//! A node derives [`Bind`] and declares its marker with `#[binds(Marker)]` and
-//! its bindings with `#[bind(trigger, handler)]`. The derive implements
-//! [`EventHandler`], whose [`accumulate`](EventHandler::accumulate) inserts the
-//! node's own triggers and recurses into its `#[resolve_into]` fields and active
-//! enum variant. [`accumulate()`] runs it from the root.
+//! A node derives [`Bind`], names its marker with `#[binds(Marker)]`, and lists
+//! its bindings with `#[bind(trigger => handler, ..)]`. The derive implements
+//! two halves:
+//!
+//! - [`EventHandler`], whose [`accumulate`](EventHandler::accumulate) gathers the
+//!   active trigger set (what the app registers with the OS). [`accumulate()`]
+//!   runs it from the root.
+//! - [`Dispatch`], whose [`dispatch`](Dispatch::dispatch) runs the handler the
+//!   active state binds for a fired event. [`dispatch()`] runs it from the root.
 #![allow(clippy::implicit_hasher)]
 
 use std::collections::HashSet;
 use std::hash::Hash;
+use std::ops::ControlFlow;
 
 pub use bind_macro::Bind;
 
-/// The marker an app implements on one type to name its unified trigger enum.
+/// The marker an app implements on one type to name its trigger, event, and
+/// output types.
 pub trait Bindings {
     /// The unified enum of every trigger the app can register.
-    type Trigger: Clone + Eq + Hash;
+    type Trigger: Eq + Hash;
+    /// The unified event the app dispatches.
+    type Event;
+    /// What a handler returns: the effect data for the consumer to perform.
+    type Output;
 }
 
-/// A bindable node. `#[derive(Bind)]` implements it.
+/// The accumulate half. `#[derive(Bind)]` implements it.
 pub trait EventHandler<M: Bindings> {
     /// Adds this node's triggers, and those of its active descendants, to `out`.
     ///
@@ -65,7 +75,8 @@ where
 }
 
 /// A trigger matches its source's event. Extracting the source event from the
-/// unified event is the type match; this is the key match on it.
+/// unified event (a `TryFrom<&Event> for &SourceEvent`) is the type match; this
+/// is the key match on the source event.
 pub trait EventTrigger {
     /// The source event this trigger matches against.
     type Event;
@@ -74,13 +85,32 @@ pub trait EventTrigger {
     fn is_matching(&self, event: &Self::Event) -> bool;
 }
 
-/// Extracts a source event from a unified event enum `E`.
-pub trait FromEvent<E> {
-    /// The source event, if `event` belongs to this source.
-    #[must_use]
-    fn from_event(event: &E) -> Option<&Self>;
+/// The dispatch half. `#[derive(Bind)]` implements it alongside [`EventHandler`].
+///
+/// Each node tries its active child first, then its own binds, so a child's
+/// binding takes priority over an ancestor's. [`Break`](ControlFlow::Break)
+/// carries the handler's output up; [`Continue`](ControlFlow::Continue) hands the
+/// node's path back so the parent can walk up (`into_parent`) and take its turn.
+pub trait Dispatch<M: Bindings>: ::laserbeam::Resolve {
+    /// Runs the active binding for `event`, or hands the path back on a miss.
+    fn dispatch<'a>(
+        path: Self::Path<'a>,
+        event: &M::Event,
+    ) -> ControlFlow<M::Output, Self::Path<'a>>
+    where
+        Self: 'a;
 }
 
-/// Dispatch found no handler for the fired event on the active path.
-#[derive(Debug, PartialEq, Eq)]
-pub struct NoHandler;
+/// Dispatches `event` against the tree at `path` (the root's `&mut Root`),
+/// returning the handler's output, or `None` when nothing on the active path
+/// binds it.
+pub fn dispatch<'a, M, N>(path: N::Path<'a>, event: &M::Event) -> Option<M::Output>
+where
+    M: Bindings,
+    N: Dispatch<M> + 'a,
+{
+    match <N as Dispatch<M>>::dispatch(path, event) {
+        ControlFlow::Break(out) => Some(out),
+        ControlFlow::Continue(_) => None,
+    }
+}

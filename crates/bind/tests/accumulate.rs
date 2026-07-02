@@ -30,6 +30,8 @@ impl From<Foreground> for MercuryTrigger {
 struct MercuryStruct;
 impl Bindings for MercuryStruct {
     type Trigger = MercuryTrigger;
+    type Event = ();
+    type Output = ();
 }
 
 #[allow(dead_code)]

@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 bind_macro = { path = "../bind_macro", version = "0.0.1" }
+laserbeam = { path = "../laserbeam", version = "0.0.1" }
 
 [dev-dependencies]
 trybuild = "1"

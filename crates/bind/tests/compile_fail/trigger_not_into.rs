@@ -7,6 +7,8 @@ struct Trig;
 struct M;
 impl Bindings for M {
     type Trigger = Trig;
+    type Event = ();
+    type Output = ();
 }
 
 // `Weird` has no `From`/`Into` for `Trig`.
