@@ -7,6 +7,7 @@ name = "bind"
 version = "0.0.1"
 dependencies = [
  "bind_macro",
+ "laserbeam",
  "trybuild",
 ]
 
@@ -24,6 +25,8 @@ dependencies = [
 name = "derive_support"
 version = "0.0.1"
 dependencies = [
+ "proc-macro2",
+ "quote",
  "syn",
 ]
 
