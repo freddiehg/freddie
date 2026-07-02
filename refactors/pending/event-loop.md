@@ -33,7 +33,7 @@ The real Mercury runner is the same synchronous dispatch with user land around i
 
 ## Mercury, concretely
 
-Mercury's v1 runner (`crates/mercury/src/main.rs`) is three loops over two tokio channels, the shape the real build keeps — it swaps the stdin source for a `CGEventTap` thread and printing for OS key synthesis and app activation. A source forwards events into the event channel; the event loop reads it and dispatches each event (mutating state synchronously, returning effects) into the effect channel; the effect loop reads the effect channel and performs each effect. `dispatch` stays synchronous inside the event loop, the same shape as isograph's language server.
+Mercury's v1 runner (`crates/mercury/src/main.rs`) is three loops over two tokio channels, the shape the real build keeps. v1 stubs the keyboard source and does not hijack the keyboard; the real build fills that stub with a `CGEventTap` thread (and the foreground watcher) and swaps printing for OS key synthesis and app activation. A source forwards events into the event channel; the event loop reads it and dispatches each event (mutating state synchronously, returning effects) into the effect channel; the effect loop reads the effect channel and performs each effect. `dispatch` stays synchronous inside the event loop, the same shape as isograph's language server.
 
 ```rust
 #[tokio::main(flavor = "current_thread")]
@@ -41,9 +41,9 @@ async fn main() {
     let (event_tx, event_rx) = unbounded_channel::<MercuryEvent>();
     let (effect_tx, effect_rx) = unbounded_channel::<MercuryEffect>();
 
-    spawn_stdin_source(event_tx.clone());  // 1. source -> event channel (real build: a CGEventTap thread)
+    spawn_keyboard_source(event_tx);       // 1. source -> event channel (v1: a stub, no hijack; real: a CGEventTap thread)
     spawn_killswitch(effect_tx.clone());   // dev safety, below
-    tokio::spawn(run_effect_loop(effect_rx, event_tx.clone()));
+    tokio::spawn(run_effect_loop(effect_rx));
     run_event_loop(Mercury::default(), event_rx, effect_tx).await;
 }
 
@@ -75,7 +75,7 @@ fn spawn_killswitch(effect_tx: UnboundedSender<MercuryEffect>) {
 }
 ```
 
-Dispatch mutates state directly (the fast path) and returns the effects; the event loop only enqueues them (unbounded, so the send never blocks), so it never waits on an effect. The effect loop performs the two outward things: send keyboard events (`Type`, `Command`) and foreground apps (`Foreground`, fire-and-forget; the watcher reports the app coming up as a normal event, which is why v1 feeds a follow-up back itself). v1 performs them synchronously and in order (one consumer, FIFO); later a slow effect can be offloaded to a pool inside the effect loop, keyboard synthesis staying synchronous, without the event loop noticing. Events and effects cross threads, so both are `Send + 'static`. The `CGEventTap` / `NSWorkspace` / synthesis / activation calls are the unverified macOS FFI and belong to figaro.
+Dispatch mutates state directly (the fast path) and returns the effects; the event loop only enqueues them (unbounded, so the send never blocks), so it never waits on an effect. The effect loop performs the two outward things: send keyboard events (`Type`, `Command`) and foreground apps (`Foreground`, fire-and-forget; the foreground watcher reports the app coming up as a normal event). v1 performs them synchronously and in order (one consumer, FIFO); later a slow effect can be offloaded to a pool inside the effect loop, keyboard synthesis staying synchronous, without the event loop noticing. Events and effects cross threads, so both are `Send + 'static`. The `CGEventTap` / `NSWorkspace` / synthesis / activation calls are the unverified macOS FFI and belong to figaro.
 
 ### Killswitches while developing
 
