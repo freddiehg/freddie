@@ -117,7 +117,7 @@ where
 
 // The real event loop is bespoke: its queue and its wait-when-empty differ per
 // consumer (a run loop, a channel), so each writes its own; `dispatch` and
-// `accumulate` are the pieces. `Runner` below is not that loop. It is a
+// `accumulate` are the pieces. `SimpleRunner` below is not that loop. It is a
 // synchronous driver for tests: process one queued event at a time, and queue
 // more (a handler's follow-ups) as you go.
 
@@ -127,12 +127,12 @@ where
 /// more between or during steps (for a handler's follow-up events). It drains
 /// rather than waits: an empty queue returns `None`, not a block. The real loop
 /// is the consumer's; this one exists to drive the tree in a test.
-pub struct Runner<'a, M: Bindings, N> {
+pub struct SimpleRunner<'a, M: Bindings, N> {
     root: &'a mut N,
     queue: VecDeque<M::Event>,
 }
 
-impl<'a, M, N> Runner<'a, M, N>
+impl<'a, M, N> SimpleRunner<'a, M, N>
 where
     M: Bindings,
     N: Dispatch<M> + for<'b> ::laserbeam::Resolve<Path<'b> = &'b mut N>,
@@ -182,7 +182,7 @@ where
     }
 }
 
-impl<M: Bindings, N> Runner<'_, M, N> {
+impl<M: Bindings, N> SimpleRunner<'_, M, N> {
     /// The number of queued events not yet processed.
     #[must_use]
     pub fn len(&self) -> usize {

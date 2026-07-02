@@ -1,11 +1,11 @@
 //! Two kinds of test. The per-event ones send one event and assert the effect
 //! (and resulting state) straight from `handle`. The loop ones drive a
-//! `bind::Runner` one event at a time: queue a key, let its effects settle
+//! `bind::SimpleRunner` one event at a time: queue a key, let its effects settle
 //! (recording them and, for an "installed" app, queueing the foreground
 //! follow-up), then queue the next key — the way the real machine sees "press c,
 //! Chrome comes up, press r".
 
-use bind::Runner;
+use bind::SimpleRunner;
 use mercury::{App, AppLayer, Layer, Mercury, MercuryEffect, MercuryStruct, foreground, key};
 
 // ---- per-event: send an event, assert the effect ----
@@ -82,13 +82,13 @@ fn unbound_key_is_none() {
     assert_eq!(m.handle(&key("q")), None);
 }
 
-// ---- loop: driving a bind::Runner one event at a time ----
+// ---- loop: driving a bind::SimpleRunner one event at a time ----
 
 /// Process everything queued: record each effect, and for an installed app queue
 /// the foreground follow-up (the way the OS reports it coming up). Returns when
 /// the queue drains.
 fn settle(
-    runner: &mut Runner<'_, MercuryStruct, Mercury>,
+    runner: &mut SimpleRunner<'_, MercuryStruct, Mercury>,
     performed: &mut Vec<MercuryEffect>,
     installed: &[App],
 ) {
@@ -115,7 +115,7 @@ fn kitchen_sink() {
     let mut m = Mercury::default();
     let mut performed = Vec::new();
     {
-        let mut runner = Runner::<MercuryStruct, _>::new(&mut m);
+        let mut runner = SimpleRunner::<MercuryStruct, _>::new(&mut m);
         for k in ["n", "c", "r", "escape", "space", "a"] {
             runner.queue_event(key(k));
             settle(&mut runner, &mut performed, &[App::Chrome]);
@@ -140,7 +140,7 @@ fn opening_a_missing_app_does_not_enter_in_app() {
     let mut m = Mercury::default();
     let mut performed = Vec::new();
     {
-        let mut runner = Runner::<MercuryStruct, _>::new(&mut m);
+        let mut runner = SimpleRunner::<MercuryStruct, _>::new(&mut m);
         for k in ["n", "c", "r"] {
             runner.queue_event(key(k));
             settle(&mut runner, &mut performed, &[]);
