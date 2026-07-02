@@ -4,12 +4,13 @@ Dispatch turns one event into effects. A runner feeds it events and performs the
 
 ## Sync core, async edges
 
-The framework is synchronous. Dispatch is one event to an output, and the outputs are handled synchronously and in order; nothing here knows about threads or async. The async lives only at the edges:
+The framework is synchronous up to the handoff. Dispatch is one event to an output, and the runner hands each output to the handler synchronously, in the order the events were dispatched. Nothing in the framework knows about threads or async.
 
-- Ingestion. Several sources (the keyboard tap, the foreground watcher) produce events concurrently. They write into one queue without blocking, and the runner reads from it separately. Getting an event, queueing it, and reading it are decoupled, and there can be as many queued as arrive.
-- Effect handlers. Handling an effect should be quick. Long work (later) is handed to a worker pool: the handler schedules it and returns, so the framework still sees a synchronous handler.
+Performing the output is the handler's business, and it can be async. A handler is meant to be quick, so it schedules the real work (later, on a worker pool) and returns. Keeping that work ordered — typed characters must not come out of order — is the handler's responsibility, in user land; the framework only guarantees that it hands the outputs over in order.
 
-So the runner's job is small: read the next event, dispatch it, hand the output to the handler. It never waits on an effect and never knows an effect is async.
+The async also lives at ingestion. Several sources (the keyboard tap, the foreground watcher) produce events concurrently, write into one queue without blocking, and the runner reads from it separately. Getting an event, queueing it, and reading it are decoupled, and as many can queue as arrive.
+
+So the runner's job is small: read the next event, dispatch it, hand the output to the handler in order. It never waits on the effect being performed and never knows an effect is async.
 
 ## The queue
 
