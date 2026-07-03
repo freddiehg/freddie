@@ -201,6 +201,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "freddie_keys"
+version = "0.0.1"
+dependencies = [
+ "bind",
+]
+
+[[package]]
 name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

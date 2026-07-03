@@ -1,0 +1,13 @@
+[package]
+name = "freddie_keys"
+description = "The platform-neutral keyboard vocabulary for freddie: the Keyboard enum and its trigger."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bind = { path = "../bind", version = "0.0.1" }
+
+[lints]
+workspace = true
