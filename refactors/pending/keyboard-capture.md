@@ -23,7 +23,7 @@ Both block the calling thread and must run on their own thread (rdev owns the ru
 ## Press, release, repeat
 
 - v1 dispatches on `KeyPress` only and ignores `KeyRelease`. Fine for triggers (a key acts on the way down), not for anything that cares about hold or release (modifiers as layers, see modifier-keys.md).
-- Held keys auto-repeat: the OS sends repeated `KeyPress` with no intervening `KeyRelease`. Correct for typing (repeat types the letter); wrong for a layer-switch key, which would fire repeatedly. If that matters, dedupe by tracking which keys are down and ignoring repeats.
+- Held keys auto-repeat: the OS sends repeated `KeyPress` with no intervening `KeyRelease`. So repeat is free: handle each repeated `KeyPress` (a passthrough re-emits, a remap emits its output again) and it repeats at the native cadence, no timer needed. Deduping (tracking which keys are down and ignoring repeats) is the opposite choice, for a key that should fire once on the way down (a layer switch); that is userland's, in the consumer, not the crate. A self-driven repeat timer earns its place only if you want a rate different from the OS's, which is niche.
 
 ## Selective swallow (the real capture)
 
@@ -59,5 +59,4 @@ Granted to whatever launches the binary (the terminal in dev, the built `.app` l
 - Does rdev re-enable the tap after a macOS timeout, or must we?
 - How wide does `name` need to be, and do we key off `Key` (layout-independent) or `Event.name` (the typed character)?
 - Publishing the active trigger set to the callback: `ArcSwap` vs `Mutex`, and the one-update staleness.
-- Repeat handling: dedupe held keys, or let repeats through.
 - Is rdev's `grab` reliable enough, or does real swallowing need raw `core-graphics`?
