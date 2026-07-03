@@ -1,111 +1,51 @@
 # capturing keyboard events
 
-Getting every key the runner cares about into its event channel, and getting back out cleanly. `rdev` does the OS-level work; `freddie_keyboard` wraps it into the shared primitives; the consumer (mercury, figaro) writes the capture loop. This is that split, the actual code, and where the sharp edges are.
+v1 grabs the keyboard on macOS, swallows every key, dispatches it, and emits whatever the model produces. Nothing reaches the app except through that emit, so typing and remapping take the same route and stay in order.
 
-## Crate organization
+## The crates
 
-Three layers, from the OS up:
+`freddie_keys` is the platform-neutral vocabulary: the `Keyboard` enum, a `KeyEvent`, and the `EventTrigger` impl, so mercury binds `Keyboard::KeyR` directly.
 
-- `rdev` is the existing cross-platform library that talks to the OS: a `CGEventTap` on macOS, low-level hooks elsewhere. It is the "library that already does the work," and nothing above it touches the platform directly.
-- `freddie_keyboard` is a thin shared crate over rdev. rdev alone is not enough to inline in each app: it hands back raw `rdev::Key` codes and does not tag the keys we emit ourselves, so every consumer would re-write the same name mapping and self-feedback guard. mercury and figaro both need those, so they live here once. This crate owns the whole platform surface (rdev is a private dependency) and exposes `run`, `listen`, `emit`, `name`, `KeyEvent`, `Error`.
-- The consumer wires the capture loop: spawn the source thread, decide the swallow/exit policy, map keys onto its own event type, and forward into its channel. That is app-specific (the channel type, the escape policy, the key-to-event mapping differ per app), so it is not in the crate.
+`freddie_keyboard` is the platform layer: an OS-agnostic API (`run`, `emit`) over `Keyboard`, with the OS-specific work behind it. v1 ships one backend, macOS on `core-graphics` (Quartz Event Services). Linux (X11/XTEST or evdev/uinput) and Windows (`SetWindowsHookEx` + `SendInput`) are separate backends behind `cfg`, whenever we want them. core-graphics is macOS-only, so it stays inside that backend and never leaks up. Each backend owns its own native keycode table, since a `CGKeyCode` is nothing like an X11 keysym or a Windows virtual-key. core-graphics' wrappers are safe, so the macOS backend needs no unsafe.
 
-## The freddie_keyboard API
+mercury writes the loop on top of the OS-agnostic API: spawn the capture thread, pick the swallow and exit policy, forward keys into its channel.
 
-What the crate exposes today:
+## The macOS tap
 
-```rust
-pub use rdev::Key;
+`CGEventTap::new` over `[KeyDown, KeyUp]`, with a callback that returns `Keep`, `Drop`, or `Replace`. For a real key the callback reads the keycode, maps it to a `Keyboard`, sends it to the event channel, and returns `Drop`, so the key never reaches the app. For a key we emitted ourselves the callback returns `Keep` and does not dispatch it. The tap runs on its own thread: build a run-loop source from its mach port, add it to the thread's run loop, enable, run. If macOS disables the tap for being slow it delivers a `TapDisabled` event, so the callback watches for that and re-enables. Keep the callback to a field read, a lookup, and a send.
 
-pub struct KeyEvent { pub key: Key, pub press: bool } // press=false is key-up
+## Telling our own keys apart
 
-pub fn run(on_key: impl Fn(KeyEvent) + 'static) -> Result<(), Error>;    // grab: swallow every key, hand it to on_key
-pub fn listen(on_key: impl Fn(KeyEvent) + 'static) -> Result<(), Error>; // observe: swallow nothing
-pub fn emit(key: Key) -> Result<(), Error>;                              // press+release, guarded so run ignores it
-pub const fn name(key: Key) -> Option<&'static str>;                     // "a", "space", "escape", ... or None
-pub enum Error { Grab(..), Listen(..), Simulate(..) }
-```
+An emitted key comes back to our own tap, and we must not re-dispatch it. The macOS backend keeps one private `CGEventSource` and stamps every emitted event's `USER_DATA` field with a magic number. The tap reads that field; if it is ours, `Keep` and move on. This replaces the old `SYNTHETIC` counter, which assumed the next two callbacks were our press and release and corrupted real input the moment a key landed in between.
 
-`run` and `listen` both block the calling thread (rdev owns the run loop there), so the consumer runs them on their own `std::thread`. `run` swallows everything and re-emits are the consumer's job via `emit`; `emit` bumps a `SYNTHETIC` counter that `run`'s callback decrements so our own output is not fed back in.
+## Emitting
 
-They return `Result<(), Error>` rather than a droppable handle because rdev cannot back a real one: `grab`/`listen` block, spin the `CFRunLoop` inline, and expose no stop and no "installed OK" signal, so there is nothing live to hand back. A guard you drop to stop is the right shape in the abstract, but on rdev it comes in two limited forms. Without unsafe, only a soft stop: `run` spawns the thread itself and returns a guard holding an `Arc<AtomicBool>` the callback checks; drop flips it and the callback goes transparent, but the tap and thread leak until process exit (so it stops remapping, not the capture), and a startup permission error surfaces asynchronously rather than from `run`. A real stop needs one `unsafe` core-foundation call: the callback stashes `CFRunLoopGetCurrent()` on first fire, drop calls `CFRunLoopStop`, `grab` returns, rdev drops the tap, the thread joins. That opts the module out of `forbid(unsafe_code)`, the same direction the emit self-feedback tag pushes (keyboard-emit.md), so the two travel together. v1 needs neither: its stop is `process::exit`, which releases the tap for free, so the blocking signature is right and the handle is a later-crate concern.
+`emit(key)` builds a keyboard event from the private source, stamps `USER_DATA`, and posts it. A chord like cmd+r is a press-and-release sequence with the modifier held around the key, either as `emit_chord(mods, key)` or by setting the event flags. The effect loop is the only caller, so emits leave one at a time in the order the model produced them.
 
-## v1 in mercury: swallow all, escape exits
+## Escape and stopping
 
-v1 grabs (`run`), swallows every key, and hardcodes one exception: escape exits the process. No per-key decision, no shared state. The whole capture source:
+Escape calls `process::exit(0)` from the callback, before anything else. It is the bail-out, and it does not depend on the model or the channel, so a wedged model cannot trap the keyboard. Killing the process frees the tap either way, since the WindowServer drops taps for dead processes, `kill -9` included. Dropping the `CGEventTap` or stopping its run loop frees it too, which is how a `Capture` handle would stop cleanly, but v1 does not need one: exit is the stop.
 
-```rust
-fn spawn_keyboard_source(event_tx: UnboundedSender<MercuryEvent>) {
-    std::thread::spawn(move || {
-        let grabbed = freddie_keyboard::run(move |ev| {
-            if ev.key == freddie_keyboard::Key::Escape {
-                std::process::exit(0); // the one way out of a full hijack
-            }
-            if !ev.press {
-                return; // v1 acts on key-down; key-up (ev.press == false) is available but unused
-            }
-            if let Some(name) = freddie_keyboard::name(ev.key) {
-                let _ = event_tx.send(key(name));
-            }
-        });
-        if let Err(e) = grabbed {
-            eprintln!("keyboard: {e}"); // usually Accessibility is not granted
-        }
-    });
-}
-```
+## What's left to build
 
-Everything else is unchanged from the current main.rs: the event loop dispatches each `key(name)`, the effect loop prints, the timed killswitch stays as a backstop. The only edit to move v1 from observe to hijack is `listen` becoming `run` plus the escape branch.
+mercury today binds `Keyboard` through a `Key(pub Keyboard)` newtype, carries `Type(Keyboard)` / `Command(Keyboard)` effects, and runs `freddie_keyboard::listen` (watching, not grabbing), printing effects instead of emitting. To get to a real v1:
 
-Escape is a callback-level hard exit, not a normal bind, on purpose. If the model wedges (a bad transition, a panic in a handler, a full channel), a bind routed through dispatch could stop firing, and a fully hijacked keyboard would then have no way out. The callback escape does not depend on dispatch running at all, so it always works. (Swallow-versus-pass for escape is moot: we exit before it matters.)
+1. Write `freddie_keys`: the `Keyboard` enum (letters, digits, `Space`/`Return`/`Tab`/`Escape`, arrows, modifiers, F1-F24), a `KeyEvent { key, down }`, and `impl EventTrigger for Keyboard`. Depends on `bind`.
 
-## Exit tears down the capture
+2. Build the macOS backend in `freddie_keyboard`: the tap above, `emit` and `emit_chord` with the `USER_DATA` stamp, and the `CGKeyCode` to `Keyboard` table both ways. The F21-F24 codes depend on the keyboard, so grab whatever the key actually sends. This is where core-graphics replaces the current rdev backend.
 
-The safety of v1 rests on one fact: killing the process removes the tap. A `CGEventTap` is owned by the process that created it and registered on that process's run loop; the WindowServer drops it when the process dies, including a hard kill (SIGKILL) or a crash. So `process::exit` on escape, the timed `_exit` killswitch (event-loop.md), and a panic all restore the keyboard. There is no persistent OS state to clean up and no way to leave the keyboard captured by a dead process.
+3. Drop mercury's wrapper: bind `Keyboard` variants straight (`MercuryTrigger::Key(Keyboard)`), delete the newtype. `AnyKey` stays.
 
-This is by design, but it has to be confirmed live: run mercury grabbing, press escape, check the keyboard is normal; then repeat with `kill -9` on the process to confirm a hard kill also frees it.
+4. Wire mercury live: `main.rs` runs `run` instead of `listen`, exits on escape, forwards each `KeyDown`. The effect loop emits instead of printing, `Type(k)` emits `k` and `Command(k)` emits cmd+`k`. Keep the killswitch timer as a backstop.
 
-## Press, release, repeat
+5. Test on the machine: Accessibility granted, escape and `kill -9` both free the keyboard, the tag stops the echo, an F-key above F12 maps.
 
-- v1 dispatches on `KeyPress`. `KeyRelease` arrives as `ev.press == false` and is available for anything that later needs hold or release (modifiers as layers, see modifier-keys.md), but v1 ignores it.
-- v1 has no repeat feature. It does nothing to synthesize repeats and nothing special with the OS's own repeated `KeyPress`.
-- Post-v1: if a held key should re-fire its output at a chosen rate, that is a "send an event every X ms while the key is held" timer loop in the consumer, started on `KeyPress` and stopped on `KeyRelease`, not something read off OS auto-repeat. Deliberately a consumer concern, not the crate's.
+## Two things to decide
 
-## Why swallow-all is permanent, not just v1
+Escape is doing two jobs. mercury's model binds it (`to_home`, `passthru`), but v1 wants it as the panic exit, so those binds will not fire while we grab. For v1, let escape be the bail-out and drive layers with other keys; hand it back to the model later, once a different panic key or the stop handle covers us.
 
-The obvious optimization is to swallow only the keys the active state binds and pass the rest natively, so passthrough costs a set lookup instead of a channel round-trip. It is unsound. Passing a key natively is synchronous; a swallowed remap is async (channel round-trip, then re-emit), so the two paths reorder. Type `a b a` with `a` passed natively and `b` remapped to `B` and it can land as `a a B`: both `a`s go straight through while `B` is still in flight. Once any key on a layer is remapped, passing the others natively reorders them (passthrough.md).
+Unbound keys get dropped. Swallow-all means a key the layer does not bind returns `None`, produces no effect, and never reaches the app. In home that is every non-command key. Fine for a modal remapper, but it is a choice: a layer that should pass its extra keys needs an explicit passthrough (passthrough.md).
 
-So swallow-all is not a v1 shortcut; it is the correct model whenever remapping is possible. Every key goes through the one ordered pipeline: v1 prints, the real remapper re-emits unremapped keys and emits remaps, both in order. This also retires the "swallow only what's bound" idea and the `accumulate`-in-callback / `ArcSwap` machinery whose only purpose was the native-pass decision.
+## Permissions
 
-## Events rdev delivers
-
-`rdev::Event { time, name, event_type }`. We care about `event_type`:
-
-- `KeyPress(Key)` / `KeyRelease(Key)` for every key, including modifiers (`ShiftLeft`, `MetaLeft` = cmd, `Alt`, `ControlLeft`).
-- rdev does not surface a combined modifier-flags value; modifier state is tracked from the modifier keys' own press/release.
-
-`rdev::Key` is a named enum (`KeyA`..`KeyZ`, `Num0`..`Num9`, `Space`, `Escape`, `Return`, `Tab`, arrows, function keys, modifiers). `freddie_keyboard::name` maps the common ones to a stable lowercase string so the model binds by name, not key code. Anything not in the map returns `None` and is dropped; the map has to grow to whatever the bindings use (digits, punctuation, arrows, modifiers). `Event.name` also carries the OS's layout-dependent character, which we currently ignore in favor of the layout-independent `Key`.
-
-## Threading and the channel
-
-`run` blocks on a `CFRunLoop` on its thread. The callback forwards each non-escape key-down into the runner's event channel with a `tokio::mpsc::UnboundedSender` (cloneable, `Send`, callable from the rdev thread), and calls `process::exit` on escape. Keep the callback to a check, a send, and a return: macOS disables a tap whose callback is slow (~1s), and a blocked callback drops input.
-
-## Permissions (macOS)
-
-- v1 grabs, so it needs Accessibility, plus Input Monitoring for the keyboard.
-- `listen` alone would need only Input Monitoring.
-
-Granted to whatever launches the binary (the terminal in dev, the built `.app` later). First run prompts; toggle in System Settings > Privacy & Security and relaunch. The exact TCC service shifts by macOS version, so verify on the target.
-
-## Footguns
-
-- Self-lockout: grabbing with no way out. v1's escape exit is the primary safety because it does not depend on dispatch; the timed killswitches (event-loop.md) back it up (`Kill` on a 5s timer, hard `_exit` at 10s, `SIGHUP` fatal).
-- Tap timeout: macOS disables a slow tap and sends a disabled event. Whether rdev re-enables it automatically or `freddie_keyboard` must is open (verify). Keep the callback trivial regardless.
-- Secure input: password fields, and apps using the secure-input API, bypass the tap; those keys cannot be captured.
-
-## Open questions
-
-- Confirm live that `process::exit` on escape, and a `kill -9`, both free the keyboard.
-- Does rdev re-enable the tap after a macOS timeout, or must we?
-- How wide does `name` need to be, and do we key off `Key` (layout-independent) or `Event.name` (the typed character)?
-- Is rdev's `grab` reliable enough, or does real swallowing need raw `core-graphics`?
+An active tap needs Accessibility plus Input Monitoring, granted to whatever launches the binary. First run prompts; flip it in System Settings and relaunch.
