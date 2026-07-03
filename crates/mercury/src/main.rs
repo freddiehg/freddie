@@ -39,9 +39,7 @@ fn spawn_keyboard_source(event_tx: UnboundedSender<MercuryEvent>) {
             if !ev.press {
                 return; // v1 dispatches on key-down
             }
-            if let Some(name) = freddie_keyboard::name(ev.key) {
-                let _ = event_tx.send(key(name));
-            }
+            let _ = event_tx.send(key(ev.key));
         });
         if let Err(e) = listened {
             eprintln!("keyboard: {e}"); // usually Input Monitoring is not granted
@@ -124,8 +122,8 @@ fn perform_effect(effect: &MercuryEffect, event_tx: &UnboundedSender<MercuryEven
             println!("foreground {app:?}");
             let _ = event_tx.send(foreground(*app));
         }
-        MercuryEffect::Type(s) => println!("printed {s}"),
-        MercuryEffect::Command(k) => println!("send cmd+{k}"),
+        MercuryEffect::Type(s) => println!("printed {s:?}"),
+        MercuryEffect::Command(k) => println!("send cmd+{k:?}"),
         MercuryEffect::Kill => {
             println!("kill: exiting");
             std::process::exit(0);

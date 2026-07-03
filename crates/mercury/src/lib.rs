@@ -23,18 +23,19 @@
 //! Run it with `cargo run -p mercury`, or the tests with `cargo test -p mercury`.
 
 use bind::{Bind, Bindings, EventTrigger};
+pub use freddie_keyboard::Key as Keyboard;
 use laserbeam::{Laserbeam, Path};
 
 // ---------------------------------------------------------------------------
 // Sources: a keyboard, and the OS reporting a newly foregrounded app.
 // ---------------------------------------------------------------------------
 
-/// A keyboard trigger for a specific key (`"a"`, `"t"`, `"escape"`, ...).
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct Key(pub &'static str);
+/// A keyboard trigger for a specific key (`Keyboard::KeyT`, `Keyboard::Escape`).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Key(pub Keyboard);
 /// A fired keyboard event.
 pub struct KeyEvent {
-    pub key: &'static str,
+    pub key: Keyboard,
 }
 impl EventTrigger for Key {
     type Event = KeyEvent;
@@ -50,7 +51,7 @@ pub struct AnyKey;
 impl EventTrigger for AnyKey {
     type Event = KeyEvent;
     fn is_matching(&self, ev: &KeyEvent) -> bool {
-        ev.key != "escape"
+        ev.key != Keyboard::Escape
     }
 }
 
@@ -134,10 +135,10 @@ impl<'a> TryFrom<&'a MercuryEvent> for &'a ForegroundEvent {
 pub enum MercuryEffect {
     /// Bring an app to the foreground.
     Foreground(App),
-    /// A letter was typed.
-    Type(&'static str),
+    /// A key was typed (passed through).
+    Type(Keyboard),
     /// Send `cmd` + this key (a refresh is `cmd`+`r`).
-    Command(&'static str),
+    Command(Keyboard),
     /// Quit the program. The effect handler performs this by exiting.
     Kill,
 }
@@ -169,7 +170,7 @@ pub struct Mercury {
 #[derive(Laserbeam, Bind)]
 #[laserbeam(path = LayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
-#[bind(Key("escape") => to_home)]
+#[bind(Key(Keyboard::Escape) => to_home)]
 pub enum Layer {
     Home(HomeLayer),
     Nav(NavLayer),
@@ -182,11 +183,11 @@ pub enum Layer {
 #[laserbeam(path = HomeLayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
 #[bind(
-    Key("n") => to_nav,
-    Key("t") => to_typing,
-    Key("i") => to_inapp,
-    Key("q") => quit,
-    Key("escape") => passthru,
+    Key(Keyboard::KeyN) => to_nav,
+    Key(Keyboard::KeyT) => to_typing,
+    Key(Keyboard::KeyI) => to_inapp,
+    Key(Keyboard::KeyQ) => quit,
+    Key(Keyboard::Escape) => passthru,
 )]
 pub struct HomeLayer {}
 
@@ -195,9 +196,9 @@ pub struct HomeLayer {}
 #[laserbeam(path = NavLayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
 #[bind(
-    Key("c") => open_chrome,
-    Key("g") => open_ghostty,
-    Key("z") => open_zed,
+    Key(Keyboard::KeyC) => open_chrome,
+    Key(Keyboard::KeyG) => open_ghostty,
+    Key(Keyboard::KeyZ) => open_zed,
 )]
 pub struct NavLayer {}
 
@@ -231,7 +232,7 @@ impl AppLayer {
 #[derive(Laserbeam, Bind)]
 #[laserbeam(path = ChromeAppPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
-#[bind(Key("r") => refresh)]
+#[bind(Key(Keyboard::KeyR) => refresh)]
 pub struct ChromeApp {}
 
 /// A foregrounded app Mercury has no bindings for.
@@ -277,7 +278,7 @@ impl Mercury {
 
 /// A keyboard event for `key`.
 #[must_use]
-pub const fn key(key: &'static str) -> MercuryEvent {
+pub const fn key(key: Keyboard) -> MercuryEvent {
     MercuryEvent::Key(KeyEvent { key })
 }
 
@@ -350,5 +351,5 @@ fn passthru<P>(ev: &KeyEvent, _path: P) -> Vec<MercuryEffect> {
 
 /// `r` in Chrome's in-app layer: refresh (`cmd`+`r`).
 fn refresh(_ev: &KeyEvent, _path: ChromeAppPath) -> Vec<MercuryEffect> {
-    vec![MercuryEffect::Command("r")]
+    vec![MercuryEffect::Command(Keyboard::KeyR)]
 }

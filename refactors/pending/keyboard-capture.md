@@ -28,6 +28,8 @@ pub enum Error { Grab(..), Listen(..), Simulate(..) }
 
 `run` and `listen` both block the calling thread (rdev owns the run loop there), so the consumer runs them on their own `std::thread`. `run` swallows everything and re-emits are the consumer's job via `emit`; `emit` bumps a `SYNTHETIC` counter that `run`'s callback decrements so our own output is not fed back in.
 
+They return `Result<(), Error>` rather than a droppable handle because rdev cannot back a real one: `grab`/`listen` block, spin the `CFRunLoop` inline, and expose no stop and no "installed OK" signal, so there is nothing live to hand back. A guard you drop to stop is the right shape in the abstract, but on rdev it comes in two limited forms. Without unsafe, only a soft stop: `run` spawns the thread itself and returns a guard holding an `Arc<AtomicBool>` the callback checks; drop flips it and the callback goes transparent, but the tap and thread leak until process exit (so it stops remapping, not the capture), and a startup permission error surfaces asynchronously rather than from `run`. A real stop needs one `unsafe` core-foundation call: the callback stashes `CFRunLoopGetCurrent()` on first fire, drop calls `CFRunLoopStop`, `grab` returns, rdev drops the tap, the thread joins. That opts the module out of `forbid(unsafe_code)`, the same direction the emit self-feedback tag pushes (keyboard-emit.md), so the two travel together. v1 needs neither: its stop is `process::exit`, which releases the tap for free, so the blocking signature is right and the handle is a later-crate concern.
+
 ## v1 in mercury: swallow all, escape exits
 
 v1 grabs (`run`), swallows every key, and hardcodes one exception: escape exits the process. No per-key decision, no shared state. The whole capture source:
