@@ -22,25 +22,43 @@ pub struct KeyEvent {
     pub press: bool,
 }
 
-/// What can go wrong intercepting or emitting keys.
+/// The interceptor could not start, usually because Accessibility (or Input
+/// Monitoring) is not granted. The failure of [`run`], and only [`run`].
 #[derive(Debug)]
-pub enum Error {
-    /// Could not start the interceptor (usually missing permission).
-    Grab(rdev::GrabError),
-    /// Could not emit a key.
-    Simulate(rdev::SimulateError),
-}
+pub struct GrabError(rdev::GrabError);
 
-impl fmt::Display for Error {
+impl fmt::Display for GrabError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Grab(e) => write!(f, "could not intercept the keyboard: {e:?}"),
-            Self::Simulate(e) => write!(f, "could not emit a key: {e:?}"),
-        }
+        write!(f, "could not intercept the keyboard: {:?}", self.0)
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for GrabError {}
+
+/// The observer could not start, usually because Input Monitoring is not
+/// granted. The failure of [`listen`], and only [`listen`].
+#[derive(Debug)]
+pub struct ListenError(rdev::ListenError);
+
+impl fmt::Display for ListenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "could not observe the keyboard: {:?}", self.0)
+    }
+}
+
+impl std::error::Error for ListenError {}
+
+/// A key could not be emitted. The failure of [`emit`], and only [`emit`].
+#[derive(Debug)]
+pub struct SimulateError(rdev::SimulateError);
+
+impl fmt::Display for SimulateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "could not emit a key: {:?}", self.0)
+    }
+}
+
+impl std::error::Error for SimulateError {}
 
 // Keys we emit are counted here so [`run`] lets them through instead of feeding
 // our own output back into the callback. rdev does not tag synthetic events, so
@@ -54,9 +72,9 @@ static SYNTHETIC: AtomicUsize = AtomicUsize::new(0);
 ///
 /// # Errors
 ///
-/// Returns [`Error::Grab`] if the interceptor cannot start, which on macOS
+/// Returns [`GrabError`] if the interceptor cannot start, which on macOS
 /// usually means Accessibility or Input Monitoring is not granted.
-pub fn run(on_key: impl Fn(KeyEvent) + 'static) -> Result<(), Error> {
+pub fn run(on_key: impl Fn(KeyEvent) + 'static) -> Result<(), GrabError> {
     rdev::grab(move |event| {
         let (key, press) = match event.event_type {
             rdev::EventType::KeyPress(key) => (key, true),
@@ -71,7 +89,28 @@ pub fn run(on_key: impl Fn(KeyEvent) + 'static) -> Result<(), Error> {
         on_key(KeyEvent { key, press });
         None // swallow real keys; the consumer re-emits what it wants
     })
-    .map_err(Error::Grab)
+    .map_err(GrabError)
+}
+
+/// Observe the keyboard without swallowing anything.
+///
+/// Every key still reaches other apps, and a copy is handed to `on_key`. Safe to
+/// run (no hijack), the v1 path. Blocks the calling thread, so run it on its own.
+///
+/// # Errors
+///
+/// Returns [`ListenError`] if listening cannot start, which on macOS usually
+/// means Input Monitoring is not granted.
+pub fn listen(on_key: impl Fn(KeyEvent) + 'static) -> Result<(), ListenError> {
+    rdev::listen(move |event| {
+        let (key, press) = match event.event_type {
+            rdev::EventType::KeyPress(key) => (key, true),
+            rdev::EventType::KeyRelease(key) => (key, false),
+            _ => return,
+        };
+        on_key(KeyEvent { key, press });
+    })
+    .map_err(ListenError)
 }
 
 /// Emit a key, pressing and releasing it, as if typed. Marked so a running
@@ -79,10 +118,50 @@ pub fn run(on_key: impl Fn(KeyEvent) + 'static) -> Result<(), Error> {
 ///
 /// # Errors
 ///
-/// Returns [`Error::Simulate`] if the key could not be posted.
-pub fn emit(key: Key) -> Result<(), Error> {
+/// Returns [`SimulateError`] if the key could not be posted.
+pub fn emit(key: Key) -> Result<(), SimulateError> {
     SYNTHETIC.fetch_add(2, Ordering::SeqCst); // one for the press, one for the release
-    rdev::simulate(&rdev::EventType::KeyPress(key)).map_err(Error::Simulate)?;
-    rdev::simulate(&rdev::EventType::KeyRelease(key)).map_err(Error::Simulate)?;
+    rdev::simulate(&rdev::EventType::KeyPress(key)).map_err(SimulateError)?;
+    rdev::simulate(&rdev::EventType::KeyRelease(key)).map_err(SimulateError)?;
     Ok(())
+}
+
+/// A stable lowercase name for a key, or `None` if it has no simple name.
+///
+/// Lets consumers bind by name (`"a"`, `"space"`, `"escape"`) instead of matching
+/// platform key codes.
+#[must_use]
+pub const fn name(key: Key) -> Option<&'static str> {
+    Some(match key {
+        Key::KeyA => "a",
+        Key::KeyB => "b",
+        Key::KeyC => "c",
+        Key::KeyD => "d",
+        Key::KeyE => "e",
+        Key::KeyF => "f",
+        Key::KeyG => "g",
+        Key::KeyH => "h",
+        Key::KeyI => "i",
+        Key::KeyJ => "j",
+        Key::KeyK => "k",
+        Key::KeyL => "l",
+        Key::KeyM => "m",
+        Key::KeyN => "n",
+        Key::KeyO => "o",
+        Key::KeyP => "p",
+        Key::KeyQ => "q",
+        Key::KeyR => "r",
+        Key::KeyS => "s",
+        Key::KeyT => "t",
+        Key::KeyU => "u",
+        Key::KeyV => "v",
+        Key::KeyW => "w",
+        Key::KeyX => "x",
+        Key::KeyY => "y",
+        Key::KeyZ => "z",
+        Key::Space => "space",
+        Key::Escape => "escape",
+        Key::Return => "return",
+        _ => return None,
+    })
 }
