@@ -1,21 +1,21 @@
-//! Mercury's runnable v1: watch the keyboard (no hijack) and drive the model.
+//! Mercury's runnable v1: grab the keyboard and drive the model.
 //!
-//! `freddie_keyboard::listen` observes keys without swallowing them, so this is
-//! safe to run: every key still works normally, and a copy drives Mercury's
-//! layers. Three loops over two tokio channels: the keyboard source forwards key
-//! events; the event loop dispatches (mutating state, producing effects); the
-//! effect loop performs them (v1 prints, and a `Foreground` reports itself back,
-//! standing in for the OS foreground watcher). `escape` quits; a 5-second timer
-//! also quits (10-second hard backstop).
+//! `freddie_keyboard::run` swallows every key and hands it to the model. Three
+//! loops over two tokio channels: the keyboard source forwards key-downs; the
+//! event loop dispatches (mutating state, producing effects); the effect loop
+//! performs them (re-emitting keys, and a `Foreground` reports itself back,
+//! standing in for the OS foreground watcher). `escape` exits from the capture
+//! callback (the way out of a full hijack); a 5-second timer is the backstop
+//! (10-second hard exit).
 //!
-//! On macOS this needs Input Monitoring granted to the terminal (or the built
-//! app).
+//! On macOS this needs Accessibility (and Input Monitoring) granted to the
+//! terminal (or the built app).
 //!
 //! `cargo run -p mercury`
 
 use std::time::Duration;
 
-use mercury::{AppLayer, Layer, Mercury, MercuryEffect, MercuryEvent, foreground, key};
+use mercury::{AppLayer, Keyboard, Layer, Mercury, MercuryEffect, MercuryEvent, foreground, key};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 #[tokio::main(flavor = "current_thread")]
@@ -27,22 +27,25 @@ async fn main() {
     spawn_killswitch(effect_tx.clone());
     tokio::spawn(run_effect_loop(effect_rx, event_tx.clone()));
 
-    println!("mercury: watching the keyboard (not hijacked); q in home or 5s quits");
+    println!("mercury: hijacking the keyboard; escape quits (5s backstop)");
     run_event_loop(Mercury::default(), event_rx, effect_tx).await;
 }
 
-/// Source: watch the keyboard on its own thread and forward each key-down as a
-/// Mercury key event. Observing only (no swallow), so the keyboard still works.
+/// Source: grab the keyboard on its own thread, swallowing every key and
+/// forwarding each key-down to the model. `escape` exits the process, which is the
+/// one way out of a full hijack and does not depend on the model or the channel.
 fn spawn_keyboard_source(event_tx: UnboundedSender<MercuryEvent>) {
     std::thread::spawn(move || {
-        let listened = freddie_keyboard::listen(move |ev| {
-            if !ev.press {
-                return; // v1 dispatches on key-down
+        let grabbed = freddie_keyboard::run(move |ev| {
+            if ev.key == Keyboard::Escape {
+                std::process::exit(0);
             }
-            let _ = event_tx.send(key(ev.key));
+            if ev.down {
+                let _ = event_tx.send(key(ev.key));
+            }
         });
-        if let Err(e) = listened {
-            eprintln!("keyboard: {e}"); // usually Input Monitoring is not granted
+        if let Err(e) = grabbed {
+            eprintln!("keyboard: {e}"); // usually Accessibility is not granted
         }
     });
 }
@@ -122,8 +125,16 @@ fn perform_effect(effect: &MercuryEffect, event_tx: &UnboundedSender<MercuryEven
             println!("foreground {app:?}");
             let _ = event_tx.send(foreground(*app));
         }
-        MercuryEffect::Type(s) => println!("printed {s:?}"),
-        MercuryEffect::Command(k) => println!("send cmd+{k:?}"),
+        MercuryEffect::Type(k) => {
+            if let Err(e) = freddie_keyboard::emit(*k) {
+                eprintln!("emit: {e}");
+            }
+        }
+        MercuryEffect::Command(k) => {
+            if let Err(e) = freddie_keyboard::emit_chord(&[Keyboard::MetaLeft], *k) {
+                eprintln!("emit: {e}");
+            }
+        }
         MercuryEffect::Kill => {
             println!("kill: exiting");
             std::process::exit(0);

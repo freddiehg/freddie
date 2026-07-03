@@ -1,13 +1,17 @@
 [package]
 name = "freddie_keyboard"
-description = "Keyboard interception and emission for freddie, wrapping rdev."
+description = "Keyboard capture and emission for freddie, over the freddie_keys vocabulary."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
-rdev = { version = "0.5", features = ["unstable_grab"] }
+freddie_keys = { path = "../freddie_keys", version = "0.0.1" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = { version = "0.25", features = ["link"] }
+core-foundation = { version = "0.10", features = ["link"] }
 
 [lints]
 workspace = true

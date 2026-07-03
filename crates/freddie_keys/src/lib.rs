@@ -118,7 +118,7 @@ pub enum Keyboard {
 }
 
 /// A key going down or coming up.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct KeyEvent {
     /// Which key.
     pub key: Keyboard,

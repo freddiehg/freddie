@@ -1,127 +1,81 @@
-//! Keyboard interception and emission for freddie.
+//! Keyboard capture and emission for freddie, over the `freddie_keys` vocabulary.
 //!
-//! [`run`] intercepts the keyboard: every key is swallowed at the OS level and
-//! handed to your callback, so nothing reaches other apps unless you re-emit it
-//! with [`emit`]. This wraps `rdev`, so the platform specifics (a `CGEventTap` on
-//! macOS, hooks elsewhere) stay here and the rest of freddie never sees them.
+//! An OS-agnostic API ([`run`], [`emit`], [`emit_chord`]) with the OS-specific
+//! work behind it. v1 ships one backend, macOS on `core-graphics`; Linux and
+//! Windows backends slot in behind `cfg` later. Nothing above this crate sees a
+//! platform type.
 //!
-//! On macOS this needs Accessibility (and Input Monitoring) granted to whatever
+//! On macOS `run` needs Accessibility (and Input Monitoring) granted to whatever
 //! launches the binary.
 
 use std::fmt;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-pub use rdev::Key;
+pub use freddie_keys::{KeyEvent, Keyboard};
 
-/// A key going down (`press`) or coming up.
-#[derive(Clone, Copy, Debug)]
-pub struct KeyEvent {
-    /// Which physical key.
-    pub key: Key,
-    /// `true` on key-down, `false` on key-up.
-    pub press: bool,
-}
+mod sys;
 
-/// The interceptor could not start, usually because Accessibility (or Input
-/// Monitoring) is not granted. The failure of [`run`], and only [`run`].
+/// The keyboard could not be intercepted. On macOS this usually means
+/// Accessibility (or Input Monitoring) is not granted.
 #[derive(Debug)]
-pub struct GrabError(rdev::GrabError);
+pub struct CaptureError;
 
-impl fmt::Display for GrabError {
+impl fmt::Display for CaptureError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "could not intercept the keyboard: {:?}", self.0)
+        f.write_str("could not intercept the keyboard (is Accessibility granted?)")
     }
 }
 
-impl std::error::Error for GrabError {}
+impl std::error::Error for CaptureError {}
 
-/// The observer could not start, usually because Input Monitoring is not
-/// granted. The failure of [`listen`], and only [`listen`].
+/// A key could not be emitted.
 #[derive(Debug)]
-pub struct ListenError(rdev::ListenError);
+pub enum EmitError {
+    /// The event source could not be created.
+    Source,
+    /// The key event could not be built or posted.
+    Post,
+    /// This key has no code on this OS, so it cannot be emitted.
+    Unmappable(Keyboard),
+}
 
-impl fmt::Display for ListenError {
+impl fmt::Display for EmitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "could not observe the keyboard: {:?}", self.0)
+        match self {
+            Self::Source => f.write_str("could not create the event source"),
+            Self::Post => f.write_str("could not build or post the key event"),
+            Self::Unmappable(key) => write!(f, "{key:?} has no key code on this OS"),
+        }
     }
 }
 
-impl std::error::Error for ListenError {}
+impl std::error::Error for EmitError {}
 
-/// A key could not be emitted. The failure of [`emit`], and only [`emit`].
-#[derive(Debug)]
-pub struct SimulateError(rdev::SimulateError);
-
-impl fmt::Display for SimulateError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "could not emit a key: {:?}", self.0)
-    }
-}
-
-impl std::error::Error for SimulateError {}
-
-// Keys we emit are counted here so [`run`] lets them through instead of feeding
-// our own output back into the callback. rdev does not tag synthetic events, so
-// this stands in for the `kCGEventSourceUserData` marker a raw tap would use.
-static SYNTHETIC: AtomicUsize = AtomicUsize::new(0);
-
-/// Intercept the keyboard, swallowing every key and handing it to `on_key`.
+/// Intercept the keyboard, swallowing every key and handing each to `on_key`.
 ///
 /// Blocks the calling thread (the OS delivers keys on it), so run it on its own
 /// thread. Nothing reaches other apps unless a key is re-emitted with [`emit`].
 ///
 /// # Errors
 ///
-/// Returns [`GrabError`] if the interceptor cannot start, which on macOS
-/// usually means Accessibility or Input Monitoring is not granted.
-pub fn run(on_key: impl Fn(KeyEvent) + 'static) -> Result<(), GrabError> {
-    rdev::grab(move |event| {
-        let (key, press) = match event.event_type {
-            rdev::EventType::KeyPress(key) => (key, true),
-            rdev::EventType::KeyRelease(key) => (key, false),
-            _ => return Some(event), // not a key; leave it untouched
-        };
-        // Our own emitted key: let it through once and stop counting it.
-        if SYNTHETIC.load(Ordering::SeqCst) > 0 {
-            SYNTHETIC.fetch_sub(1, Ordering::SeqCst);
-            return Some(event);
-        }
-        on_key(KeyEvent { key, press });
-        None // swallow real keys; the consumer re-emits what it wants
-    })
-    .map_err(GrabError)
+/// Returns [`CaptureError`] if the interceptor cannot start.
+pub fn run(on_key: impl Fn(KeyEvent) + Send + 'static) -> Result<(), CaptureError> {
+    sys::run(on_key)
 }
 
-/// Observe the keyboard without swallowing anything.
-///
-/// Every key still reaches other apps, and a copy is handed to `on_key`. Safe to
-/// run (no hijack), the v1 path. Blocks the calling thread, so run it on its own.
+/// Emit a key, pressing then releasing it, tagged so a running [`run`] ignores it.
 ///
 /// # Errors
 ///
-/// Returns [`ListenError`] if listening cannot start, which on macOS usually
-/// means Input Monitoring is not granted.
-pub fn listen(on_key: impl Fn(KeyEvent) + 'static) -> Result<(), ListenError> {
-    rdev::listen(move |event| {
-        let (key, press) = match event.event_type {
-            rdev::EventType::KeyPress(key) => (key, true),
-            rdev::EventType::KeyRelease(key) => (key, false),
-            _ => return,
-        };
-        on_key(KeyEvent { key, press });
-    })
-    .map_err(ListenError)
+/// Returns [`EmitError`] if the key has no code on this OS or could not be posted.
+pub fn emit(key: Keyboard) -> Result<(), EmitError> {
+    sys::emit(key)
 }
 
-/// Emit a key, pressing and releasing it, as if typed. Marked so a running
-/// [`run`] interceptor lets it through instead of re-handling it.
+/// Emit `key` with `mods` held around it (a chord like cmd+r), tagged like [`emit`].
 ///
 /// # Errors
 ///
-/// Returns [`SimulateError`] if the key could not be posted.
-pub fn emit(key: Key) -> Result<(), SimulateError> {
-    SYNTHETIC.fetch_add(2, Ordering::SeqCst); // one for the press, one for the release
-    rdev::simulate(&rdev::EventType::KeyPress(key)).map_err(SimulateError)?;
-    rdev::simulate(&rdev::EventType::KeyRelease(key)).map_err(SimulateError)?;
-    Ok(())
+/// Returns [`EmitError`] if a key has no code on this OS or could not be posted.
+pub fn emit_chord(mods: &[Keyboard], key: Keyboard) -> Result<(), EmitError> {
+    sys::emit_chord(mods, key)
 }
