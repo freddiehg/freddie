@@ -1,19 +1,22 @@
 # passing keys through unchanged
 
-A remapper does nothing to most keys: a few are remapped or consumed, and the rest should reach the app as if the remapper were not there. How to model "these keys pass through unchanged" is the question. There are two shapes, and they interact with dispatch and with whether the keyboard is actually hijacked.
+A remapper leaves most keys alone: a few are remapped or consumed, and the rest should reach the app as if it were not there. Two things to settle: how the runner performs passthrough, and how the model expresses it. The first has a hard constraint that mostly decides the second.
 
-## Two meanings, by mode
+## Passthrough must stay on the ordered path
 
-Passthrough means different things depending on whether the tap swallows:
+The tempting shortcut is to pass an untouched key straight through the tap (native, synchronous) and only swallow the keys you remap. It reorders. Swallowing is async: a swallowed key takes the channel round-trip through dispatch and comes back out as a re-emit, while a natively-passed key reaches the app immediately. So if `a` passes natively and `b` is remapped to `B`, typing `a b a` can land as `a a B`: both `a`s go straight through while `B` is still in flight. The moment any key on a layer is remapped, passing the other keys natively is unsound.
 
-- Listen (v1): nothing is swallowed, so a key reaches the app on its own. Passthrough is a no-op; modeling it only marks the key as handled.
-- Hijack: everything is swallowed, so passthrough means re-emit the key identically (synthesize it). Passthrough is a real effect.
+There is one correct model: swallow everything, and put every key on the single ordered effect pipeline. Passthrough is then a real effect (re-emit the key identically), not a native pass, and it stays in order with the remaps because it is on the same path. This is why the "swallow only what's bound" optimization and its `ArcSwap` are out (keyboard-capture.md): they exist to pass unbound keys natively, which is exactly what reorders.
 
-So the model has to produce something the effect handler turns into a re-emit under hijack and drops under listen. The simplest is one effect, `Passthru(key)` (mercury currently reuses `Type(key)`), that the effect loop re-emits or ignores per mode.
+The cost is a channel round-trip plus a re-emit per passed key. For a single keyboard that is microseconds, well under perception (event-loop.md), so ordering correctness beats the native-pass shortcut.
+
+## What still varies: how the model expresses it
+
+Performance is now the same either way (every key is swallowed and re-emitted in order). The only open question is whether the model declares passthrough or leaves it implicit.
 
 ## Shape 1: an explicit wildcard bind
 
-What mercury does today: a layer binds `AnyKey => passthru`, a wildcard trigger that matches any key, and `passthru` emits the key.
+What mercury does today: a layer binds `AnyKey => passthru`, a wildcard trigger that matches any key, and `passthru` re-emits it.
 
 - It reads well: "in typing, any key passes through."
 - But dispatch is child-first, so a leaf catch-all shadows ancestor binds. A global `escape` bound on the parent `Layer` never fires under a leaf that matches everything, so mercury excludes `escape` from `AnyKey`. That is a wart: the wildcard has to know about the globals above it.
@@ -21,32 +24,27 @@ What mercury does today: a layer binds `AnyKey => passthru`, a wildcard trigger 
 
 ## Shape 2: passthrough as the default
 
-The alternative: do not bind passthrough at all. Treat an unhandled event (dispatch returns `None`) as passthrough, and have the runner re-emit it. A layer then binds only the keys it changes or consumes; everything else falls through and is passed.
+The alternative: do not bind passthrough at all. Treat an unhandled event (dispatch returns `None`) as passthrough, and have the runner re-emit it. A layer then binds only the keys it changes or consumes; everything else falls through and is re-emitted.
 
 - No wildcard and no exclusions. A leaf that binds nothing lets every key bubble, so an ancestor's `escape` still fires, and a key unbound past that is re-emitted by the runner.
-- "Consume this key" (swallow, no passthrough) becomes an explicit bind to a handler that returns no effect. The three outcomes are then clear: unbound is passthrough, bound-to-nothing is swallowed, bound-to-something is remapped.
+- "Consume this key" (swallow, no re-emit) becomes an explicit bind to a handler that returns no effect. The three outcomes are then clear: unbound is passthrough (re-emit), bound-to-nothing is swallowed silent, bound-to-something is remapped.
 - Per-key exceptions are just binds; no ordering trick.
 - Cost: passthrough is implicit. You cannot see "this layer passes the rest through" in the binds, because it is the absence of binds. And the runner has to know the original key to re-emit, so the event has to carry it.
 
-## Dispatch interaction
+Both shapes now perform passthrough identically (swallow, then re-emit in order). The difference is only whether the pass-through set is visible in the binds or is the unbound default.
 
-Both shapes live under child-first dispatch, where a child's bind beats an ancestor's. Shape 1 fights it: a catch-all leaf shadows ancestors, hence the exclusions. Shape 2 works with it: leaves bind little, and ancestors plus the default catch the rest. That is the main reason to prefer shape 2 for a remapper, where passthrough is the common case and remaps are the exception.
+## Explicit Passthru bind
 
-## How it could work (post-v1)
-
-Two levers, and the second is the real win:
-
-- Swallow only what the state binds; pass the rest. The tap callback returns the original event (pass) or drops it (swallow). If it swallows only the keys the current state binds and passes the rest, an unbound key continues natively: no swallow, no re-emit, no dispatch, just the callback firing and a set lookup. The callback needs the active trigger set to decide, which is what `accumulate` produces; share it with the tap thread and update it on state change. This is the perf win: passthrough is the common case, and now it costs a lookup instead of a channel round-trip plus a synthesized re-emit.
-- Not firing the callback at all. A `CGEventTap` fires for every key of its type; you cannot ask it to skip specific keycodes. The only way the OS passes keys without handing them to you is to register just the ones you want (`RegisterEventHotKey`), so the rest never reach the process. But that is for fixed hotkey combos, not layer-based remapping, and you would re-register on every layer change. Not worth it for a modal remapper.
-
-So the model shifts from "swallow everything and re-emit passthrough" to "swallow only what the state binds and pass the rest." That makes the swallow decision synchronous in the tap (it reads the active set), while dispatch of the swallowed keys stays async.
-
-Explicit passthrough still has a role on top of this. A bind whose target is `Passthru` rather than a handler (`Key("x") => Passthru`) is how a child overrides an ancestor that remaps `x`: that key is in the active set, so it is swallowed and dispatched, and dispatch re-emits it. Implicit passthrough (a key nobody binds) is the unbound default, passed natively by the tap. So `bind` binds an enum of handler-or-passthrough.
+A bind whose target is `Passthru` rather than a handler (`Key("x") => Passthru`) is how a child overrides an ancestor that remaps `x`: `x` is bound, so it is swallowed and dispatched like anything else, and dispatch re-emits it in order. So `bind` binds an enum of handler-or-passthrough. This is orthogonal to shapes 1 and 2: it is how you say "on this layer, ignore the ancestor's remap of this key and pass it," and it rides the same ordered pipeline.
 
 ## A middle case: pass a named set through
 
 "These specific keys pass through, and nothing else here is bound" is either a small group trigger (`OneOf(["a", "s", "d"]) => passthru`, shape 1 without the catch-all problem, since it does not match the globals) or, under shape 2, just those keys left unbound. The group trigger is worth it only when you want the passed-through set to be visible in the binds.
 
+## Dispatch interaction
+
+Both shapes live under child-first dispatch, where a child's bind beats an ancestor's. Shape 1 fights it: a catch-all leaf shadows ancestors, hence the exclusions. Shape 2 works with it: leaves bind little, and ancestors plus the default catch the rest. That is the main reason to prefer shape 2 for a remapper, where passthrough is the common case and remaps are the exception.
+
 ## Recommendation
 
-For a remapper, shape 2 (passthrough is the default and the runner re-emits unbound keys) is the better fit: it matches the common case, avoids the wildcard-versus-global wart, and makes remaps and consumes explicit. Shape 1 stays useful when a layer should visibly declare "everything here passes through" as a binding rather than an absence. mercury uses shape 1 (`AnyKey => passthru`) today; moving to shape 2 drops the `AnyKey` exclusion and adds one step to the runner: on a `None` from dispatch, re-emit the key.
+For a remapper, shape 2 (passthrough is the default and the runner re-emits unbound keys) fits best: it matches the common case, avoids the wildcard-versus-global wart, and makes remaps and consumes explicit. Shape 1 stays useful when a layer should visibly declare "everything here passes through" as a binding rather than an absence. mercury uses shape 1 (`AnyKey => passthru`) today; moving to shape 2 drops the `AnyKey` exclusion and adds one step to the runner: on a `None` from dispatch, re-emit the key. Either way, passthrough is a re-emit on the ordered pipeline, never a native pass.

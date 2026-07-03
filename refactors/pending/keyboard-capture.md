@@ -69,18 +69,11 @@ This is by design, but it has to be confirmed live: run mercury grabbing, press 
 - v1 has no repeat feature. It does nothing to synthesize repeats and nothing special with the OS's own repeated `KeyPress`.
 - Post-v1: if a held key should re-fire its output at a chosen rate, that is a "send an event every X ms while the key is held" timer loop in the consumer, started on `KeyPress` and stopped on `KeyRelease`, not something read off OS auto-repeat. Deliberately a consumer concern, not the crate's.
 
-## v2: swallow only what's bound
+## Why swallow-all is permanent, not just v1
 
-Swallowing everything means every passed-through key is a channel round-trip plus a re-emit (keyboard-emit.md). The optimization is to swallow only the keys the active state binds and pass the rest natively (passthrough.md), so passthrough costs a set lookup, not a re-emit. That requires `run` to let the callback return `Some` (pass) or `None` (swallow) per key, which it does not yet expose.
+The obvious optimization is to swallow only the keys the active state binds and pass the rest natively, so passthrough costs a set lookup instead of a channel round-trip. It is unsound. Passing a key natively is synchronous; a swallowed remap is async (channel round-trip, then re-emit), so the two paths reorder. Type `a b a` with `a` passed natively and `b` remapped to `B` and it can land as `a a B`: both `a`s go straight through while `B` is still in flight. Once any key on a layer is remapped, passing the others natively reorders them (passthrough.md).
 
-To decide per key, the callback needs the active trigger set:
-
-- `bind::accumulate` computes the set from the current state.
-- The dispatch loop publishes it to the callback through a shared cell it updates on every state change (`arc_swap::ArcSwap<HashSet<Trigger>>`, or `Arc<Mutex<_>>`). The callback loads and looks up. This is the only reason ArcSwap enters the picture.
-- Bound key: swallow, send to the channel; dispatch's effects (a remap, or an explicit `Passthru` re-emit) come out the effect side.
-- Unbound key: pass natively; it never enters the loop.
-
-The swallow decision stays synchronous in the callback while dispatch stays async. The one subtlety is staleness: the set the callback sees lags the true state by one update if a key lands mid-transition. For a single keyboard that window is negligible, which is why the set is published atomically rather than locked.
+So swallow-all is not a v1 shortcut; it is the correct model whenever remapping is possible. Every key goes through the one ordered pipeline: v1 prints, the real remapper re-emits unremapped keys and emits remaps, both in order. This also retires the "swallow only what's bound" idea and the `accumulate`-in-callback / `ArcSwap` machinery whose only purpose was the native-pass decision.
 
 ## Events rdev delivers
 
