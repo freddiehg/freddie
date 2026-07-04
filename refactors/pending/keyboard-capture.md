@@ -1,181 +1,191 @@
 # capturing keyboard events
 
-Three primitives: capture, emit, drop. A `Capture` intercepts keys while it is alive; `emit` posts a key or chord; dropping the `Capture` releases its keys. Multiple captures stack and work together.
+Three primitives: capture, emit, drop. A `Capture` grabs the keyboard, delivers the keys it intercepts, and emits keys back; dropping it releases. Multiple captures stack.
 
 ## The API
 
 ```rust
 // freddie_keyboard
 
-pub use freddie_keys::{Keyboard, KeyEvent};
+pub use freddie_keys::{Key, KeyEvent};
 
 pub struct Capture(/* private */);
 impl Capture {
-    pub fn grab() -> Result<Capture, CaptureError>;   // capture every key
+    // Grab every key; `on_key` runs per intercepted key. Drop the Capture to release.
+    pub fn grab(on_key: impl Fn(KeyEvent) + Send + 'static) -> Result<Capture, CaptureError>;
     pub fn builder() -> Builder;                       // capture only chosen keys
-    pub fn recv(&self) -> Option<KeyEvent>;            // blocks; None once released
+
+    pub fn tap(&self, key: Key) -> Result<(), EmitError>;      // press then release
+    pub fn press(&self, key: Key) -> Result<Press, EmitError>; // held; released when the last handle drops
 }
-impl Iterator for Capture { type Item = KeyEvent; }   // for key in capture
-// impl Drop for Capture: releases its keys.
 
 pub struct Builder(/* private */);
 impl Builder {
-    pub fn key(self, key: Keyboard) -> Builder;
-    pub fn grab(self) -> Result<Capture, CaptureError>;
+    pub fn key(self, key: Key) -> Builder;
+    pub fn grab(self, on_key: impl Fn(KeyEvent) + Send + 'static) -> Result<Capture, CaptureError>;
 }
 
-pub fn tap(key: Keyboard) -> Result<(), EmitError>;         // press then release; returns nothing
-pub fn press(key: Keyboard) -> Result<Press, EmitError>;    // held until the last Press for this key drops
-pub struct Press(/* ref-counted hold on the key */);
-// impl Drop for Press: the last one out releases the key.
+pub struct Press(/* private */);
+impl Clone for Press;   // another handle keeping the key down
+// impl Drop for Press: the last handle releases the key.
 
-pub struct CaptureError;                       // Display + Error
-pub enum EmitError { Source, Post, Unmappable(Keyboard) }
-```
-
-This is a general keyboard library; mercury is one consumer. The library carries the whole surface (capture-all, the selective `builder`, and held presses) so others can use it; mercury exercises only `Capture::grab()` and `tap`.
-
-Everything is individual key events, and there are no chords as a real thing. `tap` presses and releases a key and returns nothing. `press` presses a key and returns a `Press`; the key is released when that `Press` drops. Presses of the same key are ref-counted, so it stays down until the last `Press` drops, and a crash or early return releases everything held. That guard is the only concession to chords: cmd+r is `let _cmd = press(cmd)?; tap(r)?;`, with `_cmd` releasing cmd at the end of the scope. No `Chord` type, no modifier list.
-
-`recv` is a blocking sync call, and the internal channel should be a runtime-agnostic async one (`flume`, `async-channel`), not `std::sync::mpsc`. Its `send` stays sync for the tap thread, `recv` blocks for a plain consumer, and `recv_async` awaits in a tokio task. That is one channel hop, the same as wiring tokio in from the start, but without baking tokio into the library. Draining a `std::sync::mpsc` into a tokio channel on a bridge thread is a second hop and an extra thread for nothing. At keyboard rates none of this is measurable, microseconds against tens of milliseconds between keys, so the single hop is worth it for fewer moving parts, not speed.
-
-```rust
-let all  = Capture::grab()?;                                  // every key
-let some = Capture::builder().key(KeyR).key(KeyN).grab()?;    // R and N; the rest pass through
-```
-
-## Stacking
-
-Several captures coexist. Each key is routed to at most one of them; a key no capture asked for passes through to the app.
-
-- `Capture::grab()` takes every key.
-- `Capture::builder()...grab()` takes only its listed keys and lets the rest through.
-- The set intercepted is the union of every live capture's keys.
-- A key more than one capture asked for goes to the newest.
-- Dropping a capture removes its keys from the union, so they pass through again (or fall to an older capture that also asked for them).
-
-That is what "they stack and transparently work together" means: two selective captures over different keys each get their own, and everything else is untouched. A capture-all sits under them and takes whatever they did not claim.
-
-One shared tap, one registry, and a pure router carry this:
-
-```rust
-// captures registered newest-first; grab() registers a wildcard.
-fn route(reg: &Registry, key: Keyboard) -> Option<CaptureId> {
-    reg.newest_owner(key)   // Some(id): that capture swallows + receives it. None: pass through.
+pub struct CaptureError;                 // Display + Error
+pub enum EmitError {
+    Unmappable(Key),   // no key code on this OS (a named F21-F24; Raw always has a code)
+    Post,              // the OS refused to build or post the event
 }
 ```
 
-The tap installs on the first `grab` and tears down when the last capture drops. The registry adds a capture's keys on `grab` and removes them on drop.
+You provide `on_key` when you grab, so keys are never buffered inside freddie_keyboard; each is handled the moment it arrives. `on_key` runs on the capture thread, so keep it to a forward and do the work elsewhere: mercury sends the key into a tokio channel and dispatches in its event loop, which is how the whole thing stays tokio-friendly without freddie_keyboard owning a runtime. `on_key` is `Send + 'static`; emit (`tap`/`press`) runs on your own thread through the `Capture`, not inside `on_key`. `Capture` and `Press` use `Rc` and are `!Send`; a `send` Cargo feature swaps `Rc` for `Arc` (README TODO).
 
-The builder only lists `Keyboard` values, so a selective capture's set is exactly those keys. Whether to also cap `grab`'s wildcard to keys the table knows is open, and not needed for v1.
+A pull form is also exposed, and it is a footgun: a grab whose keys you drain yourself. Convenient, but it buffers unboundedly if you fall behind, so `on_key` is the default and the pull form is opt-in.
+
+`Key` is one enum, every key a variant (`Key::KeyR`, `Key::Escape`, `Key::MetaLeft`, `Key::Raw(u16)`), so keys match, hash, and pass uniformly. Separate per-key structs would block all of that.
+
+`KeyEvent` is `{ key: Key, down: bool }`: which key, and whether it went down or up. Nothing else. Keyboards are not velocity-sensitive (that is MIDI), and the auto-repeat flag and timestamp the OS also exposes are not relevant to v1.
+
+## tap, press, and holding
+
+`tap(key)` presses and releases. `press(key)` presses and returns a `Press` that releases the key when it drops. Held keys are ref-counted per key: pressing a key already held (a second `press`, or `Press::clone`) does not re-press it, and it stays down until the last handle drops. A crash or early return drops the handles and frees everything held.
+
+The per-key count and the event source live in the `Capture`. A `Press` holds a reference into that state (an `Rc` the `Capture` also holds) plus its key; `Press::clone` adds a holder, `Press::drop` removes one and emits the release at zero.
+
+There are no chords. cmd+r is composed:
+
+```rust
+let _cmd = capture.press(Key::MetaLeft)?;   // cmd down, held
+capture.tap(Key::KeyR)?;                      // r down, r up
+// _cmd drops at scope end: cmd up
+```
+
+```rust
+// Rc<HeldState> lives in Capture; each Press clones it. Mutex/Arc under the `send` feature.
+struct HeldState { counts: RefCell<HashMap<Key, usize>>, source: CGEventSource }
+pub struct Press { state: Rc<HeldState>, key: Key }
+
+impl Capture {
+    pub fn press(&self, key: Key) -> Result<Press, EmitError> {
+        let code = to_code(key).ok_or(EmitError::Unmappable(key))?;
+        let mut counts = self.state.counts.borrow_mut();
+        let n = counts.entry(key).or_insert(0);
+        if *n == 0 { post(&self.state.source, code, /* down */ true)?; }   // 0 -> 1: key-down, tagged
+        *n += 1;
+        Ok(Press { state: self.state.clone(), key })
+    }
+}
+impl Drop for Press {
+    fn drop(&mut self) {
+        let n = self.state.counts.borrow_mut().entry(self.key).or_insert(0);
+        *n -= 1;
+        if *n == 0 { let _ = to_code(self.key).map(|c| post(&self.state.source, c, false)); }
+    }
+}
+```
+
+## EmitError
+
+- `Unmappable(key)`: the key has no key code on this OS. Named keys like F21-F24 on macOS. `Key::Raw(code)` always has a code, so it is never `Unmappable`.
+- `Post`: the OS refused to build or post the event.
+
+The source is created once at `grab`, so a source failure is a `CaptureError` there, not an `EmitError`.
+
+## Pipeline
+
+Captures form a pipeline, not a fan-out. A physical key enters the first stage; that stage's `on_key` runs and emits a possibly changed key; the next stage captures that emit and emits again; the last stage's output reaches the app. Each `grab` (or `builder().grab`) adds a stage.
+
+- Only the first stage sees the raw key; every later stage sees the output of the stage before it.
+- A stage ignores its own emit and handles everything else, so it never re-handles what it just produced but does handle the stage before it.
+- A `builder` stage only captures its listed keys; keys it does not list flow past to the next stage untouched.
+- New stages attach at the end, downstream and nearest the app, so existing stages transform first and the new stage sees the already-modified keys. You cannot insert into the middle.
+- Dropping a stage removes it and the pipeline closes the gap. You still cannot insert into the middle afterward, only at the end.
+
+Two stages that touch different keys leave each other's keys alone. A stage that maps caps-lock to escape, followed by one that maps escape onward, chains: caps-lock becomes escape becomes whatever the second stage makes it.
+
+Each stage is its own OS tap, not a shared one, which is what lets the pipeline cross processes: on macOS the event-tap chain is global, so a stage in another process is already in the line and the same-process stages are just the part we own. Cross-process is the goal; the same-process pipeline is the requirement.
 
 ## Unit tests
 
-Routing is a pure function over the registry, so the multi-capture behavior is unit-tested with no tap:
+The pipeline threading is a pure function over the ordered stages, unit-tested with no tap:
 
-- Two captures over disjoint keys: each routes to its own; a third key routes to `None` (passthrough).
-- A capture-all plus a selective capture: the selective one owns its keys (newest), the capture-all owns the rest.
-- Overlapping keys route to the most-recently-grabbed capture.
-- After dropping a capture, its keys route to `None`, or to an older capture that also registered them.
+- Two stages, A->B then B->C: a raw A comes out the far end as C.
+- A stage leaves keys it does not touch alone, so they reach the next stage unchanged.
+- Three stages, drop the middle: the pipeline reconnects, first straight to last.
+- A new stage lands at the end, after every existing stage, never in the middle.
 
 ## Loop prevention
 
-`emit` stamps each event's `USER_DATA` field with a module constant; `route` short-circuits a tagged event to `Keep` and never routes it. Without that, `emit` posts a key, the tap sees it, routes and re-dispatches it, which emits again. It is loop-prevention, not passthrough.
+Each stage stamps its emits with its own tag in the `USER_DATA` field and passes an event carrying that tag straight through instead of re-handling it, so a stage never re-captures its own output while the next stage still does. Without it a stage would emit a key, see it, and emit again forever.
 
 ## The macOS backend
 
-```rust
-// grab(): register the capture, install the shared tap once, hand back the receiver.
-CGEventTap::with_enabled(
-    Session, HeadInsertEventTap, Default, [KeyDown, KeyUp],
-    |_, kind, event| {
-        if event.field(USER_DATA) == TAG { return Keep; }        // our own emit
-        let key = from_code(event.field(KEYCODE));
-        match key.and_then(|k| route(&registry, k)) {
-            Some(id) => { registry.send(id, KeyEvent { key, down }); Drop }
-            None     => Keep,                                     // no capture wants it
-        }
-    },
-    || { ready.send(CFRunLoop::get_current()); CFRunLoop::run_current(); },
-);
-```
-
-`with_enabled` does the run-loop wiring inside core-graphics, so we call no `unsafe`. `CFRunLoop` is `Send`, so dropping the last capture stops the loop from any thread. A process exit or `kill -9` also releases the tap, since the WindowServer drops taps for dead processes.
-
-## Emitting
-
-Held keys are ref-counted per key: `press` holds, and the last `Press` to drop releases. Default is `Rc` with a thread-local map, so `Press` is `!Send` and emitting stays on one thread. An `arc` Cargo feature swaps `Rc` for `Arc` and the thread-local `RefCell` for a `static Mutex`, making `Press: Send` for consumers that emit from several threads.
+Each stage is its own `CGEventTap`, appended to the chain so it sits downstream of the existing stages. Its callback:
 
 ```rust
-thread_local! { static HELD: RefCell<HashMap<Keyboard, Weak<Hold>>>; }   // Mutex under `arc`
-
-pub fn press(key: Keyboard) -> Result<Press, EmitError> {
-    let code = to_code(key).ok_or(EmitError::Unmappable(key))?;
-    HELD.with_borrow_mut(|held| {
-        if let Some(hold) = held.get(&key).and_then(Weak::upgrade) {
-            return Ok(Press(hold));             // already down: share the hold
-        }
-        post(code, /* down */ true)?;           // 0 -> 1: key-down, stamped USER_DATA = TAG
-        let hold = Rc::new(Hold { key });       // Arc under `arc`
-        held.insert(key, Rc::downgrade(&hold));
-        Ok(Press(hold))
-    })
-}
-
-pub struct Press(Rc<Hold>);                     // !Send by default; Send under `arc`
-struct Hold { key: Keyboard }
-impl Drop for Hold {                            // last owner emits the release
-    fn drop(&mut self) {
-        if let Some(code) = to_code(self.key) {
-            let _ = post(code, false);          // Drop cannot return an error
-        }
-    }
-}
-
-pub fn tap(key: Keyboard) -> Result<(), EmitError> {
-    press(key)?;                                // the Press drops here: down then up
-    Ok(())
+|_, kind, event| {
+    if event.field(USER_DATA) == MY_TAG { return Keep; }     // my own emit: pass it downstream
+    let key = from_code(event.field(KEYCODE));               // Raw(code) if unnamed
+    if !this_stage_captures(key) { return Keep; }            // a builder stage: not my key
+    on_key(KeyEvent { key, down });                          // may emit, stamped MY_TAG, downstream
+    Drop
 }
 ```
 
-README TODO: consider making `arc` the default. mercury emits from one thread, so `Rc` is fine for now.
+`with_enabled` does the run-loop wiring inside core-graphics, so we call no `unsafe`. `CFRunLoop` is `Send`, so dropping a stage stops its loop from any thread. A process exit or `kill -9` releases every tap, since the WindowServer drops taps for dead processes.
+
+## Async emit
+
+`on_key` is async: the stage forwards the key and emits later, off the tap callback. That emit injects the key into the pipeline just downstream of this stage, so it reaches the next stage and never the stage itself or the ones before it:
+
+```
+Capture1 gets A, forwards it, decides to swallow A and emit "a"
+Capture2 gets nothing yet
+... later ...
+Capture1 emits "a"   ->  injected just after Capture1
+Capture2 gets "a"
+```
+
+Because the emit lands downstream of its own stage, no stage sees its own output, so the per-stage tag is a backstop, not the primary guard. Position does the work.
+
+The pipeline model does not need to know how that injection happens; it is a backend concern. In-process, the backend threads an emit to the next stage itself, so it controls the position exactly and this is simple. Cross-process leans on the global OS tap chain and is the harder, later case. How a `press` hold spans events is the other backend detail.
 
 ## Left, right, and modifiers
 
-`Keyboard` splits the sides already: `ShiftLeft`/`ShiftRight`, `ControlLeft`/`ControlRight`, `AltLeft`/`AltRight`, `MetaLeft`/`MetaRight`, each with its own macOS keycode, so capture reports the exact key. But modifiers do not arrive as `KeyDown`/`KeyUp`; macOS sends `FlagsChanged`. So the tap listens for `[KeyDown, KeyUp, FlagsChanged]`, and for a `FlagsChanged` it reads the keycode (which carries the side) and infers press or release from whether that modifier's flag bit just turned on or off.
+`Key` splits the sides already: `ShiftLeft`/`ShiftRight`, `ControlLeft`/`ControlRight`, `AltLeft`/`AltRight`, `MetaLeft`/`MetaRight`, each with its own macOS keycode, so capture reports the exact key. But modifiers do not arrive as `KeyDown`/`KeyUp`; macOS sends `FlagsChanged`. So the tap listens for `[KeyDown, KeyUp, FlagsChanged]`, and for a `FlagsChanged` it reads the keycode (which carries the side) and infers press or release from whether that modifier's flag bit just turned on or off.
 
 ## Custom and unmapped keys
 
-macOS keycodes are arbitrary `u16`: `CGEventCreateKeyboardEvent` takes any code and the tap reads any code, so made-up keys can be captured and emitted. A code produces a character only if the active layout maps it, so a custom code is a remap intermediary (emit it, catch it in your own tap), not typed text. `Keyboard::Raw(u16)` carries such a code, and `from_code` returns `Raw(code)` for anything the named table lacks, so no key is dropped for being unnamed. The `u16` is the native code, which makes `Raw` the one part that is not portable across OSes. Linux and Windows are scancode/keycode based too, so likely the same, but that is unconfirmed.
+macOS keycodes are arbitrary `u16`: `CGEventCreateKeyboardEvent` takes any code and the tap reads any code, so made-up keys can be captured and emitted. A code produces a character only if the active layout maps it, so a custom code is a remap intermediary (emit it, catch it in your own tap), not typed text. `Key::Raw(u16)` carries such a code, and `from_code` returns `Raw(code)` for anything the named table lacks, so no key is dropped for being unnamed. The `u16` is the native code, which makes `Raw` the one part not portable across OSes. Linux and Windows are scancode/keycode based too, so likely the same, but that is unconfirmed.
 
 ## Escape and quitting are not here
 
 `freddie_keyboard` has no notion of escape or quit. That is the consumer's, jerry-rigged until the hijack is trusted:
 
 ```rust
-for ev in capture {
-    if ev.key == Keyboard::Escape { process::exit(0); }   // mercury's, not the keyboard's
-    if ev.down { event_tx.send(key(ev.key)); }
-}
+let _capture = Capture::grab(move |ev| {
+    if ev.key == Key::Escape { process::exit(0); }   // mercury's, not the keyboard's
+    if ev.down { let _ = event_tx.send(ev); }         // forward into mercury's tokio channel
+})?;
 ```
 
 ## Ordering caveat
 
-A selective capture passes non-captured keys natively (`Keep`) while its captured keys arrive through `recv` asynchronously. If the consumer re-emits captured keys, they can land out of order against the passed-through ones (passthrough.md). Fine when captured keys are consumed as commands; watch it when remapping inline. mercury uses capture-all, so nothing passes through and there is no reorder.
+A stage passes a key it does not capture straight to the next stage (synchronous `Keep`), while a key it captures is swallowed and re-emitted later (async). So a passed key can overtake a captured one still in flight (passthrough.md). Fine for command keys; watch it for inline remaps. mercury's one stage captures everything, so nothing is passed synchronously and there is no reorder.
 
 ## What's left to build
 
 The code today has `run(on_key)` + `emit(key)` + `emit_chord(mods, key)` on the core-graphics backend, with mercury driving it. To reach the API above:
 
-1. `Capture` (`grab` + `builder`) over one shared tap, a registry, and `route`; `recv` / `Iterator` / `Drop`.
-2. Replace `emit(key)` + `emit_chord` with `tap(key)` and `press(key) -> Press` (ref-counted holds, `Rc` under the default, `Arc` under `arc`).
-3. mercury: reader loop `for ev in capture { ... }` over a capture-all; effect loop `tap(k)`, and cmd+r as `let _cmd = press(Keyboard::MetaLeft)?; tap(k)?;`.
+1. `Capture` as a pipeline stage: `grab(on_key)` / `builder().grab(on_key)` install a tap appended to the chain, `on_key` runs per key, `Drop` removes the stage.
+2. Emit on `Capture`: `tap` and `press -> Press` backed by a per-key count and a source held in the `Capture` (`Rc`, `Arc` under `send`); an async emit injects downstream of the stage.
+3. `Key::Raw(u16)` in `freddie_keys`, and `FlagsChanged` in the tap for modifiers.
+4. mercury: `on_key` forwards each key into a tokio channel (escape exits from `on_key`); the event loop dispatches and re-emits through the `Capture`; one capture-all stage, so `tap` on a re-emit.
+5. The pull (footgun) grab variant.
 
 ## Known v1 limits
 
-- A key with no named `Keyboard` mapping is delivered as `Raw(code)`, so nothing is lost, but that code is the non-portable macOS value.
+- A key with no named `Key` mapping is delivered as `Raw(code)`, so nothing is lost, but that code is the non-portable macOS value.
 - If macOS disables the tap on a timeout it does not auto re-enable (the cost of `with_enabled`, which keeps us unsafe-free). The callback is trivial, so it should not fire.
-- F21-F24 have no macOS keycode, so `emit` returns `Unmappable` for them until we learn what real hardware sends.
+- F21-F24 have no macOS keycode, so emitting them returns `Unmappable` until we learn what real hardware sends.
 
 ## Permissions
 
