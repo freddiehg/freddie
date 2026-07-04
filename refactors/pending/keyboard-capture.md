@@ -101,7 +101,11 @@ Captures form a pipeline, not a fan-out. A physical key enters the first stage; 
 
 Two stages that touch different keys leave each other's keys alone. A stage that maps caps-lock to escape, followed by one that maps escape onward, chains: caps-lock becomes escape becomes whatever the second stage makes it.
 
-Each stage is its own OS tap, not a shared one, which is what lets the pipeline cross processes: on macOS the event-tap chain is global, so a stage in another process is already in the line and the same-process stages are just the part we own. Cross-process is the goal; the same-process pipeline is the requirement.
+The in-process pipeline and the cross-process one are separate, independent layers.
+
+Within a process the pipeline is just a `Vec` of stages: one OS tap feeds the first, the event threads through the vec in software, and the last stage's output is posted once. Trivial, generic, and unit-testable with no tap. This is all the same-process requirement needs.
+
+The cross-process version is the same pipeline semantics for when the stages cannot live in one vec because they are in different processes. Instead of one owning vec, the per-process pipelines are linked through the global OS event-tap chain, which stands in for the vec's ordering, so one process's posted output is the next's tap input. The vec pipeline knows nothing about this; cross-process is added on top. Same-process is the requirement, cross-process the goal, and the two are separable.
 
 ## Generic over the event
 
@@ -130,23 +134,23 @@ The pipeline threading is a pure function over the ordered stages, unit-tested w
 
 ## Loop prevention
 
-Each stage stamps its emits with its own tag in the `USER_DATA` field and passes an event carrying that tag straight through instead of re-handling it, so a stage never re-captures its own output while the next stage still does. Without it a stage would emit a key, see it, and emit again forever.
+Loop prevention is per process, not per stage. The stages thread in memory, so handing an event to the next stage never round-trips the OS. Only the pipeline's final output is posted, stamped in `USER_DATA` with the process's tag; that process's tap passes its own tag straight through so it does not re-capture its own output, while another process's tap (a different tag) does. Without it a process would post a key, its own tap would see it, and it would loop.
 
 ## The macOS backend
 
-Each stage is its own `CGEventTap`, appended to the chain so it sits downstream of the existing stages. Its callback:
+In-process there is one `CGEventTap`. Its callback ignores the process's own output (the tag), decodes the event, and feeds it into the vec pipeline; the pipeline posts outputs back, tagged.
 
 ```rust
 |_, kind, event| {
-    if event.field(USER_DATA) == MY_TAG { return Keep; }     // my own emit: pass it downstream
-    let key = from_code(event.field(KEYCODE));               // Raw(code) if unnamed
-    if !this_stage_captures(key) { return Keep; }            // a builder stage: not my key
-    on_key(KeyEvent { key, down });                          // may emit, stamped MY_TAG, downstream
-    Drop
+    if event.field(USER_DATA) == MY_TAG { return Keep; }   // our own output: let it out
+    match KeyEvent::decode(event) {                        // T::decode
+        Some(ev) => { pipeline.feed(ev); Drop }            // into the in-memory vec of stages
+        None     => Keep,
+    }
 }
 ```
 
-`with_enabled` does the run-loop wiring inside core-graphics, so we call no `unsafe`. `CFRunLoop` is `Send`, so dropping a stage stops its loop from any thread. A process exit or `kill -9` releases every tap, since the WindowServer drops taps for dead processes.
+`with_enabled` does the run-loop wiring inside core-graphics, so we call no `unsafe`. `CFRunLoop` is `Send`, so dropping the pipeline stops the loop from any thread. A process exit or `kill -9` releases the tap, since the WindowServer drops taps for dead processes. The cross-process layer adds nothing to this callback; it relies on the OS chain to order another process's tap around ours, with the per-process tag keeping each process from eating its own output.
 
 ## Async emit
 
