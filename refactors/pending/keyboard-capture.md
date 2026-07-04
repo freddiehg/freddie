@@ -103,6 +103,22 @@ Two stages that touch different keys leave each other's keys alone. A stage that
 
 Each stage is its own OS tap, not a shared one, which is what lets the pipeline cross processes: on macOS the event-tap chain is global, so a stage in another process is already in the line and the same-process stages are just the part we own. Cross-process is the goal; the same-process pipeline is the requirement.
 
+## Generic over the event
+
+Nothing above mentions keys, so the pipeline is `Capture<T>` where `T: Intercept`. `Intercept` is everything the backend needs from an event type:
+
+```rust
+pub trait Intercept: Sized + Send + 'static {
+    fn tap_types() -> &'static [CGEventType];                  // which events to tap
+    fn decode(raw: &CGEvent) -> Option<Self>;                 // OS event -> T
+    fn encode(&self, src: &CGEventSource) -> Option<CGEvent>; // T -> OS event, for emit
+}
+```
+
+`Capture<T>`, `grab(on_key: impl Fn(T))`, `emit(&self, T)`, stacking, and drop are all generic; only the `Intercept` impl is per-event. `KeyEvent` impls `Intercept` (`decode`/`encode` through the keycode table, tap `[KeyDown, KeyUp, FlagsChanged]`). A mouse event type would impl it with mouse `CGEventType`s and fields, reusing the whole pipeline.
+
+freddie_keyboard is then `Capture<KeyEvent>` plus the keyboard sugar: `tap(key)` and `press(key)` compose `emit(KeyEvent { key, down })`, and `Press` is the held-key refcount. Those sit on top of the generic `emit`. (`CGEvent` in the trait is the macOS raw type; going cross-platform makes that raw type a backend parameter.)
+
 ## Unit tests
 
 The pipeline threading is a pure function over the ordered stages, unit-tested with no tap:
