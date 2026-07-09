@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use freddie_keyboard::Emitter;
 use mercury::{
-    AppLayer, Key, Layer, Mercury, MercuryEffect, MercuryEvent, PressType, foreground, key,
+    AppLayer, Layer, Mercury, MercuryEffect, MercuryEvent, PressType, foreground, key,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
