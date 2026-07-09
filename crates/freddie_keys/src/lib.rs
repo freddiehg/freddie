@@ -131,9 +131,7 @@ pub enum PressType {
 /// A key going down or coming up.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct KeyEvent {
-    /// Which key.
     pub key: Key,
-    /// Down or up.
     pub press: PressType,
 }
 
@@ -142,6 +140,41 @@ impl EventTrigger for Key {
 
     fn is_matching(&self, event: &KeyEvent) -> bool {
         *self == event.key
+    }
+}
+
+impl Key {
+    /// A trigger matching only this key's press.
+    #[must_use]
+    pub const fn down(self) -> KeyPress {
+        KeyPress {
+            key: self,
+            press: PressType::Down,
+        }
+    }
+
+    /// A trigger matching only this key's release.
+    #[must_use]
+    pub const fn up(self) -> KeyPress {
+        KeyPress {
+            key: self,
+            press: PressType::Up,
+        }
+    }
+}
+
+/// A trigger matching a key going one direction, from [`Key::down`] or [`Key::up`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct KeyPress {
+    pub key: Key,
+    pub press: PressType,
+}
+
+impl EventTrigger for KeyPress {
+    type Event = KeyEvent;
+
+    fn is_matching(&self, event: &KeyEvent) -> bool {
+        self.key == event.key && self.press == event.press
     }
 }
 
