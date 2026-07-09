@@ -62,7 +62,7 @@ fn home_escape_does_nothing() {
 #[test]
 fn escape_goes_home_from_a_sublayer() {
     let mut m = Mercury::default();
-    m.handle(&key(Key::KeyN));
+    let _ = m.handle(&key(Key::KeyN));
     assert!(matches!(m.layer, Layer::Nav(_)));
     assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
     assert!(matches!(m.layer, Layer::Home(_)));
@@ -71,7 +71,7 @@ fn escape_goes_home_from_a_sublayer() {
 #[test]
 fn typing_passes_any_key_through() {
     let mut m = Mercury::default();
-    m.handle(&key(Key::KeyT));
+    let _ = m.handle(&key(Key::KeyT));
     assert_eq!(m.handle(&key(Key::KeyA)), Some(passed(Key::KeyA)));
     assert_eq!(m.handle(&key(Key::KeyZ)), Some(passed(Key::KeyZ)));
     assert!(matches!(m.layer, Layer::Typing(_)));
@@ -82,7 +82,7 @@ fn typing_escape_goes_home() {
     // Typing binds escape explicitly so its catch-all does not shadow the go-home
     // binding.
     let mut m = Mercury::default();
-    m.handle(&key(Key::KeyT));
+    let _ = m.handle(&key(Key::KeyT));
     assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
     assert!(matches!(m.layer, Layer::Home(_)));
 }
@@ -90,7 +90,7 @@ fn typing_escape_goes_home() {
 #[test]
 fn nav_c_foregrounds_chrome_without_changing_state() {
     let mut m = Mercury::default();
-    m.handle(&key(Key::KeyN));
+    let _ = m.handle(&key(Key::KeyN));
     assert_eq!(
         m.handle(&key(Key::KeyC)),
         Some(vec![MercuryEffect::Foreground(App::Chrome)])
@@ -111,7 +111,7 @@ fn foreground_records_the_app_without_changing_layer() {
 #[test]
 fn i_enters_inapp_for_the_foregrounded_app() {
     let mut m = Mercury::default();
-    m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&foreground(App::Chrome));
     assert_eq!(m.handle(&key(Key::KeyI)), Some(vec![]));
     assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
 }
@@ -119,16 +119,16 @@ fn i_enters_inapp_for_the_foregrounded_app() {
 #[test]
 fn chrome_r_refreshes() {
     let mut m = Mercury::default();
-    m.handle(&foreground(App::Chrome));
-    m.handle(&key(Key::KeyI));
+    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&key(Key::KeyI));
     assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
 }
 
 #[test]
 fn inapp_other_app_ignores_keys() {
     let mut m = Mercury::default();
-    m.handle(&foreground(App::Zed));
-    m.handle(&key(Key::KeyI));
+    let _ = m.handle(&foreground(App::Zed));
+    let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(m.layer, Layer::InApp(AppLayer::Other(_))));
     assert_eq!(m.handle(&key(Key::KeyR)), None);
 }
@@ -196,8 +196,10 @@ fn app_name_round_trips() {
 // own variant, everything else is the other-app variant.
 #[test]
 fn for_root_reads_the_foregrounded_app() {
-    let mut m = Mercury::default();
-    m.foregrounded = App::Chrome;
+    let mut m = Mercury {
+        foregrounded: App::Chrome,
+        ..Default::default()
+    };
     assert!(matches!(AppLayer::for_root(&m), AppLayer::Chrome(_)));
     m.foregrounded = App::Zed;
     assert!(matches!(AppLayer::for_root(&m), AppLayer::Other(_)));
@@ -208,8 +210,8 @@ fn for_root_reads_the_foregrounded_app() {
 #[test]
 fn foreground_retargets_the_inapp_layer() {
     let mut m = Mercury::default();
-    m.handle(&foreground(App::Chrome));
-    m.handle(&key(Key::KeyI));
+    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
 
     assert_eq!(m.handle(&foreground(App::Zed)), Some(vec![]));
@@ -223,11 +225,11 @@ fn foreground_retargets_the_inapp_layer() {
 #[test]
 fn foreground_back_to_chrome_restores_its_bindings() {
     let mut m = Mercury::default();
-    m.handle(&foreground(App::Zed));
-    m.handle(&key(Key::KeyI));
+    let _ = m.handle(&foreground(App::Zed));
+    let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(m.layer, Layer::InApp(AppLayer::Other(_))));
 
-    m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&foreground(App::Chrome));
     assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
     assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
 }
@@ -237,7 +239,7 @@ fn foreground_back_to_chrome_restores_its_bindings() {
 #[test]
 fn foreground_outside_inapp_does_not_change_layer() {
     let mut m = Mercury::default();
-    m.handle(&key(Key::KeyN));
+    let _ = m.handle(&key(Key::KeyN));
     assert!(matches!(m.layer, Layer::Nav(_)));
 
     assert_eq!(m.handle(&foreground(App::Chrome)), Some(vec![]));
@@ -260,7 +262,7 @@ fn inapp_follows_the_front_app_across_a_switch() {
     }
     assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
     // The user switches to Zed outside mercury; the watcher reports it.
-    m.handle(&foreground(App::Zed));
+    let _ = m.handle(&foreground(App::Zed));
     assert_eq!(m.foregrounded, App::Zed);
     assert!(matches!(m.layer, Layer::InApp(AppLayer::Other(_))));
 }
