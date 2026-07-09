@@ -81,13 +81,16 @@ impl App {
     /// name for the app) to a known app. Anything unrecognized is [`App::Other`].
     ///
     /// This is the consumer's half of the app-nav contract: the watcher hands up a
-    /// string and Mercury decides which of its apps it is.
+    /// string and Mercury decides which of its apps it is. Match is
+    /// case-insensitive: `System Events` reports Ghostty and Zed lowercase
+    /// (`ghostty`, `zed`) but Chrome title-cased (`Google Chrome`), so we normalize
+    /// rather than hard-code each casing.
     #[must_use]
     pub fn from_name(name: &str) -> Self {
-        match name {
-            "Google Chrome" => Self::Chrome,
-            "Ghostty" => Self::Ghostty,
-            "Zed" => Self::Zed,
+        match name.to_ascii_lowercase().as_str() {
+            "google chrome" => Self::Chrome,
+            "ghostty" => Self::Ghostty,
+            "zed" => Self::Zed,
             _ => Self::Other,
         }
     }

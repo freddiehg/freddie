@@ -192,6 +192,16 @@ fn app_name_round_trips() {
     assert_eq!(App::from_name("Some Unknown App"), App::Other);
 }
 
+// The names `System Events` actually reports (Chrome title-cased, Ghostty and Zed
+// lowercase) all map, regardless of casing.
+#[test]
+fn reported_names_map_case_insensitively() {
+    assert_eq!(App::from_name("Google Chrome"), App::Chrome);
+    assert_eq!(App::from_name("ghostty"), App::Ghostty);
+    assert_eq!(App::from_name("zed"), App::Zed);
+    assert_eq!(App::from_name("GHOSTTY"), App::Ghostty);
+}
+
 // The in-app constructor reads the foregrounded app from the root: Chrome gets its
 // own variant, everything else is the other-app variant.
 #[test]
