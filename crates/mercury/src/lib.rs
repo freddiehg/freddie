@@ -81,28 +81,28 @@ impl App {
     /// name for the app) to a known app. Anything unrecognized is [`App::Other`].
     ///
     /// This is the consumer's half of the app-nav contract: the watcher hands up a
-    /// string and Mercury decides which of its apps it is. Match is
-    /// case-insensitive: `System Events` reports Ghostty and Zed lowercase
-    /// (`ghostty`, `zed`) but Chrome title-cased (`Google Chrome`), so we normalize
-    /// rather than hard-code each casing.
+    /// string and Mercury decides which of its apps it is. The names are exactly
+    /// what `System Events` reports: Chrome title-cased, Ghostty and Zed lowercase.
     #[must_use]
     pub fn from_name(name: &str) -> Self {
-        match name.to_ascii_lowercase().as_str() {
-            "google chrome" => Self::Chrome,
+        match name {
+            "Google Chrome" => Self::Chrome,
             "ghostty" => Self::Ghostty,
             "zed" => Self::Zed,
             _ => Self::Other,
         }
     }
 
-    /// The name to hand `freddie_app_nav::foreground` to bring this app up.
+    /// The name to hand `freddie_app_nav::foreground` to bring this app up. It is
+    /// the same string [`from_name`](Self::from_name) matches (the name the OS
+    /// reports), so the two round-trip; `open -a` resolves it either way.
     /// [`App::Other`] is not a specific app, so it has none.
     #[must_use]
     pub const fn launch_name(self) -> Option<&'static str> {
         match self {
             Self::Chrome => Some("Google Chrome"),
-            Self::Ghostty => Some("Ghostty"),
-            Self::Zed => Some("Zed"),
+            Self::Ghostty => Some("ghostty"),
+            Self::Zed => Some("zed"),
             Self::Other => None,
         }
     }
