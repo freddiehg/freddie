@@ -20,7 +20,7 @@
 use std::time::Duration;
 
 use freddie_keyboard::Emitter;
-use mercury::{App, Mercury, MercuryEffect, MercuryEvent, PressType, foreground, key};
+use mercury::{App, Mercury, MercuryEffect, MercuryEvent, foreground};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 #[tokio::main(flavor = "current_thread")]
@@ -33,10 +33,13 @@ async fn main() {
     let grabbed = freddie_keyboard::intercept({
         let event_tx = event_tx.clone();
         move |ev| {
-            if ev.press == PressType::Down {
-                let _ = event_tx.send(key(ev.key));
-            }
-            None // swallow; the model dispatches and the effect loop re-emits
+            // Forward every key, down and up, with its real press. Dropping the up
+            // leaves a modifier stuck down in the emitted stream: after ctrl-a, a
+            // swallowed ctrl-up means the next key still carries ctrl (p arrives as
+            // ctrl-p). We always swallow here; the model dispatches and the effect
+            // loop re-emits whatever passes through.
+            let _ = event_tx.send(MercuryEvent::Key(ev));
+            None
         }
     });
     let (interceptor, emitter) = match grabbed {
