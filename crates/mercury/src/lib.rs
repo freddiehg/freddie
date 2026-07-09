@@ -16,11 +16,13 @@
 //! shadow the go-home binding. From home, `q` quits, so `escape` then `q` is the
 //! way out of any layer.
 //!
-//! A foreground event only records which app is frontmost; it does not change the
-//! layer. Handlers either mutate the state through the path they are handed (the
-//! layer transitions) or return inert [`MercuryEffect`]s. Dispatch is opaque to
-//! what an effect does; performing effects is the caller's job (see the CLI and
-//! the tests).
+//! A foreground event records which app is frontmost at the root, and while the
+//! in-app layer is active it retargets that layer to the newly foregrounded app so
+//! the active bindings follow the front app; other layers are left untouched.
+//! Handlers either mutate the state through the path they are handed (the layer
+//! transitions) or return inert [`MercuryEffect`]s. Dispatch is opaque to what an
+//! effect does; performing effects is the caller's job (see the CLI and the
+//! tests).
 //!
 //! Run it with `cargo run -p mercury`, or the tests with `cargo test -p mercury`.
 
@@ -54,6 +56,7 @@ impl EventTrigger for AnyKey {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Foregrounded;
 /// A fired app-foregrounded event.
+#[derive(Debug)]
 pub struct ForegroundEvent {
     pub app: App,
 }
@@ -73,6 +76,35 @@ pub enum App {
     Other,
 }
 
+impl App {
+    /// Maps a frontmost-app name (as `freddie_app_nav` reports it, the OS's own
+    /// name for the app) to a known app. Anything unrecognized is [`App::Other`].
+    ///
+    /// This is the consumer's half of the app-nav contract: the watcher hands up a
+    /// string and Mercury decides which of its apps it is.
+    #[must_use]
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "Google Chrome" => Self::Chrome,
+            "Ghostty" => Self::Ghostty,
+            "Zed" => Self::Zed,
+            _ => Self::Other,
+        }
+    }
+
+    /// The name to hand `freddie_app_nav::foreground` to bring this app up.
+    /// [`App::Other`] is not a specific app, so it has none.
+    #[must_use]
+    pub const fn launch_name(self) -> Option<&'static str> {
+        match self {
+            Self::Chrome => Some("Google Chrome"),
+            Self::Ghostty => Some("Ghostty"),
+            Self::Zed => Some("Zed"),
+            Self::Other => None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The unified trigger, event, and effect the marker names.
 // ---------------------------------------------------------------------------
@@ -87,6 +119,7 @@ pub enum MercuryTrigger {
 }
 
 /// Every event Mercury can dispatch, one variant per source.
+#[derive(Debug)]
 pub enum MercuryEvent {
     Key(KeyEvent),
     Foreground(ForegroundEvent),
@@ -134,8 +167,7 @@ impl Bindings for MercuryStruct {
 // The state tree.
 // ---------------------------------------------------------------------------
 
-/// The outer state: the foregrounded app plus the active layer.
-#[derive(Laserbeam, Bind)]
+#[derive(Laserbeam, Bind, Debug)]
 #[laserbeam_root(resolved = Resolved)]
 #[binds(MercuryStruct)]
 #[bind(Foregrounded => on_foregrounded)]
@@ -145,8 +177,7 @@ pub struct Mercury {
     pub layer: Layer,
 }
 
-/// The active layer. `escape` goes home from a sub-layer, and is a no-op in home.
-#[derive(Laserbeam, Bind)]
+#[derive(Laserbeam, Bind, Debug)]
 #[laserbeam(path = LayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
 #[bind(Key::Escape.down() => to_home)]
@@ -157,9 +188,7 @@ pub enum Layer {
     InApp(AppLayer),
 }
 
-/// The home layer: enter a layer, or quit with `q`. `escape` is a no-op here
-/// (the layer-level binding re-enters home).
-#[derive(Laserbeam, Bind)]
+#[derive(Laserbeam, Bind, Debug)]
 #[laserbeam(path = HomeLayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
 #[bind(
@@ -170,8 +199,7 @@ pub enum Layer {
 )]
 pub struct HomeLayer {}
 
-/// The nav layer: foreground apps.
-#[derive(Laserbeam, Bind)]
+#[derive(Laserbeam, Bind, Debug)]
 #[laserbeam(path = NavLayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
 #[bind(
@@ -182,7 +210,7 @@ pub struct HomeLayer {}
 pub struct NavLayer {}
 
 /// The typing layer: `escape` goes home, any other key passes through.
-#[derive(Laserbeam, Bind)]
+#[derive(Laserbeam, Bind, Debug)]
 #[laserbeam(path = TypingLayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
 #[bind(
@@ -192,7 +220,7 @@ pub struct NavLayer {}
 pub struct TypingLayer {}
 
 /// The in-app layer: Chrome has bindings, everything else is ignored.
-#[derive(Laserbeam, Bind)]
+#[derive(Laserbeam, Bind, Debug)]
 #[laserbeam(path = AppLayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
 pub enum AppLayer {
@@ -201,7 +229,7 @@ pub enum AppLayer {
 }
 
 impl AppLayer {
-    /// The in-app variant for the foregrounded app. Only Chrome has bindings.
+    /// The in-app variant for `app`. Only Chrome has bindings.
     #[must_use]
     pub const fn for_app(app: App) -> Self {
         match app {
@@ -209,16 +237,25 @@ impl AppLayer {
             App::Ghostty | App::Zed | App::Other => Self::Other(OtherApp {}),
         }
     }
+
+    /// The in-app variant for whatever app the root currently records as
+    /// foregrounded. This is the "default" in-app constructor: entering the layer,
+    /// or re-entering it when the front app changes, reads the app from root state
+    /// rather than being told it.
+    #[must_use]
+    pub const fn for_root(root: &Mercury) -> Self {
+        Self::for_app(root.foregrounded)
+    }
 }
 
-#[derive(Laserbeam, Bind)]
+#[derive(Laserbeam, Bind, Debug)]
 #[laserbeam(path = ChromeAppPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
 #[bind(Key::KeyR.down() => refresh)]
 pub struct ChromeApp {}
 
 /// A foregrounded app Mercury has no bindings for.
-#[derive(Laserbeam, Bind)]
+#[derive(Laserbeam, Bind, Debug)]
 #[laserbeam(path = OtherAppPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
 pub struct OtherApp {}
@@ -277,10 +314,15 @@ pub const fn foreground(app: App) -> MercuryEvent {
 // Handlers.
 // ---------------------------------------------------------------------------
 
-/// An app was foregrounded: record it. This is the only thing that changes
-/// `foregrounded`, and it does not touch the layer.
+/// An app was foregrounded: record it at the root, and if we are in the in-app
+/// layer, retarget it to the newly foregrounded app so the active bindings follow
+/// the front app (Chrome's `r` refresh applies only while Chrome is up). Layers
+/// other than in-app are left alone; foregrounding does not move you between them.
 const fn on_foregrounded(ev: &ForegroundEvent, root: &mut Mercury) -> Vec<MercuryEffect> {
     root.foregrounded = ev.app;
+    if matches!(root.layer, Layer::InApp(_)) {
+        root.layer = Layer::InApp(AppLayer::for_root(root));
+    }
     Vec::new()
 }
 
@@ -323,8 +365,7 @@ fn to_typing(_ev: &KeyEvent, path: HomeLayerPath) -> Vec<MercuryEffect> {
 /// `i` in home: enter the in-app layer for whatever app is foregrounded.
 fn to_inapp(_ev: &KeyEvent, path: HomeLayerPath) -> Vec<MercuryEffect> {
     let mercury = path.into_parent().into_parent();
-    let app = mercury.foregrounded;
-    mercury.layer = Layer::InApp(AppLayer::for_app(app));
+    mercury.layer = Layer::InApp(AppLayer::for_root(mercury));
     Vec::new()
 }
 

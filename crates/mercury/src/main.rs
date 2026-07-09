@@ -3,10 +3,14 @@
 //! `freddie_keyboard::intercept` swallows every key and hands each to the model.
 //! Two loops over two channels: the event loop dispatches (mutating state,
 //! producing effects); the effect loop performs them, re-emitting keys through the
-//! `Emitter` and reporting a `Foreground` back as an event (standing in for the OS
-//! watcher). Every key goes through the model, so `escape` is handled there (it
-//! goes home) and `q` from home quits. A 30-second timer is the backstop out of
-//! the hijack (hard exit 5s after that).
+//! `Emitter` and foregrounding apps through `freddie_app_nav`. A
+//! `freddie_app_nav` watcher runs the app-navigation source: it reports the
+//! frontmost app as a `Foreground` event, so foregrounding an app (the effect) and
+//! observing it come up (the event) are decoupled the way the model expects.
+//!
+//! Every key goes through the model, so `escape` is handled there (it goes home)
+//! and `q` from home quits. A 30-second timer is the backstop out of the hijack
+//! (hard exit 5s after that).
 //!
 //! The `Emitter` is `!Send`, so the effect loop runs on this task via `join!`
 //! rather than a spawned task.
@@ -16,9 +20,7 @@
 use std::time::Duration;
 
 use freddie_keyboard::Emitter;
-use mercury::{
-    AppLayer, Layer, Mercury, MercuryEffect, MercuryEvent, PressType, foreground, key,
-};
+use mercury::{App, Mercury, MercuryEffect, MercuryEvent, PressType, foreground, key};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 #[tokio::main(flavor = "current_thread")]
@@ -31,8 +33,6 @@ async fn main() {
     let grabbed = freddie_keyboard::intercept({
         let event_tx = event_tx.clone();
         move |ev| {
-            // TODO: swap eprintln for a real logger (tracing) once we have one.
-            eprintln!("event: {:?} {:?}", ev.key, ev.press);
             if ev.press == PressType::Down {
                 let _ = event_tx.send(key(ev.key));
             }
@@ -47,12 +47,20 @@ async fn main() {
         }
     };
 
+    // The app-navigation source: report the frontmost app as a foreground event.
+    let _watcher = freddie_app_nav::watch(freddie_app_nav::DEFAULT_POLL_INTERVAL, {
+        let event_tx = event_tx.clone();
+        move |name| {
+            let _ = event_tx.send(foreground(App::from_name(name)));
+        }
+    });
+
     spawn_killswitch(effect_tx.clone());
 
     println!("mercury: hijacking the keyboard; escape then q quits (30s backstop)");
     tokio::join!(
         run_event_loop(Mercury::default(), event_rx, effect_tx),
-        run_effect_loop(effect_rx, event_tx, emitter),
+        run_effect_loop(effect_rx, emitter),
     );
     drop(interceptor); // hold the grab until here
 }
@@ -74,43 +82,22 @@ async fn run_event_loop(
     mut event_rx: UnboundedReceiver<MercuryEvent>,
     effect_tx: UnboundedSender<MercuryEffect>,
 ) {
-    log_state(&state);
     while let Some(event) = event_rx.recv().await {
         dispatch_event(&mut state, &event, &effect_tx);
     }
 }
 
-/// Dispatch one event through freddie and enqueue whatever effects it produced.
+/// Dispatch one event through freddie, log the event, its effects, and the
+/// resulting state, then enqueue the effects.
 fn dispatch_event(
     state: &mut Mercury,
     event: &MercuryEvent,
     effect_tx: &UnboundedSender<MercuryEffect>,
 ) {
-    let Some(effects) = state.handle(event) else {
-        return; // unbound: no state change
-    };
+    let effects = state.handle(event).unwrap_or_default();
+    eprintln!("event {event:?} -> {effects:?}\n  state {state:?}");
     for effect in effects {
         let _ = effect_tx.send(effect);
-    }
-    log_state(state);
-}
-
-/// Print the current layer and foregrounded app.
-fn log_state(state: &Mercury) {
-    println!(
-        "state: {} | foregrounded {:?}",
-        layer_name(&state.layer),
-        state.foregrounded
-    );
-}
-
-const fn layer_name(layer: &Layer) -> &'static str {
-    match layer {
-        Layer::Home(_) => "home",
-        Layer::Nav(_) => "nav",
-        Layer::Typing(_) => "typing",
-        Layer::InApp(AppLayer::Chrome(_)) => "in-app:chrome",
-        Layer::InApp(AppLayer::Other(_)) => "in-app:other",
     }
 }
 
@@ -119,36 +106,37 @@ const fn layer_name(layer: &Layer) -> &'static str {
 /// The `Emitter` is `!Send` by design, so this future is `!Send`; `main` runs it
 /// on the current thread via `join!` and it never crosses a thread.
 #[allow(clippy::future_not_send)]
-async fn run_effect_loop(
-    mut effect_rx: UnboundedReceiver<MercuryEffect>,
-    event_tx: UnboundedSender<MercuryEvent>,
-    emitter: Emitter,
-) {
+async fn run_effect_loop(mut effect_rx: UnboundedReceiver<MercuryEffect>, emitter: Emitter) {
     while let Some(effect) = effect_rx.recv().await {
-        perform_effect(&effect, &event_tx, &emitter);
+        perform_effect(&effect, &emitter);
     }
 }
 
-/// Perform one effect: emit keys, foreground an app (reported back as an event,
-/// standing in for the OS watcher), or exit.
-fn perform_effect(
-    effect: &MercuryEffect,
-    event_tx: &UnboundedSender<MercuryEvent>,
-    emitter: &Emitter,
-) {
+/// Perform one effect: emit keys, foreground an app, or exit.
+fn perform_effect(effect: &MercuryEffect, emitter: &Emitter) {
+    eprintln!("effect {effect:?}");
     match effect {
-        MercuryEffect::Foreground(app) => {
-            println!("foreground {app:?}");
-            let _ = event_tx.send(foreground(*app));
-        }
+        MercuryEffect::Foreground(app) => foreground_app(*app),
         MercuryEffect::Emit(ke) => {
             if let Err(e) = emitter.emit(ke.key, ke.press) {
                 eprintln!("emit: {e}");
             }
         }
-        MercuryEffect::Kill => {
-            println!("kill: exiting");
-            std::process::exit(0);
-        }
+        MercuryEffect::Kill => std::process::exit(0),
     }
+}
+
+/// Foreground an app for real, fire-and-forget on its own thread so the effect
+/// loop never blocks on `open`. The watcher reports the app that actually comes
+/// up, so nothing here waits on the result (see `app-foregrounding.md`).
+fn foreground_app(app: App) {
+    let Some(name) = app.launch_name() else {
+        eprintln!("foreground: {app:?} has no launch name");
+        return;
+    };
+    std::thread::spawn(move || {
+        if let Err(e) = freddie_app_nav::foreground(name) {
+            eprintln!("foreground {name}: {e}");
+        }
+    });
 }

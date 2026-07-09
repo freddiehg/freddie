@@ -144,7 +144,10 @@ fn unbound_key_is_none() {
 /// Drain the runner, recording each effect and reporting a foregrounded app back
 /// the way the OS watcher would (a `Foreground` effect becomes a foreground
 /// event).
-fn settle(runner: &mut SimpleRunner<'_, MercuryStruct, Mercury>, performed: &mut Vec<MercuryEffect>) {
+fn settle(
+    runner: &mut SimpleRunner<'_, MercuryStruct, Mercury>,
+    performed: &mut Vec<MercuryEffect>,
+) {
     while let Some(dispatched) = runner.next() {
         if let Some(output) = dispatched {
             for effect in output {
@@ -173,4 +176,91 @@ fn foregrounding_chrome_is_reported_back() {
     assert_eq!(performed, vec![MercuryEffect::Foreground(App::Chrome)]);
     assert_eq!(m.foregrounded, App::Chrome);
     assert!(matches!(m.layer, Layer::Nav(_)));
+}
+
+// ---- app navigation: name mapping and the in-app layer following the front app ----
+
+// Every real app's launch name maps back to that app, and `Other` (no specific
+// app) has no launch name and is where unknown names land.
+#[test]
+fn app_name_round_trips() {
+    for app in [App::Chrome, App::Ghostty, App::Zed] {
+        let name = app.launch_name().expect("a real app has a launch name");
+        assert_eq!(App::from_name(name), app);
+    }
+    assert_eq!(App::Other.launch_name(), None);
+    assert_eq!(App::from_name("Some Unknown App"), App::Other);
+}
+
+// The in-app constructor reads the foregrounded app from the root: Chrome gets its
+// own variant, everything else is the other-app variant.
+#[test]
+fn for_root_reads_the_foregrounded_app() {
+    let mut m = Mercury::default();
+    m.foregrounded = App::Chrome;
+    assert!(matches!(AppLayer::for_root(&m), AppLayer::Chrome(_)));
+    m.foregrounded = App::Zed;
+    assert!(matches!(AppLayer::for_root(&m), AppLayer::Other(_)));
+}
+
+// In the in-app layer, foregrounding a different app retargets the layer to it, so
+// the old app's bindings drop and the new app's apply.
+#[test]
+fn foreground_retargets_the_inapp_layer() {
+    let mut m = Mercury::default();
+    m.handle(&foreground(App::Chrome));
+    m.handle(&key(Key::KeyI));
+    assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
+
+    assert_eq!(m.handle(&foreground(App::Zed)), Some(vec![]));
+    assert_eq!(m.foregrounded, App::Zed);
+    assert!(matches!(m.layer, Layer::InApp(AppLayer::Other(_))));
+    // Chrome's refresh is gone now that Chrome is not the front app.
+    assert_eq!(m.handle(&key(Key::KeyR)), None);
+}
+
+// Foregrounding Chrome again while in-app restores its bindings.
+#[test]
+fn foreground_back_to_chrome_restores_its_bindings() {
+    let mut m = Mercury::default();
+    m.handle(&foreground(App::Zed));
+    m.handle(&key(Key::KeyI));
+    assert!(matches!(m.layer, Layer::InApp(AppLayer::Other(_))));
+
+    m.handle(&foreground(App::Chrome));
+    assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
+    assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
+}
+
+// Outside the in-app layer, foregrounding records the app but never moves you
+// between layers.
+#[test]
+fn foreground_outside_inapp_does_not_change_layer() {
+    let mut m = Mercury::default();
+    m.handle(&key(Key::KeyN));
+    assert!(matches!(m.layer, Layer::Nav(_)));
+
+    assert_eq!(m.handle(&foreground(App::Chrome)), Some(vec![]));
+    assert_eq!(m.foregrounded, App::Chrome);
+    assert!(matches!(m.layer, Layer::Nav(_)));
+}
+
+// The full loop: foreground Chrome from nav (reported back), enter its in-app
+// layer, then the OS switches the front app to Zed and the in-app layer follows.
+#[test]
+fn inapp_follows_the_front_app_across_a_switch() {
+    let mut m = Mercury::default();
+    let mut performed = Vec::new();
+    {
+        let mut runner = SimpleRunner::<MercuryStruct, _>::new(&mut m);
+        for k in [Key::KeyN, Key::KeyC, Key::Escape, Key::KeyI] {
+            runner.queue_event(key(k));
+            settle(&mut runner, &mut performed);
+        }
+    }
+    assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
+    // The user switches to Zed outside mercury; the watcher reports it.
+    m.handle(&foreground(App::Zed));
+    assert_eq!(m.foregrounded, App::Zed);
+    assert!(matches!(m.layer, Layer::InApp(AppLayer::Other(_))));
 }
