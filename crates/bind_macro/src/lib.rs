@@ -134,7 +134,11 @@ fn dispatch_impl(
     } else {
         quote!(where #(#children: ::bind::Dispatch<#marker>,)*)
     };
-    let binding = if needs_mut { quote!(mut path) } else { quote!(path) };
+    let binding = if needs_mut {
+        quote!(mut path)
+    } else {
+        quote!(path)
+    };
     // Each bind: extract this source's event (the type match), then `is_matching`
     // (the key match). The trigger is built once into a local; `TryFrom` and the
     // handler pin the source-event type by inference.
@@ -281,7 +285,8 @@ fn binds(attrs: &[syn::Attribute]) -> syn::Result<Vec<Binding>> {
     let mut out = Vec::new();
     for attr in attrs {
         if attr.path().is_ident("bind") {
-            let parsed = attr.parse_args_with(Punctuated::<Binding, Token![,]>::parse_terminated)?;
+            let parsed =
+                attr.parse_args_with(Punctuated::<Binding, Token![,]>::parse_terminated)?;
             out.extend(parsed);
         }
     }

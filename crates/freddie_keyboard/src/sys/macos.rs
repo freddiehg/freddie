@@ -177,7 +177,9 @@ fn press_of(kind: CGEventType, event: &CGEvent) -> Option<PressType> {
         CGEventType::KeyUp => Some(PressType::Up),
         // A modifier: down if its flag bit is set after the change.
         CGEventType::FlagsChanged => {
-            let code = u16::try_from(event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE)).ok()?;
+            let code =
+                u16::try_from(event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE))
+                    .ok()?;
             let flag = flag_for(from_code(code))?;
             Some(if event.get_flags().contains(flag) {
                 PressType::Down
@@ -215,7 +217,11 @@ pub fn intercept(
             CGEventTapLocation::Session,
             CGEventTapPlacement::TailAppendEventTap,
             CGEventTapOptions::Default,
-            vec![CGEventType::KeyDown, CGEventType::KeyUp, CGEventType::FlagsChanged],
+            vec![
+                CGEventType::KeyDown,
+                CGEventType::KeyUp,
+                CGEventType::FlagsChanged,
+            ],
             |_proxy, kind, event| {
                 if event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA) == tag {
                     return CallbackResult::Keep; // our own emit
@@ -223,18 +229,20 @@ pub fn intercept(
                 let Some(press) = press_of(kind, event) else {
                     return CallbackResult::Keep;
                 };
-                let Ok(code) =
-                    u16::try_from(event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE))
-                else {
+                let Ok(code) = u16::try_from(
+                    event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE),
+                ) else {
                     return CallbackResult::Keep;
                 };
-                let input = KeyEvent { key: from_code(code), press };
+                let input = KeyEvent {
+                    key: from_code(code),
+                    press,
+                };
                 match decide(&input, on_key(input.clone())) {
                     Decision::Pass => CallbackResult::Keep,
                     Decision::Drop => CallbackResult::Drop,
-                    Decision::Remap(out) => {
-                        encode(source.as_ref(), &out).map_or(CallbackResult::Drop, CallbackResult::Replace)
-                    }
+                    Decision::Remap(out) => encode(source.as_ref(), &out)
+                        .map_or(CallbackResult::Drop, CallbackResult::Replace),
                 }
             },
             || {
@@ -287,8 +295,8 @@ struct EmitterState {
 
 impl EmitterState {
     fn post(&self, code: CGKeyCode, down: bool) -> Result<(), EmitError> {
-        let event =
-            CGEvent::new_keyboard_event(self.source.clone(), code, down).map_err(|()| EmitError::Post)?;
+        let event = CGEvent::new_keyboard_event(self.source.clone(), code, down)
+            .map_err(|()| EmitError::Post)?;
         event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, self.tag);
         event.post(CGEventTapLocation::Session);
         Ok(())
@@ -361,7 +369,9 @@ impl Drop for Held {
         let mut held = self.state.held.borrow_mut();
         if let Some(count) = held.get_mut(&self.key) {
             *count -= 1;
-            if *count == 0 && let Some(code) = to_code(self.key) {
+            if *count == 0
+                && let Some(code) = to_code(self.key)
+            {
                 let _ = self.state.post(code, false);
             }
         }
@@ -438,10 +448,22 @@ mod tests {
 
     #[test]
     fn flags_map_modifiers_only() {
-        assert_eq!(flag_for(Key::MetaLeft), Some(CGEventFlags::CGEventFlagCommand));
-        assert_eq!(flag_for(Key::ShiftRight), Some(CGEventFlags::CGEventFlagShift));
-        assert_eq!(flag_for(Key::ControlLeft), Some(CGEventFlags::CGEventFlagControl));
-        assert_eq!(flag_for(Key::AltRight), Some(CGEventFlags::CGEventFlagAlternate));
+        assert_eq!(
+            flag_for(Key::MetaLeft),
+            Some(CGEventFlags::CGEventFlagCommand)
+        );
+        assert_eq!(
+            flag_for(Key::ShiftRight),
+            Some(CGEventFlags::CGEventFlagShift)
+        );
+        assert_eq!(
+            flag_for(Key::ControlLeft),
+            Some(CGEventFlags::CGEventFlagControl)
+        );
+        assert_eq!(
+            flag_for(Key::AltRight),
+            Some(CGEventFlags::CGEventFlagAlternate)
+        );
         assert_eq!(flag_for(Key::KeyA), None);
         assert_eq!(flag_for(Key::Escape), None);
     }

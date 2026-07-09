@@ -188,7 +188,11 @@ impl Edge<'_> {
                 }
             }
             Via::Variant(vi) => {
-                let access = if self.boxed { quote!(&mut **c) } else { quote!(c) };
+                let access = if self.boxed {
+                    quote!(&mut **c)
+                } else {
+                    quote!(c)
+                };
                 if self.is_root {
                     quote!(|o| {
                         let Self::#vi(c) = &mut **o else { ::core::unreachable!() };
@@ -207,7 +211,11 @@ impl Edge<'_> {
     /// The projection closure for a multi-parent child, reached through the route
     /// variant `variant`. The route type is total over every parent, but only this
     /// one is ever live, hence the `unreachable!()`.
-    fn multi_parent_projection(&self, variant: &TokenStream2, deref: &TokenStream2) -> TokenStream2 {
+    fn multi_parent_projection(
+        &self,
+        variant: &TokenStream2,
+        deref: &TokenStream2,
+    ) -> TokenStream2 {
         match &self.via {
             Via::Field(field) => {
                 let node = if self.is_root {
