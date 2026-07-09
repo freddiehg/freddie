@@ -1,9 +1,13 @@
-//! The macOS keyboard backend, on `core-graphics`.
-//!
-//! `run` installs an active `CGEventTap` and swallows every key. `emit` posts key
-//! events from a private source, stamped so the tap passes them through instead of
-//! re-dispatching them. All of this is safe `core-graphics`, so the crate stays
-//! inside the workspace `forbid(unsafe_code)`.
+//! The macOS backend, on `core-graphics`. The pure parts (the keycode table, the
+//! pass/remap/drop decision, the modifier flags) are unit-tested below; the tap
+//! and the posting are FFI that needs a real keyboard to exercise.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::hash::{BuildHasher, Hasher, RandomState};
+use std::rc::Rc;
+use std::sync::mpsc;
+use std::thread::JoinHandle;
 
 use core_foundation::runloop::CFRunLoop;
 use core_graphics::event::{
@@ -11,209 +15,434 @@ use core_graphics::event::{
     CGEventType, CGKeyCode, CallbackResult, EventField, KeyCode,
 };
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-use freddie_keys::{KeyEvent, Keyboard};
+use freddie_keys::{Key, KeyEvent, PressType};
 
 use crate::{CaptureError, EmitError};
 
-// Stamped on every key we emit so our own tap passes it through instead of
-// re-dispatching it. rdev's counter guessed the next two callbacks were ours; a
-// real field is exact.
-const TAG: i64 = 0x4652_4544; // "FRED"
+// ---------------------------------------------------------------------------
+// Pure logic.
+// ---------------------------------------------------------------------------
 
-// Keyboard to macOS virtual key code. Keys with no macOS code (F21-F24, Insert)
-// are absent, so they map to `None` both ways.
-const TABLE: &[(Keyboard, CGKeyCode)] = &[
-    (Keyboard::KeyA, KeyCode::ANSI_A),
-    (Keyboard::KeyB, KeyCode::ANSI_B),
-    (Keyboard::KeyC, KeyCode::ANSI_C),
-    (Keyboard::KeyD, KeyCode::ANSI_D),
-    (Keyboard::KeyE, KeyCode::ANSI_E),
-    (Keyboard::KeyF, KeyCode::ANSI_F),
-    (Keyboard::KeyG, KeyCode::ANSI_G),
-    (Keyboard::KeyH, KeyCode::ANSI_H),
-    (Keyboard::KeyI, KeyCode::ANSI_I),
-    (Keyboard::KeyJ, KeyCode::ANSI_J),
-    (Keyboard::KeyK, KeyCode::ANSI_K),
-    (Keyboard::KeyL, KeyCode::ANSI_L),
-    (Keyboard::KeyM, KeyCode::ANSI_M),
-    (Keyboard::KeyN, KeyCode::ANSI_N),
-    (Keyboard::KeyO, KeyCode::ANSI_O),
-    (Keyboard::KeyP, KeyCode::ANSI_P),
-    (Keyboard::KeyQ, KeyCode::ANSI_Q),
-    (Keyboard::KeyR, KeyCode::ANSI_R),
-    (Keyboard::KeyS, KeyCode::ANSI_S),
-    (Keyboard::KeyT, KeyCode::ANSI_T),
-    (Keyboard::KeyU, KeyCode::ANSI_U),
-    (Keyboard::KeyV, KeyCode::ANSI_V),
-    (Keyboard::KeyW, KeyCode::ANSI_W),
-    (Keyboard::KeyX, KeyCode::ANSI_X),
-    (Keyboard::KeyY, KeyCode::ANSI_Y),
-    (Keyboard::KeyZ, KeyCode::ANSI_Z),
-    (Keyboard::Num0, KeyCode::ANSI_0),
-    (Keyboard::Num1, KeyCode::ANSI_1),
-    (Keyboard::Num2, KeyCode::ANSI_2),
-    (Keyboard::Num3, KeyCode::ANSI_3),
-    (Keyboard::Num4, KeyCode::ANSI_4),
-    (Keyboard::Num5, KeyCode::ANSI_5),
-    (Keyboard::Num6, KeyCode::ANSI_6),
-    (Keyboard::Num7, KeyCode::ANSI_7),
-    (Keyboard::Num8, KeyCode::ANSI_8),
-    (Keyboard::Num9, KeyCode::ANSI_9),
-    (Keyboard::F1, KeyCode::F1),
-    (Keyboard::F2, KeyCode::F2),
-    (Keyboard::F3, KeyCode::F3),
-    (Keyboard::F4, KeyCode::F4),
-    (Keyboard::F5, KeyCode::F5),
-    (Keyboard::F6, KeyCode::F6),
-    (Keyboard::F7, KeyCode::F7),
-    (Keyboard::F8, KeyCode::F8),
-    (Keyboard::F9, KeyCode::F9),
-    (Keyboard::F10, KeyCode::F10),
-    (Keyboard::F11, KeyCode::F11),
-    (Keyboard::F12, KeyCode::F12),
-    (Keyboard::F13, KeyCode::F13),
-    (Keyboard::F14, KeyCode::F14),
-    (Keyboard::F15, KeyCode::F15),
-    (Keyboard::F16, KeyCode::F16),
-    (Keyboard::F17, KeyCode::F17),
-    (Keyboard::F18, KeyCode::F18),
-    (Keyboard::F19, KeyCode::F19),
-    (Keyboard::F20, KeyCode::F20),
-    (Keyboard::Escape, KeyCode::ESCAPE),
-    (Keyboard::Return, KeyCode::RETURN),
-    (Keyboard::Space, KeyCode::SPACE),
-    (Keyboard::Tab, KeyCode::TAB),
-    (Keyboard::Backspace, KeyCode::DELETE),
-    (Keyboard::Delete, KeyCode::FORWARD_DELETE),
-    (Keyboard::CapsLock, KeyCode::CAPS_LOCK),
-    (Keyboard::UpArrow, KeyCode::UP_ARROW),
-    (Keyboard::DownArrow, KeyCode::DOWN_ARROW),
-    (Keyboard::LeftArrow, KeyCode::LEFT_ARROW),
-    (Keyboard::RightArrow, KeyCode::RIGHT_ARROW),
-    (Keyboard::Home, KeyCode::HOME),
-    (Keyboard::End, KeyCode::END),
-    (Keyboard::PageUp, KeyCode::PAGE_UP),
-    (Keyboard::PageDown, KeyCode::PAGE_DOWN),
-    (Keyboard::ShiftLeft, KeyCode::SHIFT),
-    (Keyboard::ShiftRight, KeyCode::RIGHT_SHIFT),
-    (Keyboard::ControlLeft, KeyCode::CONTROL),
-    (Keyboard::ControlRight, KeyCode::RIGHT_CONTROL),
-    (Keyboard::AltLeft, KeyCode::OPTION),
-    (Keyboard::AltRight, KeyCode::RIGHT_OPTION),
-    (Keyboard::MetaLeft, KeyCode::COMMAND),
-    (Keyboard::MetaRight, KeyCode::RIGHT_COMMAND),
-    (Keyboard::Grave, KeyCode::ANSI_GRAVE),
-    (Keyboard::Minus, KeyCode::ANSI_MINUS),
-    (Keyboard::Equal, KeyCode::ANSI_EQUAL),
-    (Keyboard::LeftBracket, KeyCode::ANSI_LEFT_BRACKET),
-    (Keyboard::RightBracket, KeyCode::ANSI_RIGHT_BRACKET),
-    (Keyboard::BackSlash, KeyCode::ANSI_BACKSLASH),
-    (Keyboard::SemiColon, KeyCode::ANSI_SEMICOLON),
-    (Keyboard::Quote, KeyCode::ANSI_QUOTE),
-    (Keyboard::Comma, KeyCode::ANSI_COMMA),
-    (Keyboard::Dot, KeyCode::ANSI_PERIOD),
-    (Keyboard::Slash, KeyCode::ANSI_SLASH),
+// Every named key and its macOS virtual key code. Keys with no macOS code
+// (F21-F24, Insert) are absent, so `to_code` gives `None` and `from_code` gives
+// `Key::Raw`.
+const TABLE: &[(Key, CGKeyCode)] = &[
+    (Key::KeyA, KeyCode::ANSI_A),
+    (Key::KeyB, KeyCode::ANSI_B),
+    (Key::KeyC, KeyCode::ANSI_C),
+    (Key::KeyD, KeyCode::ANSI_D),
+    (Key::KeyE, KeyCode::ANSI_E),
+    (Key::KeyF, KeyCode::ANSI_F),
+    (Key::KeyG, KeyCode::ANSI_G),
+    (Key::KeyH, KeyCode::ANSI_H),
+    (Key::KeyI, KeyCode::ANSI_I),
+    (Key::KeyJ, KeyCode::ANSI_J),
+    (Key::KeyK, KeyCode::ANSI_K),
+    (Key::KeyL, KeyCode::ANSI_L),
+    (Key::KeyM, KeyCode::ANSI_M),
+    (Key::KeyN, KeyCode::ANSI_N),
+    (Key::KeyO, KeyCode::ANSI_O),
+    (Key::KeyP, KeyCode::ANSI_P),
+    (Key::KeyQ, KeyCode::ANSI_Q),
+    (Key::KeyR, KeyCode::ANSI_R),
+    (Key::KeyS, KeyCode::ANSI_S),
+    (Key::KeyT, KeyCode::ANSI_T),
+    (Key::KeyU, KeyCode::ANSI_U),
+    (Key::KeyV, KeyCode::ANSI_V),
+    (Key::KeyW, KeyCode::ANSI_W),
+    (Key::KeyX, KeyCode::ANSI_X),
+    (Key::KeyY, KeyCode::ANSI_Y),
+    (Key::KeyZ, KeyCode::ANSI_Z),
+    (Key::Num0, KeyCode::ANSI_0),
+    (Key::Num1, KeyCode::ANSI_1),
+    (Key::Num2, KeyCode::ANSI_2),
+    (Key::Num3, KeyCode::ANSI_3),
+    (Key::Num4, KeyCode::ANSI_4),
+    (Key::Num5, KeyCode::ANSI_5),
+    (Key::Num6, KeyCode::ANSI_6),
+    (Key::Num7, KeyCode::ANSI_7),
+    (Key::Num8, KeyCode::ANSI_8),
+    (Key::Num9, KeyCode::ANSI_9),
+    (Key::F1, KeyCode::F1),
+    (Key::F2, KeyCode::F2),
+    (Key::F3, KeyCode::F3),
+    (Key::F4, KeyCode::F4),
+    (Key::F5, KeyCode::F5),
+    (Key::F6, KeyCode::F6),
+    (Key::F7, KeyCode::F7),
+    (Key::F8, KeyCode::F8),
+    (Key::F9, KeyCode::F9),
+    (Key::F10, KeyCode::F10),
+    (Key::F11, KeyCode::F11),
+    (Key::F12, KeyCode::F12),
+    (Key::F13, KeyCode::F13),
+    (Key::F14, KeyCode::F14),
+    (Key::F15, KeyCode::F15),
+    (Key::F16, KeyCode::F16),
+    (Key::F17, KeyCode::F17),
+    (Key::F18, KeyCode::F18),
+    (Key::F19, KeyCode::F19),
+    (Key::F20, KeyCode::F20),
+    (Key::Escape, KeyCode::ESCAPE),
+    (Key::Return, KeyCode::RETURN),
+    (Key::Space, KeyCode::SPACE),
+    (Key::Tab, KeyCode::TAB),
+    (Key::Backspace, KeyCode::DELETE),
+    (Key::Delete, KeyCode::FORWARD_DELETE),
+    (Key::CapsLock, KeyCode::CAPS_LOCK),
+    (Key::UpArrow, KeyCode::UP_ARROW),
+    (Key::DownArrow, KeyCode::DOWN_ARROW),
+    (Key::LeftArrow, KeyCode::LEFT_ARROW),
+    (Key::RightArrow, KeyCode::RIGHT_ARROW),
+    (Key::Home, KeyCode::HOME),
+    (Key::End, KeyCode::END),
+    (Key::PageUp, KeyCode::PAGE_UP),
+    (Key::PageDown, KeyCode::PAGE_DOWN),
+    (Key::ShiftLeft, KeyCode::SHIFT),
+    (Key::ShiftRight, KeyCode::RIGHT_SHIFT),
+    (Key::ControlLeft, KeyCode::CONTROL),
+    (Key::ControlRight, KeyCode::RIGHT_CONTROL),
+    (Key::AltLeft, KeyCode::OPTION),
+    (Key::AltRight, KeyCode::RIGHT_OPTION),
+    (Key::MetaLeft, KeyCode::COMMAND),
+    (Key::MetaRight, KeyCode::RIGHT_COMMAND),
+    (Key::Grave, KeyCode::ANSI_GRAVE),
+    (Key::Minus, KeyCode::ANSI_MINUS),
+    (Key::Equal, KeyCode::ANSI_EQUAL),
+    (Key::LeftBracket, KeyCode::ANSI_LEFT_BRACKET),
+    (Key::RightBracket, KeyCode::ANSI_RIGHT_BRACKET),
+    (Key::BackSlash, KeyCode::ANSI_BACKSLASH),
+    (Key::SemiColon, KeyCode::ANSI_SEMICOLON),
+    (Key::Quote, KeyCode::ANSI_QUOTE),
+    (Key::Comma, KeyCode::ANSI_COMMA),
+    (Key::Dot, KeyCode::ANSI_PERIOD),
+    (Key::Slash, KeyCode::ANSI_SLASH),
 ];
 
-fn to_code(key: Keyboard) -> Option<CGKeyCode> {
+fn to_code(key: Key) -> Option<CGKeyCode> {
+    if let Key::Raw(code) = key {
+        return Some(code);
+    }
     TABLE.iter().find(|(k, _)| *k == key).map(|(_, code)| *code)
 }
 
-fn from_code(code: CGKeyCode) -> Option<Keyboard> {
-    TABLE.iter().find(|(_, c)| *c == code).map(|(key, _)| *key)
+fn from_code(code: CGKeyCode) -> Key {
+    TABLE
+        .iter()
+        .find(|(_, c)| *c == code)
+        .map_or(Key::Raw(code), |(key, _)| *key)
 }
 
-const fn flag_for(key: Keyboard) -> Option<CGEventFlags> {
+const fn flag_for(key: Key) -> Option<CGEventFlags> {
     Some(match key {
-        Keyboard::MetaLeft | Keyboard::MetaRight => CGEventFlags::CGEventFlagCommand,
-        Keyboard::ShiftLeft | Keyboard::ShiftRight => CGEventFlags::CGEventFlagShift,
-        Keyboard::AltLeft | Keyboard::AltRight => CGEventFlags::CGEventFlagAlternate,
-        Keyboard::ControlLeft | Keyboard::ControlRight => CGEventFlags::CGEventFlagControl,
+        Key::MetaLeft | Key::MetaRight => CGEventFlags::CGEventFlagCommand,
+        Key::ShiftLeft | Key::ShiftRight => CGEventFlags::CGEventFlagShift,
+        Key::AltLeft | Key::AltRight => CGEventFlags::CGEventFlagAlternate,
+        Key::ControlLeft | Key::ControlRight => CGEventFlags::CGEventFlagControl,
         _ => return None,
     })
 }
 
-pub fn run(on_key: impl Fn(KeyEvent) + Send + 'static) -> Result<(), CaptureError> {
-    CGEventTap::with_enabled(
-        CGEventTapLocation::Session,
-        CGEventTapPlacement::HeadInsertEventTap,
-        CGEventTapOptions::Default,
-        vec![CGEventType::KeyDown, CGEventType::KeyUp],
-        |_proxy, event_type, event| {
-            let down = match event_type {
-                CGEventType::KeyDown => true,
-                CGEventType::KeyUp => false,
-                // TapDisabled* and anything else: we cannot act on it here, so
-                // leave it alone.
-                _ => return CallbackResult::Keep,
-            };
-            // Our own emitted key: pass it, do not re-dispatch.
-            if event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA) == TAG {
-                return CallbackResult::Keep;
-            }
-            let Ok(code) =
-                u16::try_from(event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE))
-            else {
-                return CallbackResult::Keep;
-            };
-            // A key we do not name: pass it rather than silently eat it.
-            from_code(code).map_or(CallbackResult::Keep, |key| {
-                on_key(KeyEvent { key, down });
-                CallbackResult::Drop
+/// What the callback should do with a key.
+#[derive(PartialEq, Eq, Debug)]
+enum Decision {
+    Pass,
+    Remap(KeyEvent),
+    Drop,
+}
+
+// The remap decision: what `on_key` returned against what came in.
+fn decide(input: &KeyEvent, out: Option<KeyEvent>) -> Decision {
+    match out {
+        None => Decision::Drop,
+        Some(ref e) if e == input => Decision::Pass,
+        Some(e) => Decision::Remap(e),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The tap and the posting (FFI).
+// ---------------------------------------------------------------------------
+
+fn new_tag() -> i64 {
+    // Per-process random, so an interceptor skips only its own emitter's output.
+    let mut h = RandomState::new().build_hasher();
+    h.write_u8(0);
+    i64::from_ne_bytes(h.finish().to_ne_bytes())
+}
+
+fn press_of(kind: CGEventType, event: &CGEvent) -> Option<PressType> {
+    match kind {
+        CGEventType::KeyDown => Some(PressType::Down),
+        CGEventType::KeyUp => Some(PressType::Up),
+        // A modifier: down if its flag bit is set after the change.
+        CGEventType::FlagsChanged => {
+            let code = u16::try_from(event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE)).ok()?;
+            let flag = flag_for(from_code(code))?;
+            Some(if event.get_flags().contains(flag) {
+                PressType::Down
+            } else {
+                PressType::Up
             })
-        },
-        CFRunLoop::run_current,
-    )
-    .map_err(|()| CaptureError)
-}
-
-pub fn emit(key: Keyboard) -> Result<(), EmitError> {
-    let code = to_code(key).ok_or(EmitError::Unmappable(key))?;
-    let source = source()?;
-    post(&source, code, CGEventFlags::empty(), true)?;
-    post(&source, code, CGEventFlags::empty(), false)
-}
-
-pub fn emit_chord(mods: &[Keyboard], key: Keyboard) -> Result<(), EmitError> {
-    let code = to_code(key).ok_or(EmitError::Unmappable(key))?;
-    let mut flags = CGEventFlags::empty();
-    for &m in mods {
-        flags |= flag_for(m).ok_or(EmitError::Unmappable(m))?;
+        }
+        _ => None,
     }
-    let source = source()?;
-    post(&source, code, flags, true)?;
-    post(&source, code, flags, false)
 }
 
-fn source() -> Result<CGEventSource, EmitError> {
-    CGEventSource::new(CGEventSourceStateID::Private).map_err(|()| EmitError::Source)
+fn encode(source: Option<&CGEventSource>, out: &KeyEvent) -> Option<CGEvent> {
+    let code = to_code(out.key)?;
+    let down = out.press == PressType::Down;
+    CGEvent::new_keyboard_event(source?.clone(), code, down).ok()
 }
 
-fn post(source: &CGEventSource, code: CGKeyCode, flags: CGEventFlags, down: bool) -> Result<(), EmitError> {
-    let event = CGEvent::new_keyboard_event(source.clone(), code, down).map_err(|()| EmitError::Post)?;
-    if !flags.is_empty() {
-        event.set_flags(flags);
+/// Grab the keyboard. The interceptor swallows and decides via `on_key`; the
+/// emitter synthesizes keys, tagged so the interceptor passes them.
+///
+/// # Errors
+///
+/// Returns [`CaptureError`] if the tap cannot be installed (usually missing
+/// Accessibility).
+pub fn intercept(
+    on_key: impl Fn(KeyEvent) -> Option<KeyEvent> + Send + 'static,
+) -> Result<(Interceptor, Emitter), CaptureError> {
+    let tag = new_tag();
+    let (ready_tx, ready_rx) = mpsc::channel::<Result<CFRunLoop, ()>>();
+    let signal = ready_tx.clone();
+
+    let thread = std::thread::spawn(move || {
+        let source = CGEventSource::new(CGEventSourceStateID::Private).ok();
+        let outcome = CGEventTap::with_enabled(
+            CGEventTapLocation::Session,
+            CGEventTapPlacement::TailAppendEventTap,
+            CGEventTapOptions::Default,
+            vec![CGEventType::KeyDown, CGEventType::KeyUp, CGEventType::FlagsChanged],
+            |_proxy, kind, event| {
+                if event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA) == tag {
+                    return CallbackResult::Keep; // our own emit
+                }
+                let Some(press) = press_of(kind, event) else {
+                    return CallbackResult::Keep;
+                };
+                let Ok(code) =
+                    u16::try_from(event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE))
+                else {
+                    return CallbackResult::Keep;
+                };
+                let input = KeyEvent { key: from_code(code), press };
+                match decide(&input, on_key(input.clone())) {
+                    Decision::Pass => CallbackResult::Keep,
+                    Decision::Drop => CallbackResult::Drop,
+                    Decision::Remap(out) => {
+                        encode(source.as_ref(), &out).map_or(CallbackResult::Drop, CallbackResult::Replace)
+                    }
+                }
+            },
+            || {
+                let _ = ready_tx.send(Ok(CFRunLoop::get_current()));
+                CFRunLoop::run_current();
+            },
+        );
+        if outcome.is_err() {
+            let _ = signal.send(Err(()));
+        }
+    });
+
+    let Ok(Ok(run_loop)) = ready_rx.recv() else {
+        return Err(CaptureError);
+    };
+    let source = CGEventSource::new(CGEventSourceStateID::Private).map_err(|()| CaptureError)?;
+    let interceptor = Interceptor {
+        run_loop,
+        thread: Some(thread),
+    };
+    let emitter = Emitter(Rc::new(EmitterState {
+        source,
+        tag,
+        held: RefCell::new(HashMap::new()),
+    }));
+    Ok((interceptor, emitter))
+}
+
+/// An active grab of the keyboard. While it is alive keys are intercepted;
+/// dropping it releases the keyboard.
+pub struct Interceptor {
+    run_loop: CFRunLoop,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Drop for Interceptor {
+    fn drop(&mut self) {
+        self.run_loop.stop();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
-    event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, TAG);
-    event.post(CGEventTapLocation::Session);
-    Ok(())
+}
+
+struct EmitterState {
+    source: CGEventSource,
+    tag: i64,
+    held: RefCell<HashMap<Key, usize>>,
+}
+
+impl EmitterState {
+    fn post(&self, code: CGKeyCode, down: bool) -> Result<(), EmitError> {
+        let event =
+            CGEvent::new_keyboard_event(self.source.clone(), code, down).map_err(|()| EmitError::Post)?;
+        event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, self.tag);
+        event.post(CGEventTapLocation::Session);
+        Ok(())
+    }
+}
+
+/// Synthesizes keys through the interceptor's tag, so they are not re-handled.
+pub struct Emitter(Rc<EmitterState>);
+
+impl Emitter {
+    /// Emit one key event, a press or a release.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmitError`] if the key has no code on this OS or could not be posted.
+    pub fn emit(&self, key: Key, press: PressType) -> Result<(), EmitError> {
+        let code = to_code(key).ok_or(EmitError::Unmappable(key))?;
+        self.0.post(code, press == PressType::Down)
+    }
+
+    /// Press then release a key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmitError`] if the key has no code on this OS or could not be posted.
+    pub fn tap(&self, key: Key) -> Result<(), EmitError> {
+        self.emit(key, PressType::Down)?;
+        self.emit(key, PressType::Up)
+    }
+
+    /// Hold a key down until the last [`Held`] for it drops. Ref-counted per key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmitError`] if the key has no code on this OS or could not be posted.
+    pub fn press(&self, key: Key) -> Result<Held, EmitError> {
+        let code = to_code(key).ok_or(EmitError::Unmappable(key))?;
+        let mut held = self.0.held.borrow_mut();
+        let count = held.entry(key).or_insert(0);
+        if *count == 0 {
+            self.0.post(code, true)?;
+        }
+        *count += 1;
+        drop(held);
+        Ok(Held {
+            state: Rc::clone(&self.0),
+            key,
+        })
+    }
+}
+
+/// A held key. The key stays down while any `Held` for it is alive.
+pub struct Held {
+    state: Rc<EmitterState>,
+    key: Key,
+}
+
+impl Clone for Held {
+    fn clone(&self) -> Self {
+        *self.state.held.borrow_mut().entry(self.key).or_insert(0) += 1;
+        Self {
+            state: Rc::clone(&self.state),
+            key: self.key,
+        }
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let mut held = self.state.held.borrow_mut();
+        if let Some(count) = held.get_mut(&self.key) {
+            *count -= 1;
+            if *count == 0 && let Some(code) = to_code(self.key) {
+                let _ = self.state.post(code, false);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{from_code, to_code};
-    use core_graphics::event::KeyCode;
-    use freddie_keys::Keyboard;
+    use super::{Decision, decide, flag_for, from_code, to_code};
+    use core_graphics::event::{CGEventFlags, KeyCode};
+    use freddie_keys::{Key, KeyEvent, PressType};
 
-    #[test]
-    fn round_trips_a_mapped_key() {
-        assert_eq!(to_code(Keyboard::KeyR), Some(KeyCode::ANSI_R));
-        assert_eq!(from_code(KeyCode::ANSI_R), Some(Keyboard::KeyR));
+    fn ev(key: Key) -> KeyEvent {
+        KeyEvent {
+            key,
+            press: PressType::Down,
+        }
     }
 
     #[test]
-    fn keys_without_a_mac_code_are_none() {
-        assert_eq!(to_code(Keyboard::F24), None);
-        assert_eq!(to_code(Keyboard::Insert), None);
+    fn named_keys_round_trip() {
+        assert_eq!(to_code(Key::KeyR), Some(KeyCode::ANSI_R));
+        assert_eq!(from_code(KeyCode::ANSI_R), Key::KeyR);
+        assert_eq!(to_code(Key::Escape), Some(KeyCode::ESCAPE));
+        assert_eq!(from_code(KeyCode::ESCAPE), Key::Escape);
+        assert_eq!(to_code(Key::MetaLeft), Some(KeyCode::COMMAND));
+        assert_eq!(from_code(KeyCode::RIGHT_SHIFT), Key::ShiftRight);
+    }
+
+    #[test]
+    fn unknown_code_becomes_raw() {
+        assert_eq!(from_code(64000), Key::Raw(64000));
+    }
+
+    #[test]
+    fn raw_round_trips_its_code() {
+        assert_eq!(to_code(Key::Raw(64000)), Some(64000));
+        assert_eq!(from_code(64000), Key::Raw(64000));
+    }
+
+    #[test]
+    fn keys_without_a_mac_code_are_unmappable() {
+        assert_eq!(to_code(Key::F24), None);
+        assert_eq!(to_code(Key::Insert), None);
+    }
+
+    #[test]
+    fn decide_passes_unchanged() {
+        let a = ev(Key::KeyA);
+        assert_eq!(decide(&a, Some(a.clone())), Decision::Pass);
+    }
+
+    #[test]
+    fn decide_remaps_a_different_key() {
+        let a = ev(Key::KeyA);
+        let b = ev(Key::KeyB);
+        assert_eq!(decide(&a, Some(b.clone())), Decision::Remap(b));
+    }
+
+    #[test]
+    fn decide_drops_on_none() {
+        assert_eq!(decide(&ev(Key::KeyA), None), Decision::Drop);
+    }
+
+    #[test]
+    fn decide_remaps_when_only_press_changes() {
+        let down = ev(Key::KeyA);
+        let up = KeyEvent {
+            key: Key::KeyA,
+            press: PressType::Up,
+        };
+        assert_eq!(decide(&down, Some(up.clone())), Decision::Remap(up));
+    }
+
+    #[test]
+    fn flags_map_modifiers_only() {
+        assert_eq!(flag_for(Key::MetaLeft), Some(CGEventFlags::CGEventFlagCommand));
+        assert_eq!(flag_for(Key::ShiftRight), Some(CGEventFlags::CGEventFlagShift));
+        assert_eq!(flag_for(Key::ControlLeft), Some(CGEventFlags::CGEventFlagControl));
+        assert_eq!(flag_for(Key::AltRight), Some(CGEventFlags::CGEventFlagAlternate));
+        assert_eq!(flag_for(Key::KeyA), None);
+        assert_eq!(flag_for(Key::Escape), None);
     }
 }

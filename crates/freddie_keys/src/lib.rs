@@ -1,19 +1,19 @@
 //! The platform-neutral keyboard vocabulary shared across freddie.
 //!
-//! [`Keyboard`] names physical keys independent of any OS. It is the type
-//! consumers bind against, and the type each `freddie_keyboard` backend maps its
-//! native key codes to and from. Because this crate owns the type, [`Keyboard`]
-//! is a `bind` trigger directly, so a binding reads `Keyboard::KeyR` with no
-//! wrapper.
+//! [`Key`] names physical keys independent of any OS. It is the type consumers
+//! bind against, and the type each `freddie_keyboard` backend maps its native key
+//! codes to and from. Because this crate owns the type, [`Key`] is a `bind`
+//! trigger directly, so a binding reads `Key::KeyR` with no wrapper.
 //!
-//! The enum is exhaustive on purpose: a backend's keycode table is a `match` over
-//! it, so a missing mapping is a compile error rather than a silent gap.
+//! The named variants are exhaustive on purpose, so a backend's keycode table is a
+//! `match` and a missing mapping is a compile error. [`Key::Raw`] carries a native
+//! code with no name, both for keys the table lacks and for made-up keys.
 
 use bind::EventTrigger;
 
 /// A physical key, named by its US-ANSI position, independent of layout or OS.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum Keyboard {
+pub enum Key {
     KeyA,
     KeyB,
     KeyC,
@@ -115,18 +115,29 @@ pub enum Keyboard {
     Comma,
     Dot,
     Slash,
+
+    /// A native key code with no name: a key the table does not cover, or a
+    /// made-up key used as a remap intermediary. Not portable across OSes.
+    Raw(u16),
+}
+
+/// Whether a key went down or came up.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum PressType {
+    Down,
+    Up,
 }
 
 /// A key going down or coming up.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct KeyEvent {
     /// Which key.
-    pub key: Keyboard,
-    /// `true` on key-down, `false` on key-up.
-    pub down: bool,
+    pub key: Key,
+    /// Down or up.
+    pub press: PressType,
 }
 
-impl EventTrigger for Keyboard {
+impl EventTrigger for Key {
     type Event = KeyEvent;
 
     fn is_matching(&self, event: &KeyEvent) -> bool {
@@ -136,16 +147,27 @@ impl EventTrigger for Keyboard {
 
 #[cfg(test)]
 mod tests {
-    use super::{Keyboard, KeyEvent};
+    use super::{Key, KeyEvent, PressType};
     use bind::EventTrigger;
 
     #[test]
     fn matches_only_its_own_key() {
         let event = KeyEvent {
-            key: Keyboard::KeyR,
-            down: true,
+            key: Key::KeyR,
+            press: PressType::Down,
         };
-        assert!(Keyboard::KeyR.is_matching(&event));
-        assert!(!Keyboard::KeyS.is_matching(&event));
+        assert!(Key::KeyR.is_matching(&event));
+        assert!(!Key::KeyS.is_matching(&event));
+    }
+
+    #[test]
+    fn raw_matches_by_code() {
+        let event = KeyEvent {
+            key: Key::Raw(64000),
+            press: PressType::Down,
+        };
+        assert!(Key::Raw(64000).is_matching(&event));
+        assert!(!Key::Raw(1).is_matching(&event));
+        assert!(!Key::KeyA.is_matching(&event));
     }
 }

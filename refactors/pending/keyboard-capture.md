@@ -1,6 +1,6 @@
 # keyboard capture and emit
 
-Grab the keyboard on macOS. The callback decides each key and returns what to send on, and the OS tap chain runs that as a pipeline. v1 is one process with one grab.
+Intercept the keyboard on macOS. The callback decides each key and returns what to send on, and the OS tap chain runs that as a pipeline. Two structs: an `Interceptor` that captures, and an `Emitter` that synthesizes keys. v1 is one process.
 
 ## The tap chain is the pipeline
 
@@ -10,35 +10,47 @@ It is correct and loop-free as long as a tap decides by returning the event, bec
 
 ## API
 
+Capture and emit are separate structs, one handles input and the other produces output, but a single call makes both so they share a tag.
+
 ```rust
-pub struct Grab(/* private */);
-impl Grab {
-    // Decides each key and returns what continues: Some(same) passes, Some(other) remaps, None drops.
-    pub fn new(on_key: impl Fn(KeyEvent) -> Option<KeyEvent> + Send + 'static) -> Result<Grab, CaptureError>;
-    // Synthesize a key not tied to the current event. Re-posts, so it carries the tag.
+// Grab the keyboard. Returns both halves, sharing a tag so the interceptor passes the emitter's output.
+// on_key decides each key: Some(same) passes, Some(other) remaps, None drops.
+pub fn intercept(
+    on_key: impl Fn(KeyEvent) -> Option<KeyEvent> + Send + 'static,
+) -> Result<(Interceptor, Emitter), CaptureError>;
+
+pub struct Interceptor(/* private */);
+// impl Drop for Interceptor: releases the keyboard.
+
+pub struct Emitter(/* private */);
+impl Emitter {
+    // Synthesize a key not tied to an intercepted event. Re-posts, so it carries the tag.
     pub fn emit(&self, key: Key, press: PressType) -> Result<(), EmitError>;
     pub fn tap(&self, key: Key) -> Result<(), EmitError>;      // press then release
-    pub fn press(&self, key: Key) -> Result<Press, EmitError>; // held until the last handle drops
+    pub fn press(&self, key: Key) -> Result<Held, EmitError>; // held until the last handle drops
 }
-// impl Drop for Grab: releases the keyboard.
 
-pub struct Press(/* private */);
-impl Clone for Press;   // another handle holding the key down
-// impl Drop for Press: the last handle releases the key.
+pub struct Held(/* private */);
+impl Clone for Held;   // another handle holding the key down
+// impl Drop for Held: the last handle releases the key.
 
 pub struct CaptureError;                 // Display + Error
 pub enum EmitError { Unmappable(Key), Post }
 ```
 
-`on_key` runs on the capture thread and returns the transform, so keep it fast; freddie's remap is CPU-only, so it fits. `emit`, `tap`, and `press` are for keys the callback did not produce by returning, a macro or a held modifier. They `CGEventPost`, so they carry the tag and hit the cross-process caveat below. `press` holds a key and releases it when the last `Press` drops, ref-counted per key; `Press` is `Rc`-backed and `!Send`, and a `send` feature swaps in `Arc`.
+```rust
+let (interceptor, emitter) = intercept(on_key)?;
+```
+
+`on_key` runs on the capture thread and returns the transform, so keep it fast; freddie's remap is CPU-only, so it fits. The `Emitter` is for keys the callback did not produce by returning, a macro or a held modifier, and it shares the interceptor's tag from the same `intercept` call. `emit`/`tap`/`press` `CGEventPost`, so they carry the tag and hit the cross-process caveat below. `press` holds a key and releases it when the last `Held` drops, ref-counted per key; `Held` is `Rc`-backed and `!Send`, and a `send` feature swaps in `Arc`.
 
 `Key` is one enum, a variant per key, `Key::Raw(u16)` included. `KeyEvent` is `{ key: Key, press: PressType }`, and `PressType` is `Down` or `Up`, a named enum rather than a bare bool.
 
 ## The tag, and the cross-process limit
 
-A re-posted event comes back around to our own tap, so each grab stamps its emits with a tag in `USER_DATA` and passes an event carrying its own tag straight through. The return-the-event path needs no tag; only `emit`/`tap`/`press` do.
+A re-posted event comes back around to our own tap, so the emitter stamps a tag in `USER_DATA` and the interceptor passes an event carrying that tag straight through. They share the one value because a single `intercept` call makes both. The return-the-event path needs no tag; only the emitter does, so a return-only setup (the simple mercury) never touches it.
 
-The tag stops a grab looping on itself, not on another process. Two remappers with inverse maps loop: A grabs and re-posts B, B grabs and re-posts A, and B's post of A carries B's tag, not A's. Returning the event instead of posting avoids this, because a returned event never re-enters the top. Karabiner sidesteps the whole thing by not using taps for the remap: it seizes the physical keyboard at the IOKit HID level and emits through a virtual HID keyboard from a DriverKit driver, so its output is never its input. That is the correct cross-process design and a signed-driver project. v1 is single-process, where returning the event is correct and the tag covers the rest.
+Make the tag unique per process rather than a well-known constant. Two freddie processes sharing a constant would each skip the other's output as if it were their own, breaking the cross-process chain. A random tag at startup avoids that for free. Even so, the tag stops a process looping on itself, not on another process: two remappers with inverse maps loop, A re-posts B and B re-posts A, and neither tag matches the other's. Returning the event instead of posting avoids that, since a returned event never re-enters the top. Karabiner sidesteps the whole class by not using taps for the remap (virtual-hid.md). v1 is single-process, where returning the event is correct and the tag covers the emitter.
 
 ## The macOS backend
 
@@ -46,7 +58,7 @@ The tag stops a grab looping on itself, not on another process. Two remappers wi
 CGEventTap::with_enabled(
     Session, TailAppendEventTap, Default, [KeyDown, KeyUp, FlagsChanged],
     |_, kind, event| {
-        if event.field(USER_DATA) == MY_TAG { return Keep; }   // our own re-post
+        if event.field(USER_DATA) == my_tag { return Keep; }   // our own re-post
         let key = from_code(event.field(KEYCODE));             // Key::Raw(code) if unnamed
         let press = if kind == KeyDown { PressType::Down } else { PressType::Up };
         match on_key(KeyEvent { key, press }) {
@@ -59,11 +71,11 @@ CGEventTap::with_enabled(
 );
 ```
 
-`with_enabled` runs the run-loop wiring inside core-graphics, so nothing here is `unsafe` and the crate stays under the workspace `forbid(unsafe_code)`. `CFRunLoop` is `Send`, so `Grab::drop` stops it from any thread, and killing the process frees the tap regardless. Key codes come from core-graphics' `KeyCode` table; an unnamed code becomes `Key::Raw(code)`. Modifiers arrive as `FlagsChanged` rather than `KeyDown`/`KeyUp`, and the keycode gives the side (`ShiftLeft` vs `ShiftRight`). The tap needs Accessibility and Input Monitoring.
+`with_enabled` runs the run-loop wiring inside core-graphics, so nothing here is `unsafe` and the crate stays under the workspace `forbid(unsafe_code)`. `CFRunLoop` is `Send`, so `Interceptor::drop` stops it from any thread, and killing the process frees the tap regardless. Key codes come from core-graphics' `KeyCode` table; an unnamed code becomes `Key::Raw(code)`. Modifiers arrive as `FlagsChanged` rather than `KeyDown`/`KeyUp`, and the keycode gives the side (`ShiftLeft` vs `ShiftRight`). The tap needs Accessibility and Input Monitoring.
 
 ## v1 scope
 
-One process, one `Grab`, deciding each key in the callback and returning the result. `emit`/`tap`/`press` for synthesized keys. Cross-process correctness needs the virtual-HID route and is out of scope.
+One process: an `Interceptor` deciding each key in the callback and returning the result, and an `Emitter` for synthesized keys. Cross-process correctness needs the virtual-HID route and is out of scope.
 
 ## Known limits
 
