@@ -10,11 +10,8 @@ Move a `refactors/pending` doc to `refactors/past` once its work is implemented 
 
 ## Logs
 
-mercury writes its tracing output to `~/Library/Logs/mercury/mercury.log`, always, appending across runs. Read that file to debug a run; it is the only place the logs go (the terminal only gets the startup lines and a fatal keyboard error).
+mercury writes its tracing output to `~/Library/Logs/mercury/mercury.log`, always, appending across runs. Read that file to debug a run.
 
-One record per dispatched event, carrying the event, the effects it produced, and the resulting state on a single line. `RUST_LOG` sets the level, defaulting to `info`:
+The file always records down to `debug`, whatever the terminal is set to, so a run is always reconstructable afterwards. It holds one record per dispatched event, carrying the event, the effects it produced, and the resulting state on a single line, plus each key emitted, each app foregrounded, and the raw frontmost-app changes `freddie_app_nav` observed.
 
-- `info` — the per-dispatch records, and startup/kill.
-- `debug` — adds each key emitted, each app foregrounded, and `freddie_app_nav`'s raw frontmost-app changes.
-
-Run with more detail: `RUST_LOG=debug cargo run -p mercury`. Watch it live from another pane: `tail -f ~/Library/Logs/mercury/mercury.log`.
+`LOG_LEVEL` sets what the terminal shows and nothing else, defaulting to `info`. So `LOG_LEVEL=error cargo run -p mercury` gives a quiet terminal and a full log file. Watch it live from another pane: `tail -f ~/Library/Logs/mercury/mercury.log`.

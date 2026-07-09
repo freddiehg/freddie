@@ -24,10 +24,21 @@ use freddie_keyboard::Emitter;
 use mercury::{App, Mercury, MercuryEffect, MercuryEvent, foreground};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tracing::{debug, error, info, warn};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Layer, fmt};
 
 /// The log file, written under [`log_dir`].
 const LOG_FILE: &str = "mercury.log";
+
+/// The environment variable that sets the terminal's log level.
+const LOG_LEVEL_ENV: &str = "LOG_LEVEL";
+
+/// What the log file records, always. Deliberately not tied to [`LOG_LEVEL_ENV`]:
+/// the file is the record of what happened, so quieting the terminal must never
+/// quiet it.
+const FILE_LEVEL: LevelFilter = LevelFilter::DEBUG;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
@@ -90,22 +101,34 @@ fn log_dir() -> PathBuf {
     )
 }
 
-/// Send tracing to the log file and return its path.
+/// Send tracing to the log file and the terminal, and return the file's path.
 ///
-/// The appender writes synchronously rather than through `tracing_appender`'s
-/// non-blocking writer: mercury exits via `process::exit`, which runs no
-/// destructors, so a buffered writer would drop whatever it had not flushed.
-/// `RUST_LOG` overrides the default level.
+/// Two sinks with independent filters. The file always records [`FILE_LEVEL`], so
+/// the record of a run survives however quiet the terminal was asked to be. The
+/// terminal shows whatever `LOG_LEVEL` asks for, defaulting to `info`.
+///
+/// The file appender writes synchronously rather than through
+/// `tracing_appender`'s non-blocking writer: mercury exits via `process::exit`,
+/// which runs no destructors, so a buffered writer would drop whatever it had not
+/// flushed.
 fn init_tracing() -> PathBuf {
     let dir = log_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
         eprintln!("mercury: could not create {}: {e}", dir.display());
     }
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt()
+
+    let file = fmt::layer()
         .with_writer(tracing_appender::rolling::never(&dir, LOG_FILE))
         .with_ansi(false)
-        .with_env_filter(filter)
+        .with_filter(FILE_LEVEL);
+
+    let terminal = fmt::layer().with_writer(std::io::stderr).with_filter(
+        EnvFilter::try_from_env(LOG_LEVEL_ENV).unwrap_or_else(|_| EnvFilter::new("info")),
+    );
+
+    tracing_subscriber::registry()
+        .with(file)
+        .with(terminal)
         .init();
     dir.join(LOG_FILE)
 }
@@ -198,7 +221,10 @@ mod tests {
     use mercury::{Key, key};
     use tracing_subscriber::fmt::MakeWriter;
 
-    use super::{LOG_FILE, Mercury, dispatch_event, log_dir, unbounded_channel};
+    use super::{
+        EnvFilter, FILE_LEVEL, LOG_FILE, Layer, Mercury, SubscriberExt, dispatch_event, log_dir,
+        unbounded_channel,
+    };
 
     /// A writer that collects everything the subscriber emits.
     #[derive(Clone, Default)]
@@ -277,6 +303,43 @@ mod tests {
         let logged = std::fs::read_to_string(dir.join(LOG_FILE)).expect("log file exists");
         std::fs::remove_dir_all(&dir).ok();
         assert!(logged.contains("written-synchronously"), "{logged}");
+    }
+
+    /// `LOG_LEVEL` governs the terminal only. However quiet the terminal is asked
+    /// to be, the file still records down to [`FILE_LEVEL`].
+    #[test]
+    fn the_log_level_quiets_the_terminal_but_never_the_file() {
+        let to_file = Buffer::default();
+        let to_terminal = Buffer::default();
+
+        let subscriber = tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(to_file.clone())
+                    .with_ansi(false)
+                    .with_filter(FILE_LEVEL),
+            )
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(to_terminal.clone())
+                    .with_ansi(false)
+                    // The terminal is silenced short of `error`.
+                    .with_filter(EnvFilter::new("error")),
+            );
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(marker = "an-info-record", "dispatch");
+            tracing::debug!(marker = "a-debug-record", "emitted");
+        });
+
+        let file = to_file.contents();
+        assert!(file.contains("an-info-record"), "file lost info: {file}");
+        assert!(file.contains("a-debug-record"), "file lost debug: {file}");
+        assert!(
+            to_terminal.contents().is_empty(),
+            "terminal should be silent: {}",
+            to_terminal.contents()
+        );
     }
 
     #[test]
