@@ -5,7 +5,7 @@
 //! producing effects); the effect loop performs them, re-emitting keys through the
 //! `Emitter` and reporting a `Foreground` back as an event (standing in for the OS
 //! watcher). The interceptor callback exits on `escape` (the way out of a full
-//! hijack); a 5-second timer is the backstop (10-second hard exit).
+//! hijack); a 30-second timer is the backstop (hard exit 5s after that).
 //!
 //! The `Emitter` is `!Send`, so the effect loop runs on this task via `join!`
 //! rather than a spawned task.
@@ -51,7 +51,7 @@ async fn main() {
 
     spawn_killswitch(effect_tx.clone());
 
-    println!("mercury: hijacking the keyboard; escape quits (5s backstop)");
+    println!("mercury: hijacking the keyboard; escape quits (30s backstop)");
     tokio::join!(
         run_event_loop(Mercury::default(), event_rx, effect_tx),
         run_effect_loop(effect_rx, event_tx, emitter),
@@ -59,11 +59,11 @@ async fn main() {
     drop(interceptor); // hold the grab until here
 }
 
-/// Dev killswitch: a `Kill` effect after 5s (the effect loop exits on it), then a
-/// hard exit after 10s if that never happened.
+/// Dev killswitch: a `Kill` effect after 30s (the effect loop exits on it), then a
+/// hard exit 5s later if that never happened.
 fn spawn_killswitch(effect_tx: UnboundedSender<MercuryEffect>) {
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        tokio::time::sleep(Duration::from_secs(30)).await;
         let _ = effect_tx.send(MercuryEffect::Kill);
         tokio::time::sleep(Duration::from_secs(5)).await;
         std::process::exit(1);
