@@ -5,80 +5,92 @@
 
 use bind::SimpleRunner;
 use mercury::{
-    App, AppLayer, Keyboard, Layer, Mercury, MercuryEffect, MercuryStruct, foreground, key,
+    App, AppLayer, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryStruct, PressType,
+    foreground, key,
 };
+
+const fn emit(key: Key, press: PressType) -> MercuryEffect {
+    MercuryEffect::Emit(KeyEvent { key, press })
+}
+
+// A key passed straight through: the one event it arrived as.
+fn passed(key: Key) -> Vec<MercuryEffect> {
+    vec![emit(key, PressType::Down)]
+}
+
+// cmd+r: cmd down, r down, r up, cmd up.
+fn cmd_r() -> Vec<MercuryEffect> {
+    vec![
+        emit(Key::MetaLeft, PressType::Down),
+        emit(Key::KeyR, PressType::Down),
+        emit(Key::KeyR, PressType::Up),
+        emit(Key::MetaLeft, PressType::Up),
+    ]
+}
 
 // ---- per-event: send an event, assert the effect ----
 
 #[test]
 fn home_n_enters_nav() {
     let mut m = Mercury::default();
-    assert_eq!(m.handle(&key(Keyboard::KeyN)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyN)), Some(vec![]));
     assert!(matches!(m.layer, Layer::Nav(_)));
 }
 
 #[test]
 fn home_t_enters_typing() {
     let mut m = Mercury::default();
-    assert_eq!(m.handle(&key(Keyboard::KeyT)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyT)), Some(vec![]));
     assert!(matches!(m.layer, Layer::Typing(_)));
 }
 
 #[test]
 fn home_q_quits() {
     let mut m = Mercury::default();
-    assert_eq!(m.handle(&key(Keyboard::KeyQ)), Some(vec![MercuryEffect::Kill]));
+    assert_eq!(m.handle(&key(Key::KeyQ)), Some(vec![MercuryEffect::Kill]));
 }
 
 #[test]
 fn home_escape_passes_through() {
     let mut m = Mercury::default();
-    assert_eq!(
-        m.handle(&key(Keyboard::Escape)),
-        Some(vec![MercuryEffect::Type(Keyboard::Escape)])
-    );
+    assert_eq!(m.handle(&key(Key::Escape)), Some(passed(Key::Escape)));
     assert!(matches!(m.layer, Layer::Home(_)));
 }
 
 #[test]
 fn escape_goes_home_from_a_sublayer() {
     let mut m = Mercury::default();
-    m.handle(&key(Keyboard::KeyN));
+    m.handle(&key(Key::KeyN));
     assert!(matches!(m.layer, Layer::Nav(_)));
-    assert_eq!(m.handle(&key(Keyboard::Escape)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
     assert!(matches!(m.layer, Layer::Home(_)));
 }
 
 #[test]
 fn typing_passes_any_key_through() {
     let mut m = Mercury::default();
-    m.handle(&key(Keyboard::KeyT));
-    // Any key passes through, emitting itself so the runner can log it.
-    assert_eq!(
-        m.handle(&key(Keyboard::KeyA)),
-        Some(vec![MercuryEffect::Type(Keyboard::KeyA)])
-    );
-    assert_eq!(
-        m.handle(&key(Keyboard::KeyZ)),
-        Some(vec![MercuryEffect::Type(Keyboard::KeyZ)])
-    );
+    m.handle(&key(Key::KeyT));
+    assert_eq!(m.handle(&key(Key::KeyA)), Some(passed(Key::KeyA)));
+    assert_eq!(m.handle(&key(Key::KeyZ)), Some(passed(Key::KeyZ)));
     assert!(matches!(m.layer, Layer::Typing(_)));
 }
 
 #[test]
-fn typing_escape_goes_home() {
+fn typing_escape_passes_through() {
+    // In typing the catch-all shadows the go-home binding, so escape passes
+    // through like any other key rather than leaving the layer.
     let mut m = Mercury::default();
-    m.handle(&key(Keyboard::KeyT));
-    assert_eq!(m.handle(&key(Keyboard::Escape)), Some(vec![]));
-    assert!(matches!(m.layer, Layer::Home(_)));
+    m.handle(&key(Key::KeyT));
+    assert_eq!(m.handle(&key(Key::Escape)), Some(passed(Key::Escape)));
+    assert!(matches!(m.layer, Layer::Typing(_)));
 }
 
 #[test]
 fn nav_c_foregrounds_chrome_without_changing_state() {
     let mut m = Mercury::default();
-    m.handle(&key(Keyboard::KeyN));
+    m.handle(&key(Key::KeyN));
     assert_eq!(
-        m.handle(&key(Keyboard::KeyC)),
+        m.handle(&key(Key::KeyC)),
         Some(vec![MercuryEffect::Foreground(App::Chrome)])
     );
     // The effect is inert: still in nav, nothing foregrounded yet.
@@ -98,7 +110,7 @@ fn foreground_records_the_app_without_changing_layer() {
 fn i_enters_inapp_for_the_foregrounded_app() {
     let mut m = Mercury::default();
     m.handle(&foreground(App::Chrome));
-    assert_eq!(m.handle(&key(Keyboard::KeyI)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyI)), Some(vec![]));
     assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
 }
 
@@ -106,26 +118,23 @@ fn i_enters_inapp_for_the_foregrounded_app() {
 fn chrome_r_refreshes() {
     let mut m = Mercury::default();
     m.handle(&foreground(App::Chrome));
-    m.handle(&key(Keyboard::KeyI));
-    assert_eq!(
-        m.handle(&key(Keyboard::KeyR)),
-        Some(vec![MercuryEffect::Command(Keyboard::KeyR)])
-    );
+    m.handle(&key(Key::KeyI));
+    assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
 }
 
 #[test]
 fn inapp_other_app_ignores_keys() {
     let mut m = Mercury::default();
     m.handle(&foreground(App::Zed));
-    m.handle(&key(Keyboard::KeyI));
+    m.handle(&key(Key::KeyI));
     assert!(matches!(m.layer, Layer::InApp(AppLayer::Other(_))));
-    assert_eq!(m.handle(&key(Keyboard::KeyR)), None);
+    assert_eq!(m.handle(&key(Key::KeyR)), None);
 }
 
 #[test]
 fn unbound_key_is_none() {
     let mut m = Mercury::default();
-    assert_eq!(m.handle(&key(Keyboard::KeyX)), None);
+    assert_eq!(m.handle(&key(Key::KeyX)), None);
 }
 
 // ---- loop: driving a bind::SimpleRunner ----
@@ -133,10 +142,7 @@ fn unbound_key_is_none() {
 /// Drain the runner, recording each effect and reporting a foregrounded app back
 /// the way the OS watcher would (a `Foreground` effect becomes a foreground
 /// event).
-fn settle(
-    runner: &mut SimpleRunner<'_, MercuryStruct, Mercury>,
-    performed: &mut Vec<MercuryEffect>,
-) {
+fn settle(runner: &mut SimpleRunner<'_, MercuryStruct, Mercury>, performed: &mut Vec<MercuryEffect>) {
     while let Some(dispatched) = runner.next() {
         if let Some(output) = dispatched {
             for effect in output {
@@ -157,7 +163,7 @@ fn foregrounding_chrome_is_reported_back() {
     let mut performed = Vec::new();
     {
         let mut runner = SimpleRunner::<MercuryStruct, _>::new(&mut m);
-        for k in [Keyboard::KeyN, Keyboard::KeyC] {
+        for k in [Key::KeyN, Key::KeyC] {
             runner.queue_event(key(k));
             settle(&mut runner, &mut performed);
         }

@@ -11,8 +11,9 @@
 //! - [`AppLayer`] (in-app): [`ChromeApp`] binds `r` to a refresh; every other app
 //!   is [`OtherApp`], which binds nothing.
 //!
-//! `escape` quits from anywhere (a [`MercuryEffect::Kill`]); `return` (Enter)
-//! goes back to the home layer from anywhere.
+//! `escape` goes back to the home layer from the nav and in-app layers. In home
+//! and typing it passes through instead: home binds it explicitly, and typing's
+//! catch-all shadows the go-home binding.
 //!
 //! A foreground event only records which app is frontmost; it does not change the
 //! layer. Handlers either mutate the state through the path they are handed (the
@@ -23,24 +24,28 @@
 //! Run it with `cargo run -p mercury`, or the tests with `cargo test -p mercury`.
 
 use bind::{Bind, Bindings, EventTrigger};
-pub use freddie_keys::{KeyEvent, Keyboard};
+pub use freddie_keys::{Key, KeyEvent, KeyPress, PressType};
 use laserbeam::{Laserbeam, Path};
 
 // ---------------------------------------------------------------------------
 // Sources: a keyboard, and the OS reporting a newly foregrounded app.
 // ---------------------------------------------------------------------------
 
-// A specific key is its own trigger: `Keyboard::KeyR` binds that key. The type and
+// A specific key is its own trigger: `Key::KeyR` binds that key. The type and
 // its `EventTrigger` impl live in `freddie_keys`, so no wrapper is needed here.
 
-/// A keyboard trigger that matches any key except `escape`, so a catch-all
-/// binding still lets `escape` bubble up (to go home from a sub-layer).
+/// A keyboard trigger that matches every key, on either press.
+///
+/// A catch-all: when a layer binds it, it shadows an ancestor's binding for the
+/// same key (dispatch is leafward). There is no ordering between it and a
+/// specific-key trigger, so binding both on one active path is a shadow, not a
+/// conflict.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct AnyKey;
 impl EventTrigger for AnyKey {
     type Event = KeyEvent;
-    fn is_matching(&self, ev: &KeyEvent) -> bool {
-        ev.key != Keyboard::Escape
+    fn is_matching(&self, _ev: &KeyEvent) -> bool {
+        true
     }
 }
 
@@ -72,26 +77,12 @@ pub enum App {
 // ---------------------------------------------------------------------------
 
 /// Every trigger Mercury can register, one variant per source.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, derive_more::From)]
 pub enum MercuryTrigger {
-    Key(Keyboard),
+    Key(Key),
+    KeyPress(KeyPress),
     AnyKey(AnyKey),
     Foregrounded(Foregrounded),
-}
-impl From<Keyboard> for MercuryTrigger {
-    fn from(k: Keyboard) -> Self {
-        Self::Key(k)
-    }
-}
-impl From<AnyKey> for MercuryTrigger {
-    fn from(a: AnyKey) -> Self {
-        Self::AnyKey(a)
-    }
-}
-impl From<Foregrounded> for MercuryTrigger {
-    fn from(f: Foregrounded) -> Self {
-        Self::Foregrounded(f)
-    }
 }
 
 /// Every event Mercury can dispatch, one variant per source.
@@ -124,10 +115,8 @@ impl<'a> TryFrom<&'a MercuryEvent> for &'a ForegroundEvent {
 pub enum MercuryEffect {
     /// Bring an app to the foreground.
     Foreground(App),
-    /// A key was typed (passed through).
-    Type(Keyboard),
-    /// Send `cmd` + this key (a refresh is `cmd`+`r`).
-    Command(Keyboard),
+    /// Emit one key event, a press or a release. A chord is several of these.
+    Emit(KeyEvent),
     /// Quit the program. The effect handler performs this by exiting.
     Kill,
 }
@@ -159,7 +148,7 @@ pub struct Mercury {
 #[derive(Laserbeam, Bind)]
 #[laserbeam(path = LayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
-#[bind(Keyboard::Escape => to_home)]
+#[bind(Key::Escape.down() => to_home)]
 pub enum Layer {
     Home(HomeLayer),
     Nav(NavLayer),
@@ -172,11 +161,11 @@ pub enum Layer {
 #[laserbeam(path = HomeLayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
 #[bind(
-    Keyboard::KeyN => to_nav,
-    Keyboard::KeyT => to_typing,
-    Keyboard::KeyI => to_inapp,
-    Keyboard::KeyQ => quit,
-    Keyboard::Escape => passthru,
+    Key::KeyN.down() => to_nav,
+    Key::KeyT.down() => to_typing,
+    Key::KeyI.down() => to_inapp,
+    Key::KeyQ.down() => quit,
+    Key::Escape.down() => passthru,
 )]
 pub struct HomeLayer {}
 
@@ -185,9 +174,9 @@ pub struct HomeLayer {}
 #[laserbeam(path = NavLayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
 #[bind(
-    Keyboard::KeyC => open_chrome,
-    Keyboard::KeyG => open_ghostty,
-    Keyboard::KeyZ => open_zed,
+    Key::KeyC.down() => open_chrome,
+    Key::KeyG.down() => open_ghostty,
+    Key::KeyZ.down() => open_zed,
 )]
 pub struct NavLayer {}
 
@@ -221,7 +210,7 @@ impl AppLayer {
 #[derive(Laserbeam, Bind)]
 #[laserbeam(path = ChromeAppPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
-#[bind(Keyboard::KeyR => refresh)]
+#[bind(Key::KeyR.down() => refresh)]
 pub struct ChromeApp {}
 
 /// A foregrounded app Mercury has no bindings for.
@@ -267,8 +256,11 @@ impl Mercury {
 
 /// A keyboard event for `key`.
 #[must_use]
-pub const fn key(key: Keyboard) -> MercuryEvent {
-    MercuryEvent::Key(KeyEvent { key, down: true })
+pub const fn key(key: Key) -> MercuryEvent {
+    MercuryEvent::Key(KeyEvent {
+        key,
+        press: PressType::Down,
+    })
 }
 
 /// An app-foregrounded event for `app`.
@@ -331,14 +323,16 @@ fn open_zed(_ev: &KeyEvent, _path: NavLayerPath) -> Vec<MercuryEffect> {
     vec![MercuryEffect::Foreground(App::Zed)]
 }
 
-/// Pass a key through, emitting it as a [`MercuryEffect::Type`] so the runner can
-/// log it (and, later, re-emit it). Used for typing and for `escape` in home.
-/// Generic over the layer's path.
 fn passthru<P>(ev: &KeyEvent, _path: P) -> Vec<MercuryEffect> {
-    vec![MercuryEffect::Type(ev.key)]
+    vec![MercuryEffect::Emit(ev.clone())]
 }
 
-/// `r` in Chrome's in-app layer: refresh (`cmd`+`r`).
 fn refresh(_ev: &KeyEvent, _path: ChromeAppPath) -> Vec<MercuryEffect> {
-    vec![MercuryEffect::Command(Keyboard::KeyR)]
+    let emit = |key, press| MercuryEffect::Emit(KeyEvent { key, press });
+    vec![
+        emit(Key::MetaLeft, PressType::Down),
+        emit(Key::KeyR, PressType::Down),
+        emit(Key::KeyR, PressType::Up),
+        emit(Key::MetaLeft, PressType::Up),
+    ]
 }

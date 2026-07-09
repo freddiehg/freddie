@@ -9,9 +9,7 @@ members = [
     "crates/bind_macro",
     "crates/freddie_keys",
     "crates/freddie_keyboard",
-    # mercury is temporarily out while freddie_keyboard is rebuilt on the new
-    # Interceptor/Emitter API; it comes back with the simple mercury.
-    # "crates/mercury",
+    "crates/mercury",
 ]
 
 [workspace.package]
