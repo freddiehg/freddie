@@ -135,6 +135,10 @@ name = "freddie"
 version = "0.0.1"
 
 [[package]]
+name = "freddie_app_nav"
+version = "0.0.1"
+
+[[package]]
 name = "freddie_keyboard"
 version = "0.0.1"
 dependencies = [
@@ -214,6 +218,7 @@ version = "0.0.1"
 dependencies = [
  "bind",
  "derive_more",
+ "freddie_app_nav",
  "freddie_keyboard",
  "freddie_keys",
  "laserbeam",

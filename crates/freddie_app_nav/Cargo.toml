@@ -1,0 +1,10 @@
+[package]
+name = "freddie_app_nav"
+description = "App foregrounding and frontmost-app watching for freddie (the macOS app-navigation source and sink)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
