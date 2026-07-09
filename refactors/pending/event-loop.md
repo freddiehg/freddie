@@ -47,7 +47,7 @@ The tap thread runs the `CGEventTap`. Its callback locks state, dispatches the k
 // keyboard: the tap callback, synchronous
 let effects = {
     let mut state = state.lock();
-    state.handle(&KeyEvent { key, down })   // dispatch mutates state, returns Vec<Effect>
+    state.handle(&KeyEvent { key, press })   // dispatch mutates state, returns Vec<Effect>
 };
 perform_slow(&effects, &pool);              // foreground, launch, I/O -> pool, fire-and-forget
 return key_output(&effects);                // the key effects -> Keep / Replace / Drop, into the chain

@@ -16,7 +16,7 @@ impl Grab {
     // Decides each key and returns what continues: Some(same) passes, Some(other) remaps, None drops.
     pub fn new(on_key: impl Fn(KeyEvent) -> Option<KeyEvent> + Send + 'static) -> Result<Grab, CaptureError>;
     // Synthesize a key not tied to the current event. Re-posts, so it carries the tag.
-    pub fn emit(&self, key: Key, down: bool) -> Result<(), EmitError>;
+    pub fn emit(&self, key: Key, press: PressType) -> Result<(), EmitError>;
     pub fn tap(&self, key: Key) -> Result<(), EmitError>;      // press then release
     pub fn press(&self, key: Key) -> Result<Press, EmitError>; // held until the last handle drops
 }
@@ -32,7 +32,7 @@ pub enum EmitError { Unmappable(Key), Post }
 
 `on_key` runs on the capture thread and returns the transform, so keep it fast; freddie's remap is CPU-only, so it fits. `emit`, `tap`, and `press` are for keys the callback did not produce by returning, a macro or a held modifier. They `CGEventPost`, so they carry the tag and hit the cross-process caveat below. `press` holds a key and releases it when the last `Press` drops, ref-counted per key; `Press` is `Rc`-backed and `!Send`, and a `send` feature swaps in `Arc`.
 
-`Key` is one enum, a variant per key, `Key::Raw(u16)` included. `KeyEvent` is `{ key, down }`.
+`Key` is one enum, a variant per key, `Key::Raw(u16)` included. `KeyEvent` is `{ key: Key, press: PressType }`, and `PressType` is `Down` or `Up`, a named enum rather than a bare bool.
 
 ## The tag, and the cross-process limit
 
@@ -48,8 +48,9 @@ CGEventTap::with_enabled(
     |_, kind, event| {
         if event.field(USER_DATA) == MY_TAG { return Keep; }   // our own re-post
         let key = from_code(event.field(KEYCODE));             // Key::Raw(code) if unnamed
-        match on_key(KeyEvent { key, down }) {
-            Some(out) if out.key == key && out.down == down => Keep,
+        let press = if kind == KeyDown { PressType::Down } else { PressType::Up };
+        match on_key(KeyEvent { key, press }) {
+            Some(out) if out.key == key && out.press == press => Keep,
             Some(out) => Replace(encode(out)),
             None => Drop,
         }
