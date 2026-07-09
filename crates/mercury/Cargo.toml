@@ -14,6 +14,9 @@ freddie_keyboard = { path = "../freddie_keyboard", version = "0.0.1" }
 freddie_app_nav = { path = "../freddie_app_nav", version = "0.0.1" }
 derive_more = { version = "2", features = ["from"] }
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 
 [dev-dependencies]
 bind = { path = "../bind", version = "0.0.1" }

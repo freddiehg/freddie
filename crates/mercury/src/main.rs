@@ -17,19 +17,28 @@
 //!
 //! On macOS this needs Accessibility (and Input Monitoring). `cargo run -p mercury`
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use freddie_keyboard::Emitter;
 use mercury::{App, Mercury, MercuryEffect, MercuryEvent, foreground};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tracing::{debug, error, info, warn};
+use tracing_subscriber::EnvFilter;
+
+/// The log file, written under [`log_dir`].
+const LOG_FILE: &str = "mercury.log";
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    let log_path = init_tracing();
+    println!("mercury: logging to {}", log_path.display());
+
     let (event_tx, event_rx) = unbounded_channel::<MercuryEvent>();
     let (effect_tx, effect_rx) = unbounded_channel::<MercuryEffect>();
 
-    // Grab the keyboard: swallow every key and forward key-downs to the model,
-    // which decides what to emit (the effect loop performs it).
+    // Grab the keyboard: swallow every key and forward it to the model, which
+    // decides what to emit (the effect loop performs it).
     let grabbed = freddie_keyboard::intercept({
         let event_tx = event_tx.clone();
         move |ev| {
@@ -45,7 +54,10 @@ async fn main() {
     let (interceptor, emitter) = match grabbed {
         Ok(pair) => pair,
         Err(e) => {
-            eprintln!("keyboard: {e}"); // usually Accessibility is not granted
+            // Usually Accessibility is not granted. Say so on the terminal too: the
+            // user is looking there, not at the log file.
+            eprintln!("keyboard: {e}");
+            error!(error = %e, "could not intercept the keyboard");
             return;
         }
     };
@@ -61,11 +73,41 @@ async fn main() {
     spawn_killswitch(effect_tx.clone());
 
     println!("mercury: hijacking the keyboard; escape then q quits (30s backstop)");
+    info!("hijacking the keyboard; escape then q quits (30s backstop)");
     tokio::join!(
         run_event_loop(Mercury::default(), event_rx, effect_tx),
         run_effect_loop(effect_rx, emitter),
     );
     drop(interceptor); // hold the grab until here
+}
+
+/// Where the log file lives: the macOS per-user log directory, or the current
+/// directory when `HOME` is unset.
+fn log_dir() -> PathBuf {
+    std::env::var_os("HOME").map_or_else(
+        || PathBuf::from("."),
+        |home| PathBuf::from(home).join("Library/Logs/mercury"),
+    )
+}
+
+/// Send tracing to the log file and return its path.
+///
+/// The appender writes synchronously rather than through `tracing_appender`'s
+/// non-blocking writer: mercury exits via `process::exit`, which runs no
+/// destructors, so a buffered writer would drop whatever it had not flushed.
+/// `RUST_LOG` overrides the default level.
+fn init_tracing() -> PathBuf {
+    let dir = log_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("mercury: could not create {}: {e}", dir.display());
+    }
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_writer(tracing_appender::rolling::never(&dir, LOG_FILE))
+        .with_ansi(false)
+        .with_env_filter(filter)
+        .init();
+    dir.join(LOG_FILE)
 }
 
 /// Dev killswitch: a `Kill` effect after 30s (the effect loop exits on it), then a
@@ -85,20 +127,23 @@ async fn run_event_loop(
     mut event_rx: UnboundedReceiver<MercuryEvent>,
     effect_tx: UnboundedSender<MercuryEffect>,
 ) {
+    info!(state = ?state, "initial state");
     while let Some(event) = event_rx.recv().await {
         dispatch_event(&mut state, &event, &effect_tx);
     }
 }
 
-/// Dispatch one event through freddie, log the event, its effects, and the
-/// resulting state, then enqueue the effects.
+/// Dispatch one event through freddie and enqueue whatever effects it produced.
+///
+/// One record per dispatch, carrying the event, the effects it produced, and the
+/// state it left behind, so a single line tells the whole story of one event.
 fn dispatch_event(
     state: &mut Mercury,
     event: &MercuryEvent,
     effect_tx: &UnboundedSender<MercuryEffect>,
 ) {
     let effects = state.handle(event).unwrap_or_default();
-    eprintln!("event {event:?} -> {effects:?}\n  state {state:?}");
+    info!(event = ?event, effects = ?effects, state = ?state, "dispatch");
     for effect in effects {
         let _ = effect_tx.send(effect);
     }
@@ -115,17 +160,19 @@ async fn run_effect_loop(mut effect_rx: UnboundedReceiver<MercuryEffect>, emitte
     }
 }
 
-/// Perform one effect: emit keys, foreground an app, or exit.
+/// Perform one effect: emit keys, foreground an app, or exit. The effect itself is
+/// already on the dispatch record; these are the performance details.
 fn perform_effect(effect: &MercuryEffect, emitter: &Emitter) {
-    eprintln!("effect {effect:?}");
     match effect {
         MercuryEffect::Foreground(app) => foreground_app(*app),
-        MercuryEffect::Emit(ke) => {
-            if let Err(e) = emitter.emit(ke.key, ke.press) {
-                eprintln!("emit: {e}");
-            }
+        MercuryEffect::Emit(ke) => match emitter.emit(ke.key, ke.press) {
+            Ok(()) => debug!(key = ?ke.key, press = ?ke.press, "emitted"),
+            Err(e) => warn!(key = ?ke.key, press = ?ke.press, error = %e, "emit failed"),
+        },
+        MercuryEffect::Kill => {
+            info!("kill: exiting");
+            std::process::exit(0);
         }
-        MercuryEffect::Kill => std::process::exit(0),
     }
 }
 
@@ -134,12 +181,113 @@ fn perform_effect(effect: &MercuryEffect, emitter: &Emitter) {
 /// up, so nothing here waits on the result (see `app-foregrounding.md`).
 fn foreground_app(app: App) {
     let Some(name) = app.launch_name() else {
-        eprintln!("foreground: {app:?} has no launch name");
+        warn!(app = ?app, "no launch name; not foregrounding");
         return;
     };
-    std::thread::spawn(move || {
-        if let Err(e) = freddie_app_nav::foreground(name) {
-            eprintln!("foreground {name}: {e}");
-        }
+    std::thread::spawn(move || match freddie_app_nav::foreground(name) {
+        Ok(()) => debug!(app = name, "foregrounded"),
+        Err(e) => warn!(app = name, error = %e, "foreground failed"),
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    use mercury::{Key, key};
+    use tracing_subscriber::fmt::MakeWriter;
+
+    use super::{LOG_FILE, Mercury, dispatch_event, log_dir, unbounded_channel};
+
+    /// A writer that collects everything the subscriber emits.
+    #[derive(Clone, Default)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+
+    impl Buffer {
+        fn contents(&self) -> String {
+            String::from_utf8(self.0.lock().expect("not poisoned").clone()).expect("utf8")
+        }
+    }
+
+    impl Write for Buffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("not poisoned").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for Buffer {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// One dispatch is one record, carrying the event, the effects, and the state
+    /// it left behind. Regression test for the log being split across lines.
+    #[test]
+    fn dispatch_logs_event_effects_and_state_on_one_line() {
+        let buffer = Buffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buffer.clone())
+            .with_ansi(false)
+            .finish();
+
+        let (effect_tx, _effect_rx) = unbounded_channel();
+        let mut state = Mercury::default();
+        tracing::subscriber::with_default(subscriber, || {
+            dispatch_event(&mut state, &key(Key::KeyN), &effect_tx);
+        });
+
+        let out = buffer.contents();
+        let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(lines.len(), 1, "expected exactly one record, got: {out}");
+        let line = lines[0];
+        assert!(line.contains("event="), "no event field: {line}");
+        assert!(line.contains("effects="), "no effects field: {line}");
+        assert!(line.contains("state="), "no state field: {line}");
+        // `n` from home enters nav, so the state on the record is the state after.
+        assert!(
+            line.contains("Nav"),
+            "state is the post-dispatch state: {line}"
+        );
+    }
+
+    /// The file appender writes as each record is emitted, with no flush and no
+    /// guard. That is what lets `Kill`'s `process::exit` (which runs no
+    /// destructors) leave a complete log behind.
+    #[test]
+    fn the_file_appender_writes_without_a_flush() {
+        let dir = std::env::temp_dir().join(format!("mercury-log-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(tracing_appender::rolling::never(&dir, LOG_FILE))
+            .with_ansi(false)
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(marker = "written-synchronously", "dispatch");
+        });
+
+        // Read it back without having dropped or flushed anything.
+        let logged = std::fs::read_to_string(dir.join(LOG_FILE)).expect("log file exists");
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(logged.contains("written-synchronously"), "{logged}");
+    }
+
+    #[test]
+    fn log_dir_is_under_the_user_log_directory() {
+        // Only meaningful with HOME set, which it is under cargo test.
+        if std::env::var_os("HOME").is_some() {
+            let path = log_dir().join(LOG_FILE);
+            assert!(
+                path.ends_with("Library/Logs/mercury/mercury.log"),
+                "{path:?}"
+            );
+        }
+    }
 }

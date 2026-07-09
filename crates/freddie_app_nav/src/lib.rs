@@ -125,6 +125,8 @@ impl Watcher {
             let mut poller = Poller::new();
             while running_thread.load(Ordering::Relaxed) {
                 if let Some(app) = poller.observe(query()) {
+                    // The raw name, before the consumer maps it onto its own apps.
+                    tracing::debug!(app = %app, "frontmost app changed");
                     on_change(&app);
                 }
                 responsive_sleep(poll_interval, &running_thread);
