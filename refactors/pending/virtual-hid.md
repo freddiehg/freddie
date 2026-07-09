@@ -34,6 +34,10 @@ Karabiner's driver, `Karabiner-DriverKit-VirtualHIDDevice`, is open source and p
 
 Either beats writing and getting a new driver approved.
 
+## Local development is not gated
+
+The entitlement approval and notarization are for shipping to other machines, not for iterating on your own. Locally you turn on system-extension developer mode (`systemextensionsctl developer on`, usually with SIP relaxed) and load a self-signed build, which is the normal driver dev loop. And reusing Karabiner's installed, already-signed driver skips signing and notarization entirely while developing. So the Apple gate is a distribution problem and can be deferred; it does not block trying the approach.
+
 ## How it fits behind `Grab`
 
 `Grab` is observe-plus-emit: `new(on_key)` hands you each key, `emit`/`tap`/`press` post output. The HID backend implements that directly: `on_key` is a seized-device read, `emit` posts a virtual HID report. The CGEventTap backend implements the same by swallowing and re-posting, with the tag and the cross-process loop.

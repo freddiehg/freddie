@@ -1,104 +1,62 @@
-# the event loop
+# dispatch and effects
 
-Dispatch turns one event into effects. The effects and the events they cause are decoupled: opening Chrome is one action, and Chrome coming to the foreground is a separate event that arrives later. A handler does not return the follow-up event; it triggers the effect, and the resulting event is delivered like any other input.
+Every event is dispatched the moment it arrives, synchronously, and dispatch returns a `Vec` of effects. For a key that happens inside the tap callback, so the effects are ready before the callback returns. That is what lets the key output go back down the tap chain as the callback's return value instead of being re-posted, which is what keeps it correct and loop-free (cgevent-vs-hid.md).
 
-## Sync core, async edges
+## Two kinds of effect
 
-The framework is fully synchronous and never blocks. It dispatches an event to an output and hands that output to the effect handler, both synchronously and in the order events arrived. It knows nothing about threads or async: `next` returns `None` on an empty queue rather than waiting.
+The effects a handler returns split by where they go:
 
-All async lives in user land, on both edges, always as "enqueue now (synchronous), handle later (separate)":
+- Key output, the remap result. Applied synchronously. In the tap callback it is the return value: pass the event, replace it, or drop it, with any extra keys posted through the tap proxy right there. No channel, no re-post.
+- Everything else: foregrounding an app, launching, anything that touches I/O. Handed to a thread pool and forgotten. macOS disables a tap whose callback runs long, so offloading these is not a nicety, it is what keeps the tap alive.
 
-- Effects out. Dispatch returns the effects, and the event loop hands each one to an effect channel and moves on. Enqueuing never blocks, so a slow effect never back-pressures event handling. A separate effect loop reads that channel in order and performs each effect; v1 performs them synchronously, and later a slow effect can be offloaded to a pool there (keyboard synthesis staying synchronous) without the event loop noticing. A performed effect whose result is itself an event (Chrome foregrounded) reaches the event channel like any other input.
-- Events in. Something outside the framework (a run loop, OS callbacks, a channel) receives inputs and hands them to dispatch as they arrive. Blocking when idle is that layer's job.
+The result of a slow effect comes back as its own event. Activating an app does not update state directly; the foreground watcher reports the app that actually came up, and that event dispatches like any other.
 
-So there are two channels, and the framework's dispatch touches only the first: the event channel the event loop drains, and the effect channel the effect loop drains.
+## Effects and their events are decoupled
 
-## The queue
+A handler does not return the follow-up event. Opening Chrome is one effect; Chrome coming to the foreground is a separate event that arrives later from the watcher. The handler triggers the effect and moves on, and nothing synchronously ties the two. That is why a slow effect can go to the pool with no one waiting on it.
 
-Everything that produces events pushes to the event queue, and the loop drains it:
+## State
 
-- the keyboard source,
-- the foreground watcher,
-- a worker, when the async work behind an effect produces an event.
+Keys dispatch on the tap thread. The foreground watcher dispatches on its own thread. Both mutate the one state tree, so access is serialized: a `Mutex` with short critical sections, or every event marshaled onto one thread's run loop. Dispatch is microseconds and keyboard rates are low, so the `Mutex` is fine, and the lock is never held across a slow effect since those are already offloaded.
 
-Opening Chrome: the handler schedules "open Chrome" and returns; the foreground watcher, seeing Chrome come up, pushes `Foreground(Chrome)`. Nothing synchronously ties the two.
+## Sources
 
-Single-threaded: the OS delivers input on one thread and the queue is a local `VecDeque`, no `Send`, no `'static`. Multi-threaded: the queue is a channel (`mpsc`), the sources hold `Sender`s and the loop holds the `Receiver`, and events must be `Send + 'static`. The `'static` is only forced by threads. Mercury takes the channel route (below), so events are `Send + 'static`.
+- The keyboard: the tap callback, dispatching synchronously and returning the key output.
+- The foreground watcher: its own thread, feeding `Foreground` events.
+- Pool workers: performing slow effects and feeding their results back as events.
 
-## SimpleRunner and the real runner
+There is no drain-a-channel event loop and no async runtime on the key path. Dispatch runs where the event arrives. A thread pool, or tokio's blocking pool if one is already around, handles the slow effects and nothing else.
 
-`bind::SimpleRunner` is the synchronous driver: `queue_event` to push, `next` to process one event (`Option<Option<Output>>`: outer `None` is an empty queue, the inner is dispatch's result), `process_event` to queue-and-process one, plus `len`/`is_empty`. It drains rather than blocks, and an empty queue is resumable (queue more, get output again), so it is not an `Iterator`. It is a convenience, not load-bearing: the framework only needs `dispatch` and `accumulate`, and a consumer can pop-dispatch-hand-off in a handful of lines over its own queue. It is enough for the unit tests and the stdin demo.
+## SimpleRunner, for tests
 
-The real Mercury runner is the same synchronous dispatch with user land around it: sources feed the event channel, the event loop reads it and dispatches, the effect loop performs the effects, and an effect that is itself an event (a foregrounded app) feeds back in. The framework part never blocks. Later the effect loop can offload a slow effect to a pool and the queue can grow event prioritization; `SimpleRunner` is named to leave room for that. There is no generic `run` in freddie: the loops are small, the channels and the wait-when-empty are user land's, and a generic root drags in an awkward `Resolve<Path<'a> = &'a mut N>` bound. `dispatch` and `accumulate` are the pieces.
+`bind::SimpleRunner` is the synchronous test driver: `queue_event` to push, `next` to dispatch one (`Option<Option<Output>>`, outer `None` for an empty queue), `process_event` to queue-and-process, plus `len` and `is_empty`. It drains rather than blocks and an empty queue is resumable, so it is not an `Iterator`. The per-event tests dispatch one event and assert the effects with no runner; the sequence test drives a `SimpleRunner`, queueing a key, draining it while recording effects and queueing a foreground follow-up, then the next key, so it sees "press c, Chrome comes up, press r".
 
-## Mercury, concretely
+## Killswitch while developing
 
-Mercury's v1 runner (`crates/mercury/src/main.rs`) is three loops over two tokio channels, the shape the real build keeps. v1 stubs the keyboard source and does not hijack the keyboard; the real build fills that stub with a `CGEventTap` thread (and the foreground watcher) and swaps printing for OS key synthesis and app activation. A source forwards events into the event channel; the event loop reads it and dispatches each event (mutating state synchronously, returning effects) into the effect channel; the effect loop reads the effect channel and performs each effect. `dispatch` stays synchronous inside the event loop, the same shape as isograph's language server.
-
-```rust
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
-    let (event_tx, event_rx) = unbounded_channel::<MercuryEvent>();
-    let (effect_tx, effect_rx) = unbounded_channel::<MercuryEffect>();
-
-    spawn_keyboard_source(event_tx);       // 1. source -> event channel (v1: a stub, no hijack; real: a CGEventTap thread)
-    spawn_killswitch(effect_tx.clone());   // dev safety, below
-    tokio::spawn(run_effect_loop(effect_rx));
-    run_event_loop(Mercury::default(), event_rx, effect_tx).await;
-}
-
-// 2. event channel -> dispatch -> effect channel
-while let Some(event) = event_rx.recv().await {
-    if let Some(effects) = state.handle(&event) {   // dispatch mutates state, returns effects
-        for effect in effects {
-            let _ = effect_tx.send(effect);          // enqueue; unbounded, never blocks
-        }
-    }
-}
-
-// 3. effect channel -> perform (v1 prints; the real build synthesizes / activates)
-match effect {
-    MercuryEffect::Foreground(app) => activate_app(*app), // fire-and-forget; watcher reports back
-    MercuryEffect::Type(k) => synthesize_type(k),
-    MercuryEffect::Command(k) => synthesize_command(k),
-    MercuryEffect::Kill => std::process::exit(0),         // the kill, in the effect handler
-}
-
-// killing is an effect (5s, graceful) or a direct hard exit (10s)
-fn spawn_killswitch(effect_tx: UnboundedSender<MercuryEffect>) {
-    tokio::spawn(async move {
-        sleep(Duration::from_secs(5)).await;
-        let _ = effect_tx.send(MercuryEffect::Kill);  // performed by the effect loop
-        sleep(Duration::from_secs(5)).await;
-        std::process::exit(1);                         // hard backstop
-    });
-}
-```
-
-Dispatch mutates state directly (the fast path) and returns the effects; the event loop only enqueues them (unbounded, so the send never blocks), so it never waits on an effect. The effect loop performs the two outward things: send keyboard events (`Type`, `Command`) and foreground apps (`Foreground`, fire-and-forget; the foreground watcher reports the app coming up as a normal event). v1 performs them synchronously and in order (one consumer, FIFO); later a slow effect can be offloaded to a pool inside the effect loop, keyboard synthesis staying synchronous, without the event loop noticing. Events and effects cross threads, so both are `Send + 'static`. The `CGEventTap` / `NSWorkspace` / synthesis / activation calls are the unverified macOS FFI and belong to figaro.
-
-### Killswitches while developing
-
-v1 uses stdin and does not swallow the keyboard, so there is no lockout risk and Ctrl-C already works. The timers are the dead-man switch for the real build, which does swallow the keyboard; they stay in until the tap is trusted:
-
-- Killing is an effect. The 5-second timer puts `MercuryEffect::Kill` on the effect channel, and the effect loop performs it as a clean exit (in the real build, dropping the tap and restoring the keyboard). A killswitch key (later) reaches the same effect.
-- The 10-second timer calls `_exit` directly (hard), the backstop for when the effect loop itself is wedged. Either way the keyboard is back within ten seconds, no reboot.
-- `SIGHUP` stays fatal, so closing the terminal that launched it kills it. Do not install a handler that swallows `SIGHUP`.
-
-The worst case self-recovers on a timer, which is what makes it safe to iterate on the tap at all.
+The real build swallows the keyboard, so a dead-man switch stays in until the tap is trusted. A timer fires a `Kill` effect at 5 seconds, a clean exit that drops the tap and restores the keyboard; a second timer calls `_exit` at 10 seconds as the backstop for a wedged process. `SIGHUP` stays fatal, so closing the launching terminal kills it. The keyboard is back within ten seconds without a reboot, which is what makes iterating on the tap safe.
 
 ## Prior art
 
-isograph's language server is the same loop: several sources bridged into one `mpsc`, one event popped and dispatched per `select!` iteration, and dispatch is a `ControlFlow` chain (Break on the first matching handler, Continue otherwise), just like freddie's. It has no effect-as-data layer; handlers send LSP messages inline.
+isograph's language server bridges several sources into one `mpsc` and dispatches one popped event per `select!` iteration, with dispatch a `ControlFlow` chain (Break on the first matching handler). freddie's key path is tighter: it dispatches in the tap callback and returns, no channel in between, because the key output has to be synchronous. barnum defers every effect to an async scheduler; freddie defers only the slow ones and applies key output synchronously. The shared shape is effects as data and follow-ups as events; the difference is that a freddie handler mutates state during dispatch through the path it holds.
 
-barnum is the same deferred-effect shape one step further: its `advance` queues effects rather than performing them, an async scheduler runs handlers off that queue, and completions trampoline back as more effects. Its scheduler is our worker layer. The distinguishing difference is state: a freddie handler mutates state directly during dispatch (it holds `&mut` via the path), while a barnum handler never touches engine state and can only return a value the engine writes back.
+## Mercury, concretely
 
-## Tests
+The tap thread runs the `CGEventTap`. Its callback locks state, dispatches the key, and splits the effects: key output becomes the return value (plus any extra posts through the proxy), everything else goes to the pool. The foreground watcher runs on its own thread and feeds `Foreground` events, which dispatch under the same lock. A small thread pool performs the slow effects.
 
-The per-event tests dispatch one event and assert the output; they do not need a runner. The whole-sequence test drives a `SimpleRunner`: queue a key, drain it (recording effects and queueing an installed app's foreground follow-up), then queue the next key, so it sees "press c, Chrome comes up, press r".
+```rust
+// keyboard: the tap callback, synchronous
+let effects = {
+    let mut state = state.lock();
+    state.handle(&KeyEvent { key, down })   // dispatch mutates state, returns Vec<Effect>
+};
+perform_slow(&effects, &pool);              // foreground, launch, I/O -> pool, fire-and-forget
+return key_output(&effects);                // the key effects -> Keep / Replace / Drop, into the chain
+```
+
+No effect blocks the callback: the slow ones are offloaded, the key ones are a return value. The macOS calls (the tap, the watcher, key synthesis, app activation) are the unverified FFI.
 
 ## Open
 
-- Event prioritization: the reason `SimpleRunner` is not just `Runner`. See prioritization.md.
-- Post-v1: a pool for slow effects (keyboard synthesis stays synchronous, only slow effects offload), purely to avoid back pressure on event handling.
-- macOS FFI feasibility (figaro): keyboard tap + swallow (Accessibility and Input Monitoring, plus the self-lockout footgun), synthesizing keys (Accessibility, and tagging events so the tap ignores its own), foreground watching (easy, no permission), activating apps (easy).
+- Event prioritization: prioritization.md, the reason `SimpleRunner` is not just `Runner`.
+- One-to-many key output: returning the first key and posting the rest through the proxy has an ordering question; v1 is mostly one-to-one.
+- Serialize state with a `Mutex` or a single run-loop thread; the `Mutex` is the v1 default.

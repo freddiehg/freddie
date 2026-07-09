@@ -20,7 +20,7 @@ HID is below that. It reads raw HID reports from the seized device, so it keeps 
 
 CGEventTap is pure userland: one process, safe Rust over `core-graphics`, no driver, no root. The only gate is Accessibility plus Input Monitoring, which the user grants in System Settings. It ships today.
 
-HID is a project. A DriverKit system extension in C++, code-signed with managed HID entitlements that Apple has to approve on request, notarized, installed as a system extension the user approves, plus a root daemon to seize the device and drive the virtual one, with IPC to a session process. The realistic shortcut is leaning on Karabiner's open-source driver instead of shipping and getting our own approved, but that still means a driver on the machine. The entitlement approval is the gate, and it is outside our control.
+HID is a project. A DriverKit system extension in C++, code-signed with managed HID entitlements that Apple has to approve on request, notarized, installed as a system extension the user approves, plus a root daemon to seize the device and drive the virtual one, with IPC to a session process. The realistic shortcut is leaning on Karabiner's open-source driver instead of shipping and getting our own approved, but that still means a driver on the machine. The entitlement approval is the gate, and it is outside our control, but only for distribution: locally you develop with system-extension developer mode (or against Karabiner's installed driver) without approval or notarization, so the gate does not block trying it.
 
 ## Permissions and reliability
 
