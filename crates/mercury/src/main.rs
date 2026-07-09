@@ -4,8 +4,9 @@
 //! Two loops over two channels: the event loop dispatches (mutating state,
 //! producing effects); the effect loop performs them, re-emitting keys through the
 //! `Emitter` and reporting a `Foreground` back as an event (standing in for the OS
-//! watcher). The interceptor callback exits on `escape` (the way out of a full
-//! hijack); a 30-second timer is the backstop (hard exit 5s after that).
+//! watcher). Every key goes through the model, so `escape` is handled there (it
+//! goes home) and `q` from home quits. A 30-second timer is the backstop out of
+//! the hijack (hard exit 5s after that).
 //!
 //! The `Emitter` is `!Send`, so the effect loop runs on this task via `join!`
 //! rather than a spawned task.
@@ -25,16 +26,13 @@ async fn main() {
     let (event_tx, event_rx) = unbounded_channel::<MercuryEvent>();
     let (effect_tx, effect_rx) = unbounded_channel::<MercuryEffect>();
 
-    // Grab the keyboard: swallow every key, forward key-downs to the model, and
-    // exit on escape. escape does not depend on the model or the channel.
+    // Grab the keyboard: swallow every key and forward key-downs to the model,
+    // which decides what to emit (the effect loop performs it).
     let grabbed = freddie_keyboard::intercept({
         let event_tx = event_tx.clone();
         move |ev| {
             // TODO: swap eprintln for a real logger (tracing) once we have one.
             eprintln!("event: {:?} {:?}", ev.key, ev.press);
-            if ev.key == Key::Escape {
-                std::process::exit(0);
-            }
             if ev.press == PressType::Down {
                 let _ = event_tx.send(key(ev.key));
             }
@@ -51,7 +49,7 @@ async fn main() {
 
     spawn_killswitch(effect_tx.clone());
 
-    println!("mercury: hijacking the keyboard; escape quits (30s backstop)");
+    println!("mercury: hijacking the keyboard; escape then q quits (30s backstop)");
     tokio::join!(
         run_event_loop(Mercury::default(), event_rx, effect_tx),
         run_effect_loop(effect_rx, event_tx, emitter),
@@ -133,7 +131,11 @@ async fn run_effect_loop(
 
 /// Perform one effect: emit keys, foreground an app (reported back as an event,
 /// standing in for the OS watcher), or exit.
-fn perform_effect(effect: &MercuryEffect, event_tx: &UnboundedSender<MercuryEvent>, emitter: &Emitter) {
+fn perform_effect(
+    effect: &MercuryEffect,
+    event_tx: &UnboundedSender<MercuryEvent>,
+    emitter: &Emitter,
+) {
     match effect {
         MercuryEffect::Foreground(app) => {
             println!("foreground {app:?}");

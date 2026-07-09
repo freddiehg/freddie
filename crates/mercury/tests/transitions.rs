@@ -51,9 +51,11 @@ fn home_q_quits() {
 }
 
 #[test]
-fn home_escape_passes_through() {
+fn home_escape_does_nothing() {
+    // In home, escape re-enters home (the layer-level go-home binding): no effect,
+    // no visible change.
     let mut m = Mercury::default();
-    assert_eq!(m.handle(&key(Key::Escape)), Some(passed(Key::Escape)));
+    assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
     assert!(matches!(m.layer, Layer::Home(_)));
 }
 
@@ -76,13 +78,13 @@ fn typing_passes_any_key_through() {
 }
 
 #[test]
-fn typing_escape_passes_through() {
-    // In typing the catch-all shadows the go-home binding, so escape passes
-    // through like any other key rather than leaving the layer.
+fn typing_escape_goes_home() {
+    // Typing binds escape explicitly so its catch-all does not shadow the go-home
+    // binding.
     let mut m = Mercury::default();
     m.handle(&key(Key::KeyT));
-    assert_eq!(m.handle(&key(Key::Escape)), Some(passed(Key::Escape)));
-    assert!(matches!(m.layer, Layer::Typing(_)));
+    assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
+    assert!(matches!(m.layer, Layer::Home(_)));
 }
 
 #[test]

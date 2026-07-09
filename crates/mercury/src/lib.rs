@@ -7,13 +7,14 @@
 //! - [`HomeLayer`] (the default): `n` enters nav, `t` enters typing, `i` enters
 //!   the in-app layer for whatever app is foregrounded.
 //! - [`NavLayer`]: `c`/`g`/`z` foreground Chrome/Ghostty/Zed.
-//! - [`TypingLayer`]: any key passes through as a typed key.
+//! - [`TypingLayer`]: `escape` goes home, any other key passes through.
 //! - [`AppLayer`] (in-app): [`ChromeApp`] binds `r` to a refresh; every other app
 //!   is [`OtherApp`], which binds nothing.
 //!
-//! `escape` goes back to the home layer from the nav and in-app layers. In home
-//! and typing it passes through instead: home binds it explicitly, and typing's
-//! catch-all shadows the go-home binding.
+//! `escape` goes back to the home layer from every sub-layer, and is a no-op in
+//! home (it re-enters home). Typing binds it explicitly so its catch-all does not
+//! shadow the go-home binding. From home, `q` quits, so `escape` then `q` is the
+//! way out of any layer.
 //!
 //! A foreground event only records which app is frontmost; it does not change the
 //! layer. Handlers either mutate the state through the path they are handed (the
@@ -144,7 +145,7 @@ pub struct Mercury {
     pub layer: Layer,
 }
 
-/// The active layer. `escape` goes home from a sub-layer (home passes it through).
+/// The active layer. `escape` goes home from a sub-layer, and is a no-op in home.
 #[derive(Laserbeam, Bind)]
 #[laserbeam(path = LayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
@@ -156,7 +157,8 @@ pub enum Layer {
     InApp(AppLayer),
 }
 
-/// The home layer: enter a layer, quit with `q`, or pass `escape` through.
+/// The home layer: enter a layer, or quit with `q`. `escape` is a no-op here
+/// (the layer-level binding re-enters home).
 #[derive(Laserbeam, Bind)]
 #[laserbeam(path = HomeLayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
@@ -165,7 +167,6 @@ pub enum Layer {
     Key::KeyT.down() => to_typing,
     Key::KeyI.down() => to_inapp,
     Key::KeyQ.down() => quit,
-    Key::Escape.down() => passthru,
 )]
 pub struct HomeLayer {}
 
@@ -180,11 +181,14 @@ pub struct HomeLayer {}
 )]
 pub struct NavLayer {}
 
-/// The typing layer: any key passes through as a typed key.
+/// The typing layer: `escape` goes home, any other key passes through.
 #[derive(Laserbeam, Bind)]
 #[laserbeam(path = TypingLayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
-#[bind(AnyKey => passthru)]
+#[bind(
+    Key::Escape.down() => to_home_from_typing,
+    AnyKey => passthru,
+)]
 pub struct TypingLayer {}
 
 /// The in-app layer: Chrome has bindings, everything else is ignored.
@@ -289,6 +293,17 @@ fn quit(_ev: &KeyEvent, _path: HomeLayerPath) -> Vec<MercuryEffect> {
 fn to_home(_ev: &KeyEvent, mut path: LayerPath) -> Vec<MercuryEffect> {
     *path.get_mut() = Layer::Home(HomeLayer {});
     Vec::new()
+}
+
+/// `escape` in typing: go home. Bound explicitly because typing's catch-all would
+/// otherwise shadow the layer-level go-home binding. The wrapper only exists to
+/// bridge the path type (typing hands a `TypingLayerPath`, `to_home` wants a
+/// `LayerPath`).
+///
+/// TODO: explore making `to_home` generic (e.g. `impl` a trait over any path that
+/// can walk up to `LayerPath`) so it binds on both nodes without this wrapper.
+fn to_home_from_typing(ev: &KeyEvent, path: TypingLayerPath) -> Vec<MercuryEffect> {
+    to_home(ev, path.into_parent())
 }
 
 /// `n` in home: enter the nav layer.
