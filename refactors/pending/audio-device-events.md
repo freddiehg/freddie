@@ -30,6 +30,18 @@ Setting the system default input is `AudioObjectSetPropertyData` on `kAudioHardw
 
 **Whether Wispr Flow follows the system default input is unmeasured, and the whole feature rests on it.** If Wispr has its own microphone setting in its preferences, changing the system default does nothing, and controlling Wispr means driving its UI through Accessibility or writing its defaults, both of which are worse. This is the first thing to check, before any of the CoreAudio work, because it decides whether the feature is an afternoon or a project.
 
+## Headphones, in both directions
+
+The same source reports headphones arriving and leaving, because a Bluetooth headset appears and disappears from CoreAudio's device list. So "AirPods connected" is a device-list change with a new output and a new input, and the priority policy above already covers what to do about the microphone.
+
+The output side is new. Connecting headphones should probably move the system output to them, and disconnecting should move it back rather than dumping audio through the laptop speakers in a meeting. `kAudioHardwarePropertyDefaultOutputDevice` is the setting, symmetrical with the input one.
+
+Effects that act on the device rather than the routing are a different animal. Disconnecting AirPods from the keyboard, so they hand back to a phone, means talking to Bluetooth rather than to CoreAudio: `IOBluetoothDevice` and `closeConnection`, or shelling out to `blueutil`. Neither is measured, and objc2 may not cover `IOBluetooth` at all, in which case it is raw FFI or a subprocess.
+
+Worth noticing that this makes the audio crate two crates, or one crate with two halves. Enumerating and routing audio devices is CoreAudio. Connecting and disconnecting a headset is Bluetooth. They meet only in that the same physical act produces both.
+
+Open, in addition to the questions below: does disconnecting a headset from macOS make it reconnect to a phone, or merely make it deaf? And is the sensible binding a toggle, given that connecting from the keyboard is a different mechanism from disconnecting?
+
 ## Identity, for the third time
 
 `AudioDeviceID` is an opaque integer that is not stable across reboots or reconnects. `kAudioDevicePropertyDeviceUID` gives a stable string. A priority list naming "Shure MV7" wants to match on something durable, and the device-uid-to-microphone table belongs with the bindings, exactly like the bundle-id table and the display-uuid table.
