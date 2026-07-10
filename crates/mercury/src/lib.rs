@@ -230,9 +230,8 @@ impl AppLayer {
     }
 
     /// The in-app variant for whatever app the root currently records as
-    /// foregrounded. This is the "default" in-app constructor: entering the layer,
-    /// or re-entering it when the front app changes, reads the app from root state
-    /// rather than being told it.
+    /// foregrounded. This is the "default" in-app constructor: entering the layer
+    /// reads the app from root state rather than being told it.
     #[must_use]
     pub const fn for_root(root: &Mercury) -> Self {
         Self::for_app(root.foregrounded)
@@ -311,8 +310,10 @@ pub const fn foreground(app: App) -> MercuryEvent {
 /// other than in-app are left alone; foregrounding does not move you between them.
 const fn on_foregrounded(ev: &ForegroundEvent, root: &mut Mercury) -> Vec<MercuryEffect> {
     root.foregrounded = ev.app;
-    if matches!(root.layer, Layer::InApp(_)) {
-        root.layer = Layer::InApp(AppLayer::for_root(root));
+    // Retarget the in-app layer in place rather than rebuilding `Layer::InApp`,
+    // so that whatever else the variant comes to hold survives a foregrounding.
+    if let Layer::InApp(in_app) = &mut root.layer {
+        *in_app = AppLayer::for_app(ev.app);
     }
     Vec::new()
 }
