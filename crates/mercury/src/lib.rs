@@ -12,8 +12,9 @@
 //!   maximize and left and right to the halves, then it goes back to home.
 //! - [`TypingLayer`]: `escape` goes home, any other key passes through.
 //! - [`AppLayer`] (in-app): [`ChromeApp`] binds `r` to a refresh, [`GhosttyApp`]
-//!   binds `j`/`k` to tmux's previous and next pane; every other app is
-//!   [`OtherApp`], which binds nothing.
+//!   binds `j`/`k` to tmux's previous and next window and `1`-`0` to windows one
+//!   through ten;
+//!   every other app is [`OtherApp`], which binds nothing.
 //!
 //! A layer stays only if its actions make sense to do repeatedly. Walking panes
 //! and refreshing a page do, so the in-app layers stay put. Choosing an app or a
@@ -295,8 +296,18 @@ pub struct ChromeApp {}
 #[laserbeam(path = GhosttyAppPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
 #[bind(
-    Key::KeyJ.down() => previous_pane,
-    Key::KeyK.down() => next_pane,
+    Key::KeyJ.down() => previous_window,
+    Key::KeyK.down() => next_window,
+    Key::Num1.down() => window_1,
+    Key::Num2.down() => window_2,
+    Key::Num3.down() => window_3,
+    Key::Num4.down() => window_4,
+    Key::Num5.down() => window_5,
+    Key::Num6.down() => window_6,
+    Key::Num7.down() => window_7,
+    Key::Num8.down() => window_8,
+    Key::Num9.down() => window_9,
+    Key::Num0.down() => window_0,
 )]
 pub struct GhosttyApp {}
 
@@ -434,9 +445,12 @@ fn to_inapp(_ev: &KeyEvent, path: HomeLayerPath) -> Vec<MercuryEffect> {
 /// it only later, when the watcher reports what actually came up, so a following
 /// `i` may briefly resolve the in-app layer against the old app.
 /// [`on_foregrounded`] retargets it when the real event lands.
-fn and_go_home<'a, P: Ascend<LayerPath<'a>>>(path: P, effect: MercuryEffect) -> Vec<MercuryEffect> {
+fn and_go_home<'a, P: Ascend<LayerPath<'a>>>(
+    path: P,
+    effects: Vec<MercuryEffect>,
+) -> Vec<MercuryEffect> {
     go_home(&mut path.ascend());
-    vec![effect]
+    effects
 }
 
 /// `r` in home: enter the resize layer.
@@ -448,23 +462,23 @@ fn to_resize(_ev: &KeyEvent, path: HomeLayerPath) -> Vec<MercuryEffect> {
 
 /// The arrows in resize: place the focused window and return home.
 fn maximize(_ev: &KeyEvent, path: ResizeLayerPath) -> Vec<MercuryEffect> {
-    and_go_home(path, MercuryEffect::Place(Placement::Maximize))
+    and_go_home(path, vec![MercuryEffect::Place(Placement::Maximize)])
 }
 fn left_half(_ev: &KeyEvent, path: ResizeLayerPath) -> Vec<MercuryEffect> {
-    and_go_home(path, MercuryEffect::Place(Placement::LeftHalf))
+    and_go_home(path, vec![MercuryEffect::Place(Placement::LeftHalf)])
 }
 fn right_half(_ev: &KeyEvent, path: ResizeLayerPath) -> Vec<MercuryEffect> {
-    and_go_home(path, MercuryEffect::Place(Placement::RightHalf))
+    and_go_home(path, vec![MercuryEffect::Place(Placement::RightHalf)])
 }
 
 fn open_chrome(_ev: &KeyEvent, path: NavLayerPath) -> Vec<MercuryEffect> {
-    and_go_home(path, MercuryEffect::Foreground(App::Chrome))
+    and_go_home(path, vec![MercuryEffect::Foreground(App::Chrome)])
 }
 fn open_ghostty(_ev: &KeyEvent, path: NavLayerPath) -> Vec<MercuryEffect> {
-    and_go_home(path, MercuryEffect::Foreground(App::Ghostty))
+    and_go_home(path, vec![MercuryEffect::Foreground(App::Ghostty)])
 }
 fn open_zed(_ev: &KeyEvent, path: NavLayerPath) -> Vec<MercuryEffect> {
-    and_go_home(path, MercuryEffect::Foreground(App::Zed))
+    and_go_home(path, vec![MercuryEffect::Foreground(App::Zed)])
 }
 
 fn passthru<P>(ev: &KeyEvent, _path: P) -> Vec<MercuryEffect> {
@@ -479,23 +493,53 @@ fn tap(modifiers: &[Key], key: Key) -> MercuryEffect {
     }
 }
 
-/// A tmux command: the `ctrl-a` prefix, then the command key on its own.
+/// A tmux command: the `ctrl-a` prefix, then the command key.
 ///
 /// Two taps rather than one chord, because the prefix has to be let go before the
 /// command or tmux sees `ctrl-p` rather than `p`. Which is now what the shape says,
 /// rather than something the order of six raw events has to get right.
-fn tmux(command: Key) -> Vec<MercuryEffect> {
-    vec![tap(&[Key::ControlLeft], Key::KeyA), tap(&[], command)]
+fn tmux(modifiers: &[Key], command: Key) -> Vec<MercuryEffect> {
+    vec![tap(&[Key::ControlLeft], Key::KeyA), tap(modifiers, command)]
 }
 
-/// `j` in Ghostty: tmux's previous pane.
-fn previous_pane(_ev: &KeyEvent, _path: GhosttyAppPath) -> Vec<MercuryEffect> {
-    tmux(Key::KeyP)
+/// `j` in Ghostty: tmux's previous window. Stays, because walking windows repeats.
+fn previous_window(_ev: &KeyEvent, _path: GhosttyAppPath) -> Vec<MercuryEffect> {
+    tmux(&[], Key::KeyP)
 }
 
-/// `k` in Ghostty: tmux's next pane.
-fn next_pane(_ev: &KeyEvent, _path: GhosttyAppPath) -> Vec<MercuryEffect> {
-    tmux(Key::KeyN)
+/// `k` in Ghostty: tmux's next window.
+fn next_window(_ev: &KeyEvent, _path: GhosttyAppPath) -> Vec<MercuryEffect> {
+    tmux(&[], Key::KeyN)
+}
+
+/// The digits in Ghostty: jump straight to a tmux window, then go home.
+///
+/// The window is chosen with the digit's *shifted* symbol, because that is what
+/// the tmux config binds: `!` through `)` select windows 1 through 10, while the
+/// bare digits select window *indices* and so cannot reach the tenth. `1` sends
+/// `ctrl-a !` and `0` sends `ctrl-a )`.
+///
+/// Jumping to a window is a choice rather than something you repeat, so it leaves
+/// the layer. See [`and_go_home`].
+macro_rules! select_window {
+    ($($handler:ident => $digit:ident),* $(,)?) => {$(
+        fn $handler(_ev: &KeyEvent, path: GhosttyAppPath) -> Vec<MercuryEffect> {
+            and_go_home(path, tmux(&[Key::ShiftLeft], Key::$digit))
+        }
+    )*};
+}
+
+select_window! {
+    window_1 => Num1,
+    window_2 => Num2,
+    window_3 => Num3,
+    window_4 => Num4,
+    window_5 => Num5,
+    window_6 => Num6,
+    window_7 => Num7,
+    window_8 => Num8,
+    window_9 => Num9,
+    window_0 => Num0,
 }
 
 /// `r` in Chrome: cmd-r, a refresh.

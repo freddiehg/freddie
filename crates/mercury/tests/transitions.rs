@@ -193,12 +193,12 @@ fn unbound_key_is_none() {
     assert_eq!(m.handle(&key(Key::KeyX)), None);
 }
 
-// ---- ghostty: j and k walk tmux's panes ----
+// ---- ghostty: j/k walk tmux's windows, digits jump to one ----
 
 // tmux's prefix is a chord, and the command is a bare tap. If the prefix were held
 // through the command, tmux would see `ctrl-p` rather than `p`.
-fn tmux(command: Key) -> Vec<MercuryEffect> {
-    vec![tap(&[Key::ControlLeft], Key::KeyA), tap(&[], command)]
+fn tmux(modifiers: &[Key], command: Key) -> Vec<MercuryEffect> {
+    vec![tap(&[Key::ControlLeft], Key::KeyA), tap(modifiers, command)]
 }
 
 #[test]
@@ -210,14 +210,14 @@ fn i_enters_ghostty_in_app_when_ghostty_is_frontmost() {
 }
 
 #[test]
-fn ghostty_j_is_previous_pane_and_k_is_next() {
+fn ghostty_j_is_previous_window_and_k_is_next() {
     let mut m = Mercury::default();
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
 
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(Key::KeyP)));
-    assert_eq!(m.handle(&key(Key::KeyK)), Some(tmux(Key::KeyN)));
-    // Still in Ghostty's layer, so panes can be walked without re-entering.
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(&[], Key::KeyP)));
+    assert_eq!(m.handle(&key(Key::KeyK)), Some(tmux(&[], Key::KeyN)));
+    // Still in Ghostty's layer, so windows can be walked without re-entering.
     assert!(matches!(m.layer, Layer::InApp(AppLayer::Ghostty(_))));
 }
 
@@ -257,7 +257,84 @@ fn foregrounding_ghostty_retargets_the_inapp_layer() {
 
     let _ = m.handle(&foreground(App::Ghostty));
     assert!(matches!(m.layer, Layer::InApp(AppLayer::Ghostty(_))));
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(Key::KeyP)));
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(&[], Key::KeyP)));
+}
+
+// The digits jump to a tmux window with the *shifted* symbol, because that is what
+// the tmux config binds: `!`..`)` select windows 1..10, while the bare digits
+// select window indices and cannot reach the tenth.
+#[test]
+fn the_digits_select_a_tmux_window_and_return_home() {
+    for (k, expected) in [
+        (Key::Num1, Key::Num1),
+        (Key::Num5, Key::Num5),
+        (Key::Num9, Key::Num9),
+        (Key::Num0, Key::Num0),
+    ] {
+        let mut m = Mercury::default();
+        let _ = m.handle(&foreground(App::Ghostty));
+        let _ = m.handle(&key(Key::KeyI));
+
+        assert_eq!(
+            m.handle(&key(k)),
+            Some(tmux(&[Key::ShiftLeft], expected)),
+            "{k:?}"
+        );
+        // Choosing a window is a choice, not something you repeat.
+        assert!(matches!(m.layer, Layer::Home(_)), "{k:?} stayed in ghostty");
+    }
+}
+
+// Every digit is bound, and each sends its own.
+#[test]
+fn all_ten_digits_are_bound_in_ghostty() {
+    let digits = [
+        Key::Num1,
+        Key::Num2,
+        Key::Num3,
+        Key::Num4,
+        Key::Num5,
+        Key::Num6,
+        Key::Num7,
+        Key::Num8,
+        Key::Num9,
+        Key::Num0,
+    ];
+    for digit in digits {
+        let mut m = Mercury::default();
+        let _ = m.handle(&foreground(App::Ghostty));
+        let _ = m.handle(&key(Key::KeyI));
+        assert_eq!(
+            m.handle(&key(digit)),
+            Some(tmux(&[Key::ShiftLeft], digit)),
+            "{digit:?} is unbound"
+        );
+    }
+}
+
+// Walking windows repeats, so j and k stay; jumping to one does not, so it leaves.
+#[test]
+fn walking_stays_but_jumping_leaves() {
+    let mut m = Mercury::default();
+    let _ = m.handle(&foreground(App::Ghostty));
+    let _ = m.handle(&key(Key::KeyI));
+
+    let _ = m.handle(&key(Key::KeyJ));
+    assert!(matches!(m.layer, Layer::InApp(AppLayer::Ghostty(_))));
+    let _ = m.handle(&key(Key::Num3));
+    assert!(matches!(m.layer, Layer::Home(_)));
+}
+
+// The digits belong to Ghostty, not to home or to Chrome.
+#[test]
+fn the_digits_are_unbound_outside_ghostty() {
+    let mut m = Mercury::default();
+    assert_eq!(m.handle(&key(Key::Num1)), None);
+
+    let mut m = Mercury::default();
+    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&key(Key::KeyI));
+    assert_eq!(m.handle(&key(Key::Num1)), None);
 }
 
 // ---- resize: `r` from home, then the arrows place the focused window ----
