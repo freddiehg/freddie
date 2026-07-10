@@ -101,13 +101,6 @@ pub struct Stopper {
     run_loop: CFRunLoop,
 }
 
-impl Stopper {
-    /// Stops the main loop now, rather than at drop.
-    pub fn stop(self) {
-        drop(self);
-    }
-}
-
 impl Drop for Stopper {
     fn drop(&mut self) {
         // The flag first: `CFRunLoop::stop` against a loop that has not started is
@@ -152,13 +145,6 @@ mod tests {
         let (main_loop, stopper) = main_loop();
         assert!(!main_loop.stop.load(std::sync::atomic::Ordering::Acquire));
         drop(stopper);
-        assert!(main_loop.stop.load(std::sync::atomic::Ordering::Acquire));
-    }
-
-    #[test]
-    fn stopping_explicitly_sets_the_flag() {
-        let (main_loop, stopper) = main_loop();
-        Stopper::stop(stopper);
         assert!(main_loop.stop.load(std::sync::atomic::Ordering::Acquire));
     }
 

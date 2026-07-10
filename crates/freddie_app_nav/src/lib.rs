@@ -137,23 +137,17 @@ impl Watcher {
             handle: Some(handle),
         }
     }
+}
 
-    /// Stops the watcher and waits for its thread to finish.
-    pub fn stop(mut self) {
-        self.shut_down();
-    }
-
-    fn shut_down(&mut self) {
+impl Drop for Watcher {
+    /// Stops the watcher and waits for its thread to finish. `Drop` is the only
+    /// way to stop it: a consuming `stop()` would just be `drop`, and a version
+    /// that duplicated the body would run it twice, once explicitly and once here.
+    fn drop(&mut self) {
         self.running.store(false, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
-    }
-}
-
-impl Drop for Watcher {
-    fn drop(&mut self) {
-        self.shut_down();
     }
 }
 
@@ -310,7 +304,7 @@ mod tests {
         // trailing Zeds are suppressed.
         let first = rx.recv_timeout(Duration::from_secs(2)).unwrap();
         let second = rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        watcher.stop();
+        drop(watcher);
         assert_eq!(first, "Chrome");
         assert_eq!(second, "Zed");
         // No third change ever fires (everything after is Zed).

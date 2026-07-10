@@ -82,6 +82,7 @@ Most of this is not what you would guess, so none of it is assumed.
 - Foundation does not attach lazily to whoever touches `NSWorkspace` first. With main never calling it, and the watcher thread both first-touching and solely running a loop, it fired zero times. The port goes on `CFRunLoopGetMain()`.
 - Polling `frontmostApplication()` is not a workaround. It reads a cache the notification machinery refreshes, so with no run loop running it returns the app that was frontmost at process start, forever. Checked from a spawned thread with main running a loop, and from main with no loop; three real app switches, value never moved. This is why `frontmost()` is only good for seeding.
 - Dropping the observer token does not deregister it. The center kept calling the block after both the token and the `RcBlock` were dropped. Only `removeObserver` stopped it.
+- `removeObserver` works from a thread other than main, which is where `Watcher::drop` will run it. Registered on a worker, fired once on a switch, removed from the worker, and the next two switches fired nothing. Calling it twice on the same observer survives, and so does dropping the token and the block afterwards.
 
 ## The Watcher
 
@@ -104,7 +105,6 @@ The workspace sets `unsafe_code = "forbid"`, and `forbid` cannot be relaxed from
 ## Open questions
 
 - Is a test binary that runs a main loop worth building to keep the observer under test?
-- Does `Watcher` keep a consuming `stop()` alongside `Drop`, now that stopping is just deregistering?
 - Where the bundle-id to `App` map lives (with the app's bindings, as the name table does now), and how figaro overrides it.
 - Whether "window changed within the same app" matters, or only "app changed". `didActivateApplication` only fires for the latter.
 - Whether mercury wants a `NSWorkspaceDidDeactivateApplicationNotification` counterpart, or activation is enough.
