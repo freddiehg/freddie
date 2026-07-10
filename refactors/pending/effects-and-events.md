@@ -34,6 +34,22 @@ Read and write the paste buffer. voicemode's `l` layer does `pbcopy < src/llm-bl
 
 Dispatch to various Claudes. This is the one that pulls everything else along. A Claude runs in a tmux pane, in a terminal window, or in a browser tab, and dispatching to a chosen one means naming it, focusing it, and delivering text to it. Naming needs the identity scheme below. Delivering needs either the paste buffer plus a synthesized paste, or `tmux send-keys -t <target>`, which is exact and needs no focus at all. tmux is the tractable case, and it is probably where this starts.
 
+Select all, cut, hand it to an LLM to rewrite, paste the result. Every piece exists: `cmd-a` and `cmd-x` are chords the emitter already sends, the paste buffer is `NSPasteboard`, and the LLM is a subprocess or an HTTP call. Composing them is where it gets interesting, and it is the first effect that is genuinely slow rather than merely off the hot path.
+
+It takes seconds, so it cannot be one effect. It is a state. Cutting is one effect, the rewrite finishing is an event, and pasting is the effect that event triggers. In between, the model is in a rewriting state, which is exactly the pattern `refactors/past/overall-plan.md` prescribes for anything with a delay, and exactly the shape of the `Foreground` effect whose result arrives later from the watcher.
+
+Four things will go wrong, and each is worth designing for rather than discovering.
+
+The text lives only in the clipboard between the cut and the paste. If the LLM call fails, times out, or mercury exits, it is gone from the document and gone from mercury. The cut has to be recoverable: keep the text in the state, restore it on failure, and treat a failed rewrite as an event that pastes the original back.
+
+The clipboard is global and someone else's. Clobbering it to move text through is rude and detectable. Save its contents, use it, and put them back, which is a small state machine of its own.
+
+Focus can move while the LLM thinks. Paste blindly and the rewritten paragraph lands in Slack. The state has to remember which app, and ideally which window and text field, the cut came from, and refuse to paste if the answer changed. `kAXFocusedUIElementChangedNotification` is how it would know.
+
+And the user keeps typing. Keys arriving during the rewrite have to go somewhere: swallowed, buffered, or passed through into a document that is about to be overwritten. This is the first case where the model wants to say "I am busy" and mean it.
+
+Once it exists, the same shape gives translation, grammar fixes, explaining a selection, and converting units, all differing only in the prompt. The prompt itself is data, which makes it a binding: `#[bind(Key::KeyT.down() => rewrite("translate to French"))]` is a value handler, which is `handlers-as-values.md`.
+
 ## What voicemode already does
 
 The setup mercury replaces (`~/code/voicemode`) is a good inventory of the target, and a few of its details are worth stealing rather than rediscovering.
