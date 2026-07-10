@@ -2,11 +2,13 @@
 
 Knowing which app is frontmost and getting an event when it changes, fed into the runner as an input alongside keys.
 
-`freddie_app_nav` polls `osascript` for this today. We are replacing that with the `NSWorkspace` `didActivateApplication` observer. The motivation is not latency, which is fine. The poll is ugly: it spawns a subprocess every tick to read one string, it keys apps by display name, and it re-derives "did it change" by diffing something the OS already knows. Every piece of that machinery exists only because we are not asking the system the question it is willing to answer.
+Implemented. `freddie_app_nav::watch` is an `NSWorkspace` `didActivateApplication` observer, and identity is the bundle id in both directions.
+
+`freddie_app_nav` used to poll `osascript` for this. We replaced that with the observer. The motivation is not latency, which is fine. The poll is ugly: it spawns a subprocess every tick to read one string, it keys apps by display name, and it re-derives "did it change" by diffing something the OS already knows. Every piece of that machinery exists only because we are not asking the system the question it is willing to answer.
 
 The prerequisite is done. `NSWorkspace` delivers only while the main thread is inside a run loop, and mercury's main now is: see `refactors/past/main-thread.md` for why, and `freddie_main_loop` for the code. Nothing about the run loop, the `Stopper`, or the exit path is this doc's problem any more.
 
-## What we are building
+## What was built
 
 `freddie_app_nav::watch` becomes an observer. The callback fires once per real activation, carrying a bundle identifier.
 
@@ -102,9 +104,9 @@ The workspace sets `unsafe_code = "forbid"`, and `forbid` cannot be relaxed from
 
 `freddie_main_loop` hit the same wall and settled for asserting on the stop flag rather than running a loop. Here the equivalent would be a test binary that gives main to a run loop and drives real app switches, at the cost of a test that steals focus and cannot run headless.
 
-## Open questions
+## What was left open
 
-- Is a test binary that runs a main loop worth building to keep the observer under test?
+- Is a test binary that runs a main loop worth building to keep the observer under test? Not built. The path was driven end to end against the real crates instead: seeding, both directions of a switch, and `Drop` deregistering.
 - Where the bundle-id to `App` map lives (with the app's bindings, as the name table does now), and how figaro overrides it.
 - Whether "window changed within the same app" matters, or only "app changed". `didActivateApplication` only fires for the latter.
 - Whether mercury wants a `NSWorkspaceDidDeactivateApplicationNotification` counterpart, or activation is enough.
