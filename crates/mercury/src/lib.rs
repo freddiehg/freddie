@@ -15,6 +15,11 @@
 //!   binds `j`/`k` to tmux's previous and next pane; every other app is
 //!   [`OtherApp`], which binds nothing.
 //!
+//! A layer stays only if its actions make sense to do repeatedly. Walking panes
+//! and refreshing a page do, so the in-app layers stay put. Choosing an app or a
+//! window placement does not, so nav and resize are one-shot choosers that return
+//! home. See [`and_go_home`].
+//!
 //! `escape` goes back to the home layer from every sub-layer, and is a no-op in
 //! home (it re-enters home). Typing binds it explicitly so its catch-all does not
 //! shadow the go-home binding. From home, `q` quits, so `escape` then `q` is the
@@ -406,9 +411,13 @@ fn to_inapp(_ev: &KeyEvent, path: HomeLayerPath) -> Vec<MercuryEffect> {
 
 /// Ask for `effect` and return home.
 ///
-/// Nav and resize are one-shot choosers: making a choice ends the layer rather
-/// than leaving you in it swallowing every key that is not another choice. Generic
-/// over the path, so both bind it from their own node.
+/// A layer stays only if its actions make sense to do repeatedly. Walking tmux's
+/// panes and refreshing Chrome do, so the in-app layers stay. Choosing an app or a
+/// window placement does not: repeating it is a no-op, and anything else is a
+/// different choice. So nav and resize are one-shot choosers, and this is how they
+/// leave.
+///
+/// Generic over the path, so both bind it from their own node.
 ///
 /// The layer change is immediate; the effect is not. Foregrounding an app records
 /// it only later, when the watcher reports what actually came up, so a following
