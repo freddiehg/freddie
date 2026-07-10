@@ -73,14 +73,9 @@ const FILE_LEVEL: LevelFilter = LevelFilter::DEBUG;
 /// The worker holds the [`Stopper`](freddie_main_loop::Stopper). Dropping it
 /// stops main's run loop, which is how the process exits: whether [`run`] returns
 /// normally, returns early because the keyboard could not be grabbed, or panics
-/// and unwinds, the `Stopper` goes with it and main falls out of its loop. Note
-/// the declaration order in the closure, which is load-bearing: the runtime is
-/// dropped before the `Stopper`, so the loop is not stopped until the runtime is
-/// gone.
-///
-/// The keyboard tap is unaffected by any of this. `intercept` spawns its own
-/// thread and adds its source to that thread's run loop, which is why the tap
-/// works today with tokio on main, and why it keeps working with tokio off it.
+/// and unwinds, the `Stopper` goes with it and main falls out of its loop. The
+/// declaration order in the closure matters: the runtime is dropped before the
+/// `Stopper`, so the loop is not stopped until the runtime is gone.
 fn main() {
     let log_path = init_tracing();
     println!("mercury: logging to {}", log_path.display());
