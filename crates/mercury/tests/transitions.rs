@@ -191,6 +191,85 @@ fn unbound_key_is_none() {
     assert_eq!(m.handle(&key(Key::KeyX)), None);
 }
 
+// ---- ghostty: j and k walk tmux's panes ----
+
+// tmux's prefix is released before the command key: `ctrl-a`, then `p` alone. If
+// the prefix stayed down tmux would see `ctrl-p`, not `p`.
+fn tmux(command: Key) -> Vec<MercuryEffect> {
+    vec![
+        emit(Key::ControlLeft, PressType::Down),
+        emit(Key::KeyA, PressType::Down),
+        emit(Key::KeyA, PressType::Up),
+        emit(Key::ControlLeft, PressType::Up),
+        emit(command, PressType::Down),
+        emit(command, PressType::Up),
+    ]
+}
+
+#[test]
+fn i_enters_ghostty_in_app_when_ghostty_is_frontmost() {
+    let mut m = Mercury::default();
+    let _ = m.handle(&foreground(App::Ghostty));
+    let _ = m.handle(&key(Key::KeyI));
+    assert!(matches!(m.layer, Layer::InApp(AppLayer::Ghostty(_))));
+}
+
+#[test]
+fn ghostty_j_is_previous_pane_and_k_is_next() {
+    let mut m = Mercury::default();
+    let _ = m.handle(&foreground(App::Ghostty));
+    let _ = m.handle(&key(Key::KeyI));
+
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(Key::KeyP)));
+    assert_eq!(m.handle(&key(Key::KeyK)), Some(tmux(Key::KeyN)));
+    // Still in Ghostty's layer, so panes can be walked without re-entering.
+    assert!(matches!(m.layer, Layer::InApp(AppLayer::Ghostty(_))));
+}
+
+// The prefix is let go before the command. Getting this backwards is the bug that
+// made a real `ctrl-a p` arrive as `ctrl-p`.
+#[test]
+fn the_tmux_prefix_is_released_before_the_command() {
+    let mut m = Mercury::default();
+    let _ = m.handle(&foreground(App::Ghostty));
+    let _ = m.handle(&key(Key::KeyI));
+    let effects = m.handle(&key(Key::KeyJ)).expect("j is bound");
+
+    let ctrl_up = effects
+        .iter()
+        .position(|e| *e == emit(Key::ControlLeft, PressType::Up))
+        .expect("ctrl is released");
+    let p_down = effects
+        .iter()
+        .position(|e| *e == emit(Key::KeyP, PressType::Down))
+        .expect("p is pressed");
+    assert!(ctrl_up < p_down, "ctrl must be up before p goes down");
+}
+
+// j and k belong to Ghostty, not to every app.
+#[test]
+fn j_and_k_are_unbound_in_chrome_in_app() {
+    let mut m = Mercury::default();
+    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&key(Key::KeyI));
+    assert_eq!(m.handle(&key(Key::KeyJ)), None);
+    assert_eq!(m.handle(&key(Key::KeyK)), None);
+}
+
+// Foregrounding Ghostty while in-app retargets to its layer, so its bindings
+// follow the front app the way Chrome's do.
+#[test]
+fn foregrounding_ghostty_retargets_the_inapp_layer() {
+    let mut m = Mercury::default();
+    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&key(Key::KeyI));
+    assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
+
+    let _ = m.handle(&foreground(App::Ghostty));
+    assert!(matches!(m.layer, Layer::InApp(AppLayer::Ghostty(_))));
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(Key::KeyP)));
+}
+
 // ---- resize: `r` from home, then the arrows place the focused window ----
 
 #[test]

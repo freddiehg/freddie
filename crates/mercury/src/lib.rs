@@ -11,8 +11,9 @@
 //! - [`ResizeLayer`] (`r` from home): the arrows place the focused window, up to
 //!   maximize and left and right to the halves, then it goes back to home.
 //! - [`TypingLayer`]: `escape` goes home, any other key passes through.
-//! - [`AppLayer`] (in-app): [`ChromeApp`] binds `r` to a refresh; every other app
-//!   is [`OtherApp`], which binds nothing.
+//! - [`AppLayer`] (in-app): [`ChromeApp`] binds `r` to a refresh, [`GhosttyApp`]
+//!   binds `j`/`k` to tmux's previous and next pane; every other app is
+//!   [`OtherApp`], which binds nothing.
 //!
 //! `escape` goes back to the home layer from every sub-layer, and is a no-op in
 //! home (it re-enters home). Typing binds it explicitly so its catch-all does not
@@ -243,6 +244,7 @@ pub struct TypingLayer {}
 #[binds(MercuryStruct)]
 pub enum AppLayer {
     Chrome(ChromeApp),
+    Ghostty(GhosttyApp),
     Other(OtherApp),
 }
 
@@ -252,7 +254,8 @@ impl AppLayer {
     pub const fn for_app(app: App) -> Self {
         match app {
             App::Chrome => Self::Chrome(ChromeApp {}),
-            App::Ghostty | App::Zed | App::Other => Self::Other(OtherApp {}),
+            App::Ghostty => Self::Ghostty(GhosttyApp {}),
+            App::Zed | App::Other => Self::Other(OtherApp {}),
         }
     }
 
@@ -271,6 +274,16 @@ impl AppLayer {
 #[bind(Key::KeyR.down() => refresh)]
 pub struct ChromeApp {}
 
+/// The in-app layer for Ghostty, where `j` and `k` walk tmux's panes.
+#[derive(Laserbeam, Bind, Debug)]
+#[laserbeam(path = GhosttyAppPath, resolved = Resolved)]
+#[binds(MercuryStruct)]
+#[bind(
+    Key::KeyJ.down() => previous_pane,
+    Key::KeyK.down() => next_pane,
+)]
+pub struct GhosttyApp {}
+
 /// A foregrounded app Mercury has no bindings for.
 #[derive(Laserbeam, Bind, Debug)]
 #[laserbeam(path = OtherAppPath, resolved = Resolved)]
@@ -284,6 +297,7 @@ pub type ResizeLayerPath<'a> = Path<ResizeLayer, LayerPath<'a>>;
 pub type TypingLayerPath<'a> = Path<TypingLayer, LayerPath<'a>>;
 pub type AppLayerPath<'a> = Path<AppLayer, LayerPath<'a>>;
 pub type ChromeAppPath<'a> = Path<ChromeApp, AppLayerPath<'a>>;
+pub type GhosttyAppPath<'a> = Path<GhosttyApp, AppLayerPath<'a>>;
 pub type OtherAppPath<'a> = Path<OtherApp, AppLayerPath<'a>>;
 
 /// The active leaf the tree resolves to.
@@ -293,6 +307,7 @@ pub enum Resolved<'a> {
     ResizeLayer(ResizeLayerPath<'a>),
     TypingLayer(TypingLayerPath<'a>),
     ChromeApp(ChromeAppPath<'a>),
+    GhosttyApp(GhosttyAppPath<'a>),
     OtherApp(OtherAppPath<'a>),
 }
 
@@ -434,6 +449,33 @@ fn open_zed(_ev: &KeyEvent, path: NavLayerPath) -> Vec<MercuryEffect> {
 
 fn passthru<P>(ev: &KeyEvent, _path: P) -> Vec<MercuryEffect> {
     vec![MercuryEffect::Emit(ev.clone())]
+}
+
+/// A tmux command: the `ctrl-a` prefix, released, then the command key on its own.
+///
+/// The prefix has to be let go before the command, or tmux sees `ctrl-p` rather
+/// than `p`. That is the same release the interceptor has to forward for a real
+/// `ctrl-a p` to work.
+fn tmux(command: Key) -> Vec<MercuryEffect> {
+    let emit = |key, press| MercuryEffect::Emit(KeyEvent { key, press });
+    vec![
+        emit(Key::ControlLeft, PressType::Down),
+        emit(Key::KeyA, PressType::Down),
+        emit(Key::KeyA, PressType::Up),
+        emit(Key::ControlLeft, PressType::Up),
+        emit(command, PressType::Down),
+        emit(command, PressType::Up),
+    ]
+}
+
+/// `j` in Ghostty: tmux's previous pane.
+fn previous_pane(_ev: &KeyEvent, _path: GhosttyAppPath) -> Vec<MercuryEffect> {
+    tmux(Key::KeyP)
+}
+
+/// `k` in Ghostty: tmux's next pane.
+fn next_pane(_ev: &KeyEvent, _path: GhosttyAppPath) -> Vec<MercuryEffect> {
+    tmux(Key::KeyN)
 }
 
 fn refresh(_ev: &KeyEvent, _path: ChromeAppPath) -> Vec<MercuryEffect> {
