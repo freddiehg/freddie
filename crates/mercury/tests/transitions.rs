@@ -5,8 +5,8 @@
 
 use bind::SimpleRunner;
 use mercury::{
-    App, AppLayer, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryStruct, PressType,
-    foreground, key,
+    App, AppLayer, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryStruct, Placement,
+    PressType, foreground, key,
 };
 
 const fn emit(key: Key, press: PressType) -> MercuryEffect {
@@ -189,6 +189,69 @@ fn inapp_other_app_ignores_keys() {
 fn unbound_key_is_none() {
     let mut m = Mercury::default();
     assert_eq!(m.handle(&key(Key::KeyX)), None);
+}
+
+// ---- resize: `r` from home, then the arrows place the focused window ----
+
+#[test]
+fn home_r_enters_resize() {
+    let mut m = Mercury::default();
+    assert_eq!(m.handle(&key(Key::KeyR)), Some(vec![]));
+    assert!(matches!(m.layer, Layer::Resize(_)));
+}
+
+// Each arrow emits its placement. Unlike nav, resize is not a one-shot chooser:
+// it stays put so placements chain.
+#[test]
+fn the_arrows_place_the_window_and_stay_in_resize() {
+    let mut m = Mercury::default();
+    let _ = m.handle(&key(Key::KeyR));
+    for (k, placement) in [
+        (Key::UpArrow, Placement::Maximize),
+        (Key::LeftArrow, Placement::LeftHalf),
+        (Key::RightArrow, Placement::RightHalf),
+    ] {
+        assert_eq!(
+            m.handle(&key(k)),
+            Some(vec![MercuryEffect::Place(placement)]),
+            "{k:?}"
+        );
+        assert!(matches!(m.layer, Layer::Resize(_)), "{k:?} left resize");
+    }
+}
+
+// Placements chain, then escape leaves.
+#[test]
+fn escape_leaves_resize() {
+    let mut m = Mercury::default();
+    let _ = m.handle(&key(Key::KeyR));
+    let _ = m.handle(&key(Key::LeftArrow));
+    let _ = m.handle(&key(Key::UpArrow));
+    assert!(matches!(m.layer, Layer::Resize(_)));
+
+    assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
+    assert!(matches!(m.layer, Layer::Home(_)));
+}
+
+// The arrows mean nothing outside resize, so they do not place a window by
+// accident from home.
+#[test]
+fn the_arrows_are_unbound_in_home() {
+    let mut m = Mercury::default();
+    assert_eq!(m.handle(&key(Key::UpArrow)), None);
+    assert_eq!(m.handle(&key(Key::LeftArrow)), None);
+    assert_eq!(m.handle(&key(Key::RightArrow)), None);
+}
+
+// `r` is Chrome's refresh in the in-app layer, and resize's entry from home. The
+// layers keep them apart.
+#[test]
+fn r_still_refreshes_chrome_in_app() {
+    let mut m = Mercury::default();
+    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&key(Key::KeyI));
+    assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
+    assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
 }
 
 // ---- loop: driving a bind::SimpleRunner ----

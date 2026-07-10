@@ -39,7 +39,7 @@ use std::ops::ControlFlow;
 use std::time::Duration;
 
 use freddie_keyboard::Emitter;
-use mercury::{App, Mercury, MercuryEffect, MercuryEvent, foreground};
+use mercury::{App, Mercury, MercuryEffect, MercuryEvent, Placement, foreground};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tracing::{debug, error, info, warn};
 
@@ -57,6 +57,13 @@ mod logging;
 fn main() {
     let log_path = logging::init();
     println!("mercury: logging to {}", log_path.display());
+
+    // `freddie_windows` reads the screen's visible frame, which is AppKit and so
+    // main-thread-bound. Do it here, while we still are one, and cache it.
+    if let Err(e) = freddie_windows::init() {
+        eprintln!("windows: {e}");
+        error!(error = %e, "window placement unavailable");
+    }
 
     let (main_loop, stopper) = freddie_main_loop::main_loop();
 
@@ -213,12 +220,29 @@ fn perform_effect(effect: &MercuryEffect, emitter: &Emitter) -> ControlFlow<()> 
             Ok(()) => debug!(key = ?ke.key, press = ?ke.press, "emitted"),
             Err(e) => warn!(key = ?ke.key, press = ?ke.press, error = %e, "emit failed"),
         },
+        MercuryEffect::Place(placement) => place_window(*placement),
         MercuryEffect::Kill => {
             info!("kill: exiting");
             return ControlFlow::Break(());
         }
     }
     ControlFlow::Continue(())
+}
+
+/// Place the focused window, fire-and-forget on its own thread. It takes tens of
+/// milliseconds, which is long enough to delay a key the effect loop is about to
+/// emit. A detached thread cannot hold up the exit path the way `spawn_blocking`
+/// would, which is the same reason `foreground_app` uses one.
+fn place_window(placement: Placement) {
+    let placement = match placement {
+        Placement::Maximize => freddie_windows::Placement::Maximize,
+        Placement::LeftHalf => freddie_windows::Placement::LeftHalf,
+        Placement::RightHalf => freddie_windows::Placement::RightHalf,
+    };
+    std::thread::spawn(move || match freddie_windows::place(placement) {
+        Ok(()) => debug!(?placement, "placed the window"),
+        Err(e) => warn!(?placement, error = %e, "place failed"),
+    });
 }
 
 /// Foreground an app for real, fire-and-forget on its own thread so the effect

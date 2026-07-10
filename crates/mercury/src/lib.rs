@@ -110,6 +110,15 @@ impl App {
     }
 }
 
+/// Where a window should go. Mercury's own, mirroring `freddie_windows::Placement`
+/// so the model stays free of the OS crates, the way `App` is free of bundle ids.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Placement {
+    Maximize,
+    LeftHalf,
+    RightHalf,
+}
+
 // ---------------------------------------------------------------------------
 // The unified trigger, event, and effect the marker names.
 // ---------------------------------------------------------------------------
@@ -142,6 +151,8 @@ pub enum MercuryEffect {
     Foreground(App),
     /// Emit one key event, a press or a release. A chord is several of these.
     Emit(KeyEvent),
+    /// Move and resize the focused window of the frontmost app.
+    Place(Placement),
     /// Quit the program. The effect handler performs this by exiting.
     Kill,
 }
@@ -175,6 +186,7 @@ pub struct Mercury {
 pub enum Layer {
     Home(HomeLayer),
     Nav(NavLayer),
+    Resize(ResizeLayer),
     Typing(TypingLayer),
     InApp(AppLayer),
 }
@@ -184,6 +196,7 @@ pub enum Layer {
 #[binds(MercuryStruct)]
 #[bind(
     Key::KeyN.down() => to_nav,
+    Key::KeyR.down() => to_resize,
     Key::KeyT.down() => to_typing,
     Key::KeyI.down() => to_inapp,
     Key::KeyQ.down() => quit,
@@ -199,6 +212,18 @@ pub struct HomeLayer {}
     Key::KeyZ.down() => open_zed,
 )]
 pub struct NavLayer {}
+
+/// The resize layer: the arrows place the focused window. Unlike nav, it stays put,
+/// so placements chain (left, then up) until `escape` goes home.
+#[derive(Laserbeam, Bind, Debug)]
+#[laserbeam(path = ResizeLayerPath, resolved = Resolved)]
+#[binds(MercuryStruct)]
+#[bind(
+    Key::UpArrow.down() => maximize,
+    Key::LeftArrow.down() => left_half,
+    Key::RightArrow.down() => right_half,
+)]
+pub struct ResizeLayer {}
 
 /// The typing layer: `escape` goes home, any other key passes through.
 #[derive(Laserbeam, Bind, Debug)]
@@ -253,6 +278,7 @@ pub struct OtherApp {}
 pub type LayerPath<'a> = Path<Layer, &'a mut Mercury>;
 pub type HomeLayerPath<'a> = Path<HomeLayer, LayerPath<'a>>;
 pub type NavLayerPath<'a> = Path<NavLayer, LayerPath<'a>>;
+pub type ResizeLayerPath<'a> = Path<ResizeLayer, LayerPath<'a>>;
 pub type TypingLayerPath<'a> = Path<TypingLayer, LayerPath<'a>>;
 pub type AppLayerPath<'a> = Path<AppLayer, LayerPath<'a>>;
 pub type ChromeAppPath<'a> = Path<ChromeApp, AppLayerPath<'a>>;
@@ -267,6 +293,7 @@ laserbeam::impl_ascend!(LayerPath, ToLayerPath);
 pub enum Resolved<'a> {
     HomeLayer(HomeLayerPath<'a>),
     NavLayer(NavLayerPath<'a>),
+    ResizeLayer(ResizeLayerPath<'a>),
     TypingLayer(TypingLayerPath<'a>),
     ChromeApp(ChromeAppPath<'a>),
     OtherApp(OtherAppPath<'a>),
@@ -376,6 +403,24 @@ fn to_inapp(_ev: &KeyEvent, path: HomeLayerPath) -> Vec<MercuryEffect> {
 fn foreground_and_go_home(path: NavLayerPath, app: App) -> Vec<MercuryEffect> {
     go_home(&mut path.ascend());
     vec![MercuryEffect::Foreground(app)]
+}
+
+/// `r` in home: enter the resize layer.
+fn to_resize(_ev: &KeyEvent, path: HomeLayerPath) -> Vec<MercuryEffect> {
+    let mut layer = path.ascend();
+    *layer.get_mut() = Layer::Resize(ResizeLayer {});
+    Vec::new()
+}
+
+/// The arrows in resize: place the focused window, and stay here so they chain.
+fn maximize(_ev: &KeyEvent, _path: ResizeLayerPath) -> Vec<MercuryEffect> {
+    vec![MercuryEffect::Place(Placement::Maximize)]
+}
+fn left_half(_ev: &KeyEvent, _path: ResizeLayerPath) -> Vec<MercuryEffect> {
+    vec![MercuryEffect::Place(Placement::LeftHalf)]
+}
+fn right_half(_ev: &KeyEvent, _path: ResizeLayerPath) -> Vec<MercuryEffect> {
+    vec![MercuryEffect::Place(Placement::RightHalf)]
 }
 
 fn open_chrome(_ev: &KeyEvent, path: NavLayerPath) -> Vec<MercuryEffect> {
