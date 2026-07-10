@@ -26,6 +26,28 @@ Modifier states. `modifier-keys.md` already scopes this: cmd is not special, it 
 
 Keyboard-mouse mode. Move and click the pointer from the keyboard. `CGWarpMouseCursorPosition` to move, `CGEvent` mouse events to click. It is a state in the model, and it needs continuous motion, which means a timer source feeding repeat events rather than one event per keypress.
 
+## More effects
+
+Trigger Wispr Flow, and send a Wispr Flow message to a specific window. voicemode does the first by having Karabiner synthesize `F19` (from `RCtrl+y`), which Wispr listens for, plus an `F18` passthrough. Targeting a specific window is the "message a specific tab" problem again, and the same answer applies: a global key emit goes wherever focus is, so either focus first or speak to the app.
+
+Read and write the paste buffer. voicemode's `l` layer does `pbcopy < src/llm-blurb.txt` to load a canned prompt, and `vscode-open-in-chrome.sh` does `pbpaste` to read a path back out. As effects these are trivial (`NSPasteboard`, or shelling out), and they are the cheapest way to move text into an app that will not talk to us.
+
+Dispatch to various Claudes. This is the one that pulls everything else along. A Claude runs in a tmux pane, in a terminal window, or in a browser tab, and dispatching to a chosen one means naming it, focusing it, and delivering text to it. Naming needs the identity scheme below. Delivering needs either the paste buffer plus a synthesized paste, or `tmux send-keys -t <target>`, which is exact and needs no focus at all. tmux is the tractable case, and it is probably where this starts.
+
+## What voicemode already does
+
+The setup mercury replaces (`~/code/voicemode`) is a good inventory of the target, and a few of its details are worth stealing rather than rediscovering.
+
+Its architecture is a file bus: Karabiner writes `/tmp/karabiner-layer` and `/tmp/karabiner-command`, and Hammerspoon watches those paths and runs handlers. That is the inbound source described below, implemented as files, and it is why `state.lua` calls itself the single source of truth and enforces valid transitions by hand. That is what laserbeam is for.
+
+It has twenty-four layers, including an `l` family crossed with held modifiers (`lC`, `lTC`, `lTO`, `lCTO`), which is `WithModifierKeys` written out by hand, one state per combination.
+
+It has the pointer work already: directional scroll, hover mode, six click variants, Homerow labels, a grid layer, and `warpd`. It has window management (halves, maximize, next screen) and switcher emulation. It has per-layer screen borders and overlays whose text comes from `src/layers/*.txt`, and a SwiftBar menu bar item.
+
+Its display module is the thing to copy carefully. On external-monitor connect it disables the built-in panel through BetterDisplay, one-directionally (it never re-enables, because macOS already does and fighting it flaps), idempotently (re-firing the watcher recomputes the same action), and only after a DDC confirm, because enumerating screens proves macOS sees a display and not that the panel is lit. See display-events.md.
+
+And it has three separate panic buttons: `cleanup-external-state.sh` resets warpd, Homerow, the scroll timer, hover mode, and the lmode modifier at once, alongside `panic-cleanup.sh` and `hammerspoon-hard-restart.sh`. A program that swallows the keyboard needs an undo-everything, and mercury has only the killswitch. See launch-at-login.md.
+
 ## What is actually hard here
 
 Three things recur, and they are worth seeing before any of these is built.
@@ -33,6 +55,8 @@ Three things recur, and they are worth seeing before any of these is built.
 The first is identity. Bundle ids solved this for apps. Windows have `CGWindowID` and `AXUIElement` references, neither stable across restarts. Tabs have no OS-level identity at all. Any effect that targets "that tab" needs an identity scheme the target app agrees to, which usually means the target app has to be complicit.
 
 The second is direction. Foregrounding and the keyboard are things we observe from outside. Terminal panes and browser tabs cannot be observed from outside; the app must push to us. That means mercury needs an inbound source that is not an OS observer: a socket, or a CLI subcommand that another process invokes. That is a genuinely new kind of source, and it would serve tmux, a Chrome extension, and anything else we ever want to hear from. It is probably the single most enabling item on this page.
+
+voicemode already has this, as files under `/tmp` that Hammerspoon watches. It works, and it is the shape to keep while replacing the transport.
 
 The third is that most of these effects are slow and involve other processes. AppleScript, `tmux`, `open`. They must stay fire-and-forget off the effect loop, the way `Foreground` already spawns a thread, and their results must come back as events rather than return values. Also, several want Automation permission, which is a second TCC prompt, and Chrome's `execute javascript` additionally requires "Allow JavaScript from Apple Events" to be turned on by hand.
 
