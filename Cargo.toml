@@ -10,6 +10,7 @@ members = [
     "crates/freddie_keys",
     "crates/freddie_keyboard",
     "crates/freddie_app_nav",
+    "crates/freddie_main_loop",
     "crates/mercury",
 ]
 
