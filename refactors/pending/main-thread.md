@@ -171,9 +171,27 @@ Verified to exit cleanly when the stopper is dropped before main enters the loop
 
 ## Who owns the run loop
 
-Not a library. Two libraries cannot each expose a `run_main_loop()` and both be called, even though their sources would happily share one loop. `freddie_app_nav` registers an observer and documents that main must be running a loop. mercury runs it.
+Not a source library. Two libraries cannot each expose a `run_main_loop()` and both be called, even though their sources would happily share one loop. `freddie_app_nav` registers an observer and documents that main must be running a loop. It does not run one.
 
-If a second consumer appears, `Stopper` and `run_main_loop` move into one small crate that both depend on. They are about thirty lines and depend only on `core-foundation`.
+Nor mercury. figaro will want the same thing, and so will anything else built on these crates, so the run loop lives in its own crate from the start: `freddie_main_loop`. It depends on `core-foundation` and nothing else.
+
+```rust
+/// Pair a main loop with the handle that stops it.
+pub fn main_loop() -> (MainLoop, Stopper);
+
+pub struct MainLoop { .. }
+impl MainLoop {
+    /// Run until stopped. Must be called on the main thread.
+    pub fn run(self);
+}
+
+/// Send. Dropping it stops the main loop, from any thread.
+pub struct Stopper { .. }
+```
+
+`run` can check it is really on main without `libc` or objc2, by comparing `CFRunLoop::get_current()` against `CFRunLoop::get_main()`. Calling it anywhere else is a bug that should say so rather than hang.
+
+The crate needs `unsafe_code = "deny"` rather than the workspace's `forbid`, for one operation: `kCFRunLoopDefaultMode` is an extern static (`core-foundation-sys/src/runloop.rs:128`) and reading it is unsafe. `CFRunLoop::get_main`, `get_current`, `stop`, and `run_in_mode` are all safe. Same arrangement as `freddie_app_nav`: its own `[lints]` table copying the workspace's clippy denies, one `#[allow(unsafe_code)]` with a SAFETY comment, and the other crates keep the `forbid`.
 
 ## What does not change
 
@@ -185,7 +203,6 @@ Nothing about laserbeam, bind, or the model is involved. This is a change to one
 
 ## Open questions
 
-- Where `Stopper` and `run_main_loop` live before a second consumer exists: `mercury/src/main.rs`, or a crate from the start.
 - Whether to build the wake source now rather than accept the 100ms slice.
 - Whether the killswitch should drop the `Stopper` rather than call `process::exit`, so the `Watcher` deregisters on the way out. It probably should, which makes `Kill` an ordinary return.
 - Whether AppKit requires anything of main beyond a running loop. `NSStatusItem` may want `NSApplication` initialized, which is a bigger commitment than `CFRunLoopRun`. Unmeasured, and menu-bar.md should settle it before assuming this doc is sufficient.
