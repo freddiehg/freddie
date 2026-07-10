@@ -214,132 +214,140 @@ mod tests {
     }
 }
 
-/// Nest `Path` one level per type parameter, ending at the target path.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __ascend_nest {
-    ($lt:lifetime, $target:ident) => { $target<$lt> };
-    ($lt:lifetime, $target:ident, $head:ident $(, $rest:ident)*) => {
-        $crate::Path<$head, $crate::__ascend_nest!($lt, $target $(, $rest)*)>
-    };
-}
-
-/// One `into_parent()` per type parameter.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __ascend_up {
-    ($e:expr) => { $e };
-    ($e:expr, $head:ident $(, $rest:ident)*) => {
-        $crate::__ascend_up!($e.into_parent() $(, $rest)*)
-    };
-}
-
-/// One impl per depth, walking the list of type parameters.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __ascend_impls {
-    ($lt:lifetime, $target:ident, $trait:ident, [$($acc:ident),*]) => {};
-    ($lt:lifetime, $target:ident, $trait:ident, [$($acc:ident),*], $head:ident $(, $rest:ident)*) => {
-        impl<$lt, $($acc,)* $head> $trait<$lt>
-            for $crate::__ascend_nest!($lt, $target $(, $acc)*, $head)
-        {
-            fn ascend(self) -> $target<$lt> {
-                $crate::__ascend_up!(self $(, $acc)*, $head)
-            }
-        }
-        $crate::__ascend_impls!($lt, $target, $trait, [$($acc,)* $head] $(, $rest)*);
-    };
-}
-
-/// Declare a trait for ascending to `$target`, and implement it for `$target`
-/// itself and for every path beneath it, to a depth of twelve.
+/// Walk up a path to an ancestor, consuming it.
 ///
-/// The impls match on the shape of the path rather than on which node it is, so
-/// no node is named and adding one needs no new impl. `HomeLayerPath` is just an
-/// alias for `Path<HomeLayer, LayerPath<'a>>`, which is the depth-one shape.
-///
-/// They cannot overlap: unifying two of them would require a type that contains
-/// itself, which the occurs check rejects. That is why this needs no phantom
-/// index to disambiguate, the way `frunk`'s `Here`/`There` does.
+/// Implemented for every path and for each of its ancestors, to twelve levels, so
+/// a handler can be generic over "any path beneath this node" rather than naming
+/// one. Use [`Path::ascend_to`] to name the target, or let it be inferred.
 ///
 /// ```ignore
-/// laserbeam::impl_ascend!(LayerPath, ToLayerPath);
-///
-/// fn to_home<'a, P: ToLayerPath<'a>>(path: P) { /* path.ascend() is a LayerPath */ }
+/// fn to_home<'a, P: Ascend<LayerPath<'a>>>(path: P) {
+///     let layer: LayerPath = path.ascend();
+/// }
+/// nav_path.ascend_to::<LayerPath>();
 /// ```
+///
+/// The impls match on the shape of the path rather than on which node it is, so
+/// no node is named and adding one needs no new impl: `NavLayerPath` is just an
+/// alias for `Path<NavLayer, LayerPath<'a>>`, which is the depth-one shape.
+///
+/// There is one impl per depth, and they cannot overlap. For a single `Self` each
+/// gives a different `Target`, and unifying two of them would need a type that
+/// contains itself, which the occurs check rejects. That is why this needs no
+/// phantom index to disambiguate, the way `frunk`'s `Here`/`There` does, and why
+/// no index leaks into the bounds of a handler that uses it.
 ///
 /// Only for trees where every node has one parent. A node with several declares
 /// its parent as a route enum rather than a `Path`, so the shapes stop matching,
 /// and the ascent would not be unique anyway.
-#[macro_export]
-macro_rules! impl_ascend {
-    ($target:ident, $trait:ident) => {
-        /// A path that can ascend to the target path, consuming itself.
-        pub trait $trait<'a> {
-            /// Walk up to the target path.
-            fn ascend(self) -> $target<'a>;
-        }
+pub trait Ascend<Target> {
+    /// Walk up to the target.
+    fn ascend(self) -> Target;
+}
 
-        impl<'a> $trait<'a> for $target<'a> {
-            fn ascend(self) -> Self {
-                self
-            }
-        }
+/// Every path is its own ancestor, at depth zero.
+impl<T> Ascend<T> for T {
+    fn ascend(self) -> T {
+        self
+    }
+}
 
-        $crate::__ascend_impls!(
-            'a, $target, $trait, [],
-            N0, N1, N2, N3, N4, N5, N6, N7, N8, N9, N10, N11
-        );
+impl<Node, Parent> Path<Node, Parent> {
+    /// Walk up to `Target`, naming it rather than leaving it to inference.
+    #[must_use]
+    pub fn ascend_to<Target>(self) -> Target
+    where
+        Self: Ascend<Target>,
+    {
+        Ascend::ascend(self)
+    }
+}
+
+/// `Path<N0, Path<N1, .. T>>`, one level per type parameter.
+macro_rules! ascend_nest {
+    ($t:ident) => { $t };
+    ($t:ident, $head:ident $(, $rest:ident)*) => {
+        Path<$head, ascend_nest!($t $(, $rest)*)>
     };
 }
+
+/// One `into_parent()` per type parameter.
+macro_rules! ascend_up {
+    ($e:expr) => { $e };
+    ($e:expr, $head:ident $(, $rest:ident)*) => {
+        ascend_up!($e.into_parent() $(, $rest)*)
+    };
+}
+
+/// One `Ascend` impl per depth, walking the list of type parameters.
+macro_rules! ascend_impls {
+    ([$($acc:ident),*]) => {};
+    ([$($acc:ident),*], $head:ident $(, $rest:ident)*) => {
+        impl<T, $($acc,)* $head> Ascend<T> for ascend_nest!(T $(, $acc)*, $head) {
+            fn ascend(self) -> T {
+                ascend_up!(self $(, $acc)*, $head)
+            }
+        }
+        ascend_impls!([$($acc,)* $head] $(, $rest)*);
+    };
+}
+
+ascend_impls!([], N0, N1, N2, N3, N4, N5, N6, N7, N8, N9, N10, N11);
 
 #[cfg(test)]
 #[allow(dead_code)] // the impls are asserted at the type level, never called
 mod ascend_tests {
-    use crate::Path;
+    use crate::{Ascend, Path};
 
-    pub struct Root;
-    pub struct Target;
-    pub type TargetPath<'a> = Path<Target, &'a mut Root>;
+    struct Root;
+    struct Target;
+    type TargetPath<'a> = Path<Target, &'a mut Root>;
 
-    crate::impl_ascend!(TargetPath, ToTarget);
+    struct N1;
+    struct N2;
+    struct N3;
+    struct N4;
+    struct N5;
+    struct N6;
+    struct N7;
+    struct N8;
+    struct N9;
+    struct N10;
+    struct N11;
+    struct N12;
 
-    pub struct N1;
-    pub struct N2;
-    pub struct N3;
-    pub struct N4;
-    pub struct N5;
-    pub struct N6;
-    pub struct N7;
-    pub struct N8;
-    pub struct N9;
-    pub struct N10;
-    pub struct N11;
-    pub struct N12;
+    type D1<'a> = Path<N1, TargetPath<'a>>;
+    type D2<'a> = Path<N2, D1<'a>>;
+    type D3<'a> = Path<N3, D2<'a>>;
+    type D4<'a> = Path<N4, D3<'a>>;
+    type D5<'a> = Path<N5, D4<'a>>;
+    type D6<'a> = Path<N6, D5<'a>>;
+    type D7<'a> = Path<N7, D6<'a>>;
+    type D8<'a> = Path<N8, D7<'a>>;
+    type D9<'a> = Path<N9, D8<'a>>;
+    type D10<'a> = Path<N10, D9<'a>>;
+    type D11<'a> = Path<N11, D10<'a>>;
+    type D12<'a> = Path<N12, D11<'a>>;
 
-    pub type D1<'a> = Path<N1, TargetPath<'a>>;
-    pub type D2<'a> = Path<N2, D1<'a>>;
-    pub type D3<'a> = Path<N3, D2<'a>>;
-    pub type D4<'a> = Path<N4, D3<'a>>;
-    pub type D5<'a> = Path<N5, D4<'a>>;
-    pub type D6<'a> = Path<N6, D5<'a>>;
-    pub type D7<'a> = Path<N7, D6<'a>>;
-    pub type D8<'a> = Path<N8, D7<'a>>;
-    pub type D9<'a> = Path<N9, D8<'a>>;
-    pub type D10<'a> = Path<N10, D9<'a>>;
-    pub type D11<'a> = Path<N11, D10<'a>>;
-    pub type D12<'a> = Path<N12, D11<'a>>;
+    const fn ascends<'a, P: Ascend<TargetPath<'a>>>() {}
 
-    const fn assert_ascends<'a, P: ToTarget<'a>>() {}
-
-    /// The macro claims twelve levels. This fails to compile if it does not.
+    /// Twelve levels, plus the identity. Fails to compile if the reach is short.
     #[test]
     fn ascends_from_every_depth_up_to_twelve() {
-        assert_ascends::<TargetPath<'_>>(); // depth 0, the identity impl
-        assert_ascends::<D1<'_>>();
-        assert_ascends::<D2<'_>>();
-        assert_ascends::<D6<'_>>();
-        assert_ascends::<D11<'_>>();
-        assert_ascends::<D12<'_>>();
+        ascends::<TargetPath<'_>>(); // depth 0, the identity impl
+        ascends::<D1<'_>>();
+        ascends::<D2<'_>>();
+        ascends::<D6<'_>>();
+        ascends::<D11<'_>>();
+        ascends::<D12<'_>>();
+    }
+
+    /// A path ascends to every ancestor, not only the one it was written for.
+    #[test]
+    fn a_path_ascends_to_each_of_its_ancestors() {
+        const fn to<T, P: Ascend<T>>() {}
+        to::<D2<'_>, D12<'_>>();
+        to::<D11<'_>, D12<'_>>();
+        to::<TargetPath<'_>, D12<'_>>();
     }
 }

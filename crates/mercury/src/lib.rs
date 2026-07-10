@@ -29,7 +29,7 @@
 
 use bind::{Bind, Bindings, EventTrigger};
 pub use freddie_keys::{Key, KeyEvent, KeyPress, PressType};
-use laserbeam::{Laserbeam, Path};
+use laserbeam::{Ascend, Laserbeam, Path};
 
 // ---------------------------------------------------------------------------
 // Sources: a keyboard, and the OS reporting a newly foregrounded app.
@@ -284,11 +284,6 @@ pub type AppLayerPath<'a> = Path<AppLayer, LayerPath<'a>>;
 pub type ChromeAppPath<'a> = Path<ChromeApp, AppLayerPath<'a>>;
 pub type OtherAppPath<'a> = Path<OtherApp, AppLayerPath<'a>>;
 
-// A handler like `to_home` can be bound on the layer enum and on any node
-// beneath it, rather than needing a wrapper per node to bridge the path type.
-// The impls match on path shape, so no node is named here. See `impl_ascend`.
-laserbeam::impl_ascend!(LayerPath, ToLayerPath);
-
 /// The active leaf the tree resolves to.
 pub enum Resolved<'a> {
     HomeLayer(HomeLayerPath<'a>),
@@ -366,7 +361,7 @@ fn go_home(layer: &mut LayerPath<'_>) {
 /// directly. Typing has to bind it explicitly, because its catch-all would
 /// otherwise shadow the layer-level binding, and now it binds this rather than a
 /// wrapper that only existed to bridge the path type.
-fn to_home<'a, P: ToLayerPath<'a>>(_ev: &KeyEvent, path: P) -> Vec<MercuryEffect> {
+fn to_home<'a, P: Ascend<LayerPath<'a>>>(_ev: &KeyEvent, path: P) -> Vec<MercuryEffect> {
     go_home(&mut path.ascend());
     Vec::new()
 }
@@ -407,7 +402,7 @@ fn foreground_and_go_home(path: NavLayerPath, app: App) -> Vec<MercuryEffect> {
 
 /// `r` in home: enter the resize layer.
 fn to_resize(_ev: &KeyEvent, path: HomeLayerPath) -> Vec<MercuryEffect> {
-    let mut layer = path.ascend();
+    let mut layer = path.ascend_to::<LayerPath>();
     *layer.get_mut() = Layer::Resize(ResizeLayer {});
     Vec::new()
 }
