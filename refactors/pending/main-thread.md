@@ -6,15 +6,9 @@ This is a prerequisite, not a feature. It unblocks foreground-events.md and menu
 
 ## Why AppKit needs the main thread
 
-An AppKit source registers itself with the main thread's run loop, and a run loop only delivers while some thread is inside it. `CFRunLoopRun()` is the loop:
+An AppKit source registers itself with the main thread's run loop, and a run loop only delivers while some thread is inside it.
 
-```
-loop {
-    deadline = earliest_timer_deadline()
-    msg = mach_msg_receive(port_set, timeout: deadline)  // one blocking syscall
-    dispatch(msg)                                        // run the callback, return, repeat
-}
-```
+A run loop is a loop around one blocking receive. Each mode owns a mach port set, which is a kernel object grouping many ports, and every source contributes a port to it. The thread calls `mach_msg` to receive on the set, which sleeps until a message arrives on any member port, then dispatches whichever source it came from and goes back to sleep. Timers are not special: CoreFoundation arms a `mk_timer` port and puts it in the same set, so a timer firing is another message. That is the whole mechanism, and it is why one thread can serve arbitrarily many sources while burning no CPU between them.
 
 The main thread is the initial thread of the process, the one that entered `main()`. libpthread marks it, `pthread_main_np()` identifies it, and `CFRunLoopGetMain()` is its run loop. Nothing can become it later.
 
