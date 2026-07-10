@@ -2,7 +2,9 @@
 
 mercury runs its tokio runtime on the main thread. That has to stop. Everything mercury does moves to a spawned thread, and the main thread does nothing but sit in a run loop, so AppKit can deliver its callbacks there.
 
-This is a prerequisite, not a feature. It unblocks foreground-events.md and menu-bar.md, and every Cocoa integration after them. Right now mercury can host none of them.
+Implemented. `freddie_main_loop` owns `MainLoop` and `Stopper`, and mercury's `main` runs the loop while `run` does the work on a worker thread.
+
+This was a prerequisite, not a feature. It unblocks foreground-events.md and menu-bar.md, and every Cocoa integration after them. Before it, mercury could host none of them.
 
 ## What a run loop is, and who owns it
 
@@ -213,9 +215,9 @@ The event loop, the effect loop, the channels, the killswitch, and the model all
 
 Nothing about laserbeam, bind, or the model is involved. This is a change to one `main`.
 
-## Open questions
+## What was left open
 
-- Whether to build the wake source now rather than accept the 100ms slice.
+- Whether to build the wake source rather than accept the 100ms slice. Not built. `run` sleeps in `mach_msg` and surfaces every 100ms only to check the stop flag, so event latency is unaffected and idle cost is ten wakeups a second.
 - Whether the killswitch should drop the `Stopper` rather than call `process::exit`, so the `Watcher` deregisters on the way out. It probably should, which makes `Kill` an ordinary return.
 - Whether AppKit requires anything of main beyond a running loop. `NSStatusItem` may want `NSApplication` initialized, which is a bigger commitment than `CFRunLoopRun`. Unmeasured, and menu-bar.md should settle it before assuming this doc is sufficient.
 - `addObserverForName:object:queue:usingBlock:` takes an `NSOperationQueue`, and we always pass `None`. If a queue delivers without main running a loop, foreground-events.md would not need any of this. The expectation is that it relocates the callback but not the receiving of the mach message. Unmeasured. It does not change this doc's conclusion, because `NSStatusItem` needs main regardless.
