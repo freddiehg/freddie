@@ -124,28 +124,14 @@ pub enum MercuryTrigger {
 }
 
 /// Every event Mercury can dispatch, one variant per source.
-#[derive(Debug)]
+///
+/// `TryInto` gives the `TryFrom<&MercuryEvent> for &SourceEvent` that dispatch
+/// uses to narrow the unified event to the one a trigger cares about.
+#[derive(Debug, derive_more::TryInto)]
+#[try_into(ref)]
 pub enum MercuryEvent {
     Key(KeyEvent),
     Foreground(ForegroundEvent),
-}
-impl<'a> TryFrom<&'a MercuryEvent> for &'a KeyEvent {
-    type Error = ();
-    fn try_from(e: &'a MercuryEvent) -> Result<Self, ()> {
-        match e {
-            MercuryEvent::Key(k) => Ok(k),
-            MercuryEvent::Foreground(_) => Err(()),
-        }
-    }
-}
-impl<'a> TryFrom<&'a MercuryEvent> for &'a ForegroundEvent {
-    type Error = ();
-    fn try_from(e: &'a MercuryEvent) -> Result<Self, ()> {
-        match e {
-            MercuryEvent::Foreground(f) => Ok(f),
-            MercuryEvent::Key(_) => Err(()),
-        }
-    }
 }
 
 /// What a handler asks the consumer to do. Inert data; performing it is the

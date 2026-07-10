@@ -13,7 +13,7 @@ freddie_keys = { path = "../freddie_keys", version = "0.0.1" }
 freddie_keyboard = { path = "../freddie_keyboard", version = "0.0.1" }
 freddie_app_nav = { path = "../freddie_app_nav", version = "0.0.1" }
 freddie_main_loop = { path = "../freddie_main_loop", version = "0.0.1" }
-derive_more = { version = "2", features = ["from"] }
+derive_more = { version = "2", features = ["from", "try_into"] }
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
