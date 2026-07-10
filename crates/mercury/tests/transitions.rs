@@ -200,36 +200,53 @@ fn home_r_enters_resize() {
     assert!(matches!(m.layer, Layer::Resize(_)));
 }
 
-// Each arrow emits its placement. Unlike nav, resize is not a one-shot chooser:
-// it stays put so placements chain.
+// Resize is a one-shot chooser, like nav: each arrow emits its placement and lands
+// back in home, so `r up` maximizes and leaves you where you started.
 #[test]
-fn the_arrows_place_the_window_and_stay_in_resize() {
-    let mut m = Mercury::default();
-    let _ = m.handle(&key(Key::KeyR));
+fn the_arrows_place_the_window_and_return_home() {
     for (k, placement) in [
         (Key::UpArrow, Placement::Maximize),
         (Key::LeftArrow, Placement::LeftHalf),
         (Key::RightArrow, Placement::RightHalf),
     ] {
+        let mut m = Mercury::default();
+        let _ = m.handle(&key(Key::KeyR));
+        assert!(matches!(m.layer, Layer::Resize(_)));
+
         assert_eq!(
             m.handle(&key(k)),
             Some(vec![MercuryEffect::Place(placement)]),
             "{k:?}"
         );
-        assert!(matches!(m.layer, Layer::Resize(_)), "{k:?} left resize");
+        assert!(matches!(m.layer, Layer::Home(_)), "{k:?} stayed in resize");
     }
 }
 
-// Placements chain, then escape leaves.
+// Escape leaves resize without placing anything.
 #[test]
 fn escape_leaves_resize() {
     let mut m = Mercury::default();
     let _ = m.handle(&key(Key::KeyR));
-    let _ = m.handle(&key(Key::LeftArrow));
-    let _ = m.handle(&key(Key::UpArrow));
     assert!(matches!(m.layer, Layer::Resize(_)));
 
     assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
+    assert!(matches!(m.layer, Layer::Home(_)));
+}
+
+// Placing twice means entering resize twice: `r up r left`.
+#[test]
+fn placing_twice_re_enters_resize() {
+    let mut m = Mercury::default();
+    let _ = m.handle(&key(Key::KeyR));
+    assert_eq!(
+        m.handle(&key(Key::UpArrow)),
+        Some(vec![MercuryEffect::Place(Placement::Maximize)])
+    );
+    let _ = m.handle(&key(Key::KeyR));
+    assert_eq!(
+        m.handle(&key(Key::LeftArrow)),
+        Some(vec![MercuryEffect::Place(Placement::LeftHalf)])
+    );
     assert!(matches!(m.layer, Layer::Home(_)));
 }
 

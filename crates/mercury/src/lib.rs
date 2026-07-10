@@ -8,6 +8,8 @@
 //!   the in-app layer for whatever app is foregrounded.
 //! - [`NavLayer`]: `c`/`g`/`z` foreground Chrome/Ghostty/Zed and go back to home.
 //!   Nav is a one-shot chooser, so `n c i r` navigates to Chrome and refreshes it.
+//! - [`ResizeLayer`] (`r` from home): the arrows place the focused window, up to
+//!   maximize and left and right to the halves, then it goes back to home.
 //! - [`TypingLayer`]: `escape` goes home, any other key passes through.
 //! - [`AppLayer`] (in-app): [`ChromeApp`] binds `r` to a refresh; every other app
 //!   is [`OtherApp`], which binds nothing.
@@ -213,8 +215,8 @@ pub struct HomeLayer {}
 )]
 pub struct NavLayer {}
 
-/// The resize layer: the arrows place the focused window. Unlike nav, it stays put,
-/// so placements chain (left, then up) until `escape` goes home.
+/// The resize layer: the arrows place the focused window and return home. Like
+/// nav, a one-shot chooser.
 #[derive(Laserbeam, Bind, Debug)]
 #[laserbeam(path = ResizeLayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
@@ -387,17 +389,19 @@ fn to_inapp(_ev: &KeyEvent, path: HomeLayerPath) -> Vec<MercuryEffect> {
     Vec::new()
 }
 
-/// Foreground `app` and return home. Nav is a one-shot chooser: picking an app
-/// ends the nav layer, rather than leaving you in it swallowing every key that is
-/// not another app's.
+/// Ask for `effect` and return home.
 ///
-/// The layer change is immediate; the foregrounding is not. The app comes up (and
-/// is recorded) later, when the watcher reports it, so a following `i` may briefly
-/// resolve the in-app layer against the old app. [`on_foregrounded`] retargets it
-/// when the real event lands.
-fn foreground_and_go_home(path: NavLayerPath, app: App) -> Vec<MercuryEffect> {
+/// Nav and resize are one-shot choosers: making a choice ends the layer rather
+/// than leaving you in it swallowing every key that is not another choice. Generic
+/// over the path, so both bind it from their own node.
+///
+/// The layer change is immediate; the effect is not. Foregrounding an app records
+/// it only later, when the watcher reports what actually came up, so a following
+/// `i` may briefly resolve the in-app layer against the old app.
+/// [`on_foregrounded`] retargets it when the real event lands.
+fn and_go_home<'a, P: Ascend<LayerPath<'a>>>(path: P, effect: MercuryEffect) -> Vec<MercuryEffect> {
     go_home(&mut path.ascend());
-    vec![MercuryEffect::Foreground(app)]
+    vec![effect]
 }
 
 /// `r` in home: enter the resize layer.
@@ -407,25 +411,25 @@ fn to_resize(_ev: &KeyEvent, path: HomeLayerPath) -> Vec<MercuryEffect> {
     Vec::new()
 }
 
-/// The arrows in resize: place the focused window, and stay here so they chain.
-fn maximize(_ev: &KeyEvent, _path: ResizeLayerPath) -> Vec<MercuryEffect> {
-    vec![MercuryEffect::Place(Placement::Maximize)]
+/// The arrows in resize: place the focused window and return home.
+fn maximize(_ev: &KeyEvent, path: ResizeLayerPath) -> Vec<MercuryEffect> {
+    and_go_home(path, MercuryEffect::Place(Placement::Maximize))
 }
-fn left_half(_ev: &KeyEvent, _path: ResizeLayerPath) -> Vec<MercuryEffect> {
-    vec![MercuryEffect::Place(Placement::LeftHalf)]
+fn left_half(_ev: &KeyEvent, path: ResizeLayerPath) -> Vec<MercuryEffect> {
+    and_go_home(path, MercuryEffect::Place(Placement::LeftHalf))
 }
-fn right_half(_ev: &KeyEvent, _path: ResizeLayerPath) -> Vec<MercuryEffect> {
-    vec![MercuryEffect::Place(Placement::RightHalf)]
+fn right_half(_ev: &KeyEvent, path: ResizeLayerPath) -> Vec<MercuryEffect> {
+    and_go_home(path, MercuryEffect::Place(Placement::RightHalf))
 }
 
 fn open_chrome(_ev: &KeyEvent, path: NavLayerPath) -> Vec<MercuryEffect> {
-    foreground_and_go_home(path, App::Chrome)
+    and_go_home(path, MercuryEffect::Foreground(App::Chrome))
 }
 fn open_ghostty(_ev: &KeyEvent, path: NavLayerPath) -> Vec<MercuryEffect> {
-    foreground_and_go_home(path, App::Ghostty)
+    and_go_home(path, MercuryEffect::Foreground(App::Ghostty))
 }
 fn open_zed(_ev: &KeyEvent, path: NavLayerPath) -> Vec<MercuryEffect> {
-    foreground_and_go_home(path, App::Zed)
+    and_go_home(path, MercuryEffect::Foreground(App::Zed))
 }
 
 fn passthru<P>(ev: &KeyEvent, _path: P) -> Vec<MercuryEffect> {
