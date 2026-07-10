@@ -18,14 +18,16 @@ fn passed(key: Key) -> Vec<MercuryEffect> {
     vec![emit(key, PressType::Down)]
 }
 
-// cmd+r: cmd down, r down, r up, cmd up.
+fn tap(modifiers: &[Key], key: Key) -> MercuryEffect {
+    MercuryEffect::Tap {
+        modifiers: modifiers.to_vec(),
+        key,
+    }
+}
+
+// cmd-r, one chord.
 fn cmd_r() -> Vec<MercuryEffect> {
-    vec![
-        emit(Key::MetaLeft, PressType::Down),
-        emit(Key::KeyR, PressType::Down),
-        emit(Key::KeyR, PressType::Up),
-        emit(Key::MetaLeft, PressType::Up),
-    ]
+    vec![tap(&[Key::MetaLeft], Key::KeyR)]
 }
 
 // ---- per-event: send an event, assert the effect ----
@@ -193,17 +195,10 @@ fn unbound_key_is_none() {
 
 // ---- ghostty: j and k walk tmux's panes ----
 
-// tmux's prefix is released before the command key: `ctrl-a`, then `p` alone. If
-// the prefix stayed down tmux would see `ctrl-p`, not `p`.
+// tmux's prefix is a chord, and the command is a bare tap. If the prefix were held
+// through the command, tmux would see `ctrl-p` rather than `p`.
 fn tmux(command: Key) -> Vec<MercuryEffect> {
-    vec![
-        emit(Key::ControlLeft, PressType::Down),
-        emit(Key::KeyA, PressType::Down),
-        emit(Key::KeyA, PressType::Up),
-        emit(Key::ControlLeft, PressType::Up),
-        emit(command, PressType::Down),
-        emit(command, PressType::Up),
-    ]
+    vec![tap(&[Key::ControlLeft], Key::KeyA), tap(&[], command)]
 }
 
 #[test]
@@ -226,24 +221,19 @@ fn ghostty_j_is_previous_pane_and_k_is_next() {
     assert!(matches!(m.layer, Layer::InApp(AppLayer::Ghostty(_))));
 }
 
-// The prefix is let go before the command. Getting this backwards is the bug that
-// made a real `ctrl-a p` arrive as `ctrl-p`.
+// The command carries no modifiers. Emitting it inside the prefix chord is the bug
+// that would make tmux see `ctrl-p` rather than `p`, and the shape now says so:
+// the prefix is one tap and the command is another.
 #[test]
-fn the_tmux_prefix_is_released_before_the_command() {
+fn the_tmux_command_is_a_bare_tap() {
     let mut m = Mercury::default();
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
     let effects = m.handle(&key(Key::KeyJ)).expect("j is bound");
 
-    let ctrl_up = effects
-        .iter()
-        .position(|e| *e == emit(Key::ControlLeft, PressType::Up))
-        .expect("ctrl is released");
-    let p_down = effects
-        .iter()
-        .position(|e| *e == emit(Key::KeyP, PressType::Down))
-        .expect("p is pressed");
-    assert!(ctrl_up < p_down, "ctrl must be up before p goes down");
+    assert_eq!(effects.len(), 2, "a prefix and a command");
+    assert_eq!(effects[0], tap(&[Key::ControlLeft], Key::KeyA));
+    assert_eq!(effects[1], tap(&[], Key::KeyP));
 }
 
 // j and k belong to Ghostty, not to every app.

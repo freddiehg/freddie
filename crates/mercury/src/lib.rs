@@ -157,7 +157,18 @@ pub enum MercuryEvent {
 pub enum MercuryEffect {
     /// Bring an app to the foreground.
     Foreground(App),
-    /// Emit one key event, a press or a release. A chord is several of these.
+    /// Tap `key` while `modifiers` are held. The chord.
+    ///
+    /// The modifiers are pressed, the key is tapped, and they are released, so a
+    /// key cannot carry a modifier that was never pressed. Prefer this to a
+    /// hand-written sequence of [`Emit`](Self::Emit)s.
+    Tap { modifiers: Vec<Key>, key: Key },
+    /// Emit one raw key event, a press or a release on its own.
+    ///
+    /// The escape hatch, for the one case that is genuinely a lone half of a
+    /// keypress: passing a key through, where the model sees a down and an up as
+    /// separate events and re-emits each. Building a chord out of these is a bug
+    /// waiting to happen; use [`Tap`](Self::Tap).
     Emit(KeyEvent),
     /// Move and resize the focused window of the frontmost app.
     Place(Placement),
@@ -460,21 +471,21 @@ fn passthru<P>(ev: &KeyEvent, _path: P) -> Vec<MercuryEffect> {
     vec![MercuryEffect::Emit(ev.clone())]
 }
 
-/// A tmux command: the `ctrl-a` prefix, released, then the command key on its own.
+/// Tap `key` while `modifiers` are held.
+fn tap(modifiers: &[Key], key: Key) -> MercuryEffect {
+    MercuryEffect::Tap {
+        modifiers: modifiers.to_vec(),
+        key,
+    }
+}
+
+/// A tmux command: the `ctrl-a` prefix, then the command key on its own.
 ///
-/// The prefix has to be let go before the command, or tmux sees `ctrl-p` rather
-/// than `p`. That is the same release the interceptor has to forward for a real
-/// `ctrl-a p` to work.
+/// Two taps rather than one chord, because the prefix has to be let go before the
+/// command or tmux sees `ctrl-p` rather than `p`. Which is now what the shape says,
+/// rather than something the order of six raw events has to get right.
 fn tmux(command: Key) -> Vec<MercuryEffect> {
-    let emit = |key, press| MercuryEffect::Emit(KeyEvent { key, press });
-    vec![
-        emit(Key::ControlLeft, PressType::Down),
-        emit(Key::KeyA, PressType::Down),
-        emit(Key::KeyA, PressType::Up),
-        emit(Key::ControlLeft, PressType::Up),
-        emit(command, PressType::Down),
-        emit(command, PressType::Up),
-    ]
+    vec![tap(&[Key::ControlLeft], Key::KeyA), tap(&[], command)]
 }
 
 /// `j` in Ghostty: tmux's previous pane.
@@ -487,12 +498,7 @@ fn next_pane(_ev: &KeyEvent, _path: GhosttyAppPath) -> Vec<MercuryEffect> {
     tmux(Key::KeyN)
 }
 
+/// `r` in Chrome: cmd-r, a refresh.
 fn refresh(_ev: &KeyEvent, _path: ChromeAppPath) -> Vec<MercuryEffect> {
-    let emit = |key, press| MercuryEffect::Emit(KeyEvent { key, press });
-    vec![
-        emit(Key::MetaLeft, PressType::Down),
-        emit(Key::KeyR, PressType::Down),
-        emit(Key::KeyR, PressType::Up),
-        emit(Key::MetaLeft, PressType::Up),
-    ]
+    vec![tap(&[Key::MetaLeft], Key::KeyR)]
 }

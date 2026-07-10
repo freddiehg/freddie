@@ -379,6 +379,37 @@ impl Emitter {
         self.emit(key, PressType::Up)
     }
 
+    /// Hold `modifiers` down for the duration of `f`, then release them in reverse.
+    ///
+    /// This is how a chord should be emitted. Holding is structural, so the release
+    /// cannot be forgotten, and a key cannot carry a modifier that was never
+    /// pressed: the flags an event gets are the modifiers this emitter is holding.
+    ///
+    /// ```ignore
+    /// emitter.with_modifiers(&[Key::MetaLeft], |e| e.tap(Key::KeyR))?; // cmd-r
+    /// ```
+    ///
+    /// The modifiers are released even if `f` fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EmitError`] if a modifier or the key has no code on this OS, or
+    /// could not be posted. Propagates whatever `f` returns.
+    pub fn with_modifiers<F, R>(&self, modifiers: &[Key], f: F) -> Result<R, EmitError>
+    where
+        F: FnOnce(&Self) -> Result<R, EmitError>,
+    {
+        let mut held = Vec::with_capacity(modifiers.len());
+        for &modifier in modifiers {
+            held.push(self.press(modifier)?);
+        }
+        let out = f(self);
+        // Reverse order, the way a person lets go: the last pressed is the first
+        // released. `Vec`'s own drop would go the other way.
+        while held.pop().is_some() {}
+        out
+    }
+
     /// Hold a key down until the last [`Held`] for it drops. Ref-counted per key.
     ///
     /// # Errors
