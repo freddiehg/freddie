@@ -233,27 +233,27 @@ fn foregrounding_chrome_is_reported_back() {
 
 // ---- app navigation: name mapping and the in-app layer following the front app ----
 
-// Every real app's launch name maps back to that app, and `Other` (no specific
-// app) has no launch name and is where unknown names land.
+// Every real app's bundle id maps back to that app, and `Other` (no specific app)
+// has no bundle id and is where unknown ids land.
 #[test]
-fn app_name_round_trips() {
+fn bundle_id_round_trips() {
     for app in [App::Chrome, App::Ghostty, App::Zed] {
-        let name = app.launch_name().expect("a real app has a launch name");
-        assert_eq!(App::from_name(name), app);
+        let id = app.bundle_id().expect("a real app has a bundle id");
+        assert_eq!(App::from_bundle_id(id), app);
     }
-    assert_eq!(App::Other.launch_name(), None);
-    assert_eq!(App::from_name("Some Unknown App"), App::Other);
+    assert_eq!(App::Other.bundle_id(), None);
+    assert_eq!(App::from_bundle_id("com.example.Unknown"), App::Other);
 }
 
-// The exact names `System Events` reports (Chrome title-cased, Ghostty and Zed
-// lowercase) map to their apps. Matching is case-sensitive: a different casing is
-// a different string.
+// The bundle ids the OS actually reports. Unlike display names, these do not vary
+// with who is asked, so there is one spelling and it is this one.
 #[test]
-fn reported_names_map_exactly() {
-    assert_eq!(App::from_name("Google Chrome"), App::Chrome);
-    assert_eq!(App::from_name("ghostty"), App::Ghostty);
-    assert_eq!(App::from_name("zed"), App::Zed);
-    assert_eq!(App::from_name("Ghostty"), App::Other);
+fn reported_bundle_ids_map() {
+    assert_eq!(App::from_bundle_id("com.google.Chrome"), App::Chrome);
+    assert_eq!(App::from_bundle_id("com.mitchellh.ghostty"), App::Ghostty);
+    assert_eq!(App::from_bundle_id("dev.zed.Zed"), App::Zed);
+    // A display name is not a bundle id.
+    assert_eq!(App::from_bundle_id("Google Chrome"), App::Other);
 }
 
 // The in-app constructor reads the foregrounded app from the root: Chrome gets its

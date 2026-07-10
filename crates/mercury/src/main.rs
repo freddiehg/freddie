@@ -115,11 +115,17 @@ async fn run() {
         }
     };
 
-    // The app-navigation source: report the frontmost app as a foreground event.
-    let _watcher = freddie_app_nav::watch(freddie_app_nav::DEFAULT_POLL_INTERVAL, {
+    // The app-navigation source. `watch` reports changes, not the app that is
+    // already frontmost, so seed that one by hand.
+    if let Some(bundle_id) = freddie_app_nav::frontmost() {
+        let _ = event_tx.send(foreground(App::from_bundle_id(&bundle_id)));
+    }
+    // The block runs on the main thread, where callbacks are serialized, so it does
+    // one send and returns. The work happens back on this thread.
+    let _watcher = freddie_app_nav::watch({
         let event_tx = event_tx.clone();
-        move |name| {
-            let _ = event_tx.send(foreground(App::from_name(name)));
+        move |bundle_id| {
+            let _ = event_tx.send(foreground(App::from_bundle_id(bundle_id)));
         }
     });
 
@@ -219,12 +225,12 @@ fn perform_effect(effect: &MercuryEffect, emitter: &Emitter) -> ControlFlow<()> 
 /// loop never blocks on `open`. The watcher reports the app that actually comes
 /// up, so nothing here waits on the result (see `app-foregrounding.md`).
 fn foreground_app(app: App) {
-    let Some(name) = app.launch_name() else {
-        warn!(app = ?app, "no launch name; not foregrounding");
+    let Some(bundle_id) = app.bundle_id() else {
+        warn!(app = ?app, "no bundle id; not foregrounding");
         return;
     };
-    std::thread::spawn(move || match freddie_app_nav::foreground(name) {
-        Ok(()) => debug!(app = name, "foregrounded"),
-        Err(e) => warn!(app = name, error = %e, "foreground failed"),
+    std::thread::spawn(move || match freddie_app_nav::foreground(bundle_id) {
+        Ok(()) => debug!(app = bundle_id, "foregrounded"),
+        Err(e) => warn!(app = bundle_id, error = %e, "foreground failed"),
     });
 }

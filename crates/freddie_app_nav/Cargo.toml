@@ -8,6 +8,27 @@ repository.workspace = true
 
 [dependencies]
 tracing = "0.1"
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication"] }
+objc2-foundation = { version = "0.3", features = [
+    "NSString",
+    "NSNotification",
+    "NSDictionary",
+] }
 
-[lints]
-workspace = true
+# Not `workspace = true`: the workspace forbids `unsafe_code`, and `forbid` cannot
+# be relaxed from inside the crate. Observing `NSWorkspace` needs four unsafe
+# operations (two unsafe objc methods and two extern statics), each allowed at its
+# call site with a SAFETY comment. Every other lint matches the workspace, and
+# every other crate keeps the `forbid`.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+multiple_crate_versions = "allow"
+cargo_common_metadata = "allow"

@@ -78,32 +78,33 @@ pub enum App {
 }
 
 impl App {
-    /// Maps a frontmost-app name (as `freddie_app_nav` reports it, the OS's own
-    /// name for the app) to a known app. Anything unrecognized is [`App::Other`].
+    /// Maps a bundle identifier, as `freddie_app_nav` reports it, to a known app.
+    /// Anything unrecognized is [`App::Other`].
     ///
     /// This is the consumer's half of the app-nav contract: the watcher hands up a
-    /// string and Mercury decides which of its apps it is. The names are exactly
-    /// what `System Events` reports: Chrome title-cased, Ghostty and Zed lowercase.
+    /// string and Mercury decides which of its apps it is. Bundle ids are the
+    /// stable name for an app, unlike display names, which differ depending on who
+    /// is asked (`System Events` says `ghostty`, the app says `Ghostty`).
     #[must_use]
-    pub fn from_name(name: &str) -> Self {
-        match name {
-            "Google Chrome" => Self::Chrome,
-            "ghostty" => Self::Ghostty,
-            "zed" => Self::Zed,
+    pub fn from_bundle_id(bundle_id: &str) -> Self {
+        match bundle_id {
+            "com.google.Chrome" => Self::Chrome,
+            "com.mitchellh.ghostty" => Self::Ghostty,
+            "dev.zed.Zed" => Self::Zed,
             _ => Self::Other,
         }
     }
 
-    /// The name to hand `freddie_app_nav::foreground` to bring this app up. It is
-    /// the same string [`from_name`](Self::from_name) matches (the name the OS
-    /// reports), so the two round-trip; `open -a` resolves it either way.
-    /// [`App::Other`] is not a specific app, so it has none.
+    /// The bundle identifier to hand `freddie_app_nav::foreground` to bring this
+    /// app up. It is the same string [`from_bundle_id`](Self::from_bundle_id)
+    /// matches, so the two round-trip. [`App::Other`] is not a specific app, so it
+    /// has none.
     #[must_use]
-    pub const fn launch_name(self) -> Option<&'static str> {
+    pub const fn bundle_id(self) -> Option<&'static str> {
         match self {
-            Self::Chrome => Some("Google Chrome"),
-            Self::Ghostty => Some("ghostty"),
-            Self::Zed => Some("zed"),
+            Self::Chrome => Some("com.google.Chrome"),
+            Self::Ghostty => Some("com.mitchellh.ghostty"),
+            Self::Zed => Some("dev.zed.Zed"),
             Self::Other => None,
         }
     }

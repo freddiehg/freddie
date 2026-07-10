@@ -1,37 +1,47 @@
 //! App navigation for freddie: bring an app to the front, and watch which app is
 //! frontmost.
 //!
-//! Two directions, both over plain app names (whatever the OS calls the app, e.g.
-//! `"Google Chrome"`):
+//! Both directions speak bundle identifiers (`com.google.Chrome`), which are the
+//! stable name for an app. Display names are not: System Events calls Ghostty
+//! `ghostty` while the app calls itself `Ghostty`.
 //!
-//! - [`foreground`] performs the sink half: it asks the OS to make a named app
-//!   frontmost, launching it if needed. Fire-and-forget; it does not report back.
-//! - [`watch`] is the source half: it runs a background watcher that calls a
-//!   callback with the frontmost app's name, once at startup and again on every
-//!   change. That is the event the model dispatches.
+//! - [`foreground`] is the sink: it asks the OS to bring an app to the front,
+//!   launching it if needed. Fire-and-forget; it does not report back.
+//! - [`watch`] is the source. It observes `NSWorkspace`'s
+//!   `didActivateApplication` notification, so the callback runs once per real
+//!   activation. No polling and no interval.
 //!
 //! The two are decoupled on purpose (see `refactors/pending/event-loop.md`):
-//! [`foreground`] triggers a change, [`watch`] reports the change that actually
-//! happens, and nothing ties one call to the other. The name-to-app mapping is the
-//! consumer's (mercury owns its `App` enum), so this crate stays app-agnostic and
-//! only ever hands up a string.
+//! [`foreground`] asks for a change, [`watch`] reports the change that actually
+//! happened, and nothing ties one call to the other. The bundle-id-to-app mapping
+//! belongs to the consumer (mercury owns its `App` enum), so this crate only ever
+//! hands up a string.
 //!
-//! macOS only. Foregrounding shells out to `open -a`, and the watcher polls the
-//! frontmost process name via `osascript`. Both are the cheap userland path; the
-//! `NSWorkspace`/`active-win-pos-rs` upgrades noted in
-//! `refactors/pending/foreground-events.md` and `app-foregrounding.md` slot in
-//! behind the same API.
+//! # The main thread
+//!
+//! `NSWorkspace` registers its notification port with the main thread's run loop
+//! and gives no handle to redirect it, so a callback only ever runs while the main
+//! thread is inside that loop. `freddie_main_loop` is how you get there, and the
+//! binary is what calls it. This crate registers a source and nothing else.
+//!
+//! Registering from any thread is fine. Delivery is always on main, and
+//! main-thread callbacks are serialized, so `on_change` must do its work
+//! elsewhere and return.
+//!
+//! macOS only.
 
 use std::fmt;
 use std::process::Command;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::ptr::NonNull;
 
-/// A sensible poll cadence for the polling backend, for callers that do not have
-/// a preference: fast enough to feel immediate, slow enough to stay idle.
-pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(250);
+use block2::RcBlock;
+use objc2::rc::Retained;
+use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
+use objc2_app_kit::{
+    NSRunningApplication, NSWorkspace, NSWorkspaceApplicationKey,
+    NSWorkspaceDidActivateApplicationNotification,
+};
+use objc2_foundation::NSNotification;
 
 /// Foregrounding an app failed.
 #[derive(Debug)]
@@ -63,19 +73,20 @@ impl std::error::Error for NavError {
     }
 }
 
-/// Brings the named app to the front, launching it if it is not running.
+/// Brings the app with this bundle identifier to the front, launching it if it is
+/// not running.
 ///
-/// This is fire-and-forget: it asks the OS and returns. It does not confirm the
-/// app actually came up; the [`watch`] source reports the real frontmost app, so
-/// the consumer never has to trust that this succeeded.
+/// Fire-and-forget: it asks the OS and returns. It does not confirm the app came
+/// up; [`watch`] reports the real frontmost app, so the consumer never has to
+/// trust that this succeeded.
 ///
 /// # Errors
 ///
 /// Returns [`NavError::Spawn`] if `open` cannot be spawned, or [`NavError::Failed`]
-/// if `open` runs but exits non-zero (unknown app, activation refused).
-pub fn foreground(app_name: &str) -> Result<(), NavError> {
+/// if `open` exits non-zero (unknown bundle id, activation refused).
+pub fn foreground(bundle_id: &str) -> Result<(), NavError> {
     let status = Command::new("open")
-        .args(open_args(app_name))
+        .args(open_args(bundle_id))
         .status()
         .map_err(NavError::Spawn)?;
     if status.success() {
@@ -85,229 +96,146 @@ pub fn foreground(app_name: &str) -> Result<(), NavError> {
     }
 }
 
-/// The `open` arguments that foreground `app_name`: `open -a <app_name>`, which
+/// The `open` arguments that foreground `bundle_id`: `open -b <bundle_id>`, which
 /// launches the app if needed and brings it to the front.
-const fn open_args(app_name: &str) -> [&str; 2] {
-    ["-a", app_name]
+const fn open_args(bundle_id: &str) -> [&str; 2] {
+    ["-b", bundle_id]
 }
 
-/// Starts watching the frontmost app, calling `on_change` with its name: once
-/// immediately with whatever is frontmost now, then again on every change.
+/// The bundle identifier of the frontmost app, or `None` if there is none.
 ///
-/// The callback runs on the watcher's own thread. Returns a [`Watcher`] that stops
-/// the thread when dropped, so hold onto it for as long as you want the events.
-#[must_use = "the watcher stops as soon as it is dropped; hold it to keep receiving events"]
-pub fn watch<F>(poll_interval: Duration, on_change: F) -> Watcher
+/// Good for seeding the initial state, and for nothing else. It reads a cache that
+/// the workspace notification machinery refreshes, so polling it in a loop returns
+/// the app that was frontmost at process start, forever. Use [`watch`] for changes.
+#[must_use]
+pub fn frontmost() -> Option<String> {
+    NSWorkspace::sharedWorkspace()
+        .frontmostApplication()?
+        .bundleIdentifier()
+        .map(|id| id.to_string())
+}
+
+/// The bundle identifier of the app a `didActivateApplication` notification is
+/// about.
+fn activated_bundle_id(notif: &NSNotification) -> Option<String> {
+    let info = notif.userInfo()?;
+    // SAFETY: `NSWorkspaceApplicationKey` is an immutable extern static `NSString`
+    // that AppKit initializes before any notification can be delivered.
+    #[allow(unsafe_code)]
+    let key = unsafe { NSWorkspaceApplicationKey };
+    let app = info
+        .objectForKey(key)?
+        .downcast::<NSRunningApplication>()
+        .ok()?;
+    app.bundleIdentifier().map(|id| id.to_string())
+}
+
+/// Calls `on_change` with the bundle identifier of each app as it becomes
+/// frontmost.
+///
+/// One call per real activation: `NSWorkspace` posts the notification only when the
+/// front app actually changes, so there is nothing to diff and no interval to tune.
+///
+/// This reports changes, not the state at registration. Seed the current app with
+/// [`frontmost`].
+///
+/// The callback runs on the main thread, whichever thread registered it, and only
+/// while the main thread is inside its run loop.
+///
+/// Dropping the returned [`Watcher`] deregisters the observer. Leaking it instead
+/// leaves the callback live and callable after whatever it captured is gone.
+#[must_use = "dropping the watcher deregisters the observer; hold it to keep receiving events"]
+pub fn watch<F>(on_change: F) -> Watcher
 where
-    F: FnMut(&str) + Send + 'static,
+    F: Fn(&str) + Send + 'static,
 {
-    Watcher::spawn(poll_interval, frontmost, on_change)
-}
-
-/// A running frontmost-app watcher. Dropping it stops the background thread.
-#[must_use = "the watcher stops as soon as it is dropped"]
-pub struct Watcher {
-    running: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
-}
-
-impl Watcher {
-    /// Spawns the watcher thread over a `query` source (the OS in production, a
-    /// fake in tests) and a change callback.
-    fn spawn<Q, F>(poll_interval: Duration, mut query: Q, mut on_change: F) -> Self
-    where
-        Q: FnMut() -> Option<String> + Send + 'static,
-        F: FnMut(&str) + Send + 'static,
-    {
-        let running = Arc::new(AtomicBool::new(true));
-        let running_thread = Arc::clone(&running);
-        let handle = thread::spawn(move || {
-            let mut poller = Poller::new();
-            while running_thread.load(Ordering::Relaxed) {
-                if let Some(app) = poller.observe(query()) {
-                    // The raw name, before the consumer maps it onto its own apps.
-                    tracing::debug!(app = %app, "frontmost app changed");
-                    on_change(&app);
-                }
-                responsive_sleep(poll_interval, &running_thread);
-            }
-        });
-        Self {
-            running,
-            handle: Some(handle),
+    let block = RcBlock::new(move |notif: NonNull<NSNotification>| {
+        // SAFETY: Foundation hands the block a valid, retained notification, live
+        // for the duration of this call.
+        #[allow(unsafe_code)]
+        let notif = unsafe { notif.as_ref() };
+        if let Some(bundle_id) = activated_bundle_id(notif) {
+            tracing::debug!(app = %bundle_id, "frontmost app changed");
+            on_change(&bundle_id);
         }
+    });
+
+    // SAFETY: `NSWorkspaceDidActivateApplicationNotification` is an immutable
+    // extern static. The block is `Send` because `F` is, which is what makes it
+    // sound for Foundation to invoke it on the main thread. `Watcher` owns both the
+    // token and the block, and removes the observer before either is dropped.
+    #[allow(unsafe_code)]
+    let token = unsafe {
+        NSWorkspace::sharedWorkspace()
+            .notificationCenter()
+            .addObserverForName_object_queue_usingBlock(
+                Some(NSWorkspaceDidActivateApplicationNotification),
+                None, // any sender
+                None, // no queue: deliver on the posting thread, which is main
+                &block,
+            )
+    };
+
+    Watcher {
+        token,
+        _block: block,
     }
+}
+
+/// A live `didActivateApplication` observer. Dropping it deregisters.
+#[must_use = "dropping the watcher deregisters the observer"]
+pub struct Watcher {
+    token: Retained<ProtocolObject<dyn NSObjectProtocol>>,
+    /// Held so the callback outlives the observation. The notification center
+    /// copies the block, but the closure it wraps is ours to keep alive.
+    _block: RcBlock<dyn Fn(NonNull<NSNotification>)>,
 }
 
 impl Drop for Watcher {
-    /// Stops the watcher and waits for its thread to finish. `Drop` is the only
-    /// way to stop it: a consuming `stop()` would just be `drop`, and a version
-    /// that duplicated the body would run it twice, once explicitly and once here.
+    /// Deregisters the observer. This is the only way to stop one.
+    ///
+    /// Dropping the token alone does not stop the observation: the notification
+    /// center goes on calling the block, which is a use-after-free once the closure
+    /// is gone. `removeObserver` is what stops it, and Cocoa requires it before the
+    /// observer is deallocated.
+    ///
+    /// Measured to work off the main thread, which is where this runs: the
+    /// `Watcher` lives on the thread that registered it.
     fn drop(&mut self) {
-        self.running.store(false, Ordering::Relaxed);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
+        let observer: &AnyObject = (*self.token).as_ref();
+        // SAFETY: `token` is what `addObserverForName...` returned and it is still
+        // registered, so this is the documented way to deregister it.
+        #[allow(unsafe_code)]
+        unsafe {
+            NSWorkspace::sharedWorkspace()
+                .notificationCenter()
+                .removeObserver(observer);
         }
     }
-}
-
-/// Sleeps up to `total`, but wakes every `STEP` to check `running`, so a stopped
-/// watcher does not linger for the whole poll interval before exiting.
-fn responsive_sleep(total: Duration, running: &AtomicBool) {
-    const STEP: Duration = Duration::from_millis(50);
-    let mut slept = Duration::ZERO;
-    while slept < total && running.load(Ordering::Relaxed) {
-        let chunk = STEP.min(total.saturating_sub(slept));
-        thread::sleep(chunk);
-        slept += chunk;
-    }
-}
-
-/// Tracks the last frontmost app so the watcher reports only changes.
-struct Poller {
-    last: Option<String>,
-}
-
-impl Poller {
-    const fn new() -> Self {
-        Self { last: None }
-    }
-
-    /// Records `current` and returns it when it differs from the last reported
-    /// app, so the caller fires a change event only on a real change. A `None`
-    /// read (the query failed) is ignored and leaves the last app unchanged.
-    fn observe(&mut self, current: Option<String>) -> Option<String> {
-        match current {
-            Some(app) if self.last.as_deref() != Some(app.as_str()) => {
-                self.last = Some(app.clone());
-                Some(app)
-            }
-            _ => None,
-        }
-    }
-}
-
-/// The name of the frontmost application, or `None` when it cannot be read.
-///
-/// Uses `osascript` to ask System Events for the frontmost process name. This is
-/// the polling backend; an `NSWorkspace` observer is the event-based upgrade.
-fn frontmost() -> Option<String> {
-    const SCRIPT: &str = "tell application \"System Events\" to name of first application process whose frontmost is true";
-    let output = Command::new("osascript")
-        .arg("-e")
-        .arg(SCRIPT)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let name = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if name.is_empty() { None } else { Some(name) }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use std::sync::Mutex;
-    use std::sync::mpsc;
+    use super::{frontmost, open_args};
 
     #[test]
-    fn open_args_are_dash_a_name() {
-        assert_eq!(open_args("Google Chrome"), ["-a", "Google Chrome"]);
-        assert_eq!(open_args("Zed"), ["-a", "Zed"]);
+    fn open_args_are_dash_b_bundle_id() {
+        assert_eq!(open_args("com.google.Chrome"), ["-b", "com.google.Chrome"]);
+        assert_eq!(open_args("dev.zed.Zed"), ["-b", "dev.zed.Zed"]);
     }
 
+    /// `frontmost` reads a real `NSWorkspace`, so it runs under `cargo test` and
+    /// reports whatever is frontmost. It must not panic, and what it returns must
+    /// look like a bundle id.
     #[test]
-    fn poller_reports_the_first_app() {
-        let mut p = Poller::new();
-        assert_eq!(
-            p.observe(Some("Chrome".to_owned())),
-            Some("Chrome".to_owned())
-        );
+    fn frontmost_is_a_bundle_id_or_nothing() {
+        if let Some(id) = frontmost() {
+            assert!(!id.is_empty());
+            assert!(id.contains('.'), "not a bundle id: {id}");
+        }
     }
 
-    #[test]
-    fn poller_suppresses_a_repeat() {
-        let mut p = Poller::new();
-        assert_eq!(
-            p.observe(Some("Chrome".to_owned())),
-            Some("Chrome".to_owned())
-        );
-        assert_eq!(p.observe(Some("Chrome".to_owned())), None);
-    }
-
-    #[test]
-    fn poller_reports_each_change() {
-        let mut p = Poller::new();
-        assert_eq!(
-            p.observe(Some("Chrome".to_owned())),
-            Some("Chrome".to_owned())
-        );
-        assert_eq!(p.observe(Some("Zed".to_owned())), Some("Zed".to_owned()));
-        assert_eq!(p.observe(Some("Zed".to_owned())), None);
-        assert_eq!(
-            p.observe(Some("Chrome".to_owned())),
-            Some("Chrome".to_owned())
-        );
-    }
-
-    #[test]
-    fn poller_ignores_failed_reads() {
-        let mut p = Poller::new();
-        assert_eq!(
-            p.observe(Some("Chrome".to_owned())),
-            Some("Chrome".to_owned())
-        );
-        // A failed query does not clear the last app, so the next successful read
-        // of the same app is still a no-op.
-        assert_eq!(p.observe(None), None);
-        assert_eq!(p.observe(Some("Chrome".to_owned())), None);
-    }
-
-    #[test]
-    fn poller_reports_a_change_after_a_failed_read() {
-        let mut p = Poller::new();
-        assert_eq!(
-            p.observe(Some("Chrome".to_owned())),
-            Some("Chrome".to_owned())
-        );
-        assert_eq!(p.observe(None), None);
-        assert_eq!(p.observe(Some("Zed".to_owned())), Some("Zed".to_owned()));
-    }
-
-    // The watcher, driven off a scripted source instead of the OS: it delivers the
-    // current app then each change, and stops cleanly.
-    #[test]
-    fn watcher_delivers_current_then_changes() {
-        // The scripted frontmost app: Chrome, Chrome, Zed, then Zed forever.
-        let script = Arc::new(Mutex::new(
-            vec!["Chrome", "Chrome", "Zed"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect::<Vec<_>>(),
-        ));
-        let idx = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let query_idx = Arc::clone(&idx);
-        let query_script = Arc::clone(&script);
-        let query = move || {
-            let script = query_script.lock().unwrap();
-            let i = query_idx.fetch_add(1, Ordering::Relaxed);
-            script.get(i).or_else(|| script.last()).cloned()
-        };
-
-        let (tx, rx) = mpsc::channel();
-        let watcher = Watcher::spawn(Duration::from_millis(5), query, move |app| {
-            let _ = tx.send(app.to_owned());
-        });
-
-        // Two changes: Chrome (initial), then Zed. The repeated Chrome and the
-        // trailing Zeds are suppressed.
-        let first = rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        let second = rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        drop(watcher);
-        assert_eq!(first, "Chrome");
-        assert_eq!(second, "Zed");
-        // No third change ever fires (everything after is Zed).
-        assert!(rx.recv_timeout(Duration::from_millis(50)).is_err());
-    }
+    // The observer cannot be tested here: `cargo test` never puts the main thread
+    // in a run loop, so nothing is ever delivered. What was measured out of process
+    // is recorded in `refactors/pending/foreground-events.md`.
 }
