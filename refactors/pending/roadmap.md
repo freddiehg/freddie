@@ -1,39 +1,40 @@
 # roadmap
 
-The four things that matter next, in the owner's priority order. Everything else in `refactors/pending` is a note; this is the plan.
+The goal is not figaro yet. The goal is to get mercury to a state worth announcing.
 
-## 1. Flesh out events and effects, and build more of them
+That reorders everything, because "announceable" is a different bar than "more features". It is the bar where someone who is not the author can install the thing, run it, and understand what it is, without it dying after sixty seconds or swallowing their keyboard with no way out.
 
-The model is proven; the surface is thin. `effects-and-events.md` and `ideas.md` are the backlog. This is the priority that produces visible value on every commit, and it is where the "message an app at an address" shape gets exercised: tmux commands, Chrome tab targeting, the LLM rewrite, window and audio and display work.
+## The one question the announcement has to answer first
 
-It is also the cheapest way to keep finding the sharp edges early, the way the flags bug and the key-up bug turned up only once real bindings existed.
+Who is it for, because that decides what mercury even is.
 
-## 2. HID
+If the audience is programmers, the pitch is the thesis: a keyboard remapper as a typed state machine, bindings in Rust, valid by construction, checked by the compiler. Karabiner is JSON and Hammerspoon is Lua; mercury is a program. Then bindings living in Rust is not a gap, it is the entire selling point, and "announceable" means the developer experience of writing a remapper is good.
 
-The one the whole thing is secretly for. mercury on a `CGEventTap` is a decent remapper for a shared keyboard; the idea that makes sense in the owner's head is an external keyboard that is *entirely* mercury's, which is HID. See `virtual-hid.md` and `cgevent-vs-hid.md`.
+If the audience is end users, bindings in Rust is a wall, and announceable means configuration without recompiling, which is a real project mercury has not started and which cuts against the typed-by-construction pitch.
 
-HID is the thing three other docs are quietly waiting on. It is the only real fix for the cross-process loop (`synchronous-dispatch.md`). It is the only way to know which physical keyboard a key came from, which is the real motivation for multiple `#[resolve_into]` (`laserbeam-missing-features.md`) and for per-keyboard layers. And it makes secure-input fields and cmd+Tab reachable, both of which the tap cannot touch.
+These are two different products and two different roadmaps. Nothing below can be sequenced until this is answered. The rest of this doc assumes the first, the programmer pitch, because it is the one the design is already built for.
 
-It is also the largest single item on the page: a DriverKit extension, a managed entitlement Apple grants, a root daemon, and IPC, or leaning on Karabiner's already-installed driver. The API does not change above `Grab`, so nothing built now is wasted.
+## What announceable requires, that mercury does not have
 
-## 3. A good default schema for mercury
+The dev killswitch has to go, or become opt-in. A thing that force-quits after sixty seconds is a demo, not a tool. Its backstop role is real while iterating, so it becomes a flag, off by default. This is small.
 
-The `App`/`Layer`/`AppLayer` tree grew binding by binding and nobody has sat down and asked what the *default* mercury should be. Home swallowing everything but `n`/`t`/`i`/`q` is why `launch-at-login.md` is blocked: autostart it and the machine looks broken.
+It has to survive a login. `launch-at-login.md` is the doc, and its blockers are the blockers here: a signed binary at a stable path so the Accessibility grant is not invalidated by every rebuild, a LaunchAgent, and a way to disable it without the keyboard. Announcing a keyboard swallower with no recovery story is announcing a footgun.
 
-So this is not cosmetics. The boot state, whether unbound keys pass through or are eaten, and whether the top level should be driven by the focused-element source (`ideas.md`) rather than chosen, are all the same question: what is the sensible thing for a keyboard that is always on to do when you are not asking it for anything.
+It needs a default that makes sense cold. This is priority 3 from before, and it is now load-bearing rather than nice: the first thing anyone runs is the default, and the default currently boots into a layer that swallows every key but four. The focused-element source (`kAXFocusedUIElementChangedNotification`, in `ideas.md`) is the likely answer, a model that passes keys through when the cursor is in a text field and is modal otherwise.
 
-Small in code, load-bearing for shipping.
+The developer experience of writing bindings has to be the good part. If the pitch is "write your remapper in Rust", then adding a binding, a layer, an effect has to be clean, and the errors have to be legible. This is where the sharp edges found by building more effects (priority 1) pay back: every wart in the binding surface is a wart in the pitch.
 
-## 4. Start figaro
+## What is not required for the announcement
 
-The thesis test. `refactors/past/overall-plan.md` claims laserbeam and bind are not keyboard-specific, that a router and a reactive UI are the same machine. Nothing has tested that, and mercury cannot: it is the only consumer, so every abstraction looks right because it is the only thing there. The README's rule about what belongs in a `freddie_*` crate versus mercury has been applied on faith.
+HID. It is the thing the project is secretly for, and it is a DriverKit project gated on an Apple entitlement. A `CGEventTap` remapper is announceable now; the loop hole and secure-input gaps are real but they are not what a first announcement lives or dies on. HID is the second chapter, not the first. `virtual-hid.md` stands; it just is not on the critical path to announcing.
 
-figaro is the second consumer that makes the rule real. If sharing laserbeam, bind, `freddie_main_loop`, and the derives across two apps is awkward, the abstraction is a keyboard remapper in a costume, and better to learn it against a second real app than a toy.
+figaro. Explicitly deferred. It is the thesis test and it matters, but it is after the announcement, not before it.
 
-## How they relate
+## Order
 
-1 and 2 are independent and can run in parallel; 1 is incremental, 2 is a project.
+1. Answer the audience question. Everything hangs on it.
+2. Kill the killswitch-by-default, and settle the default schema. Small, and they are what make a cold run coherent.
+3. Build more effects and events, because the surface is the demo and building it is what surfaces the DX warts.
+4. Make it survive a login: signing, the agent, the recovery story.
 
-3 should come before autostart is attempted, and probably before 4, because figaro will copy mercury's shape and it should copy a considered one, not an accreted one.
-
-4 is the one that could invalidate the others: if figaro reveals the core is wrong, that changes what 1 and 2 are even building on. So there is an argument for a thin figaro early, purely to test the shape, before investing more in mercury's surface.
+HID and figaro are chapter two.
