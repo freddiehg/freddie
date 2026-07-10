@@ -74,6 +74,18 @@ It hands the run loop back to `intercept` over an `mpsc`, so `Interceptor` can s
 
 Afterwards, a keypress makes the WindowServer send a mach message to the tap's port. The port is in the spawned thread's set, so that thread wakes out of `mach_msg`, CoreFoundation dispatches the source, the tap closure runs, calls mercury's `on_key`, which sends the event into the channel and returns `None`, so the key is dropped. The thread goes back to sleep. All of that happens on the tap thread, synchronously, inside the run loop.
 
+## Why the tap does not move to main
+
+It would be more uniform to put the `CGEventTap` source on main's run loop too, and it is possible without `unsafe`: `CGEventTap::new` (`core-graphics-0.25.0/src/event.rs:570`) takes a `Send + 'static` callback and hands back a tap you hold, rather than the scoped `with_enabled`. Create it, `add_source(CFRunLoop::get_main(), ..)`, enable it, and one thread serves everything.
+
+Do not. A `CGEventTap` sits in the synchronous input path. The WindowServer sends each key to the tap and waits for the verdict before delivering it to anyone, so the callback's return value is the event, and every keystroke on the machine is stalled until it returns. Take too long and macOS disables the tap outright, which is what `CGEventType::TapDisabledByTimeout` is for.
+
+Main-thread callbacks are serialized. Putting the tap there means an `NSStatusItem` click handler that takes 200ms stalls every keystroke in every application for 200ms, and enough of that kills the tap. It couples the machine's input latency to the slowest AppKit handler we ever write.
+
+There is a second reason, specific to mercury: it swallows the keyboard. With the tap on its own thread, a wedged main still leaves keys flowing and `Interceptor::drop` can still release the grab. With the tap on main, a wedged main means no keyboard and no way to fix it, because the thing you would fix it with is the keyboard.
+
+So the split is principled. A notification is late and nobody cares. A tap is a synchronous filter the whole OS blocks on. They want opposite scheduling, and the API that forces you onto main happens to be the one where lateness is harmless.
+
 ## How the pieces connect
 
 There is no integration between the run loop and tokio. That is the design. They never share a thread, a scheduler, or a lock. One channel joins them.
