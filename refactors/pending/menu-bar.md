@@ -27,28 +27,11 @@ bar.set("HOME");   // call again anytime to update
 
 It takes an arbitrary string. It knows nothing about `Mercury`, `Layer`, or `label`. That keeps the platform FFI in one crate that the model never depends on, and lets the same renderer show arbitrary things later (a timer, a count, an error) without touching `mercury`. The event loop is the glue: after each dispatch it computes `state.label()` and, when it changed, calls `bar.set(...)`. Recomputing every dispatch is free (`label` is microseconds); the only reason to diff is to avoid redundant renders.
 
-Where `set` goes is a backend decision the crate hides. Two families, below. The recommendation is the streaming SwiftBar plugin.
+`set` mutates the menu bar item directly. No file, no external renderer. The backend is a native `NSStatusItem`, below.
 
-## Reframe: the file read is not the cost
+## The backend: a native NSStatusItem
 
-The current itch is "re-reading a file to render is inefficient". That is mostly a misdiagnosis. A stat plus a read of a tiny file is microseconds. The latency you feel is SwiftBar's poll interval: it only re-runs the plugin every N seconds, and your update waits for the next tick. The read is not what is slow; the interval is. If latency is the only complaint, it is fixable without leaving SwiftBar and without removing the file.
-
-## Keeping SwiftBar as the renderer
-
-SwiftBar stays the thing that draws the menu bar item; we change how it learns about updates.
-
-- Push-refresh via URL scheme. `open "swiftbar://refreshplugin?name=<plugin>"` forces an immediate refresh instead of waiting for the interval. It still re-runs the plugin, which re-reads the file, so it does not remove the file dependency, but the delay is gone. Cheap, keeps the current plugin as is.
-- Streaming plugin. SwiftBar can run a plugin as a long-lived process and read its stdout continuously. The plugin prints a block, then a line containing only `~~~`, and SwiftBar re-renders. No file, no interval, fully push. Our Rust binary becomes the plugin: it stays alive and prints when it wants to update. This is the actual answer to "eliminate the file and the poll" while keeping SwiftBar's rendering. Verify the exact metadata declaration for marking a plugin streamable against current SwiftBar docs before building: the `~~~` separator is confirmed, the precise header token that flags a plugin as streamable is not, and it is not worth guessing.
-
-Streaming is strictly better than URL-refresh for the stated goal (no file, no interval) and is a small change. If we keep SwiftBar, this is where to stop.
-
-Topology caveat, for the "## Open" list: in streaming mode SwiftBar launches and owns the plugin process, reading its stdout. That is a different process shape than "mercury is the daemon and owns the keyboard tap". Either mercury itself is the plugin SwiftBar launches (it then also owns stdout as the render channel), or a thin plugin process streams on mercury's behalf over an IPC channel. Which one drives whether `freddie_menu_bar`'s backend is "write framed blocks to stdout" or "talk to the mercury process". Decide this before committing to streaming.
-
-## Owning the menu bar item ourselves
-
-If we want control SwiftBar does not expose (click handlers, custom drawing, submenus built imperatively), we drop SwiftBar and own the item.
-
-The item is an `NSStatusItem` from `NSStatusBar.systemStatusBar`. We hold it and mutate its button's title imperatively. The cost is real: we now own an `NSApplication` run loop on the main thread, i.e. a long-lived agent process, for what is fundamentally "set a string in the menu bar".
+We own the menu bar item ourselves rather than routing through SwiftBar. The item is an `NSStatusItem` from `NSStatusBar.systemStatusBar`; we hold it and mutate its button's title imperatively. `MenuBar::set` is a `setTitle:` on the button. Updates are push: the moment `label` changes, the title changes. No file, no poll, no separate process.
 
 Raw path with `objc2` + `objc2-app-kit`, at the selector level (exact Rust signatures churn across versions and are not compile-checked here, so this is the logic, not a snippet to paste):
 
@@ -57,17 +40,23 @@ Raw path with `objc2` + `objc2-app-kit`, at the selector level (exact Rust signa
 - Grab `.button()`, call `setTitle:` with an `NSString`. Call it again anytime to update.
 - `app.run()`.
 
-AppKit mutations must happen on the main thread. If update logic lives on a worker thread, funnel updates to the main queue (`dispatch2`'s main-queue async, or a channel drained by a run-loop source). objc2's `MainThreadMarker` enforces this at the type level in recent versions, which is the reason to prefer objc2 over hand-rolled FFI here.
+`tray-icon` (Tauri's crate) wraps `NSStatusItem` cross-platform and gives `tray.set_title(Some("..."))`, less boilerplate but more dependency than we want for rendering text. Default to raw objc2; reach for `tray-icon` only if the raw path fights us.
 
-Wrapper alternative: `tray-icon` (Tauri's crate) wraps `NSStatusItem` cross-platform and gives `tray.set_title(Some("..."))`. Less boilerplate, but it still needs an event loop and pulls in more than we want if all we render is text.
+## The one real cost: the main-thread run loop
 
-## Recommendation
+`NSStatusItem` is an AppKit UI object, so it must be created and mutated on the main thread, and keeping it live means the process runs an AppKit run loop (`NSApplication::run`) on the main thread. That is the whole cost of going native, and it is a one-time structural change, not per-update overhead.
 
-Streaming SwiftBar plugin. We keep the renderer, get push updates, write the daemon in Rust, and do not take on a Cocoa run loop for setting a string. Go native only if we want control SwiftBar does not expose. Whichever backend wins, it hides behind `freddie_menu_bar::MenuBar::set`, and `Mercury::label` stays the same pure function feeding it.
+mercury today runs `tokio` (`current_thread`) on the main thread and the keyboard tap on its own thread with its own `CFRunLoop`. Adding the status item inverts main-thread ownership: AppKit takes the main thread via `app.run()`, and the tokio event/effect loops move to a spawned thread. The keyboard tap is unaffected; it is already off-main on its own run loop.
+
+The crate hides the main-thread affinity. `MenuBar::new` is created on the main thread (objc2's `MainThreadMarker` enforces this at the type level, which is the reason to prefer objc2 over hand-rolled FFI). `set`, called from the tokio thread after a dispatch, marshals the update to the main queue (`dispatch2`'s main-queue async, or a channel the run loop drains). So the event loop calls `bar.set(state.label())` from wherever it runs and the crate gets it onto the main thread.
+
+## Rejected: SwiftBar
+
+SwiftBar was the incumbent (a plugin re-reading a file on an interval). Rejected because we do not want a SwiftBar-launched subprocess resident and polling. The file read was never the cost; the poll interval was, and to catch keypress-driven changes a poll would have to run at roughly keypress latency (~30ms), which is absurd idle work for a status string. SwiftBar's streaming-plugin mode (long-lived process, print a block then a `~~~` line, no interval) would have fixed the latency without polling, but it still means a resident SwiftBar subprocess and a topology question (is mercury the plugin SwiftBar launches, or does a thin plugin stream over IPC). Native `NSStatusItem` is simple enough that neither is worth it: we own the item, push updates directly, and drop SwiftBar, the file, and the poll together.
 
 ## Open
 
-- Streaming topology: is mercury the plugin SwiftBar launches, or does a thin plugin stream on mercury's behalf over IPC (see the caveat above). Drives the crate's backend shape.
-- Confirm the SwiftBar streamable-plugin header token in current docs; `~~~` is confirmed, the header is not.
 - Diffing in the event loop: `set` only on a changed `label`. Trivial, but decide whether the crate dedupes or the caller does.
 - `label`'s vocabulary: exact strings per layer and per app, and whether the in-app layer shows the app name or a fixed `APP`.
+- Confirm the objc2 / objc2-app-kit / dispatch2 versions and the exact `setTitle:` and main-queue-dispatch call sites against the pinned crates before writing the FFI.
+- Where `app.run()` and the tokio threads are wired: mercury's `main` currently owns the tokio runtime on the main thread, so moving tokio to a spawned thread and giving main to AppKit is a `main` restructure, tracked here so it is not a surprise.
