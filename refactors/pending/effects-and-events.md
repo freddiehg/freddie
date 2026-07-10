@@ -64,6 +64,16 @@ Its display module is the thing to copy carefully. On external-monitor connect i
 
 And it has three separate panic buttons: `cleanup-external-state.sh` resets warpd, Homerow, the scroll timer, hover mode, and the lmode modifier at once, alongside `panic-cleanup.sh` and `hammerspoon-hard-restart.sh`. A program that swallows the keyboard needs an undo-everything, and mercury has only the killswitch. See launch-at-login.md.
 
+## Targeting a specific Chrome window or tab
+
+Not "do something to Chrome", but "find the tab whose title contains X, in the profile window, and act on that one". Foreground it, reload it, run script in it, read its URL, close it, move it. voicemode already does the coarse version: `chrome-tab.sh` finds a window whose title contains `(Personal)` and raises it, and `focusChromeProfile` matches personal versus work by title.
+
+There are two addressing schemes and they do different things. AppleScript sees Chrome's own object model: `window 2`, `tab 3 of window 1`, `every tab whose URL contains "github"`. That reaches inside a window to a tab and can read a tab's URL and title, which nothing else can. Accessibility sees only what is drawn: windows and their titles, the visible tab strip, but not the URL of a background tab. So finding a tab by URL is AppleScript; raising a window and clicking in it is either.
+
+The addressing is the effect's real content, and it wants to be data. "The tab whose URL matches this" and "window N of the profile that is not this one" are queries, and an effect like `ChromeDo { target: Query, action: Action }` is the general form, with `Foreground` and the tmux commands as the degenerate case where the target is "the front one". Which is the same realization as messaging a tmux pane: the effect is "message an app at an address", and emitting a key is the special case where the address is "whatever has focus".
+
+The hard parts are the ones already on this page, sharper. Identity: a tab has none the browser will hand out, so you address it by a property (title, URL, index) that the page itself changes as you use it, and the tab you found a moment ago is a different tab now. Direction: reading which tab is frontmost is the poll or the extension in the events section above, and acting on a specific one is this. Cost: every one of these is an AppleScript round-trip of tens of milliseconds, off the effect loop, and Chrome's `execute javascript` additionally needs "Allow JavaScript from Apple Events" turned on by hand.
+
 ## What is actually hard here
 
 Three things recur, and they are worth seeing before any of these is built.
