@@ -12,8 +12,9 @@
 //! and `q` from home quits. A 30-second timer is the backstop out of the hijack
 //! (hard exit 5s after that).
 //!
-//! The `Emitter` is `!Send`, so the effect loop runs on this task via `join!`
-//! rather than a spawned task.
+//! Quitting is a `Kill` effect, which ends the effect loop rather than exiting the
+//! process, so the way out runs destructors: the keyboard is released and main's
+//! run loop is stopped. The hard exit is only for a wedged process.
 //!
 //! # Threads
 //!
@@ -34,6 +35,7 @@
 //!
 //! On macOS this needs Accessibility (and Input Monitoring). `cargo run -p mercury`
 
+use std::ops::ControlFlow;
 use std::time::Duration;
 
 use freddie_keyboard::Emitter;
@@ -125,15 +127,22 @@ async fn run() {
 
     println!("mercury: hijacking the keyboard; escape then q quits (30s backstop)");
     info!("hijacking the keyboard; escape then q quits (30s backstop)");
-    tokio::join!(
-        run_event_loop(Mercury::default(), event_rx, effect_tx),
-        run_effect_loop(effect_rx, emitter),
-    );
+    // `select!` rather than `join!`: the effect loop ends on `Kill`, and the event
+    // loop never does, because the tap thread holds a sender for as long as the
+    // grab is alive.
+    tokio::select! {
+        () = run_event_loop(Mercury::default(), event_rx, effect_tx) => {}
+        () = run_effect_loop(effect_rx, emitter) => {}
+    }
     drop(interceptor); // hold the grab until here
 }
 
-/// Dev killswitch: a `Kill` effect after 30s (the effect loop exits on it), then a
-/// hard exit 5s later if that never happened.
+/// Dev killswitch: a `Kill` effect after 30s, then a hard exit 5s later if the
+/// clean path never got there.
+///
+/// The hard exit runs no destructors, which is the point: it is the backstop for a
+/// wedged process that is still swallowing the keyboard. Reaching it means the
+/// clean exit failed.
 fn spawn_killswitch(effect_tx: UnboundedSender<MercuryEffect>) {
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(30)).await;
@@ -171,20 +180,27 @@ fn dispatch_event(
     }
 }
 
-/// The effect loop: read the effect channel and perform each effect.
+/// The effect loop: read the effect channel and perform each effect, until one of
+/// them says to stop.
 ///
-/// The `Emitter` is `!Send` by design, so this future is `!Send`; `main` runs it
-/// on the current thread via `join!` and it never crosses a thread.
+/// The `Emitter` is `!Send` by design, so this future is `!Send`; it runs on the
+/// worker thread that created the `Emitter` and never crosses a thread.
 #[allow(clippy::future_not_send)]
 async fn run_effect_loop(mut effect_rx: UnboundedReceiver<MercuryEffect>, emitter: Emitter) {
     while let Some(effect) = effect_rx.recv().await {
-        perform_effect(&effect, &emitter);
+        if perform_effect(&effect, &emitter).is_break() {
+            break;
+        }
     }
 }
 
-/// Perform one effect: emit keys, foreground an app, or exit. The effect itself is
+/// Perform one effect: emit keys, foreground an app, or stop. The effect itself is
 /// already on the dispatch record; these are the performance details.
-fn perform_effect(effect: &MercuryEffect, emitter: &Emitter) {
+///
+/// `Kill` breaks rather than exiting the process, so the way out runs destructors:
+/// the `Interceptor` releases the keyboard, the `Stopper` stops main's run loop,
+/// and anything registered with the OS gets to deregister.
+fn perform_effect(effect: &MercuryEffect, emitter: &Emitter) -> ControlFlow<()> {
     match effect {
         MercuryEffect::Foreground(app) => foreground_app(*app),
         MercuryEffect::Emit(ke) => match emitter.emit(ke.key, ke.press) {
@@ -193,9 +209,10 @@ fn perform_effect(effect: &MercuryEffect, emitter: &Emitter) {
         },
         MercuryEffect::Kill => {
             info!("kill: exiting");
-            std::process::exit(0);
+            return ControlFlow::Break(());
         }
     }
+    ControlFlow::Continue(())
 }
 
 /// Foreground an app for real, fire-and-forget on its own thread so the effect

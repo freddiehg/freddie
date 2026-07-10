@@ -87,7 +87,7 @@ Most of this is not what you would guess, so none of it is assumed.
 
 `Watcher` promises that dropping it stops the source, and under the poll it delivers: `Drop` flips an `AtomicBool` and joins the thread. That promise has to be kept a different way, because the notification center holds the observer regardless of what Rust thinks it owns. `Watcher` holds the token and the block, and `Drop` calls `removeObserver`. Leaking it instead leaves the callback live and callable after whatever it closed over is gone, which for a callback holding an `UnboundedSender` is a use-after-free. Holding an `RcBlock` and a `Retained` makes `Watcher` `!Send`.
 
-This is also why mercury's `Kill` effect calling `process::exit` is now a real problem rather than a stylistic one. `process::exit` runs no destructors, so the `Watcher` never deregisters. It should drop the `Stopper` and return instead, which `freddie_main_loop` already supports.
+mercury's exit path is already ready for that. `Kill` ends the effect loop rather than calling `process::exit`, so `run` returns, the `Stopper` drops, and destructors run all the way out. A `Watcher` held on the worker thread will deregister on the way.
 
 ## The lint
 
@@ -105,7 +105,6 @@ The workspace sets `unsafe_code = "forbid"`, and `forbid` cannot be relaxed from
 
 - Is a test binary that runs a main loop worth building to keep the observer under test?
 - Does `Watcher` keep a consuming `stop()` alongside `Drop`, now that stopping is just deregistering?
-- Should `Kill` drop the `Stopper` and return, rather than `process::exit`, so the `Watcher` deregisters on the way out? It probably should, and now it can.
 - Where the bundle-id to `App` map lives (with the app's bindings, as the name table does now), and how figaro overrides it.
 - Whether "window changed within the same app" matters, or only "app changed". `didActivateApplication` only fires for the latter.
 - Whether mercury wants a `NSWorkspaceDidDeactivateApplicationNotification` counterpart, or activation is enough.
