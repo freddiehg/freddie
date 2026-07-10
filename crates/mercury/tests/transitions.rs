@@ -87,17 +87,69 @@ fn typing_escape_goes_home() {
     assert!(matches!(m.layer, Layer::Home(_)));
 }
 
+// Nav is a one-shot chooser: picking an app emits the effect and lands in home.
 #[test]
-fn nav_c_foregrounds_chrome_without_changing_state() {
+fn nav_c_foregrounds_chrome_and_returns_home() {
     let mut m = Mercury::default();
     let _ = m.handle(&key(Key::KeyN));
     assert_eq!(
         m.handle(&key(Key::KeyC)),
         Some(vec![MercuryEffect::Foreground(App::Chrome)])
     );
-    // The effect is inert: still in nav, nothing foregrounded yet.
-    assert!(matches!(m.layer, Layer::Nav(_)));
+    assert!(matches!(m.layer, Layer::Home(_)));
+    // The effect is inert: nothing is foregrounded until the watcher reports it.
     assert_eq!(m.foregrounded, App::Other);
+}
+
+// Every nav choice ends in home, not just Chrome's.
+#[test]
+fn every_nav_choice_returns_home() {
+    for (k, app) in [
+        (Key::KeyC, App::Chrome),
+        (Key::KeyG, App::Ghostty),
+        (Key::KeyZ, App::Zed),
+    ] {
+        let mut m = Mercury::default();
+        let _ = m.handle(&key(Key::KeyN));
+        assert!(matches!(m.layer, Layer::Nav(_)));
+        assert_eq!(
+            m.handle(&key(k)),
+            Some(vec![MercuryEffect::Foreground(app)])
+        );
+        assert!(matches!(m.layer, Layer::Home(_)), "{app:?} left nav");
+    }
+}
+
+// The whole point: `n c i r` navigates to Chrome and refreshes it. The foreground
+// event lands between `c` and `i`, the way the watcher delivers it.
+#[test]
+fn n_c_i_r_refreshes_chrome() {
+    let mut m = Mercury::default();
+    let _ = m.handle(&key(Key::KeyN));
+    assert_eq!(
+        m.handle(&key(Key::KeyC)),
+        Some(vec![MercuryEffect::Foreground(App::Chrome)])
+    );
+    let _ = m.handle(&foreground(App::Chrome)); // the watcher reports it
+    let _ = m.handle(&key(Key::KeyI));
+    assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
+    assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
+}
+
+// `i` pressed before the watcher reports resolves against the old app, and the
+// foreground event retargets the in-app layer when it lands. So `n c i` is still
+// Chrome's in-app layer by the time `r` arrives.
+#[test]
+fn i_before_the_foreground_event_is_retargeted() {
+    let mut m = Mercury::default();
+    let _ = m.handle(&key(Key::KeyN));
+    let _ = m.handle(&key(Key::KeyC));
+    let _ = m.handle(&key(Key::KeyI)); // foregrounded is still Other
+    assert!(matches!(m.layer, Layer::InApp(AppLayer::Other(_))));
+
+    let _ = m.handle(&foreground(App::Chrome)); // the watcher catches up
+    assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
+    assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
 }
 
 #[test]
@@ -175,7 +227,8 @@ fn foregrounding_chrome_is_reported_back() {
     }
     assert_eq!(performed, vec![MercuryEffect::Foreground(App::Chrome)]);
     assert_eq!(m.foregrounded, App::Chrome);
-    assert!(matches!(m.layer, Layer::Nav(_)));
+    // Nav handed back to home once the app was chosen.
+    assert!(matches!(m.layer, Layer::Home(_)));
 }
 
 // ---- app navigation: name mapping and the in-app layer following the front app ----
@@ -266,7 +319,8 @@ fn inapp_follows_the_front_app_across_a_switch() {
     let mut performed = Vec::new();
     {
         let mut runner = SimpleRunner::<MercuryStruct, _>::new(&mut m);
-        for k in [Key::KeyN, Key::KeyC, Key::Escape, Key::KeyI] {
+        // `c` already lands in home, so `i` follows straight after.
+        for k in [Key::KeyN, Key::KeyC, Key::KeyI] {
             runner.queue_event(key(k));
             settle(&mut runner, &mut performed);
         }

@@ -6,7 +6,8 @@
 //!
 //! - [`HomeLayer`] (the default): `n` enters nav, `t` enters typing, `i` enters
 //!   the in-app layer for whatever app is foregrounded.
-//! - [`NavLayer`]: `c`/`g`/`z` foreground Chrome/Ghostty/Zed.
+//! - [`NavLayer`]: `c`/`g`/`z` foreground Chrome/Ghostty/Zed and go back to home.
+//!   Nav is a one-shot chooser, so `n c i r` navigates to Chrome and refreshes it.
 //! - [`TypingLayer`]: `escape` goes home, any other key passes through.
 //! - [`AppLayer`] (in-app): [`ChromeApp`] binds `r` to a refresh; every other app
 //!   is [`OtherApp`], which binds nothing.
@@ -334,9 +335,14 @@ fn quit(_ev: &KeyEvent, _path: HomeLayerPath) -> Vec<MercuryEffect> {
     vec![MercuryEffect::Kill]
 }
 
+/// Put the layer back in home. The one place the home layer is entered.
+fn go_home(layer: &mut LayerPath<'_>) {
+    *layer.get_mut() = Layer::Home(HomeLayer {});
+}
+
 /// `escape` in a sub-layer: go back to the home layer.
 fn to_home(_ev: &KeyEvent, mut path: LayerPath) -> Vec<MercuryEffect> {
-    *path.get_mut() = Layer::Home(HomeLayer {});
+    go_home(&mut path);
     Vec::new()
 }
 
@@ -372,14 +378,27 @@ fn to_inapp(_ev: &KeyEvent, path: HomeLayerPath) -> Vec<MercuryEffect> {
     Vec::new()
 }
 
-fn open_chrome(_ev: &KeyEvent, _path: NavLayerPath) -> Vec<MercuryEffect> {
-    vec![MercuryEffect::Foreground(App::Chrome)]
+/// Foreground `app` and return home. Nav is a one-shot chooser: picking an app
+/// ends the nav layer, rather than leaving you in it swallowing every key that is
+/// not another app's.
+///
+/// The layer change is immediate; the foregrounding is not. The app comes up (and
+/// is recorded) later, when the watcher reports it, so a following `i` may briefly
+/// resolve the in-app layer against the old app. [`on_foregrounded`] retargets it
+/// when the real event lands.
+fn foreground_and_go_home(path: NavLayerPath, app: App) -> Vec<MercuryEffect> {
+    go_home(&mut path.into_parent());
+    vec![MercuryEffect::Foreground(app)]
 }
-fn open_ghostty(_ev: &KeyEvent, _path: NavLayerPath) -> Vec<MercuryEffect> {
-    vec![MercuryEffect::Foreground(App::Ghostty)]
+
+fn open_chrome(_ev: &KeyEvent, path: NavLayerPath) -> Vec<MercuryEffect> {
+    foreground_and_go_home(path, App::Chrome)
 }
-fn open_zed(_ev: &KeyEvent, _path: NavLayerPath) -> Vec<MercuryEffect> {
-    vec![MercuryEffect::Foreground(App::Zed)]
+fn open_ghostty(_ev: &KeyEvent, path: NavLayerPath) -> Vec<MercuryEffect> {
+    foreground_and_go_home(path, App::Ghostty)
+}
+fn open_zed(_ev: &KeyEvent, path: NavLayerPath) -> Vec<MercuryEffect> {
+    foreground_and_go_home(path, App::Zed)
 }
 
 fn passthru<P>(ev: &KeyEvent, _path: P) -> Vec<MercuryEffect> {
