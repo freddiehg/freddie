@@ -2,7 +2,13 @@
 
 mercury swallows every key and re-posts its output through `CGEventPost`. The alternative, which `refactors/past/event-loop.md` prescribed and we did not build, is to dispatch inside the tap callback and return the key as the callback's return value, re-posting nothing.
 
-This is the live decision. It is not a cleanup.
+Decided: no. We keep the re-post, and virtual-hid.md is where this actually goes.
+
+The reason is not that the synchronous model is bad. It is that the channel model mercury already has is the shape HID wants, and the synchronous model is a detour HID would undo. virtual-hid.md is explicit: both backends sit behind observe-plus-emit, and "the one thing that would leak is CGEventTap's trick of deciding in the callback and returning the event down the chain. HID has no chain to return into." Seize the device and every key the user sees is one you emitted. There is no pass, no `Keep`, no `Replace`, and nothing to optimize by not re-posting, because re-posting is the only mechanism there is.
+
+So the passthrough fast path, the snapshot of the accumulated trigger set, and the opt-out-of-capture policy below all evaporate under HID. They are recorded because they are good ideas for the tap, and because we are on the tap until the driver exists.
+
+The rest of this doc is the record of what we accept in the meantime, and why.
 
 ## What we do now
 

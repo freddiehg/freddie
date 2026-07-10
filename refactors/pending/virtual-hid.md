@@ -44,6 +44,12 @@ The entitlement approval and notarization are for shipping to other machines, no
 
 The one thing that would leak is CGEventTap's trick of deciding in the callback and returning the event down the chain. HID has no chain to return into, so we do not use that trick; both backends stay on observe-plus-emit, and the swap is invisible above `Grab`.
 
+## mercury is already shaped for this
+
+mercury swallows every key and re-posts its output through `CGEventPost`, rather than deciding in the tap callback and returning the event down the chain. That looks like a compromise on the tap and it is exactly what HID needs: observe, then emit. Nothing above `Grab` changes on the swap, and nothing in mercury's event loop, effect loop, or model changes either.
+
+The alternative, dispatching synchronously in the tap callback, would have to be undone here, because there is no chain to return into. See synchronous-dispatch.md, where that is decided against for this reason.
+
 ## Recommendation
 
 CGEventTap now, behind `Grab`, single-process. HID when the cross-process loop or robustness matters, ideally by leaning on Karabiner's driver rather than shipping our own. The API does not change across the swap, so starting on the tap is not wasted.
