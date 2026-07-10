@@ -205,7 +205,7 @@ pub struct NavLayer {}
 #[laserbeam(path = TypingLayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
 #[bind(
-    Key::Escape.down() => to_home_from_typing,
+    Key::Escape.down() => to_home,
     AnyKey => passthru,
 )]
 pub struct TypingLayer {}
@@ -257,6 +257,41 @@ pub type TypingLayerPath<'a> = Path<TypingLayer, LayerPath<'a>>;
 pub type AppLayerPath<'a> = Path<AppLayer, LayerPath<'a>>;
 pub type ChromeAppPath<'a> = Path<ChromeApp, AppLayerPath<'a>>;
 pub type OtherAppPath<'a> = Path<OtherApp, AppLayerPath<'a>>;
+
+/// A path that can walk up to the layer enum, consuming itself on the way.
+///
+/// This is what lets a handler like [`to_home`] be bound on the layer enum and on
+/// any node beneath it, rather than needing a wrapper per node to bridge the path
+/// type. It cannot be `From`/`Into`: `Path` is laserbeam's, and a foreign type
+/// parameterized by local ones is still foreign, so the orphan rule refuses it.
+pub trait ToLayerPath<'a> {
+    /// Ascend to the layer enum's path.
+    fn to_layer_path(self) -> LayerPath<'a>;
+}
+
+impl<'a> ToLayerPath<'a> for LayerPath<'a> {
+    fn to_layer_path(self) -> Self {
+        self
+    }
+}
+
+macro_rules! ascends_to_layer {
+    ($($path:ident => $($step:ident).+),* $(,)?) => {$(
+        impl<'a> ToLayerPath<'a> for $path<'a> {
+            fn to_layer_path(self) -> LayerPath<'a> {
+                self.$($step()).+
+            }
+        }
+    )*};
+}
+ascends_to_layer! {
+    HomeLayerPath => into_parent,
+    NavLayerPath => into_parent,
+    TypingLayerPath => into_parent,
+    AppLayerPath => into_parent,
+    ChromeAppPath => into_parent.into_parent,
+    OtherAppPath => into_parent.into_parent,
+}
 
 /// The active leaf the tree resolves to.
 pub enum Resolved<'a> {
@@ -328,21 +363,15 @@ fn go_home(layer: &mut LayerPath<'_>) {
     *layer.get_mut() = Layer::Home(HomeLayer {});
 }
 
-/// `escape` in a sub-layer: go back to the home layer.
-fn to_home(_ev: &KeyEvent, mut path: LayerPath) -> Vec<MercuryEffect> {
-    go_home(&mut path);
-    Vec::new()
-}
-
-/// `escape` in typing: go home. Bound explicitly because typing's catch-all would
-/// otherwise shadow the layer-level go-home binding. The wrapper only exists to
-/// bridge the path type (typing hands a `TypingLayerPath`, `to_home` wants a
-/// `LayerPath`).
+/// `escape` anywhere: go back to the home layer.
 ///
-/// TODO: explore making `to_home` generic (e.g. `impl` a trait over any path that
-/// can walk up to `LayerPath`) so it binds on both nodes without this wrapper.
-fn to_home_from_typing(ev: &KeyEvent, path: TypingLayerPath) -> Vec<MercuryEffect> {
-    to_home(ev, path.into_parent())
+/// Generic over the path, so the layer enum and every node under it can bind it
+/// directly. Typing has to bind it explicitly, because its catch-all would
+/// otherwise shadow the layer-level binding, and now it binds this rather than a
+/// wrapper that only existed to bridge the path type.
+fn to_home<'a, P: ToLayerPath<'a>>(_ev: &KeyEvent, path: P) -> Vec<MercuryEffect> {
+    go_home(&mut path.to_layer_path());
+    Vec::new()
 }
 
 /// `n` in home: enter the nav layer.
@@ -375,7 +404,7 @@ fn to_inapp(_ev: &KeyEvent, path: HomeLayerPath) -> Vec<MercuryEffect> {
 /// resolve the in-app layer against the old app. [`on_foregrounded`] retargets it
 /// when the real event lands.
 fn foreground_and_go_home(path: NavLayerPath, app: App) -> Vec<MercuryEffect> {
-    go_home(&mut path.into_parent());
+    go_home(&mut path.to_layer_path());
     vec![MercuryEffect::Foreground(app)]
 }
 
