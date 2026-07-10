@@ -46,17 +46,21 @@ Today that is harmless: `Home` binds nothing for it and dispatch returns `None`.
 
 The fix is the same ownership. `Timer` holds an `Arc<()>` and the fired event carries a `Weak<()>`. Dropping the node drops the `Arc`, the `Weak` is dead, and the event loop discards the event before dispatch. A cancelled timer's event cannot reach the model, and there is still no id anywhere.
 
-## This is a special case of a state owning its sources
+## Owned sources and shared sources
 
-A timer is the smallest instance of something more general: a state that, while it is active, produces events, and stops producing them when it is left.
+A timer is not the general case. It is one of two kinds, and conflating them is easy.
 
-Everything mercury registers today is global and always on. The keyboard tap is grabbed for the process lifetime. The `NSWorkspace` watcher is registered in `run` and lives until the process exits. Neither belongs to a state, because no state has ever wanted to own one.
+An **owned** source is one the node wants its own instance of, with its own parameters. A timer is owned: `Nav`'s ten seconds is not `Home`'s ten seconds, they are different timers that happen to share a duration. Cardinality is one per node, lifetime is the node's, and `Drop` cancels. Nothing outside the tree.
 
-But `Watcher` is already an RAII handle whose `Drop` deregisters, and so is `Interceptor`, and so is `Stopper`. A node holding a `Watcher` would observe app activations only while that node is active, and stop when it is dropped. That is the same sentence as the timer, with a different source.
+A **shared** source is one instance for the process, of which many nodes take a view. The keyboard is shared. `Mercury` binds `escape`, `Layer` binds `tab`, `Nav` binds `c`: three nodes, three subscriptions, one tap, and not one of them owns it. The node holds nothing; the binding is the subscription.
 
-The generalization: a state's fields may include sources, sources produce events, and dropping the state stops them. Registration is construction and deregistration is `Drop`, so there is no lifecycle to manage and no diff to compute. `bind::accumulate` and its trigger diff are the other way to say this, and they say it by keeping a registry outside the tree.
+The test is whether the node wants its own instance or a slice of a common one. `Nav` wants its own deadline. `Nav` does not want its own keyboard.
 
-What that would want, and does not have: a way for a handler to construct a source, which means the context struct `overall-plan.md` describes; and a decision about whether an in-flight event from a dropped source is discarded (the `Weak` above) or dispatched against whatever state is now active.
+`bind::accumulate` is for the shared kind. Its union over the active path is the set of live subscriptions, and diffing it across a dispatch says when to register a shared source and when to tear it down: register while at least one active node subscribes, deregister when none do. That is why nothing consumes it today. The tap delivers every key whether or not anything is bound, so registration is a no-op, and the union is never interesting. It becomes interesting for a source where registering costs something, or where the set of subscriptions decides what to ask the OS for.
+
+So the two mechanisms are not rivals and neither subsumes the other. Ownership handles owned sources. The diff handles shared ones. A timer is the easy case precisely because it is owned and needs no OS registration at all.
+
+Where the foreground watcher falls is not obvious. mercury registers one `Watcher` for the process lifetime and every state sees its events, which is the shared shape. A state that wanted app activations only while it was active could hold its own `Watcher`, since `Drop` deregisters, which is the owned shape. Both work, and nothing has needed to choose.
 
 ## What this costs
 
@@ -74,9 +78,9 @@ The alternative keeps the state pure and makes the timer a trigger. `bind::accum
 
 It works, and it is worse. `After(Duration)` is not an identity: two states binding `After(500ms)` are the same trigger, so a transition between them arms nothing, two on one active path are a `DuplicateTrigger` error, and re-entering a state changes nothing in the set. The fix is a trigger carrying the deadline, `At(Instant)`, which is `Eq + Hash + Copy` and therefore a legal trigger. Then re-entry produces a new `Instant` and the diff notices.
 
-But the running timer's task handle still has to live somewhere, and that somewhere is a `HashMap<Trigger, JoinHandle>` in the registration handler. That is mutable state outside the tree, which is the thing the single-root premise exists to prevent. Ownership in the node gets the same behavior with nothing outside.
+But the running timer's task handle still has to live somewhere, and that somewhere is a `HashMap<Trigger, JoinHandle>` in the registration handler. That is mutable state outside the tree, which is the thing the single-root premise exists to prevent. Ownership in the node gets the same behavior with nothing outside, because a timer is an owned source.
 
-Note that this means timers do not force `accumulate`'s diff to be built. Nothing consumes `accumulate` today, and a timer is not the thing that changes that.
+So timers do not force `accumulate`'s diff to be built. Nothing consumes `accumulate` today, and a timer is not the thing that changes that. A shared source whose registration costs something would be.
 
 ## What wants timers
 
@@ -100,4 +104,5 @@ There is exactly one timer, and it cheats. `spawn_killswitch` sleeps and then se
 - Where the timer runs. `tokio::time` on the worker thread is already there. A `CFRunLoopTimer` on main would deliver where AppKit callbacks deliver, and nothing wants that.
 - Interaction with `prioritization.md`. A fast repeat timer feeding the same queue as the keyboard can starve typing, which is the case that doc was written for.
 - Is the `Weak<()>` check the right place to discard a cancelled timer's in-flight event, and does it belong in the event loop or in dispatch?
-- Does the same treatment want to generalize to every source, so that a state can own a `Watcher` the way it owns a `Timer`? A timer is the easy case because it needs no OS registration.
+- Is the foreground watcher owned or shared? It is registered once for the process today, which is shared, and `Watcher::drop` deregisters, which would let a node own one.
+- What shared source has a registration cost high enough to make `accumulate`'s diff worth building?
