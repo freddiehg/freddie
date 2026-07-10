@@ -288,6 +288,7 @@ dependencies = [
  "freddie_app_nav",
  "freddie_keyboard",
  "freddie_keys",
+ "freddie_main_loop",
  "laserbeam",
  "tokio",
  "tracing",

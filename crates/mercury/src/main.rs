@@ -15,6 +15,23 @@
 //! The `Emitter` is `!Send`, so the effect loop runs on this task via `join!`
 //! rather than a spawned task.
 //!
+//! # Threads
+//!
+//! Three, each asleep in its own loop, joined only by a channel.
+//!
+//! The main thread runs the platform run loop and nothing else, so that `AppKit`
+//! can deliver callbacks there. It is a doorman: a callback sends into the event
+//! channel and returns. Main-thread callbacks are serialized, so a slow one would
+//! stall every other source.
+//!
+//! The tap thread, spawned inside `freddie_keyboard::intercept`, runs its own run
+//! loop for the `CGEventTap`. It has always been off main, which is why the
+//! keyboard works whatever main is doing.
+//!
+//! The worker thread runs the tokio runtime, owns the state and the `!Send`
+//! `Emitter`, and runs both the event and effect loops. It is the only place
+//! state is mutated, so there is no shared mutable state and no `Mutex`.
+//!
 //! On macOS this needs Accessibility (and Input Monitoring). `cargo run -p mercury`
 
 use std::path::PathBuf;
@@ -40,11 +57,63 @@ const LOG_LEVEL_ENV: &str = "LOG_LEVEL";
 /// quiet it.
 const FILE_LEVEL: LevelFilter = LevelFilter::DEBUG;
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
+/// Give the main thread to the run loop, and run mercury on a worker thread.
+///
+/// The main thread does nothing here, forever, and that is the point. `AppKit`
+/// delivers its callbacks on the main thread's run loop and only while a thread
+/// is inside it, so anything that wants to observe `NSWorkspace` or own an
+/// `NSStatusItem` needs main to be sitting in [`freddie_main_loop::MainLoop::run`]
+/// rather than running our code. See `refactors/pending/main-thread.md`.
+///
+/// That forces the inversion below. The tokio runtime cannot also live on main,
+/// because `block_on` is itself a loop that wants to own the thread's sleep, and
+/// a thread can only be blocked in one syscall. So everything mercury does moves
+/// to a worker thread, and [`run`] is what used to be the body of `main`.
+///
+/// The worker holds the [`Stopper`](freddie_main_loop::Stopper). Dropping it
+/// stops main's run loop, which is how the process exits: whether [`run`] returns
+/// normally, returns early because the keyboard could not be grabbed, or panics
+/// and unwinds, the `Stopper` goes with it and main falls out of its loop. Note
+/// the declaration order in the closure, which is load-bearing: the runtime is
+/// dropped before the `Stopper`, so the loop is not stopped until the runtime is
+/// gone.
+///
+/// The keyboard tap is unaffected by any of this. `intercept` spawns its own
+/// thread and adds its source to that thread's run loop, which is why the tap
+/// works today with tokio on main, and why it keeps working with tokio off it.
+fn main() {
     let log_path = init_tracing();
     println!("mercury: logging to {}", log_path.display());
 
+    let (main_loop, stopper) = freddie_main_loop::main_loop();
+
+    let worker = std::thread::Builder::new()
+        .name("mercury-runtime".to_owned())
+        .spawn(move || {
+            let _stopper = stopper; // dropped last: see the note above
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a current-thread runtime with no reactor cannot fail to build");
+            runtime.block_on(run());
+        })
+        .expect("spawning the runtime thread");
+
+    main_loop.run(); // services AppKit sources until the worker drops the stopper
+    let _ = worker.join();
+}
+
+/// Everything mercury does, on the worker thread.
+///
+/// `intercept` has to be called from here rather than from `main`, because it
+/// returns the `Emitter`, the `Emitter` is `!Send` (it holds an `Rc`), and the
+/// effect loop uses it. It has to be born on the thread it will live on.
+///
+/// Which is exactly why this future is `!Send`, and why that is fine: it is
+/// `block_on`ed by the worker's current-thread runtime and never crosses a
+/// thread.
+#[allow(clippy::future_not_send)]
+async fn run() {
     let (event_tx, event_rx) = unbounded_channel::<MercuryEvent>();
     let (effect_tx, effect_rx) = unbounded_channel::<MercuryEffect>();
 
