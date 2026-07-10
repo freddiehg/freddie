@@ -254,6 +254,12 @@ impl<T> Ascend<T> for T {
 
 impl<Node, Parent> Path<Node, Parent> {
     /// Walk up to `Target`, naming it rather than leaving it to inference.
+    ///
+    /// Sugar, and the only way to name the target on the right. `Target` is a
+    /// parameter of [`Ascend`] rather than of its method, so `path.ascend::<T>()`
+    /// does not compile: the method takes no generic arguments. Without this you
+    /// would name the target on the left, `let layer: LayerPath = path.ascend();`,
+    /// or spell out `<HomeLayerPath as Ascend<LayerPath>>::ascend(path)`.
     #[must_use]
     pub fn ascend_to<Target>(self) -> Target
     where
