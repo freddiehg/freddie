@@ -213,3 +213,133 @@ mod tests {
         assert_eq!(setlist[1], 25);
     }
 }
+
+/// Nest `Path` one level per type parameter, ending at the target path.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __ascend_nest {
+    ($lt:lifetime, $target:ident) => { $target<$lt> };
+    ($lt:lifetime, $target:ident, $head:ident $(, $rest:ident)*) => {
+        $crate::Path<$head, $crate::__ascend_nest!($lt, $target $(, $rest)*)>
+    };
+}
+
+/// One `into_parent()` per type parameter.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __ascend_up {
+    ($e:expr) => { $e };
+    ($e:expr, $head:ident $(, $rest:ident)*) => {
+        $crate::__ascend_up!($e.into_parent() $(, $rest)*)
+    };
+}
+
+/// One impl per depth, walking the list of type parameters.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __ascend_impls {
+    ($lt:lifetime, $target:ident, $trait:ident, [$($acc:ident),*]) => {};
+    ($lt:lifetime, $target:ident, $trait:ident, [$($acc:ident),*], $head:ident $(, $rest:ident)*) => {
+        impl<$lt, $($acc,)* $head> $trait<$lt>
+            for $crate::__ascend_nest!($lt, $target $(, $acc)*, $head)
+        {
+            fn ascend(self) -> $target<$lt> {
+                $crate::__ascend_up!(self $(, $acc)*, $head)
+            }
+        }
+        $crate::__ascend_impls!($lt, $target, $trait, [$($acc,)* $head] $(, $rest)*);
+    };
+}
+
+/// Declare a trait for ascending to `$target`, and implement it for `$target`
+/// itself and for every path beneath it, to a depth of twelve.
+///
+/// The impls match on the shape of the path rather than on which node it is, so
+/// no node is named and adding one needs no new impl. `HomeLayerPath` is just an
+/// alias for `Path<HomeLayer, LayerPath<'a>>`, which is the depth-one shape.
+///
+/// They cannot overlap: unifying two of them would require a type that contains
+/// itself, which the occurs check rejects. That is why this needs no phantom
+/// index to disambiguate, the way `frunk`'s `Here`/`There` does.
+///
+/// ```ignore
+/// laserbeam::impl_ascend!(LayerPath, ToLayerPath);
+///
+/// fn to_home<'a, P: ToLayerPath<'a>>(path: P) { /* path.ascend() is a LayerPath */ }
+/// ```
+///
+/// Only for trees where every node has one parent. A node with several declares
+/// its parent as a route enum rather than a `Path`, so the shapes stop matching,
+/// and the ascent would not be unique anyway.
+#[macro_export]
+macro_rules! impl_ascend {
+    ($target:ident, $trait:ident) => {
+        /// A path that can ascend to the target path, consuming itself.
+        pub trait $trait<'a> {
+            /// Walk up to the target path.
+            fn ascend(self) -> $target<'a>;
+        }
+
+        impl<'a> $trait<'a> for $target<'a> {
+            fn ascend(self) -> Self {
+                self
+            }
+        }
+
+        $crate::__ascend_impls!(
+            'a, $target, $trait, [],
+            N0, N1, N2, N3, N4, N5, N6, N7, N8, N9, N10, N11
+        );
+    };
+}
+
+#[cfg(test)]
+#[allow(dead_code)] // the impls are asserted at the type level, never called
+mod ascend_tests {
+    use crate::Path;
+
+    pub struct Root;
+    pub struct Target;
+    pub type TargetPath<'a> = Path<Target, &'a mut Root>;
+
+    crate::impl_ascend!(TargetPath, ToTarget);
+
+    pub struct N1;
+    pub struct N2;
+    pub struct N3;
+    pub struct N4;
+    pub struct N5;
+    pub struct N6;
+    pub struct N7;
+    pub struct N8;
+    pub struct N9;
+    pub struct N10;
+    pub struct N11;
+    pub struct N12;
+
+    pub type D1<'a> = Path<N1, TargetPath<'a>>;
+    pub type D2<'a> = Path<N2, D1<'a>>;
+    pub type D3<'a> = Path<N3, D2<'a>>;
+    pub type D4<'a> = Path<N4, D3<'a>>;
+    pub type D5<'a> = Path<N5, D4<'a>>;
+    pub type D6<'a> = Path<N6, D5<'a>>;
+    pub type D7<'a> = Path<N7, D6<'a>>;
+    pub type D8<'a> = Path<N8, D7<'a>>;
+    pub type D9<'a> = Path<N9, D8<'a>>;
+    pub type D10<'a> = Path<N10, D9<'a>>;
+    pub type D11<'a> = Path<N11, D10<'a>>;
+    pub type D12<'a> = Path<N12, D11<'a>>;
+
+    const fn assert_ascends<'a, P: ToTarget<'a>>() {}
+
+    /// The macro claims twelve levels. This fails to compile if it does not.
+    #[test]
+    fn ascends_from_every_depth_up_to_twelve() {
+        assert_ascends::<TargetPath<'_>>(); // depth 0, the identity impl
+        assert_ascends::<D1<'_>>();
+        assert_ascends::<D2<'_>>();
+        assert_ascends::<D6<'_>>();
+        assert_ascends::<D11<'_>>();
+        assert_ascends::<D12<'_>>();
+    }
+}

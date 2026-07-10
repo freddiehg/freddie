@@ -258,47 +258,10 @@ pub type AppLayerPath<'a> = Path<AppLayer, LayerPath<'a>>;
 pub type ChromeAppPath<'a> = Path<ChromeApp, AppLayerPath<'a>>;
 pub type OtherAppPath<'a> = Path<OtherApp, AppLayerPath<'a>>;
 
-/// A path that can walk up to the layer enum, consuming itself on the way.
-///
-/// This is what lets a handler like [`to_home`] be bound on the layer enum and on
-/// any node beneath it, rather than needing a wrapper per node to bridge the path
-/// type.
-///
-/// The impls match on the shape of the path rather than on which node it is, so
-/// no list of nodes appears here and adding a layer needs no new impl. One impl
-/// per depth: `Path<_, LayerPath>` is a child, `Path<_, Path<_, LayerPath>>` is a
-/// grandchild, and `LayerPath` is already there. They cannot overlap, because
-/// unifying them would need an infinitely nested type.
-///
-/// It cannot be `From`/`Into`: `Path` is laserbeam's, and a foreign type
-/// parameterized by local ones is still foreign, so the orphan rule refuses it.
-///
-/// This only works because every node here has one parent. laserbeam also allows
-/// a node to declare several, in which case its `Parent` is a route enum rather
-/// than a `Path`, the shapes below stop matching, and the ascent is no longer
-/// unique anyway.
-pub trait ToLayerPath<'a> {
-    /// Ascend to the layer enum's path.
-    fn to_layer_path(self) -> LayerPath<'a>;
-}
-
-impl<'a> ToLayerPath<'a> for LayerPath<'a> {
-    fn to_layer_path(self) -> Self {
-        self
-    }
-}
-
-impl<'a, Node> ToLayerPath<'a> for Path<Node, LayerPath<'a>> {
-    fn to_layer_path(self) -> LayerPath<'a> {
-        self.into_parent()
-    }
-}
-
-impl<'a, Node, Mid> ToLayerPath<'a> for Path<Node, Path<Mid, LayerPath<'a>>> {
-    fn to_layer_path(self) -> LayerPath<'a> {
-        self.into_parent().into_parent()
-    }
-}
+// A handler like `to_home` can be bound on the layer enum and on any node
+// beneath it, rather than needing a wrapper per node to bridge the path type.
+// The impls match on path shape, so no node is named here. See `impl_ascend`.
+laserbeam::impl_ascend!(LayerPath, ToLayerPath);
 
 /// The active leaf the tree resolves to.
 pub enum Resolved<'a> {
@@ -377,7 +340,7 @@ fn go_home(layer: &mut LayerPath<'_>) {
 /// otherwise shadow the layer-level binding, and now it binds this rather than a
 /// wrapper that only existed to bridge the path type.
 fn to_home<'a, P: ToLayerPath<'a>>(_ev: &KeyEvent, path: P) -> Vec<MercuryEffect> {
-    go_home(&mut path.to_layer_path());
+    go_home(&mut path.ascend());
     Vec::new()
 }
 
@@ -411,7 +374,7 @@ fn to_inapp(_ev: &KeyEvent, path: HomeLayerPath) -> Vec<MercuryEffect> {
 /// resolve the in-app layer against the old app. [`on_foregrounded`] retargets it
 /// when the real event lands.
 fn foreground_and_go_home(path: NavLayerPath, app: App) -> Vec<MercuryEffect> {
-    go_home(&mut path.to_layer_path());
+    go_home(&mut path.ascend());
     vec![MercuryEffect::Foreground(app)]
 }
 
