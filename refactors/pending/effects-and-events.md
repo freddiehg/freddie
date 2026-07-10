@@ -2,7 +2,7 @@
 
 A grab bag of the sources and sinks mercury should eventually have. Not a plan and not a design. Nothing here is measured, and several entries turn out to be much harder than they sound, which is the main reason to write them down together.
 
-This supersedes event-loop.md, whose model of dispatch mercury did not build. See the last section for what that doc still carries.
+This supersedes the effects and events half of event-loop.md, which is retired. Its model of dispatch, which mercury did not build, is synchronous-dispatch.md.
 
 ## Events
 
@@ -59,11 +59,3 @@ The second is direction. Foregrounding and the keyboard are things we observe fr
 voicemode already has this, as files under `/tmp` that Hammerspoon watches. It works, and it is the shape to keep while replacing the transport.
 
 The third is that most of these effects are slow and involve other processes. AppleScript, `tmux`, `open`. They must stay fire-and-forget off the effect loop, the way `Foreground` already spawns a thread, and their results must come back as events rather than return values. Also, several want Automation permission, which is a second TCC prompt, and Chrome's `execute javascript` additionally requires "Allow JavaScript from Apple Events" to be turned on by hand.
-
-## What event-loop.md still carries
-
-event-loop.md is superseded as a description of mercury, because mercury does the opposite of what it prescribes. It says dispatch happens synchronously inside the tap callback so key output is the callback's return value and is never re-posted. mercury sends the event down a channel, returns `None`, dispatches on the worker thread, and re-posts the output through `CGEventPost`.
-
-The consequence is real and should not be lost with the doc. Because mercury re-posts rather than returning the event down the tap chain, it has the cross-process loop hole `cgevent-vs-hid.md` describes. The `EVENT_SOURCE_USER_DATA` tag stops mercury re-eating its own output, but it does not stop another process feeding that output back. Two remappers with inverse maps would ping-pong. We accept this because we are the only remapper on the machine, and nobody has written that down until now.
-
-Whether to move to the synchronous model, and whether it is even compatible with dispatching on a single worker thread that owns the state, is the open question that outlives the doc.
