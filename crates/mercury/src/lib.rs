@@ -272,6 +272,11 @@ pub type OtherAppPath<'a> = Path<OtherApp, AppLayerPath<'a>>;
 ///
 /// It cannot be `From`/`Into`: `Path` is laserbeam's, and a foreign type
 /// parameterized by local ones is still foreign, so the orphan rule refuses it.
+///
+/// This only works because every node here has one parent. laserbeam also allows
+/// a node to declare several, in which case its `Parent` is a route enum rather
+/// than a `Path`, the shapes below stop matching, and the ascent is no longer
+/// unique anyway.
 pub trait ToLayerPath<'a> {
     /// Ascend to the layer enum's path.
     fn to_layer_path(self) -> LayerPath<'a>;
