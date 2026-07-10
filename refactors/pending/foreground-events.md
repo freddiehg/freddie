@@ -39,14 +39,9 @@ pub fn frontmost() -> Option<String> {
     NSWorkspace::sharedWorkspace().frontmostApplication()?
         .bundleIdentifier().map(|id| id.to_string())
 }
-
-/// Hands the calling thread (which must be main) to the run loop, forever.
-pub fn run_main_loop() -> ! {
-    loop { NSRunLoop::currentRunLoop().run(); }
-}
 ```
 
-`run_main_loop` lives in this crate so mercury never takes an objc2 dependency of its own.
+The crate does not pump the run loop. It registers a source and says so; whoever owns the process owns main. See below.
 
 Deleted: `Poller`, `responsive_sleep`, `DEFAULT_POLL_INTERVAL`, the `AtomicBool`, the `JoinHandle`, and the `osascript` `frontmost`. The crate stops owning a thread, and the diffing goes with the poll, since the notification only fires on a real change.
 
@@ -57,6 +52,10 @@ Three semantic changes come with it. `watch` loses its interval argument. `watch
 ## The constraint: main must pump the run loop
 
 `NSWorkspace` installs its mach port on the main thread's run loop. A message in a port does nothing until some thread is inside the loop that owns it, so nothing is delivered unless main is pumping. The block does not fail to run because the notification is routed elsewhere; the notification is never posted at all.
+
+This does not limit the process to one main-thread source. A run loop multiplexes: it is an event loop over many sources, the way tokio's executor is an event loop over many tasks. One `CFRunLoopRun` on main served the `NSWorkspace` port and an unrelated `CFRunLoopTimer` concurrently, interleaving both. So the menu bar's `NSStatusItem` (menu-bar.md), which is AppKit and therefore also main-thread, shares the same loop rather than competing for it.
+
+What cannot be shared is ownership of main. Two libraries cannot each expose a `run_main_loop()` and both be called. So `freddie_app_nav` registers its observer and documents that main must be pumped; the binary pumps. Pumping belongs to mercury, or to one small crate that both `freddie_app_nav` and the menu bar depend on.
 
 Measured, because most of it is not what you would guess:
 
@@ -75,12 +74,16 @@ fn main() {
     let log_path = init_tracing();
     println!("mercury: logging to {}", log_path.display());
 
-    std::thread::spawn(|| {
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopper = Stopper::new(Arc::clone(&stop)); // Send; holds CFRunLoop::get_main()
+
+    std::thread::spawn(move || {
+        let _stopper = stopper; // dropping it stops main, however we leave
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(run()); // everything main() does today
     });
 
-    freddie_app_nav::run_main_loop(); // main does nothing else, ever
+    run_main_loop(&stop); // main does nothing else until stopped
 }
 ```
 
@@ -88,7 +91,33 @@ fn main() {
 
 The keyboard tap is unaffected. `intercept` already spawns its own thread with its own `CFRunLoop`, and does not care what main does.
 
-One bug the restructure introduces: failing to grab the keyboard currently prints and returns from `main`, exiting the process. Under the new shape that `return` happens on the tokio thread while main sits in `run_main_loop` forever, so mercury hangs. The tokio thread has to `process::exit`, or signal main to stop the run loop.
+Exiting is what the `Stopper` is for. Failing to grab the keyboard currently prints and returns from `main`, which exits the process. Once that `return` happens on the tokio thread, main has to be told, or mercury hangs with a dead worker. A `Stopper` owned by the worker thread handles it: dropping it stops main's run loop, so a normal return, an early error return, and a panic that unwinds all exit cleanly. That is strictly better than having the worker call `process::exit`, which skips every destructor including the `Watcher` that must call `removeObserver`.
+
+## Stopping the run loop is not one line
+
+`NSRunLoop::run()` is the wrong primitive: it re-enters, so it does not return when the loop is stopped. `CFRunLoop::run_current()` does. `CFRunLoop` is `Send`, and `get_main()` and `stop()` are safe, so the stopper needs no `unsafe` and no dependency beyond `core-foundation`, which `freddie_keyboard` already uses.
+
+There is a race, and it is the exact failure the `Stopper` exists to prevent. `CFRunLoopStop` stops the run that is currently executing; against a loop that has not started it is a no-op. A worker that fails fast (`intercept` failing takes microseconds) drops its stopper before main reaches the loop, and main then blocks forever. Measured: main hung.
+
+So the stopper is a flag plus the loop, and main pumps in bounded slices:
+
+```rust
+impl Drop for Stopper {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release); // seen even if the loop has not started
+        self.rl.stop();                           // breaks it out if it has
+    }
+}
+
+fn run_main_loop(stop: &AtomicBool) {
+    const SLICE: Duration = Duration::from_millis(100);
+    while !stop.load(Ordering::Acquire) {
+        CFRunLoop::run_in_mode(kCFRunLoopDefaultMode, SLICE, false);
+    }
+}
+```
+
+The slice bounds shutdown latency, not event latency: sources are still serviced the moment they fire, inside `run_in_mode`. Verified that this exits cleanly when the stopper is dropped before main ever enters the loop.
 
 ## The Watcher
 
@@ -108,6 +137,7 @@ The workspace sets `unsafe_code = "forbid"`, and `forbid` cannot be relaxed from
 
 - Does `watch` seed the initial app itself, or does the caller call `frontmost()`?
 - Is a run-loop-pumping test binary worth building to keep the observer under test?
+- Where the run loop is pumped from: mercury directly, or a small crate that the menu bar can share.
 - Does `Watcher` keep a consuming `stop()` alongside `Drop`, now that stopping is just deregistering?
 - Where the bundle-id to `App` map lives (with the app's bindings, as the name table does now), and how figaro overrides it.
 - Whether "window changed within the same app" matters, or only "app changed". `didActivateApplication` only fires for the latter.
