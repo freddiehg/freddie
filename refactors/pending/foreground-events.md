@@ -102,9 +102,19 @@ The observer needs exactly three `unsafe` operations, and no more. `addObserverF
 
 The main thread must pump a run loop, and that is the expensive constraint. An observer registered on a spawned thread whose own run loop is running never fires, if main is not pumping. The same observer registered on a spawned thread does fire when main pumps a run loop, and the block is always invoked on the main thread. So registration thread is irrelevant and the main run loop is mandatory.
 
+The obvious escape, that Foundation might attach lazily to the run loop of whichever thread first touches `NSWorkspace`, does not work. With main never calling `NSWorkspace` at all, and the watcher thread being both the first toucher and the only thread pumping a run loop, the observer fired zero times across two real app switches. Foundation installs the port on `CFRunLoopGetMain()`, not on the caller's run loop.
+
+Why any of this is so: the kernel only delivers a mach message to a port. The main thread is a userland fact that Foundation records at process init (`pthread_main_np()`), and `CFRunLoopGetMain()` is that thread's run loop. `NSWorkspace` registers its port as a source on that run loop. A message sitting in the port does nothing until someone pumps that run loop, at which point Foundation dequeues it and posts the `NSNotification` synchronously on the pumping thread. So the block does not run because the notification is never posted, not because it is posted and routed elsewhere.
+
 Polling `frontmostApplication()` is not a workaround. It reads a cache that the workspace notification machinery refreshes, not the live window server. With no run loop pumping it returns the app that was frontmost at process start, forever. This was checked twice: polling from a spawned thread while main pumped a run loop, and polling from the main thread with no run loop at all. In both cases `open -a` returned exit status 0 for three real app switches and the polled value never moved off `dev.zed.Zed`. Any design that swaps `osascript` for an `NSWorkspace` poll is silently broken.
 
 The bundle identifiers are stable and are what we want: `com.google.Chrome`, `com.mitchellh.ghostty`, `dev.zed.Zed`. Note that `localizedName` reports `"Zed"` where System Events reports `"zed"`, which is the discrepancy that made the current name table have to be lowercase.
+
+Dropping the observer token does not stop the observation. Registering, then dropping both the returned `Retained` token and the `RcBlock`, then switching apps twice, still invoked the block twice. Only `center.removeObserver(observer)` stopped it, after which nothing fired. Cocoa's contract is that `removeObserver:` must be called before the returned observer is deallocated, so dropping the token and letting the block keep running is precisely the unsound case: the block was invoked after the Rust value that owned it was gone. A callback closing over an `UnboundedSender` in that state is a use-after-free waiting to happen.
+
+## What this does to the Watcher
+
+`Watcher` currently promises that dropping it stops the source, and under the poll it delivers: `Drop` flips an `AtomicBool` and joins the thread. Under `NSWorkspace` that promise breaks, because the notification center holds the observer regardless of what Rust thinks it owns. The new `Watcher` has to hold the token and call `removeObserver` in `Drop`, and stopping the source means stopping the run loop (`CFRunLoop::stop`) rather than setting a flag the loop reads on its next tick. The `AtomicBool` and `responsive_sleep` both disappear with the poll.
 
 ## What it costs mercury
 
