@@ -262,7 +262,15 @@ pub type OtherAppPath<'a> = Path<OtherApp, AppLayerPath<'a>>;
 ///
 /// This is what lets a handler like [`to_home`] be bound on the layer enum and on
 /// any node beneath it, rather than needing a wrapper per node to bridge the path
-/// type. It cannot be `From`/`Into`: `Path` is laserbeam's, and a foreign type
+/// type.
+///
+/// The impls match on the shape of the path rather than on which node it is, so
+/// no list of nodes appears here and adding a layer needs no new impl. One impl
+/// per depth: `Path<_, LayerPath>` is a child, `Path<_, Path<_, LayerPath>>` is a
+/// grandchild, and `LayerPath` is already there. They cannot overlap, because
+/// unifying them would need an infinitely nested type.
+///
+/// It cannot be `From`/`Into`: `Path` is laserbeam's, and a foreign type
 /// parameterized by local ones is still foreign, so the orphan rule refuses it.
 pub trait ToLayerPath<'a> {
     /// Ascend to the layer enum's path.
@@ -275,22 +283,16 @@ impl<'a> ToLayerPath<'a> for LayerPath<'a> {
     }
 }
 
-macro_rules! ascends_to_layer {
-    ($($path:ident => $($step:ident).+),* $(,)?) => {$(
-        impl<'a> ToLayerPath<'a> for $path<'a> {
-            fn to_layer_path(self) -> LayerPath<'a> {
-                self.$($step()).+
-            }
-        }
-    )*};
+impl<'a, Node> ToLayerPath<'a> for Path<Node, LayerPath<'a>> {
+    fn to_layer_path(self) -> LayerPath<'a> {
+        self.into_parent()
+    }
 }
-ascends_to_layer! {
-    HomeLayerPath => into_parent,
-    NavLayerPath => into_parent,
-    TypingLayerPath => into_parent,
-    AppLayerPath => into_parent,
-    ChromeAppPath => into_parent.into_parent,
-    OtherAppPath => into_parent.into_parent,
+
+impl<'a, Node, Mid> ToLayerPath<'a> for Path<Node, Path<Mid, LayerPath<'a>>> {
+    fn to_layer_path(self) -> LayerPath<'a> {
+        self.into_parent().into_parent()
+    }
 }
 
 /// The active leaf the tree resolves to.
