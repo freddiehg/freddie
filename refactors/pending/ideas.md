@@ -72,6 +72,12 @@ voicemode already does the Accessibility half of this. `chrome-tab.sh` finds a w
 
 Two things make it harder than it reads. Finding the element means walking the app's Accessibility tree by role and title, and both are display strings, so this is the identity problem again, in the worst form: not merely unstable, but localized. And an app with no menu bar item and no Accessibility label offers nothing to click, which is where the OCR-and-label idea below stops being a stunt.
 
+Toggle Chrome's dark mode through Dark Reader. Worth writing down because the obvious routes all fail, and the failure is instructive. AppleScript's `execute javascript` runs in the page, and an extension runs in an isolated world, so the page cannot reach it. There is no AppleScript dictionary for an extension. Clicking its toolbar button through Accessibility works and is exactly as brittle as the previous entry.
+
+The route that works is that Chrome lets an extension declare a keyboard shortcut, at `chrome://extensions/shortcuts`. Assign Dark Reader one, and mercury's effect is a `Tap`, which it already has.
+
+That generalizes past Dark Reader. For any browser extension, the integration point is a hotkey, not an API. Which is a little humbling: the most robust way for a keyboard remapper to talk to a program is to press a key at it.
+
 ## States
 
 A numeric argument. `3 j` walks three panes. The state holds a count, digits accumulate into it, and the next command consumes it. Vim's best idea and nobody outside vim has it.
