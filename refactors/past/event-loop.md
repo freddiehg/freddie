@@ -1,5 +1,11 @@
 # dispatch and effects
 
+Superseded, not built. mercury does the opposite of what this prescribes: it sends each key down a channel, returns `None` from the tap callback, dispatches on a worker thread that owns the state, and re-posts the output through `CGEventPost`. There is no `Mutex`, no thread pool, and no synchronous dispatch inside the tap callback.
+
+What survives is effects-as-data, effects decoupled from their follow-up events, and `bind::SimpleRunner`. What it was pointing at, and what must not be lost, is recorded in effects-and-events.md: re-posting instead of returning the event down the tap chain leaves mercury with the cross-process loop hole cgevent-vs-hid.md describes.
+
+Kept as the record of the synchronous model, and of why the question of moving to it is still open.
+
 Every event is dispatched the moment it arrives, synchronously, and dispatch returns a `Vec` of effects. For a key that happens inside the tap callback, so the effects are ready before the callback returns. That is what lets the key output go back down the tap chain as the callback's return value instead of being re-posted, which is what keeps it correct and loop-free (cgevent-vs-hid.md).
 
 ## Two kinds of effect

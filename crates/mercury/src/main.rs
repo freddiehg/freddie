@@ -9,7 +9,7 @@
 //! observing it come up (the event) are decoupled the way the model expects.
 //!
 //! Every key goes through the model, so `escape` is handled there (it goes home)
-//! and `q` from home quits. A 30-second timer is the backstop out of the hijack
+//! and `q` from home quits. A 60-second timer is the backstop out of the hijack
 //! (hard exit 5s after that).
 //!
 //! Quitting is a `Kill` effect, which ends the effect loop rather than exiting the
@@ -131,8 +131,8 @@ async fn run() {
 
     spawn_killswitch(effect_tx.clone());
 
-    println!("mercury: hijacking the keyboard; escape then q quits (30s backstop)");
-    info!("hijacking the keyboard; escape then q quits (30s backstop)");
+    println!("mercury: hijacking the keyboard; escape then q quits (60s backstop)");
+    info!("hijacking the keyboard; escape then q quits (60s backstop)");
     // `select!` rather than `join!`: the effect loop ends on `Kill`, and the event
     // loop never does, because the tap thread holds a sender for as long as the
     // grab is alive.
@@ -143,7 +143,7 @@ async fn run() {
     drop(interceptor); // hold the grab until here
 }
 
-/// Dev killswitch: a `Kill` effect after 30s, then a hard exit 5s later if the
+/// Dev killswitch: a `Kill` effect after 60s, then a hard exit 5s later if the
 /// clean path never got there.
 ///
 /// The hard exit runs no destructors, which is the point: it is the backstop for a
@@ -151,7 +151,7 @@ async fn run() {
 /// clean exit failed.
 fn spawn_killswitch(effect_tx: UnboundedSender<MercuryEffect>) {
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(30)).await;
+        tokio::time::sleep(Duration::from_mins(1)).await;
         let _ = effect_tx.send(MercuryEffect::Kill);
         tokio::time::sleep(Duration::from_secs(5)).await;
         std::process::exit(1);
