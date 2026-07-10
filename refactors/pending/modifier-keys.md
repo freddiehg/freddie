@@ -10,7 +10,7 @@ A modifier is an ordinary key whose down and up are state transitions:
 - g (while cmd is held) -> cmd-g behavior
 - cmd up -> return to the nothing-held state
 
-This matches the "special keys are not special" stance in `overall-plan.md`: cmd down is a transition `A -> B`, cmd up is `B -> A`. This is orthogonal to bind. bind just routes `(Keyboard, down/up)` triggers to handlers; the question here is how to model the held-modifier state so a handler can branch on it cleanly, without bind or laserbeam knowing what a modifier is.
+This matches the "special keys are not special" stance in `refactors/past/overall-plan.md`: cmd down is a transition `A -> B`, cmd up is `B -> A`. This is orthogonal to bind. bind just routes `(Keyboard, down/up)` triggers to handlers; the question here is how to model the held-modifier state so a handler can branch on it cleanly, without bind or laserbeam knowing what a modifier is.
 
 ## WithModifierKeys<T>
 

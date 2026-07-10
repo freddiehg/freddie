@@ -1,6 +1,14 @@
 # Overall plan
 
-Status: drafting. The model has been reworked; this is the current coherent version.
+Status: retired to past. The design it describes is built; the parts that were not built have their own docs.
+
+Built: the single-root state tree, variants-as-states, the `Path`/`Cursor` design (reborrow from the root, `into_parent` consumes), the `Laserbeam` and `bind` derives, effects-as-data, and one `Trigger` and one `Effect` enum per consumer. mercury is the working consumer. The crate layout settled roughly as sketched, plus `freddie_keys`, `freddie_keyboard`, `freddie_app_nav`, and `freddie_main_loop`.
+
+Not built, and still wanted: the `freddie` crate is a one-line stub, not the framework tying laserbeam and bind together. The event loop lives in mercury and is bespoke, which bind's own comment argues is correct. The daemon CLI with `start`/`stop` and a pid file does not exist; see freddie-cli-plan.md and launch-at-login.md.
+
+Its open questions found homes rather than answers. Enum-versus-substate binding precedence is freddie-dispatch-precedence.md, which ships static and non-clobberable. Validity encoded in types is the type-level enumeration note in laserbeam-missing-features.md. Per-keyboard identity in the `Keyboard` trigger is laserbeam-missing-features.md and modifier-keys.md. `Path` projection settled on `unreachable!` over `Option`. Constructing a target variant is explicit construction, with carry-over available since the cursor owns the data.
+
+The `main.rs` this doc refers to is long gone; mercury's is in `crates/mercury/src/main.rs`.
 
 ## Goal
 
