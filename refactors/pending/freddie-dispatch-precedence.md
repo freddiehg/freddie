@@ -1,35 +1,46 @@
-# freddie: precedence and dispatch model
+# precedence and dispatch
 
-The design space for how multiple bindings on the active path resolve to one behavior. v1 implements only the simplest point in it (static dispatch, non-clobberable); everything past that is a later addition. Terminology: leafward means closer to the active leaf (the more-specific node), rootward means closer to the root (the global default).
+How multiple bindings on the active path resolve to one behavior. Implemented; this records the model and what is still open. Terminology: leafward means closer to the active leaf (the more-specific node), rootward means closer to the root.
 
-## v1: static and non-clobberable
+## The model: priority across the whole path
 
-Every binding is non-clobberable and dispatch is static. A trigger bound at two levels of the active path is a collision and an error caught during accumulation. One trigger, one handler, no overriding, no fall-through. This is what ships first.
+A trigger tested against an event returns `Match::Handle(Priority) | DontHandle`, where `Priority` is an `i32`, higher wins. Dispatch is two passes over the active path:
 
-## Precedence on conflict (later)
+- `winner` reads the tree and returns the highest priority any active binding gives the event.
+- `dispatch_at` runs the binding that handles at exactly that priority, trying the active child first, so among equal priorities the leafward one wins.
 
-Once overriding is allowed, leafward clobbers rootward. The leafward binding wins over the rootward one. Walking up from the active leaf, the first binding seen for a given trigger wins, and bindings higher up do not overwrite it.
+So the winner is chosen by priority first and position second. That is the whole point, and it is what a bare `bool` and leaf-wins could not express.
 
-The constraint that forces this: there may be a global escape binding that applies to nav and the other layers, but in the typing layer escape should type an escape character. The typing layer's escape (leafward) clobbers the global escape (rootward).
+## Why bool was wrong
 
-## Clobberable vs non-clobberable
+The old rule was leafward-wins by position: dispatch tried the active child first and took the first match. That is correct until the leaf's binding is a wildcard. mercury's typing layer binds a catch-all that matches every key, and it sits at the leaf, so under leaf-wins it shadowed the layer-level `escape` binding above it. The workaround was to re-bind `escape` in typing too, which is a wart that scales with every catch-all and every key it should not swallow.
 
-A binding can be marked non-clobberable. The behavior is one of:
+The overlap is invisible to equality. `accumulate` still dedups triggers by `Eq`/`Hash`, and `AnyKey` and `KeyPress(escape)` are different values, so it cannot see that one's match set contains the other's. Detecting overlap in general is undecidable (two predicates over key and press). Priority sidesteps detection entirely: the wildcard declares itself lower, and the specific key wins wherever they overlap, with no comparison of match sets.
 
-- Non-clobberable: a leafward node attempting to override it is an error, caught during accumulation.
-- Otherwise: the leafward binding clobbers it.
+## How a trigger picks its priority
 
-The global escape above is clobberable, which is why typing may override it. A binding we never want a layer to steal is marked non-clobberable. v1 treats every binding as non-clobberable, so the marker and the clobbering it enables come later.
+The trigger's `try_match` returns the priority. In freddie_keys a specific key handles at `SPECIFIC` (0). In mercury the catch-all handles at `WILDCARD` (`SPECIFIC - 1`), one below, so a named key always beats it. A trigger that must never be overridden returns a priority nothing else reaches; a trigger meant as a fallback returns a negative one.
 
-## Static winner vs dynamic fall-through
+Priority is a property of the trigger, not the binding site. Two bindings using the same trigger type get the same priority, and ties break leafward. If a specific binding must outrank another specific binding regardless of position, it needs a distinct trigger that returns a higher priority. That is the shape of a global escape hatch: a dedicated trigger at a priority above every layer's.
 
-Two ways to resolve which handler runs:
+## What this gives, and what it does not
 
-- Static. Accumulation picks a single winner per trigger (leafward clobbers rootward), and that one handler runs. Simple, but a leafward handler cannot conditionally decline.
-- Dynamic fall-through. Accumulation keeps the chain of handlers per trigger, leafward first. When the event fires, each handler returns an `Option` saying whether it handled it; if the leafward handler declines, dispatch falls through to the next one rootward, up to the top. A leafward binding can then handle some cases and pass the rest to the global default.
+It gives the general answer to "keep this binding from being clobbered": make its priority higher than whatever overlaps it. A wildcard cannot shadow a specific key; a rootward global cannot be shadowed by a leafward wildcard.
 
-The dynamic model can do everything the static one can; it costs an extra chain to keep and walk at dispatch. v1 ships the static model.
+It does not, on its own, give a truly unclobberable binding against a deliberate leafward binding of the *same* priority, because that is a tie and leafward wins. That is correct: a layer that explicitly rebinds a key is overriding on purpose. A binding that must survive even that needs its own high-priority trigger, which the model supports but mercury has not yet defined.
 
-## A richer handled signal
+It also does not give the killswitch its replacement for free. A global quit still needs a key the model can recognize, and a modifier chord like ctrl-q is not one event the model sees today, because modifier state is not tracked (modifier-keys.md). The precedence is the mechanism; the trigger for a global quit is the missing piece.
 
-The handled signal could be more than a two-state `Option`: a third outcome (handled-but-keep-going, or an explicit block) is conceivable. The need is unclear, so it is deferred.
+## The road not taken
+
+Two alternatives were considered and are worse for this.
+
+Static winner chosen at accumulation. Pick one handler per trigger up front. But a wildcard and a specific key are different triggers, so this still needs overlap detection, which is the thing priority avoids.
+
+Dynamic fall-through, where a matched handler returns whether it handled the event and dispatch falls through on decline. This is strictly more powerful, since a leafward handler can take some cases and pass the rest rootward. It is also more machinery: a chain kept per trigger and a handler-return protocol. The priority model resolves selection before any handler runs, which is simpler and enough for everything wanted so far. Fall-through remains available as an additive future step if a handler ever needs to conditionally decline.
+
+## Open questions
+
+- A dedicated high-priority trigger for a global escape hatch (the ctrl-q case), gated on modifier state so the chord is one recognizable event.
+- Whether a binding site should be able to override its trigger's priority, for the rare case where the same trigger type wants different precedence in different places.
+- Whether accumulate's `DuplicateTrigger` is still the right guard now that overlap is resolved by priority. Two equal triggers at the same priority on one path is still ambiguous and still an error; the question is only whether that is the useful line.
