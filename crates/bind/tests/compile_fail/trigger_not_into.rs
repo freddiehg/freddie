@@ -27,8 +27,8 @@ impl Bindings for M {
 struct Weird;
 impl EventTrigger for Weird {
     type Event = KeyEv;
-    fn is_matching(&self, _: &KeyEv) -> bool {
-        false
+    fn try_match(&self, _: &KeyEv) -> bind::Match {
+        bind::Match::DontHandle
     }
 }
 

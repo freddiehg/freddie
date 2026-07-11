@@ -10,7 +10,8 @@
 //!   Nav is a one-shot chooser, so `n c i r` navigates to Chrome and refreshes it.
 //! - [`ResizeLayer`] (`r` from home): the arrows place the focused window, up to
 //!   maximize and left and right to the halves, then it goes back to home.
-//! - [`TypingLayer`]: `escape` goes home, any other key passes through.
+//! - [`TypingLayer`]: any key passes through; `escape` still goes home, because
+//!   the layer-level `escape` outranks typing's catch-all by priority.
 //! - [`AppLayer`] (in-app): [`ChromeApp`] binds `r` to a refresh, [`GhosttyApp`]
 //!   binds `j`/`k` to tmux's previous and next window and `1`-`0` to windows one
 //!   through ten;
@@ -22,9 +23,9 @@
 //! home. See [`and_go_home`].
 //!
 //! `escape` goes back to the home layer from every sub-layer, and is a no-op in
-//! home (it re-enters home). Typing binds it explicitly so its catch-all does not
-//! shadow the go-home binding. From home, `q` quits, so `escape` then `q` is the
-//! way out of any layer.
+//! home (it re-enters home). Even in typing, whose catch-all matches `escape` too,
+//! the layer-level `escape` wins, because a specific binding outranks a wildcard.
+//! From home, `q` quits, so `escape` then `q` is the way out of any layer.
 //!
 //! A foreground event records which app is frontmost at the root, and while the
 //! in-app layer is active it retargets that layer to the newly foregrounded app so
@@ -36,7 +37,8 @@
 //!
 //! Run it with `cargo run -p mercury`, or the tests with `cargo test -p mercury`.
 
-use bind::{Bind, Bindings, EventTrigger};
+use bind::{Bind, Bindings, EventTrigger, Match};
+pub use freddie_keys::SPECIFIC;
 pub use freddie_keys::{Key, KeyEvent, KeyPress, PressType};
 use laserbeam::{Ascend, Laserbeam, Path};
 
@@ -49,16 +51,20 @@ use laserbeam::{Ascend, Laserbeam, Path};
 
 /// A keyboard trigger that matches every key, on either press.
 ///
-/// A catch-all: when a layer binds it, it shadows an ancestor's binding for the
-/// same key (dispatch is leafward). There is no ordering between it and a
-/// specific-key trigger, so binding both on one active path is a shadow, not a
-/// conflict.
+/// A wildcard: it handles at [`WILDCARD`], one below a specific key, so a named
+/// key wins wherever the two overlap, whichever is nearer the leaf. That is why
+/// typing can catch every key with this and still let the layer-level `escape`
+/// binding fire: `escape` is specific and outranks the catch-all.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct AnyKey;
+
+/// The priority the catch-all handles at, below a specific key.
+pub const WILDCARD: bind::Priority = SPECIFIC - 1;
+
 impl EventTrigger for AnyKey {
     type Event = KeyEvent;
-    fn is_matching(&self, _ev: &KeyEvent) -> bool {
-        true
+    fn try_match(&self, _ev: &KeyEvent) -> Match {
+        Match::Handle(WILDCARD)
     }
 }
 
@@ -72,8 +78,8 @@ pub struct ForegroundEvent {
 }
 impl EventTrigger for Foregrounded {
     type Event = ForegroundEvent;
-    fn is_matching(&self, _ev: &ForegroundEvent) -> bool {
-        true
+    fn try_match(&self, _ev: &ForegroundEvent) -> Match {
+        Match::Handle(SPECIFIC)
     }
 }
 
@@ -249,10 +255,7 @@ pub struct ResizeLayer {}
 #[derive(Laserbeam, Bind, Debug)]
 #[laserbeam(path = TypingLayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
-#[bind(
-    Key::Escape.down() => to_home,
-    AnyKey => passthru,
-)]
+#[bind(AnyKey => passthru)]
 pub struct TypingLayer {}
 
 /// The in-app layer: Chrome has bindings, everything else is ignored.

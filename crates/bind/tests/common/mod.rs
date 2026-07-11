@@ -5,7 +5,7 @@
 //! return the fired key's length, so a dispatch test can see which handler ran.
 #![allow(dead_code)]
 
-use bind::{Bind, Bindings, EventTrigger};
+use bind::{Bind, Bindings, EventTrigger, Match};
 use laserbeam::{Laserbeam, Path};
 
 // Two sources: a keyboard and the foregrounded app.
@@ -16,8 +16,12 @@ pub struct KeyEvent {
 }
 impl EventTrigger for Keyboard {
     type Event = KeyEvent;
-    fn is_matching(&self, ev: &KeyEvent) -> bool {
-        self.0 == ev.key
+    fn try_match(&self, ev: &KeyEvent) -> Match {
+        if self.0 == ev.key {
+            Match::Handle(0)
+        } else {
+            Match::DontHandle
+        }
     }
 }
 
@@ -28,8 +32,12 @@ pub struct FgEvent {
 }
 impl EventTrigger for Foreground {
     type Event = FgEvent;
-    fn is_matching(&self, ev: &FgEvent) -> bool {
-        self.0 == ev.app
+    fn try_match(&self, ev: &FgEvent) -> Match {
+        if self.0 == ev.app {
+            Match::Handle(0)
+        } else {
+            Match::DontHandle
+        }
     }
 }
 

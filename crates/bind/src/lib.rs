@@ -7,8 +7,9 @@
 //! - [`EventHandler`], whose [`accumulate`](EventHandler::accumulate) gathers the
 //!   active trigger set (what the app registers with the OS). [`accumulate()`]
 //!   runs it from the root.
-//! - [`Dispatch`], whose [`dispatch`](Dispatch::dispatch) runs the handler the
-//!   active state binds for a fired event. [`dispatch()`] runs it from the root.
+//! - [`Dispatch`], which runs the handler the active state binds for a fired
+//!   event. [`dispatch()`] runs it from the root, picking the highest-priority
+//!   binding across the active path rather than the leafmost by position.
 #![allow(clippy::implicit_hasher)]
 
 use std::collections::{HashSet, VecDeque};
@@ -74,28 +75,60 @@ where
     Ok(out)
 }
 
+/// How much a binding wants an event, when it wants it at all.
+///
+/// Higher wins; ties break leafward, so a more specific node overrides a more
+/// general one. Negative is allowed and is how a wildcard sits below the specific
+/// keys it overlaps.
+pub type Priority = i32;
+
+/// The result of testing one trigger against one event.
+///
+/// A wildcard like a catch-all key returns `Handle` at a low priority, and a
+/// specific key at a higher one, so the specific key wins even when the wildcard
+/// is nearer the leaf. That is the whole reason this is not a `bool`: leaf-wins is
+/// the wrong rule when the leaf's binding is a wildcard.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Match {
+    /// The trigger does not apply to this event.
+    DontHandle,
+    /// The trigger handles this event, at this priority.
+    Handle(Priority),
+}
+
 /// A trigger matches its source's event. Extracting the source event from the
 /// unified event (a `TryFrom<&Event> for &SourceEvent`) is the type match; this
 /// is the key match on the source event.
 pub trait EventTrigger {
     /// The source event this trigger matches against.
     type Event;
-    /// Whether the trigger matches `event`.
+    /// Whether the trigger handles `event`, and at what priority.
     #[must_use]
-    fn is_matching(&self, event: &Self::Event) -> bool;
+    fn try_match(&self, event: &Self::Event) -> Match;
 }
 
 /// The dispatch half. `#[derive(Bind)]` implements it alongside [`EventHandler`].
 ///
-/// Each node tries its active child first, then its own binds, so a child's
-/// binding takes priority over an ancestor's. [`Break`](ControlFlow::Break)
-/// carries the handler's output up; [`Continue`](ControlFlow::Continue) hands the
-/// node's path back so the parent can walk up (`into_parent`) and take its turn.
+/// Dispatch is two passes over the active path. [`winner`](Self::winner) reads the
+/// tree and returns the highest priority any active binding gives the event.
+/// [`dispatch_at`](Self::dispatch_at) then runs the binding that handles at exactly
+/// that priority, trying the active child first so that among equal priorities the
+/// leafward one wins.
 pub trait Dispatch<M: Bindings>: ::laserbeam::Resolve {
-    /// Runs the active binding for `event`, or hands the path back on a miss.
-    fn dispatch<'a>(
+    /// The highest priority any binding on the active path gives `event`, or `None`
+    /// if none handles it. Reads the tree without mutating it, and hands the path
+    /// back so the caller can dispatch with it.
+    fn winner<'a>(path: Self::Path<'a>, event: &M::Event) -> (Option<Priority>, Self::Path<'a>)
+    where
+        Self: 'a;
+
+    /// Runs the active binding that handles `event` at exactly `target`, or hands
+    /// the path back on a miss. The active child is tried first, so ties break
+    /// leafward.
+    fn dispatch_at<'a>(
         path: Self::Path<'a>,
         event: &M::Event,
+        target: Priority,
     ) -> ControlFlow<M::Output, Self::Path<'a>>
     where
         Self: 'a;
@@ -103,15 +136,31 @@ pub trait Dispatch<M: Bindings>: ::laserbeam::Resolve {
 
 /// Dispatches `event` against the tree at `path` (the root's `&mut Root`),
 /// returning the handler's output, or `None` when nothing on the active path
-/// binds it.
+/// handles it.
+///
+/// Finds the winning priority across the whole active path, then runs the binding
+/// that handles at it. So a specific binding beats an overlapping wildcard wherever
+/// each sits in the tree, rather than the leaf winning by position alone.
 pub fn dispatch<'a, M, N>(path: N::Path<'a>, event: &M::Event) -> Option<M::Output>
 where
     M: Bindings,
     N: Dispatch<M> + 'a,
 {
-    match <N as Dispatch<M>>::dispatch(path, event) {
+    let (winner, path) = <N as Dispatch<M>>::winner(path, event);
+    let target = winner?;
+    match <N as Dispatch<M>>::dispatch_at(path, event, target) {
         ControlFlow::Break(out) => Some(out),
+        // Unreachable: `winner` found `target`, so a binding handles at it.
         ControlFlow::Continue(_) => None,
+    }
+}
+
+/// The higher of two optional priorities.
+#[must_use]
+pub fn merge(a: Option<Priority>, b: Match) -> Option<Priority> {
+    match b {
+        Match::DontHandle => a,
+        Match::Handle(p) => Some(a.map_or(p, |a| a.max(p))),
     }
 }
 
@@ -193,5 +242,35 @@ impl<M: Bindings, N> SimpleRunner<'_, M, N> {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Match, merge};
+
+    #[test]
+    fn merge_ignores_a_non_match() {
+        assert_eq!(merge(None, Match::DontHandle), None);
+        assert_eq!(merge(Some(3), Match::DontHandle), Some(3));
+    }
+
+    #[test]
+    fn merge_takes_a_match_when_there_was_nothing() {
+        assert_eq!(merge(None, Match::Handle(2)), Some(2));
+    }
+
+    #[test]
+    fn merge_keeps_the_higher_priority() {
+        assert_eq!(merge(Some(5), Match::Handle(2)), Some(5));
+        assert_eq!(merge(Some(2), Match::Handle(5)), Some(5));
+    }
+
+    // None is below every Some, so a real match always beats no candidate, which is
+    // what `winner` relies on when folding child priorities with `Ord::max`.
+    #[test]
+    fn no_candidate_is_below_any_candidate() {
+        assert!(None < Some(i32::MIN));
+        assert_eq!(Ord::max(None, Some(-1)), Some(-1));
     }
 }
