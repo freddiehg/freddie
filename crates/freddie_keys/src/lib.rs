@@ -9,7 +9,7 @@
 //! `match` and a missing mapping is a compile error. [`Key::Raw`] carries a native
 //! code with no name, both for keys the table lacks and for made-up keys.
 
-use bind::{EventTrigger, Match};
+use bind::EventTrigger;
 
 /// A physical key, named by its US-ANSI position, independent of layout or OS.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -135,19 +135,11 @@ pub struct KeyEvent {
     pub press: PressType,
 }
 
-/// The priority a specific key binds at. A wildcard (a catch-all key) should bind
-/// below this, so a named key wins wherever the two overlap.
-pub const SPECIFIC: bind::Priority = 0;
-
 impl EventTrigger for Key {
     type Event = KeyEvent;
 
-    fn try_match(&self, event: &KeyEvent) -> Match {
-        if *self == event.key {
-            Match::Handle(SPECIFIC)
-        } else {
-            Match::DontHandle
-        }
+    fn is_matching(&self, event: &KeyEvent) -> bool {
+        *self == event.key
     }
 }
 
@@ -181,19 +173,15 @@ pub struct KeyPress {
 impl EventTrigger for KeyPress {
     type Event = KeyEvent;
 
-    fn try_match(&self, event: &KeyEvent) -> Match {
-        if self.key == event.key && self.press == event.press {
-            Match::Handle(SPECIFIC)
-        } else {
-            Match::DontHandle
-        }
+    fn is_matching(&self, event: &KeyEvent) -> bool {
+        self.key == event.key && self.press == event.press
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Key, KeyEvent, PressType, SPECIFIC};
-    use bind::{EventTrigger, Match};
+    use super::{Key, KeyEvent, PressType};
+    use bind::EventTrigger;
 
     #[test]
     fn matches_only_its_own_key() {
@@ -201,8 +189,8 @@ mod tests {
             key: Key::KeyR,
             press: PressType::Down,
         };
-        assert_eq!(Key::KeyR.try_match(&event), Match::Handle(SPECIFIC));
-        assert_eq!(Key::KeyS.try_match(&event), Match::DontHandle);
+        assert!(Key::KeyR.is_matching(&event));
+        assert!(!Key::KeyS.is_matching(&event));
     }
 
     #[test]
@@ -211,8 +199,8 @@ mod tests {
             key: Key::Raw(64000),
             press: PressType::Down,
         };
-        assert_eq!(Key::Raw(64000).try_match(&event), Match::Handle(SPECIFIC));
-        assert_eq!(Key::Raw(1).try_match(&event), Match::DontHandle);
-        assert_eq!(Key::KeyA.try_match(&event), Match::DontHandle);
+        assert!(Key::Raw(64000).is_matching(&event));
+        assert!(!Key::Raw(1).is_matching(&event));
+        assert!(!Key::KeyA.is_matching(&event));
     }
 }

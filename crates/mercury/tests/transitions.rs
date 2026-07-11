@@ -417,25 +417,7 @@ fn r_still_refreshes_chrome_in_app() {
     assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
 }
 
-// ---- precedence: a specific binding beats an overlapping wildcard ----
-
-// Typing's catch-all matches every key, including escape, but the layer-level
-// escape is specific and outranks it, so escape goes home rather than passing
-// through. This is what lets typing not re-bind escape itself.
-#[test]
-fn escape_beats_typings_catch_all() {
-    let mut m = Mercury::default();
-    let _ = m.handle(&key(Key::KeyT));
-    assert!(matches!(m.layer, Layer::Typing(_)));
-
-    // A normal key is caught by the wildcard and passes through.
-    assert_eq!(m.handle(&key(Key::KeyA)), Some(passed(Key::KeyA)));
-    // Escape is caught by the wildcard too, but the specific binding wins.
-    assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
-    assert!(matches!(m.layer, Layer::Home(_)));
-}
-
-// ---- loop: driving a bind::SimpleRunner ----// ---- loop: driving a bind::SimpleRunner ----
+// ---- loop: driving a bind::SimpleRunner ----
 
 /// Drain the runner, recording each effect and reporting a foregrounded app back
 /// the way the OS watcher would (a `Foreground` effect becomes a foreground
