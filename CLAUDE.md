@@ -8,6 +8,12 @@ Commit after every change, small and atomically, without being asked. Each logic
 
 Move a `refactors/pending` doc to `refactors/past` once its work is implemented and tested.
 
+Small, easy-to-state items that do not need a doc of their own go in `refactors/pending/todos.md`, one line each. A big or subtle item still gets its own doc.
+
+## Tests
+
+The standard for the model is exhaustive: every key in every reachable state, asserting exactly what dispatch produces. The model is a pure function of state and event, so the full table is checkable and doubles as documentation of the keymap. Not all of it exists yet; new bindings should extend toward it rather than test only the happy path.
+
 ## Logs
 
 mercury writes its tracing output to `~/Library/Logs/mercury/mercury.log`, always, appending across runs. Read that file to debug a run.
