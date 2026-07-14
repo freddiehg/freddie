@@ -2,7 +2,10 @@
 
 The coordinating doc. What ships in what order.
 
-Nothing is implemented. Every design claim in the referenced docs was compiled in a scratchpad; no code in the repo has changed.
+STEPS 1 THROUGH 8 ARE SHIPPED. The design (`refactors/past/resolution.md`) and the
+`accumulate` change (`refactors/past/accumulate-takes-a-path.md`) are done and tested;
+mercury no longer stores the foregrounded app twice. What follows in "Downstream" is not
+started. Every design claim there was compiled in a scratchpad; none of it is in the repo.
 
 ## The goal
 
@@ -15,17 +18,17 @@ Delete the duplicate. A level that is not in the tree, built from root state on 
 The design is last. Everything before it is additive or a pure refactor, lands on master on its own, and leaves the tree working.
 
 ```
-1  Node<Parent, Data>, data: () everywhere    PURE REFACTOR. No new capability.
-2  HasParent                                  additive
-3  Descend                                    additive, unused
-4  accumulate takes a path                    behaviour-preserving
-5  the check does not ship                    behaviour-preserving
-6  #[derived_node(parent = ..)]               additive, unused
-7  #[derived_child(f)]                        the design lights up
-8  mercury uses it                            the duplicate dies
+1  Node<Parent, Data>, data: () everywhere    SHIPPED  e0cecdf
+2  HasParent                                  SHIPPED  993e12b
+3  Descend                                    SHIPPED  993e12b
+4  accumulate takes a path                    SHIPPED  ba0450e
+5  the check does not ship                    SHIPPED  ba0450e
+6  #[derived_node(parent = ..)]               SHIPPED  22cdc34
+7  #[derived_child(f)]                        SHIPPED  22cdc34
+8  mercury uses it                            SHIPPED  45850e9
 ```
 
-Steps 1 through 6 can each land alone, in that order, without `resolution.md` being agreed. If the design is abandoned after step 6, the only dead weight is `Descend` and one unused attribute.
+Each landed alone, in order, with the full suite green at every step.
 
 ## 1. `Node<Parent, Data>`, with `data: ()` everywhere
 
