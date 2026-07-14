@@ -119,6 +119,70 @@ fn derived_node_impl(
     marker: &Path,
     binds: &[Binding],
 ) -> syn::Result<TokenStream2> {
+    // Several possible levels: the DATA is an enum. There is no separate mechanism. The derive
+    // destructures per variant and rebuilds the node, so each variant's handler gets its own
+    // `Data` and the parent is shared by construction.
+    if let Data::Enum(e) = &input.data {
+        if !binds.is_empty() {
+            return Err(syn::Error::new(
+                input.span(),
+                "an enum of derived levels binds nothing itself; put the binds on its variants",
+            ));
+        }
+        let mut dispatch_arms = Vec::new();
+        let mut acc_arms = Vec::new();
+        for v in &e.variants {
+            let vi = &v.ident;
+            single_field_ty(&v.fields)?; // one Data per variant
+            dispatch_arms.push(quote! {
+                #name::#vi(data) => ::bind::Descend::<#marker>::dispatch(
+                    ::bind::Node { parent, data },
+                    event,
+                ),
+            });
+            acc_arms.push(quote! {
+                #name::#vi(data) => ::bind::DerivedHandler::<#marker>::accumulate(
+                    ::bind::Node { parent, data },
+                    out,
+                ),
+            });
+        }
+        return Ok(quote! {
+            #[automatically_derived]
+            impl<'a> ::bind::Descend<#marker> for ::bind::Node<#parent<'a>, #name> {
+                fn dispatch(
+                    self,
+                    event: &<#marker as ::bind::Bindings>::Event,
+                ) -> ::core::ops::ControlFlow<
+                    <#marker as ::bind::Bindings>::Output,
+                    <Self as ::bind::HasParent>::Parent,
+                > {
+                    let ::bind::Node { parent, data } = self;
+                    match data { #(#dispatch_arms)* }
+                }
+            }
+
+            ::bind::check_only! {
+            #[automatically_derived]
+            #[allow(clippy::implicit_hasher)]
+            impl<'a> ::bind::DerivedHandler<#marker> for ::bind::Node<#parent<'a>, #name> {
+                fn accumulate(
+                    self,
+                    out: &mut ::std::collections::HashSet<
+                        <#marker as ::bind::Bindings>::Trigger,
+                    >,
+                ) -> ::core::result::Result<
+                    <Self as ::bind::HasParent>::Parent,
+                    ::bind::BindError,
+                > {
+                    let ::bind::Node { parent, data } = self;
+                    match data { #(#acc_arms)* }
+                }
+            }
+            }
+        });
+    }
+
     let descend = derived_dispatch_descent(input, marker)?;
     let acc_descend = derived_accumulate_descent(input, marker)?;
     let checks = binds.iter().map(|b| {

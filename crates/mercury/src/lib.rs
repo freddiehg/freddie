@@ -11,10 +11,12 @@
 //! - [`ResizeLayer`] (`r` from home): the arrows place the focused window, up to
 //!   maximize and left and right to the halves, then it goes back to home.
 //! - [`TypingLayer`]: `escape` goes home, any other key passes through.
-//! - [`AppLayer`] (in-app): [`ChromeApp`] binds `r` to a refresh, [`GhosttyApp`]
-//!   binds `j`/`k` to tmux's previous and next window and `1`-`0` to windows one
-//!   through ten;
-//!   every other app is [`OtherApp`], which binds nothing.
+//! - [`AppLayer`] (in-app): it stores NO app. [`app_data`] reads `root.foregrounded`
+//!   on every dispatch and builds the app's level from it, so there is one copy of
+//!   the foregrounded app and nothing to keep in sync. [`ChromeApp`] binds `r` to a
+//!   refresh; [`GhosttyApp`] binds `j`/`k` to tmux's previous and next window and
+//!   `1`-`0` to windows one through ten. An app with no bindings gets no level at
+//!   all: `app_data` returns `None` for it.
 //!
 //! A layer stays only if its actions make sense to do repeatedly. Walking panes
 //! and refreshing a page do, so the in-app layers stay put. Choosing an app or a
@@ -255,45 +257,50 @@ pub struct ResizeLayer {}
 )]
 pub struct TypingLayer {}
 
-/// The in-app layer: Chrome has bindings, everything else is ignored.
+/// The in-app layer. It stores NO app: `root.foregrounded` is the only copy, and
+/// [`app_data`] builds the app's level from it on every dispatch. There is nothing
+/// to keep in sync and nothing to go stale.
 #[derive(Laserbeam, Bind, Debug)]
 #[laserbeam(path = AppLayerPath, resolved = Resolved)]
 #[binds(MercuryStruct)]
-pub enum AppLayer {
+#[derived_child(app_data)]
+#[derive(Default)]
+pub struct AppLayer {}
+
+/// The app's level, which is not in the tree. Several possible levels, so the data is
+/// an enum; an app with no bindings is not a variant, and [`app_data`] returns `None`
+/// for it.
+#[derive(Bind, Debug)]
+#[derived_node(parent = AppLayerPath)]
+#[binds(MercuryStruct)]
+pub enum AppData {
     Chrome(ChromeApp),
     Ghostty(GhosttyApp),
-    Other(OtherApp),
 }
 
-impl AppLayer {
-    /// The in-app variant for `app`. Only Chrome has bindings.
-    #[must_use]
-    pub const fn for_app(app: App) -> Self {
-        match app {
-            App::Chrome => Self::Chrome(ChromeApp {}),
-            App::Ghostty => Self::Ghostty(GhosttyApp {}),
-            App::Zed | App::Other => Self::Other(OtherApp {}),
-        }
-    }
-
-    /// The in-app variant for whatever app the root currently records as
-    /// foregrounded. This is the "default" in-app constructor: entering the layer
-    /// reads the app from root state rather than being told it.
-    #[must_use]
-    pub const fn for_root(root: &Mercury) -> Self {
-        Self::for_app(root.foregrounded)
+/// Reads `root.foregrounded`, the only copy, and builds the level for it.
+///
+/// A shared reference, so it cannot mutate: it derives, it does not act. `Zed` and
+/// `Other` bind nothing, so they get no level and no struct.
+fn app_data(path: &AppLayerPath) -> Option<AppData> {
+    match path.parent().parent().foregrounded {
+        App::Chrome => Some(AppData::Chrome(ChromeApp {})),
+        App::Ghostty => Some(AppData::Ghostty(GhosttyApp {})),
+        App::Zed | App::Other => None,
     }
 }
 
-#[derive(Laserbeam, Bind, Debug)]
-#[laserbeam(path = ChromeAppPath, resolved = Resolved)]
+/// Chrome's level. A unit for now: mercury tracks nothing per app. It stops being one
+/// when it carries something (a tab name).
+#[derive(Bind, Debug)]
+#[derived_node(parent = AppLayerPath)]
 #[binds(MercuryStruct)]
 #[bind(Key::KeyR.down() => refresh)]
 pub struct ChromeApp {}
 
-/// The in-app layer for Ghostty, where `j` and `k` walk tmux's panes.
-#[derive(Laserbeam, Bind, Debug)]
-#[laserbeam(path = GhosttyAppPath, resolved = Resolved)]
+/// Ghostty's level, where `j` and `k` walk tmux's panes.
+#[derive(Bind, Debug)]
+#[derived_node(parent = AppLayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
     Key::KeyJ.down() => previous_window,
@@ -311,31 +318,27 @@ pub struct ChromeApp {}
 )]
 pub struct GhosttyApp {}
 
-/// A foregrounded app Mercury has no bindings for.
-#[derive(Laserbeam, Bind, Debug)]
-#[laserbeam(path = OtherAppPath, resolved = Resolved)]
-#[binds(MercuryStruct)]
-pub struct OtherApp {}
-
 pub type LayerPath<'a> = Path<Layer, &'a mut Mercury>;
 pub type HomeLayerPath<'a> = Path<HomeLayer, LayerPath<'a>>;
 pub type NavLayerPath<'a> = Path<NavLayer, LayerPath<'a>>;
 pub type ResizeLayerPath<'a> = Path<ResizeLayer, LayerPath<'a>>;
 pub type TypingLayerPath<'a> = Path<TypingLayer, LayerPath<'a>>;
 pub type AppLayerPath<'a> = Path<AppLayer, LayerPath<'a>>;
-pub type ChromeAppPath<'a> = Path<ChromeApp, AppLayerPath<'a>>;
-pub type GhosttyAppPath<'a> = Path<GhosttyApp, AppLayerPath<'a>>;
-pub type OtherAppPath<'a> = Path<OtherApp, AppLayerPath<'a>>;
+/// An app's level is not in the tree, so it is a `Node`, not a `Path`.
+pub type ChromeAppNode<'a> = Node<AppLayerPath<'a>, ChromeApp>;
+pub type GhosttyAppNode<'a> = Node<AppLayerPath<'a>, GhosttyApp>;
 
 /// The active leaf the tree resolves to.
+///
+/// An app's level is not in the tree, so it cannot appear here: `Resolved` is an enum of
+/// `Path`s and a derived level has none. Nothing calls `resolve()` anyway; see
+/// `refactors/pending/resolved-is-dead-weight.md`.
 pub enum Resolved<'a> {
     HomeLayer(HomeLayerPath<'a>),
     NavLayer(NavLayerPath<'a>),
     ResizeLayer(ResizeLayerPath<'a>),
     TypingLayer(TypingLayerPath<'a>),
-    ChromeApp(ChromeAppPath<'a>),
-    GhosttyApp(GhosttyAppPath<'a>),
-    OtherApp(OtherAppPath<'a>),
+    AppLayer(AppLayerPath<'a>),
 }
 
 impl Default for Mercury {
@@ -379,14 +382,11 @@ pub const fn foreground(app: App) -> MercuryEvent {
 /// layer, retarget it to the newly foregrounded app so the active bindings follow
 /// the front app (Chrome's `r` refresh applies only while Chrome is up). Layers
 /// other than in-app are left alone; foregrounding does not move you between them.
-fn on_foregrounded(ev: &ForegroundEvent, node: Node<&mut Mercury, ()>) -> Vec<MercuryEffect> {
-    let root = node.parent;
-    root.foregrounded = ev.app;
-    // Retarget the in-app layer in place rather than rebuilding `Layer::InApp`,
-    // so that whatever else the variant comes to hold survives a foregrounding.
-    if let Layer::InApp(in_app) = &mut root.layer {
-        *in_app = AppLayer::for_app(ev.app);
-    }
+const fn on_foregrounded(ev: &ForegroundEvent, node: Node<&mut Mercury, ()>) -> Vec<MercuryEffect> {
+    // The only copy. The in-app layer holds no app, so there is nothing to resync and
+    // nothing that can go stale: `app_data` rebuilds the app's level from this on every
+    // dispatch.
+    node.parent.foregrounded = ev.app;
     Vec::new()
 }
 
@@ -428,7 +428,7 @@ fn to_typing(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect
 /// `i` in home: enter the in-app layer for whatever app is foregrounded.
 fn to_inapp(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
     let mercury = node.parent.into_parent().into_parent();
-    mercury.layer = Layer::InApp(AppLayer::for_root(mercury));
+    mercury.layer = Layer::InApp(AppLayer {});
     Vec::new()
 }
 
@@ -507,12 +507,12 @@ fn tmux(modifiers: &[Key], command: Key) -> Vec<MercuryEffect> {
 }
 
 /// `j` in Ghostty: tmux's previous window. Stays, because walking windows repeats.
-fn previous_window(_ev: &KeyEvent, _node: Node<GhosttyAppPath, ()>) -> Vec<MercuryEffect> {
+fn previous_window(_ev: &KeyEvent, _node: GhosttyAppNode) -> Vec<MercuryEffect> {
     tmux(&[], Key::KeyP)
 }
 
 /// `k` in Ghostty: tmux's next window.
-fn next_window(_ev: &KeyEvent, _node: Node<GhosttyAppPath, ()>) -> Vec<MercuryEffect> {
+fn next_window(_ev: &KeyEvent, _node: GhosttyAppNode) -> Vec<MercuryEffect> {
     tmux(&[], Key::KeyN)
 }
 
@@ -527,7 +527,7 @@ fn next_window(_ev: &KeyEvent, _node: Node<GhosttyAppPath, ()>) -> Vec<MercuryEf
 /// the layer. See [`and_go_home`].
 macro_rules! select_window {
     ($($handler:ident => $digit:ident),* $(,)?) => {$(
-        fn $handler(_ev: &KeyEvent, node: Node<GhosttyAppPath, ()>) -> Vec<MercuryEffect> {
+        fn $handler(_ev: &KeyEvent, node: GhosttyAppNode) -> Vec<MercuryEffect> {
             and_go_home(node.parent, tmux(&[Key::ShiftLeft], Key::$digit))
         }
     )*};
@@ -547,6 +547,6 @@ select_window! {
 }
 
 /// `r` in Chrome: cmd-r, a refresh.
-fn refresh(_ev: &KeyEvent, _node: Node<ChromeAppPath, ()>) -> Vec<MercuryEffect> {
+fn refresh(_ev: &KeyEvent, _node: ChromeAppNode) -> Vec<MercuryEffect> {
     vec![tap(&[Key::MetaLeft], Key::KeyR)]
 }

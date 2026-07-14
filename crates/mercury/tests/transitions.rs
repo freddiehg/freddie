@@ -5,8 +5,8 @@
 
 use bind::SimpleRunner;
 use mercury::{
-    App, AppLayer, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryStruct, Placement,
-    PressType, foreground, key,
+    App, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryStruct, Placement, PressType,
+    foreground, key,
 };
 
 const fn emit(key: Key, press: PressType) -> MercuryEffect {
@@ -134,7 +134,8 @@ fn n_c_i_r_refreshes_chrome() {
     );
     let _ = m.handle(&foreground(App::Chrome)); // the watcher reports it
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert_eq!(m.foregrounded, App::Chrome);
     assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
 }
 
@@ -147,10 +148,12 @@ fn i_before_the_foreground_event_is_retargeted() {
     let _ = m.handle(&key(Key::KeyN));
     let _ = m.handle(&key(Key::KeyC));
     let _ = m.handle(&key(Key::KeyI)); // foregrounded is still Other
-    assert!(matches!(m.layer, Layer::InApp(AppLayer::Other(_))));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.foregrounded, App::Zed | App::Other));
 
     let _ = m.handle(&foreground(App::Chrome)); // the watcher catches up
-    assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert_eq!(m.foregrounded, App::Chrome);
     assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
 }
 
@@ -167,7 +170,8 @@ fn i_enters_inapp_for_the_foregrounded_app() {
     let mut m = Mercury::default();
     let _ = m.handle(&foreground(App::Chrome));
     assert_eq!(m.handle(&key(Key::KeyI)), Some(vec![]));
-    assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert_eq!(m.foregrounded, App::Chrome);
 }
 
 #[test]
@@ -183,7 +187,8 @@ fn inapp_other_app_ignores_keys() {
     let mut m = Mercury::default();
     let _ = m.handle(&foreground(App::Zed));
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer, Layer::InApp(AppLayer::Other(_))));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.foregrounded, App::Zed | App::Other));
     assert_eq!(m.handle(&key(Key::KeyR)), None);
 }
 
@@ -206,7 +211,8 @@ fn i_enters_ghostty_in_app_when_ghostty_is_frontmost() {
     let mut m = Mercury::default();
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer, Layer::InApp(AppLayer::Ghostty(_))));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert_eq!(m.foregrounded, App::Ghostty);
 }
 
 #[test]
@@ -218,7 +224,8 @@ fn ghostty_j_is_previous_window_and_k_is_next() {
     assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(&[], Key::KeyP)));
     assert_eq!(m.handle(&key(Key::KeyK)), Some(tmux(&[], Key::KeyN)));
     // Still in Ghostty's layer, so windows can be walked without re-entering.
-    assert!(matches!(m.layer, Layer::InApp(AppLayer::Ghostty(_))));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert_eq!(m.foregrounded, App::Ghostty);
 }
 
 // The command carries no modifiers. Emitting it inside the prefix chord is the bug
@@ -253,10 +260,12 @@ fn foregrounding_ghostty_retargets_the_inapp_layer() {
     let mut m = Mercury::default();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert_eq!(m.foregrounded, App::Chrome);
 
     let _ = m.handle(&foreground(App::Ghostty));
-    assert!(matches!(m.layer, Layer::InApp(AppLayer::Ghostty(_))));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert_eq!(m.foregrounded, App::Ghostty);
     assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(&[], Key::KeyP)));
 }
 
@@ -320,7 +329,8 @@ fn walking_stays_but_jumping_leaves() {
     let _ = m.handle(&key(Key::KeyI));
 
     let _ = m.handle(&key(Key::KeyJ));
-    assert!(matches!(m.layer, Layer::InApp(AppLayer::Ghostty(_))));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert_eq!(m.foregrounded, App::Ghostty);
     let _ = m.handle(&key(Key::Num3));
     assert!(matches!(m.layer, Layer::Home(_)));
 }
@@ -414,7 +424,8 @@ fn r_still_refreshes_chrome_in_app() {
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
-    assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert_eq!(m.foregrounded, App::Chrome);
 }
 
 // ---- loop: driving a bind::SimpleRunner ----
@@ -482,17 +493,29 @@ fn reported_bundle_ids_map() {
     assert_eq!(App::from_bundle_id("Google Chrome"), App::Other);
 }
 
-// The in-app constructor reads the foregrounded app from the root: Chrome gets its
-// own variant, everything else is the other-app variant.
+// The in-app layer holds no app. Its bindings come from `root.foregrounded`, read on every
+// dispatch, so changing the root changes what binds WITHOUT anything re-entering the layer
+// and without any resync. There is no copy to go stale.
 #[test]
-fn for_root_reads_the_foregrounded_app() {
+fn the_inapp_layers_bindings_follow_the_root_with_no_resync() {
     let mut m = Mercury {
         foregrounded: App::Chrome,
+        layer: Layer::InApp(Default::default()),
         ..Default::default()
     };
-    assert!(matches!(AppLayer::for_root(&m), AppLayer::Chrome(_)));
+    // Chrome binds `r`.
+    assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
+
+    // Write the ROOT directly. Nothing touches the layer.
+    m.foregrounded = App::Ghostty;
+
+    // Chrome's `r` is gone and Ghostty's `j` is live, with no re-entry and no resync.
+    assert_eq!(m.handle(&key(Key::KeyR)), None);
+    assert!(m.handle(&key(Key::KeyJ)).is_some());
+
+    // An app with no bindings has no level at all.
     m.foregrounded = App::Zed;
-    assert!(matches!(AppLayer::for_root(&m), AppLayer::Other(_)));
+    assert_eq!(m.handle(&key(Key::KeyJ)), None);
 }
 
 // In the in-app layer, foregrounding a different app retargets the layer to it, so
@@ -502,11 +525,13 @@ fn foreground_retargets_the_inapp_layer() {
     let mut m = Mercury::default();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert_eq!(m.foregrounded, App::Chrome);
 
     assert_eq!(m.handle(&foreground(App::Zed)), Some(vec![]));
     assert_eq!(m.foregrounded, App::Zed);
-    assert!(matches!(m.layer, Layer::InApp(AppLayer::Other(_))));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.foregrounded, App::Zed | App::Other));
     // Chrome's refresh is gone now that Chrome is not the front app.
     assert_eq!(m.handle(&key(Key::KeyR)), None);
 }
@@ -517,10 +542,12 @@ fn foreground_back_to_chrome_restores_its_bindings() {
     let mut m = Mercury::default();
     let _ = m.handle(&foreground(App::Zed));
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer, Layer::InApp(AppLayer::Other(_))));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.foregrounded, App::Zed | App::Other));
 
     let _ = m.handle(&foreground(App::Chrome));
-    assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert_eq!(m.foregrounded, App::Chrome);
     assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
 }
 
@@ -551,9 +578,11 @@ fn inapp_follows_the_front_app_across_a_switch() {
             settle(&mut runner, &mut performed);
         }
     }
-    assert!(matches!(m.layer, Layer::InApp(AppLayer::Chrome(_))));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert_eq!(m.foregrounded, App::Chrome);
     // The user switches to Zed outside mercury; the watcher reports it.
     let _ = m.handle(&foreground(App::Zed));
     assert_eq!(m.foregrounded, App::Zed);
-    assert!(matches!(m.layer, Layer::InApp(AppLayer::Other(_))));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.foregrounded, App::Zed | App::Other));
 }
