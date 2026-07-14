@@ -4,23 +4,56 @@
 //! its bindings with `#[bind(trigger => handler, ..)]`. The derive implements
 //! two halves:
 //!
-//! - [`EventHandler`], whose [`accumulate`](EventHandler::accumulate) gathers the
-//!   active trigger set (what the app registers with the OS). [`accumulate()`]
-//!   runs it from the root.
-//! - [`Dispatch`], whose [`dispatch`](Dispatch::dispatch) runs the handler the
-//!   active state binds for a fired event. [`dispatch()`] runs it from the root.
+//! There are two halves, and only one of them ships.
+//!
+//! [`Dispatch`] runs the handler the active state binds for a fired event. It is what a
+//! keystroke costs. [`dispatch()`] runs it from the root.
+//!
+//! [`EventHandler`] is THE CHECK, behind the `check` feature. It walks the same tree and
+//! collects every live bind's trigger into a set, erroring on a collision. It is a test.
+//! Nothing in a shipped binary calls it: the keyboard tap subscribes to event TYPES, not to
+//! individual keys, so there is no trigger set to register and no reason for it to exist at
+//! runtime.
+//!
+//! With `default-features = false` the check does not exist. [`EventHandler`],
+//! [`accumulate()`], and [`BindError`] are not compiled, and `#[derive(Bind)]` emits no
+//! `EventHandler` impl, because it wraps that impl in [`check_only!`].
 #![allow(clippy::implicit_hasher)]
 
-use std::collections::{HashSet, VecDeque};
+#[cfg(feature = "check")]
+use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::hash::Hash;
 use std::ops::ControlFlow;
 
 pub use bind_macro::Bind;
 
+/// Emits its body only when the `check` feature is on.
+///
+/// A derive cannot see the features of the crate it expands into, so it cannot cfg the check
+/// away itself. It emits `::bind::check_only! { .. }` instead, and this macro, which IS
+/// compiled with `bind`'s features, keeps or drops the body.
+#[cfg(feature = "check")]
+#[macro_export]
+macro_rules! check_only {
+    ($($t:tt)*) => { $($t)* };
+}
+
+/// Drops its body: the `check` feature is off, so the check does not exist.
+#[cfg(not(feature = "check"))]
+#[macro_export]
+macro_rules! check_only {
+    ($($t:tt)*) => {};
+}
+
 /// The marker an app implements on one type to name its trigger, event, and
 /// output types.
 pub trait Bindings {
-    /// The unified enum of every trigger the app can register.
+    /// The unified enum of every trigger the app can bind.
+    ///
+    /// Only the check uses it, and it cannot be cfg'd away: a consumer implements `Bindings`
+    /// and cannot see `bind`'s features, so an associated type that came and went would not
+    /// compile for them.
     type Trigger: Eq + Hash;
     /// The unified event the app dispatches.
     type Event;
@@ -29,17 +62,32 @@ pub trait Bindings {
 }
 
 /// The accumulate half. `#[derive(Bind)]` implements it.
-pub trait EventHandler<M: Bindings> {
+///
+/// It takes a path rather than `&self`, for the same reason [`Dispatch`] does: a level whose
+/// child is produced by a function reaches it by CALLING that function, and the function
+/// needs a path. With `&self` there is no path, so such a level's binds are invisible to the
+/// trigger set, which is the one thing the trigger set exists to be complete about.
+///
+/// It hands the path back, again like [`Dispatch`], because a node that has descended still
+/// has its own triggers to insert.
+#[cfg(feature = "check")]
+pub trait EventHandler<M: Bindings>: ::laserbeam::Resolve {
     /// Adds this node's triggers, and those of its active descendants, to `out`.
     ///
     /// # Errors
     ///
     /// Returns [`BindError::DuplicateTrigger`] when a trigger is bound at more
     /// than one node on the active path.
-    fn accumulate(&self, out: &mut HashSet<M::Trigger>) -> Result<(), BindError>;
+    fn accumulate<'a>(
+        path: Self::Path<'a>,
+        out: &mut HashSet<M::Trigger>,
+    ) -> Result<Self::Path<'a>, BindError>
+    where
+        Self: 'a;
 }
 
 /// The error [`accumulate()`] can produce.
+#[cfg(feature = "check")]
 #[derive(Debug, PartialEq, Eq)]
 pub enum BindError {
     /// A trigger was bound at more than one node on the active path.
@@ -51,6 +99,7 @@ pub enum BindError {
 /// # Errors
 ///
 /// Returns [`BindError::DuplicateTrigger`] when `t` is already in `out`.
+#[cfg(feature = "check")]
 pub fn insert_or_error<T: Eq + Hash>(out: &mut HashSet<T>, t: T) -> Result<(), BindError> {
     if out.insert(t) {
         Ok(())
@@ -59,18 +108,19 @@ pub fn insert_or_error<T: Eq + Hash>(out: &mut HashSet<T>, t: T) -> Result<(), B
     }
 }
 
-/// Accumulates the active trigger set for the tree rooted at `root`.
+/// Accumulates the active trigger set for the tree at `path` (the root's `&mut Root`).
 ///
 /// # Errors
 ///
 /// Propagates [`BindError::DuplicateTrigger`] from [`EventHandler::accumulate`].
-pub fn accumulate<M, N>(root: &N) -> Result<HashSet<M::Trigger>, BindError>
+#[cfg(feature = "check")]
+pub fn accumulate<'a, M, N>(path: N::Path<'a>) -> Result<HashSet<M::Trigger>, BindError>
 where
     M: Bindings,
-    N: EventHandler<M>,
+    N: EventHandler<M> + 'a,
 {
     let mut out = HashSet::new();
-    root.accumulate(&mut out)?;
+    <N as EventHandler<M>>::accumulate(path, &mut out)?;
     Ok(out)
 }
 

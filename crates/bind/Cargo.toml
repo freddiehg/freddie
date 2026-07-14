@@ -1,10 +1,17 @@
 [package]
 name = "bind"
-description = "Accumulate the active trigger set for a laserbeam state tree."
+description = "Dispatch events against a laserbeam state tree."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+
+[features]
+# The clobber check. It is a TEST, not a runtime path: nothing in a shipped binary calls
+# `accumulate`. A consumer that ships sets `default-features = false`, and the derive then
+# emits no `EventHandler` impl at all.
+default = ["check"]
+check = []
 
 [dependencies]
 bind_macro = { path = "../bind_macro", version = "0.0.1" }

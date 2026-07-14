@@ -25,7 +25,7 @@ help: the trait `Bindings` is not implemented for `NotBindings`
 note: required by a bound in `EventHandler`
  --> src/lib.rs
   |
-  | pub trait EventHandler<M: Bindings> {
+  | pub trait EventHandler<M: Bindings>: ::laserbeam::Resolve {
   |                           ^^^^^^^^ required by this bound in `EventHandler`
   = note: this error originates in the derive macro `Bind` (in Nightly builds, run with -Z macro-backtrace for more info)
 

@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 laserbeam = { path = "../laserbeam", version = "0.0.1" }
-bind = { path = "../bind", version = "0.0.1" }
+bind = { path = "../bind", version = "0.0.1", default-features = false }
 freddie_keys = { path = "../freddie_keys", version = "0.0.1" }
 freddie_keyboard = { path = "../freddie_keyboard", version = "0.0.1" }
 freddie_app_nav = { path = "../freddie_app_nav", version = "0.0.1" }
@@ -21,7 +21,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 
 [dev-dependencies]
-bind = { path = "../bind", version = "0.0.1" }
+# Turns the check on for TESTS only. With resolver 3 a dev-dependency's features do not leak
+# into the normal build, so `cargo build -p mercury` has no `accumulate`.
+bind = { path = "../bind", version = "0.0.1", features = ["check"] }
 
 [lints]
 workspace = true

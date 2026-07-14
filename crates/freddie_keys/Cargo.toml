@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-bind = { path = "../bind", version = "0.0.1" }
+bind = { path = "../bind", version = "0.0.1", default-features = false }
 
 [lints]
 workspace = true

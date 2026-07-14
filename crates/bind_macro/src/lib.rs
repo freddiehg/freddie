@@ -86,54 +86,84 @@ fn descend_impl(input: &DeriveInput, name: &Ident, marker: &Path) -> syn::Result
 }
 
 /// Emits `impl EventHandler<M>`: insert this node's triggers, then recurse.
+///
+/// It takes a path, exactly as `dispatch` does, and for the same reason: a level whose child
+/// is produced by a function needs a path to call that function with. The two bodies descend
+/// through the same `derive_support::Edge`, so they cannot drift.
 fn accumulate_impl(
     input: &DeriveInput,
     name: &Ident,
     marker: &Path,
     binds: &[Binding],
 ) -> syn::Result<TokenStream2> {
-    let (recurse, children) = accumulate_body(input, marker)?;
+    let root = is_root(&input.attrs);
+    let (recurse, children, needs_mut) = accumulate_body(input, name, marker, root)?;
     let where_clause = if children.is_empty() {
         quote!()
     } else {
         quote!(where #(#children: ::bind::EventHandler<#marker>,)*)
     };
+    let binding = if needs_mut {
+        quote!(mut path)
+    } else {
+        quote!(path)
+    };
     let triggers = binds.iter().map(|b| &b.trigger);
     Ok(quote! {
+        ::bind::check_only! {
         #[automatically_derived]
         #[allow(clippy::useless_conversion, clippy::implicit_hasher)]
         impl ::bind::EventHandler<#marker> for #name #where_clause {
-            fn accumulate(
-                &self,
+            fn accumulate<'a>(
+                #binding: <Self as ::laserbeam::Resolve>::Path<'a>,
                 out: &mut ::std::collections::HashSet<<#marker as ::bind::Bindings>::Trigger>,
-            ) -> ::core::result::Result<(), ::bind::BindError> {
+            ) -> ::core::result::Result<
+                <Self as ::laserbeam::Resolve>::Path<'a>,
+                ::bind::BindError,
+            >
+            where
+                Self: 'a,
+            {
                 #(
                     ::bind::insert_or_error(out, ::core::convert::Into::into(#triggers))?;
                 )*
                 #recurse
+                ::core::result::Result::Ok(path)
             }
+        }
         }
     })
 }
 
-/// The accumulate recursion tail and the child types to bound, by node kind.
+/// The accumulate recursion, the child types to bound, and whether the path binding needs
+/// `mut`. Mirrors `dispatch_body`, minus the `ControlFlow`: accumulate never stops early.
 #[allow(clippy::option_if_let_else)]
-fn accumulate_body(input: &DeriveInput, marker: &Path) -> syn::Result<(TokenStream2, Vec<Type>)> {
+fn accumulate_body(
+    input: &DeriveInput,
+    name: &Ident,
+    marker: &Path,
+    root: bool,
+) -> syn::Result<(TokenStream2, Vec<Type>, bool)> {
     match &input.data {
         Data::Struct(s) => match find_resolve_into(&s.fields)? {
-            None => Ok((quote!(::core::result::Result::Ok(())), Vec::new())),
-            Some((field, child_ty, _route)) => {
+            None => Ok((quote!(), Vec::new(), false)),
+            Some((field, child_ty, route)) => {
                 let (child, boxed) = unbox(&child_ty);
-                let child = child.clone();
-                let recv = if boxed {
-                    quote!(&*self.#field)
-                } else {
-                    quote!(&self.#field)
+                let edge = Edge {
+                    parent: name,
+                    is_root: root,
+                    route: route.as_ref(),
+                    boxed,
+                    via: Via::Field(&field),
                 };
-                Ok((
-                    quote!(::bind::EventHandler::<#marker>::accumulate(#recv, out)),
-                    vec![child],
-                ))
+                let child_path = edge.child_path(&quote!(path));
+                let recover = edge.recover_parent(&quote!(child));
+                let recurse = quote! {
+                    let child =
+                        <#child as ::bind::EventHandler<#marker>>::accumulate(#child_path, out)?;
+                    path = #recover;
+                };
+                Ok((recurse, vec![child.clone()], true))
             }
         },
         Data::Enum(e) => {
@@ -142,18 +172,34 @@ fn accumulate_body(input: &DeriveInput, marker: &Path) -> syn::Result<(TokenStre
             for v in &e.variants {
                 let vi = &v.ident;
                 let ty = single_field_ty(&v.fields)?;
+                let route = parent_route(&v.attrs)?;
                 let (child, boxed) = unbox(&ty);
                 children.push(child.clone());
-                let recv = if boxed {
-                    quote!(&**inner)
-                } else {
-                    quote!(inner)
+                let edge = Edge {
+                    parent: name,
+                    is_root: root,
+                    route: route.as_ref(),
+                    boxed,
+                    via: Via::Variant(vi),
                 };
+                let child_path = edge.child_path(&quote!(path));
+                let recover = edge.recover_parent(&quote!(child));
                 arms.push(quote! {
-                    Self::#vi(inner) => ::bind::EventHandler::<#marker>::accumulate(#recv, out),
+                    Self::#vi(_) => {
+                        let child = <#child as ::bind::EventHandler<#marker>>::accumulate(
+                            #child_path,
+                            out,
+                        )?;
+                        path = #recover;
+                    }
                 });
             }
-            Ok((quote!(match self { #(#arms)* }), children))
+            let scrutinee = if root {
+                quote!(path)
+            } else {
+                quote!(path.get_mut())
+            };
+            Ok((quote!(match #scrutinee { #(#arms)* }), children, true))
         }
         Data::Union(_) => Err(syn::Error::new(
             input.span(),
