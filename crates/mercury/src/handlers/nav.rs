@@ -4,7 +4,7 @@ use bind::Node;
 use freddie_keys::KeyEvent;
 
 use super::and_go_home;
-use crate::tree::NavLayerPath;
+use crate::state::NavLayerPath;
 use crate::{App, MercuryEffect};
 
 pub(crate) fn open_chrome(_ev: &KeyEvent, node: Node<NavLayerPath, ()>) -> Vec<MercuryEffect> {

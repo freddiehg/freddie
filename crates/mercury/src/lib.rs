@@ -31,7 +31,7 @@
 //! caller's job (see the CLI and the tests).
 //!
 //! The code is split by concern: [`sources`] and [`effect`] are the domain types, [`model`] is
-//! the unified trigger/event/marker, [`tree`] is the state nodes and their bindings, and
+//! the unified trigger/event/marker, [`state`] is the state nodes and their bindings, and
 //! `handlers` holds the handler functions, one module per layer.
 //!
 //! Run it with `cargo run -p mercury`, or the tests with `cargo test -p mercury`.
@@ -42,12 +42,12 @@ mod effect;
 mod handlers;
 mod model;
 mod sources;
-mod tree;
+mod state;
 
 pub use effect::{MercuryEffect, Placement};
 pub use model::{MercuryEvent, MercuryStruct, MercuryTrigger};
 pub use sources::{AnyKey, App, ForegroundEvent, Foregrounded};
-pub use tree::{
+pub use state::{
     AppData, AppLayer, ChromeApp, GhosttyApp, HomeLayer, Layer, Mercury, NavLayer, ResizeLayer,
     Resolved, TypingLayer, foreground, key,
 };

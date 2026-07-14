@@ -4,7 +4,7 @@ use bind::Node;
 use freddie_keys::KeyEvent;
 
 use super::and_go_home;
-use crate::tree::ResizeLayerPath;
+use crate::state::ResizeLayerPath;
 use crate::{MercuryEffect, Placement};
 
 pub(crate) fn maximize(_ev: &KeyEvent, node: Node<ResizeLayerPath, ()>) -> Vec<MercuryEffect> {

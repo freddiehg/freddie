@@ -5,7 +5,7 @@ use freddie_keys::{Key, KeyEvent};
 
 use super::and_go_home;
 use crate::effect::tap;
-use crate::tree::{ChromeAppNode, GhosttyAppNode};
+use crate::state::{ChromeAppNode, GhosttyAppNode};
 use crate::MercuryEffect;
 
 /// `r` in Chrome: cmd-r, a refresh.

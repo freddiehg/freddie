@@ -2,7 +2,7 @@
 
 use bind::Node;
 
-use crate::tree::Mercury;
+use crate::state::Mercury;
 use crate::{ForegroundEvent, MercuryEffect};
 
 /// An app was foregrounded: record it at the root.
