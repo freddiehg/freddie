@@ -16,7 +16,10 @@ use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{Data, DeriveInput, Expr, Ident, Path, Token, Type, parse_macro_input};
 
-#[proc_macro_derive(Bind, attributes(binds, bind, resolve_into))]
+#[proc_macro_derive(
+    Bind,
+    attributes(binds, bind, resolve_into, derived_child, derived_node)
+)]
 pub fn derive_bind(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     expand(&input)
@@ -35,6 +38,13 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let marker = marker_of(input)?;
     let binds = binds(&input.attrs)?;
 
+    // A DERIVED level is not a place in the tree. It has no `Resolve`, so it can have neither
+    // `Dispatch` nor `EventHandler`, both of which take `Self::Path`. It implements `Descend`
+    // on its `Node` instead.
+    if let Some(parent) = derived_node_parent(&input.attrs)? {
+        return derived_node_impl(input, name, &parent, &marker, &binds);
+    }
+
     let accumulate = accumulate_impl(input, name, &marker, &binds)?;
     let dispatch = dispatch_impl(input, name, &marker, &binds)?;
     let descend = descend_impl(input, name, &marker)?;
@@ -42,6 +52,177 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         #accumulate
         #dispatch
         #descend
+    })
+}
+
+/// The parent path named by `#[derived_node(parent = Alias)]`, if this level is not a place.
+///
+/// The derive is on the level's own struct and cannot see its parent, so it has to be told.
+/// With the parent and its own name it can build `Node<ParentPath<'a>, Self>` itself, which is
+/// why no node alias is needed.
+fn derived_node_parent(attrs: &[syn::Attribute]) -> syn::Result<Option<Path>> {
+    let mut found = None;
+    for attr in attrs {
+        if attr.path().is_ident("derived_node") {
+            if found.is_some() {
+                return Err(syn::Error::new(
+                    attr.span(),
+                    "expected one `#[derived_node(..)]`",
+                ));
+            }
+            let mut parent = None;
+            attr.parse_nested_meta(|meta| {
+                if meta.path.is_ident("parent") {
+                    parent = Some(meta.value()?.parse::<Path>()?);
+                    Ok(())
+                } else {
+                    Err(meta.error("expected `parent = Alias`"))
+                }
+            })?;
+            found = Some(parent.ok_or_else(|| {
+                syn::Error::new(attr.span(), "`#[derived_node]` needs `parent = Alias`")
+            })?);
+        }
+    }
+    Ok(found)
+}
+
+/// The fn named by `#[derived_child(f)]`, if this node's child is not a field.
+///
+/// `f` is `fn(&Parent) -> Option<Data>`. A shared reference, so it cannot mutate the tree and
+/// cannot consume the parent.
+fn derived_child_fn(attrs: &[syn::Attribute]) -> syn::Result<Option<Path>> {
+    let mut found = None;
+    for attr in attrs {
+        if attr.path().is_ident("derived_child") {
+            if found.is_some() {
+                return Err(syn::Error::new(
+                    attr.span(),
+                    "expected one `#[derived_child(..)]`",
+                ));
+            }
+            found = Some(attr.parse_args::<Path>()?);
+        }
+    }
+    Ok(found)
+}
+
+/// Emits `Descend` (and the check's half) for a DERIVED level: its own child, then its own
+/// binds, then hand the parent back.
+///
+/// It never names its own node type. `Node<#parent<'a>, Self>` is built from the attribute and
+/// from the struct the derive sits on.
+fn derived_node_impl(
+    input: &DeriveInput,
+    name: &Ident,
+    parent: &Path,
+    marker: &Path,
+    binds: &[Binding],
+) -> syn::Result<TokenStream2> {
+    let descend = derived_dispatch_descent(input, marker)?;
+    let acc_descend = derived_accumulate_descent(input, marker)?;
+    let checks = binds.iter().map(|b| {
+        let trigger = &b.trigger;
+        let handler = &b.handler;
+        quote! {
+            if let ::core::option::Option::Some(ev) =
+                ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
+            {
+                let trigger = #trigger;
+                if ::bind::EventTrigger::is_matching(&trigger, ev) {
+                    return ::core::ops::ControlFlow::Break(#handler(ev, node));
+                }
+            }
+        }
+    });
+    let triggers = binds.iter().map(|b| &b.trigger);
+    Ok(quote! {
+        #[automatically_derived]
+        #[allow(clippy::useless_conversion)]
+        impl<'a> ::bind::Descend<#marker> for ::bind::Node<#parent<'a>, #name> {
+            fn dispatch(
+                self,
+                event: &<#marker as ::bind::Bindings>::Event,
+            ) -> ::core::ops::ControlFlow<
+                <#marker as ::bind::Bindings>::Output,
+                <Self as ::bind::HasParent>::Parent,
+            > {
+                let node = self;
+                #descend
+                #(#checks)*
+                ::core::ops::ControlFlow::Continue(::bind::HasParent::into_parent(node))
+            }
+        }
+
+        ::bind::check_only! {
+        #[automatically_derived]
+        #[allow(clippy::useless_conversion, clippy::implicit_hasher)]
+        impl<'a> ::bind::DerivedHandler<#marker> for ::bind::Node<#parent<'a>, #name> {
+            fn accumulate(
+                self,
+                out: &mut ::std::collections::HashSet<<#marker as ::bind::Bindings>::Trigger>,
+            ) -> ::core::result::Result<
+                <Self as ::bind::HasParent>::Parent,
+                ::bind::BindError,
+            > {
+                let node = self;
+                #(
+                    ::bind::insert_or_error(out, ::core::convert::Into::into(#triggers))?;
+                )*
+                #acc_descend
+                ::core::result::Result::Ok(::bind::HasParent::into_parent(node))
+            }
+        }
+        }
+    })
+}
+
+/// The `#[derived_child]` descent, for dispatch. Emitted on a PLACE and on a DERIVED level
+/// alike, because both reach a child the same way once they hold it.
+///
+/// `f` is `fn(&Parent) -> Option<Data>`: a shared reference, so the parent is never moved and
+/// never has to be handed back. The derive builds the node, and names no type it cannot see:
+/// `data`'s type comes from `f`'s return, and inference resolves `Descend` from the `Node`.
+fn derived_child_descent(f: &Path, marker: &Path, place: &TokenStream2) -> TokenStream2 {
+    quote! {
+        let #place = match #f(&#place) {
+            ::core::option::Option::Some(data) => {
+                ::bind::Descend::<#marker>::dispatch(
+                    ::bind::Node { parent: #place, data },
+                    event,
+                )?
+            }
+            ::core::option::Option::None => #place,
+        };
+    }
+}
+
+/// The same descent, for the check.
+fn derived_child_accumulate(f: &Path, marker: &Path, place: &TokenStream2) -> TokenStream2 {
+    quote! {
+        let #place = match #f(&#place) {
+            ::core::option::Option::Some(data) => {
+                ::bind::DerivedHandler::<#marker>::accumulate(
+                    ::bind::Node { parent: #place, data },
+                    out,
+                )?
+            }
+            ::core::option::Option::None => #place,
+        };
+    }
+}
+
+fn derived_dispatch_descent(input: &DeriveInput, marker: &Path) -> syn::Result<TokenStream2> {
+    Ok(match derived_child_fn(&input.attrs)? {
+        Some(f) => derived_child_descent(&f, marker, &quote!(node)),
+        None => quote!(),
+    })
+}
+
+fn derived_accumulate_descent(input: &DeriveInput, marker: &Path) -> syn::Result<TokenStream2> {
+    Ok(match derived_child_fn(&input.attrs)? {
+        Some(f) => derived_child_accumulate(&f, marker, &quote!(node)),
+        None => quote!(),
     })
 }
 
@@ -144,6 +325,13 @@ fn accumulate_body(
     marker: &Path,
     root: bool,
 ) -> syn::Result<(TokenStream2, Vec<Type>, bool)> {
+    if let Some(f) = derived_child_fn(&input.attrs)? {
+        return Ok((
+            derived_child_accumulate(&f, marker, &quote!(path)),
+            Vec::new(),
+            false,
+        ));
+    }
     match &input.data {
         Data::Struct(s) => match find_resolve_into(&s.fields)? {
             None => Ok((quote!(), Vec::new(), false)),
@@ -278,6 +466,16 @@ fn dispatch_body(
     marker: &Path,
     root: bool,
 ) -> syn::Result<(TokenStream2, Vec<Type>, bool)> {
+    // `#[derived_child(f)]`: the child is not a field, so `f` produces its data and the derive
+    // builds the node. Nothing here names the child's type, and nothing can: the derive has
+    // only `f`'s name.
+    if let Some(f) = derived_child_fn(&input.attrs)? {
+        return Ok((
+            derived_child_descent(&f, marker, &quote!(path)),
+            Vec::new(),
+            false,
+        ));
+    }
     match &input.data {
         Data::Struct(s) => match find_resolve_into(&s.fields)? {
             // A leaf descends into nothing; its path is never reassigned.

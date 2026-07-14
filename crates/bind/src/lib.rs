@@ -194,6 +194,22 @@ pub trait Descend<M: Bindings>: HasParent + Sized {
     fn dispatch(self, event: &M::Event) -> ControlFlow<M::Output, Self::Parent>;
 }
 
+/// A derived level's half of THE CHECK. It does not ship, for the same reason
+/// [`EventHandler`] does not.
+///
+/// A derived level has no [`Resolve`](::laserbeam::Resolve), so it cannot implement
+/// `EventHandler`, whose signature is written in terms of `Self::Path`. It carries its
+/// triggers here instead.
+#[cfg(feature = "check")]
+pub trait DerivedHandler<M: Bindings>: HasParent + Sized {
+    /// Adds this level's triggers to `out` and hands the PARENT back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BindError::DuplicateTrigger`] when a trigger is already claimed.
+    fn accumulate(self, out: &mut HashSet<M::Trigger>) -> Result<Self::Parent, BindError>;
+}
+
 /// The dispatch half. `#[derive(Bind)]` implements it alongside [`EventHandler`].
 ///
 /// Each node tries its active child first, then its own binds, so a child's
