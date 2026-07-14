@@ -151,7 +151,10 @@ fn dispatch_impl(
             {
                 let trigger = #trigger;
                 if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                    return ::core::ops::ControlFlow::Break(#handler(ev, path));
+                    return ::core::ops::ControlFlow::Break(#handler(
+                        ev,
+                        ::bind::Node { parent: path, data: () },
+                    ));
                 }
             }
         }

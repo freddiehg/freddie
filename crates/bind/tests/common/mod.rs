@@ -5,7 +5,7 @@
 //! return the fired key's length, so a dispatch test can see which handler ran.
 #![allow(dead_code)]
 
-use bind::{Bind, Bindings, EventTrigger};
+use bind::{Bind, Bindings, EventTrigger, Node};
 use laserbeam::{Laserbeam, Path};
 
 // Two sources: a keyboard and the foregrounded app.
@@ -81,30 +81,30 @@ impl Bindings for MercuryStruct {
 }
 
 // Handlers. Each takes its node's path and returns the fired key's length.
-pub const fn on_esc(ev: &KeyEvent, root: &mut App) -> usize {
-    root.hits += 1;
+pub fn on_esc(ev: &KeyEvent, node: Node<&mut App, ()>) -> usize {
+    node.parent.hits += 1;
     ev.key.len()
 }
-pub fn on_f1(ev: &KeyEvent, _path: LayerPath) -> usize {
+pub fn on_f1(ev: &KeyEvent, _node: Node<LayerPath, ()>) -> usize {
     ev.key.len()
 }
-pub fn on_g(ev: &KeyEvent, mut path: NavPath) -> usize {
-    path.get_mut().hits += 1;
+pub fn on_g(ev: &KeyEvent, mut node: Node<NavPath, ()>) -> usize {
+    node.parent.get_mut().hits += 1;
     ev.key.len()
 }
-pub fn on_slack(ev: &FgEvent, _path: NavPath) -> usize {
+pub fn on_slack(ev: &FgEvent, _node: Node<NavPath, ()>) -> usize {
     ev.app.len()
 }
-pub fn on_bksp(ev: &KeyEvent, mut path: TypingPath) -> usize {
-    path.get_mut().hits += 1;
+pub fn on_bksp(ev: &KeyEvent, mut node: Node<TypingPath, ()>) -> usize {
+    node.parent.get_mut().hits += 1;
     ev.key.len()
 }
-pub fn on_d(ev: &KeyEvent, mut path: DeepPath) -> usize {
-    path.get_mut().hits += 1;
+pub fn on_d(ev: &KeyEvent, mut node: Node<DeepPath, ()>) -> usize {
+    node.parent.get_mut().hits += 1;
     ev.key.len()
 }
 /// A handler for nodes a dispatch test never fires (any path, ignored).
-pub fn ignore<P>(ev: &KeyEvent, _path: P) -> usize {
+pub fn ignore<P>(ev: &KeyEvent, _node: Node<P, ()>) -> usize {
     ev.key.len()
 }
 
@@ -243,8 +243,8 @@ pub enum MediaResolved<'a> {
     Title(TitlePath<'a>),
 }
 
-pub fn on_title(ev: &KeyEvent, mut path: TitlePath) -> usize {
-    path.get_mut().hits += 1;
+pub fn on_title(ev: &KeyEvent, mut node: Node<TitlePath, ()>) -> usize {
+    node.parent.get_mut().hits += 1;
     ev.key.len()
 }
 

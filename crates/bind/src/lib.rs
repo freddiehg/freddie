@@ -74,6 +74,21 @@ where
     Ok(out)
 }
 
+/// What a handler is given: a parent, plus the immutable data this level produced.
+///
+/// `data` is `()` for every level that is a place in the tree, and it is zero-sized, so a
+/// place pays nothing for the field. A level that is NOT in the tree puts an object there.
+///
+/// `parent` is a [`laserbeam::Path`](::laserbeam::Path) when the level above is a place, so
+/// `node.parent.get_mut()` reaches it. A `Path` ADDRESSES a place; this type CARRIES data.
+/// They both sit next to a parent, and that is the whole of the resemblance.
+pub struct Node<Parent, Data> {
+    /// What the level above handed down.
+    pub parent: Parent,
+    /// The immutable data this level produced.
+    pub data: Data,
+}
+
 /// A trigger matches its source's event. Extracting the source event from the
 /// unified event (a `TryFrom<&Event> for &SourceEvent`) is the type match; this
 /// is the key match on the source event.

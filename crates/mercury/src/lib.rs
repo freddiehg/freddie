@@ -36,7 +36,7 @@
 //!
 //! Run it with `cargo run -p mercury`, or the tests with `cargo test -p mercury`.
 
-use bind::{Bind, Bindings, EventTrigger};
+use bind::{Bind, Bindings, EventTrigger, Node};
 pub use freddie_keys::{Key, KeyEvent, KeyPress, PressType};
 use laserbeam::{Ascend, Laserbeam, Path};
 
@@ -379,7 +379,8 @@ pub const fn foreground(app: App) -> MercuryEvent {
 /// layer, retarget it to the newly foregrounded app so the active bindings follow
 /// the front app (Chrome's `r` refresh applies only while Chrome is up). Layers
 /// other than in-app are left alone; foregrounding does not move you between them.
-const fn on_foregrounded(ev: &ForegroundEvent, root: &mut Mercury) -> Vec<MercuryEffect> {
+fn on_foregrounded(ev: &ForegroundEvent, node: Node<&mut Mercury, ()>) -> Vec<MercuryEffect> {
+    let root = node.parent;
     root.foregrounded = ev.app;
     // Retarget the in-app layer in place rather than rebuilding `Layer::InApp`,
     // so that whatever else the variant comes to hold survives a foregrounding.
@@ -390,7 +391,7 @@ const fn on_foregrounded(ev: &ForegroundEvent, root: &mut Mercury) -> Vec<Mercur
 }
 
 /// `q` in home: quit.
-fn quit(_ev: &KeyEvent, _path: HomeLayerPath) -> Vec<MercuryEffect> {
+fn quit(_ev: &KeyEvent, _node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
     vec![MercuryEffect::Kill]
 }
 
@@ -405,28 +406,28 @@ fn go_home(layer: &mut LayerPath<'_>) {
 /// directly. Typing has to bind it explicitly, because its catch-all would
 /// otherwise shadow the layer-level binding, and now it binds this rather than a
 /// wrapper that only existed to bridge the path type.
-fn to_home<'a, P: Ascend<LayerPath<'a>>>(_ev: &KeyEvent, path: P) -> Vec<MercuryEffect> {
-    go_home(&mut path.ascend());
+fn to_home<'a, P: Ascend<LayerPath<'a>>>(_ev: &KeyEvent, node: Node<P, ()>) -> Vec<MercuryEffect> {
+    go_home(&mut node.parent.ascend());
     Vec::new()
 }
 
 /// `n` in home: enter the nav layer.
-fn to_nav(_ev: &KeyEvent, path: HomeLayerPath) -> Vec<MercuryEffect> {
-    let mut layer = path.into_parent();
+fn to_nav(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
+    let mut layer = node.parent.into_parent();
     *layer.get_mut() = Layer::Nav(NavLayer {});
     Vec::new()
 }
 
 /// `t` in home: enter the typing layer.
-fn to_typing(_ev: &KeyEvent, path: HomeLayerPath) -> Vec<MercuryEffect> {
-    let mut layer = path.into_parent();
+fn to_typing(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
+    let mut layer = node.parent.into_parent();
     *layer.get_mut() = Layer::Typing(TypingLayer {});
     Vec::new()
 }
 
 /// `i` in home: enter the in-app layer for whatever app is foregrounded.
-fn to_inapp(_ev: &KeyEvent, path: HomeLayerPath) -> Vec<MercuryEffect> {
-    let mercury = path.into_parent().into_parent();
+fn to_inapp(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
+    let mercury = node.parent.into_parent().into_parent();
     mercury.layer = Layer::InApp(AppLayer::for_root(mercury));
     Vec::new()
 }
@@ -454,31 +455,34 @@ fn and_go_home<'a, P: Ascend<LayerPath<'a>>>(
 }
 
 /// `r` in home: enter the resize layer.
-fn to_resize(_ev: &KeyEvent, path: HomeLayerPath) -> Vec<MercuryEffect> {
-    let mut layer = path.ascend_to::<LayerPath>();
+fn to_resize(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
+    let mut layer = node.parent.ascend_to::<LayerPath>();
     *layer.get_mut() = Layer::Resize(ResizeLayer {});
     Vec::new()
 }
 
 /// The arrows in resize: place the focused window and return home.
-fn maximize(_ev: &KeyEvent, path: ResizeLayerPath) -> Vec<MercuryEffect> {
-    and_go_home(path, vec![MercuryEffect::Place(Placement::Maximize)])
+fn maximize(_ev: &KeyEvent, node: Node<ResizeLayerPath, ()>) -> Vec<MercuryEffect> {
+    and_go_home(node.parent, vec![MercuryEffect::Place(Placement::Maximize)])
 }
-fn left_half(_ev: &KeyEvent, path: ResizeLayerPath) -> Vec<MercuryEffect> {
-    and_go_home(path, vec![MercuryEffect::Place(Placement::LeftHalf)])
+fn left_half(_ev: &KeyEvent, node: Node<ResizeLayerPath, ()>) -> Vec<MercuryEffect> {
+    and_go_home(node.parent, vec![MercuryEffect::Place(Placement::LeftHalf)])
 }
-fn right_half(_ev: &KeyEvent, path: ResizeLayerPath) -> Vec<MercuryEffect> {
-    and_go_home(path, vec![MercuryEffect::Place(Placement::RightHalf)])
+fn right_half(_ev: &KeyEvent, node: Node<ResizeLayerPath, ()>) -> Vec<MercuryEffect> {
+    and_go_home(
+        node.parent,
+        vec![MercuryEffect::Place(Placement::RightHalf)],
+    )
 }
 
-fn open_chrome(_ev: &KeyEvent, path: NavLayerPath) -> Vec<MercuryEffect> {
-    and_go_home(path, vec![MercuryEffect::Foreground(App::Chrome)])
+fn open_chrome(_ev: &KeyEvent, node: Node<NavLayerPath, ()>) -> Vec<MercuryEffect> {
+    and_go_home(node.parent, vec![MercuryEffect::Foreground(App::Chrome)])
 }
-fn open_ghostty(_ev: &KeyEvent, path: NavLayerPath) -> Vec<MercuryEffect> {
-    and_go_home(path, vec![MercuryEffect::Foreground(App::Ghostty)])
+fn open_ghostty(_ev: &KeyEvent, node: Node<NavLayerPath, ()>) -> Vec<MercuryEffect> {
+    and_go_home(node.parent, vec![MercuryEffect::Foreground(App::Ghostty)])
 }
-fn open_zed(_ev: &KeyEvent, path: NavLayerPath) -> Vec<MercuryEffect> {
-    and_go_home(path, vec![MercuryEffect::Foreground(App::Zed)])
+fn open_zed(_ev: &KeyEvent, node: Node<NavLayerPath, ()>) -> Vec<MercuryEffect> {
+    and_go_home(node.parent, vec![MercuryEffect::Foreground(App::Zed)])
 }
 
 fn passthru<P>(ev: &KeyEvent, _path: P) -> Vec<MercuryEffect> {
@@ -503,12 +507,12 @@ fn tmux(modifiers: &[Key], command: Key) -> Vec<MercuryEffect> {
 }
 
 /// `j` in Ghostty: tmux's previous window. Stays, because walking windows repeats.
-fn previous_window(_ev: &KeyEvent, _path: GhosttyAppPath) -> Vec<MercuryEffect> {
+fn previous_window(_ev: &KeyEvent, _node: Node<GhosttyAppPath, ()>) -> Vec<MercuryEffect> {
     tmux(&[], Key::KeyP)
 }
 
 /// `k` in Ghostty: tmux's next window.
-fn next_window(_ev: &KeyEvent, _path: GhosttyAppPath) -> Vec<MercuryEffect> {
+fn next_window(_ev: &KeyEvent, _node: Node<GhosttyAppPath, ()>) -> Vec<MercuryEffect> {
     tmux(&[], Key::KeyN)
 }
 
@@ -523,8 +527,8 @@ fn next_window(_ev: &KeyEvent, _path: GhosttyAppPath) -> Vec<MercuryEffect> {
 /// the layer. See [`and_go_home`].
 macro_rules! select_window {
     ($($handler:ident => $digit:ident),* $(,)?) => {$(
-        fn $handler(_ev: &KeyEvent, path: GhosttyAppPath) -> Vec<MercuryEffect> {
-            and_go_home(path, tmux(&[Key::ShiftLeft], Key::$digit))
+        fn $handler(_ev: &KeyEvent, node: Node<GhosttyAppPath, ()>) -> Vec<MercuryEffect> {
+            and_go_home(node.parent, tmux(&[Key::ShiftLeft], Key::$digit))
         }
     )*};
 }
@@ -543,6 +547,6 @@ select_window! {
 }
 
 /// `r` in Chrome: cmd-r, a refresh.
-fn refresh(_ev: &KeyEvent, _path: ChromeAppPath) -> Vec<MercuryEffect> {
+fn refresh(_ev: &KeyEvent, _node: Node<ChromeAppPath, ()>) -> Vec<MercuryEffect> {
     vec![tap(&[Key::MetaLeft], Key::KeyR)]
 }
