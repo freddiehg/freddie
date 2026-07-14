@@ -23,6 +23,9 @@ repository = "https://github.com/freddiehg/freddie"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+# Unused imports, variables, and the like fail the build rather than warn, so a stray
+# import cannot slip through review.
+unused = { level = "deny", priority = -1 }
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }

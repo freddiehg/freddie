@@ -1,6 +1,5 @@
 //! In-app handlers: Chrome's refresh, and Ghostty's tmux window navigation.
 
-use bind::Node;
 use freddie_keys::{Key, KeyEvent};
 
 use super::and_go_home;

@@ -5,7 +5,7 @@
 //! the node's definition site.
 
 use bind::{Bind, Node};
-use freddie_keys::{Key, KeyEvent, KeyPress, PressType};
+use freddie_keys::{Key, KeyEvent, PressType};
 use laserbeam::{Laserbeam, Path};
 
 use crate::handlers::*;
