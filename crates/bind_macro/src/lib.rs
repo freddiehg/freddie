@@ -37,9 +37,51 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     let accumulate = accumulate_impl(input, name, &marker, &binds)?;
     let dispatch = dispatch_impl(input, name, &marker, &binds)?;
+    let descend = descend_impl(input, name, &marker)?;
     Ok(quote! {
         #accumulate
         #dispatch
+        #descend
+    })
+}
+
+/// Emits `impl Descend<M>` for a PLACE: delegate to its own `Dispatch`, then hand the parent
+/// back.
+///
+/// Per node, and not a blanket `impl<N, P> Descend<M> for Path<N, P>`: `Dispatch` carries
+/// `Self: 'a`, and the HRTB needed to state the blanket is E0311. Here the lifetime is named,
+/// so `Self: 'a` holds.
+///
+/// The root has no parent to hand back, so it gets none.
+fn descend_impl(input: &DeriveInput, name: &Ident, marker: &Path) -> syn::Result<TokenStream2> {
+    if is_root(&input.attrs) {
+        return Ok(quote!());
+    }
+    Ok(quote! {
+        #[automatically_derived]
+        impl<'a> ::bind::Descend<#marker> for <#name as ::laserbeam::Resolve>::Path<'a>
+        where
+            #name: 'a,
+        {
+            fn dispatch(
+                self,
+                event: &<#marker as ::bind::Bindings>::Event,
+            ) -> ::core::ops::ControlFlow<
+                <#marker as ::bind::Bindings>::Output,
+                <Self as ::bind::HasParent>::Parent,
+            > {
+                match <#name as ::bind::Dispatch<#marker>>::dispatch(self, event) {
+                    ::core::ops::ControlFlow::Break(out) => {
+                        ::core::ops::ControlFlow::Break(out)
+                    }
+                    ::core::ops::ControlFlow::Continue(path) => {
+                        ::core::ops::ControlFlow::Continue(
+                            ::bind::HasParent::into_parent(path),
+                        )
+                    }
+                }
+            }
+        }
     })
 }
 

@@ -142,7 +142,13 @@ When `Data` is an enum, the derive destructures per variant. There is no separat
 
 ## 8. Mercury uses it
 
-Delete `AppLayer`, `ChromeApp {}`, `GhosttyApp {}`, `OtherApp {}`, and the resync in `on_foregrounded`. `root.foregrounded` becomes the only copy and holds the app's state.
+`root.foregrounded` becomes the only copy of the foregrounded app. `InAppLayer` gets `#[derived_child]`. The existing binds (`refresh`, `previous_window`, `next_window`, `window_1..0`) move onto the derived payloads.
+
+Deletes `AppLayer`, `OtherApp {}`, and the resync in `on_foregrounded`. An app with no bindings gets no struct: the derived child fn returns `None` for it.
+
+Does NOT delete `ChromeApp {}` and `GhosttyApp {}`. They become `ChromeInfo` and `GhosttyInfo` and stay unit structs, because mercury tracks nothing per app yet. They cannot be `()`, because the derive needs distinct `Data` types to select a handler: two levels with the same `Data` would have conflicting `Descend` impls.
+
+They stop being units when mercury tracks something per app (a tab name, a pane index). Punted.
 
 ## Downstream
 

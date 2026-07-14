@@ -150,8 +150,12 @@ pub struct InAppLayer {
     pub log: String,                  // and it stores no app
 }
 
-/// The immutable data a derived level produces. Never empty: a level with no data is a level
-/// with no bindings, and it gets no struct.
+/// The immutable data a derived level produces.
+///
+/// A level with no BINDINGS gets no struct at all: the derived child fn returns `None` for
+/// it. A level with bindings and no data is a unit struct, and mercury has two of those
+/// (Chrome and Ghostty bind keys and track nothing yet). They stop being units when mercury
+/// tracks something per app.
 #[derive(Bind)]
 #[derived_node(parent = InAppLayerPath)]
 #[binds(MercuryStruct)]

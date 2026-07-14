@@ -89,6 +89,33 @@ pub struct Node<Parent, Data> {
     pub data: Data,
 }
 
+/// How a generated impl reaches the parent's type without naming it.
+///
+/// A node's derive sees one struct's tokens. When it descends into a child produced by a
+/// function it cannot know that function's return type, so it asks for `Self::Parent`
+/// instead of writing it.
+pub trait HasParent {
+    /// The parent's type: a [`laserbeam::Path`](::laserbeam::Path) when the level above is a
+    /// place, a [`Node`] when it is derived.
+    type Parent;
+    /// Consumes this node and returns the parent, moving one level up.
+    fn into_parent(self) -> Self::Parent;
+}
+
+impl<Parent, Data> HasParent for Node<Parent, Data> {
+    type Parent = Parent;
+    fn into_parent(self) -> Parent {
+        self.parent
+    }
+}
+
+impl<N, P> HasParent for ::laserbeam::Path<N, P> {
+    type Parent = P;
+    fn into_parent(self) -> P {
+        ::laserbeam::Path::into_parent(self)
+    }
+}
+
 /// A trigger matches its source's event. Extracting the source event from the
 /// unified event (a `TryFrom<&Event> for &SourceEvent`) is the type match; this
 /// is the key match on the source event.
@@ -98,6 +125,23 @@ pub trait EventTrigger {
     /// Whether the trigger matches `event`.
     #[must_use]
     fn is_matching(&self, event: &Self::Event) -> bool;
+}
+
+/// ONE descent, whatever the child is.
+///
+/// A PLACE implements it by delegating to its own [`Dispatch`] and then handing the parent
+/// back. A DERIVED level implements it directly, because it has no [`Resolve`] and so cannot
+/// have `Dispatch`.
+///
+/// It exists because a node's derive cannot name the return type of a function that produces
+/// its child. It calls this on whatever that function returned, and inference finds the impl.
+///
+/// The place impl is emitted PER NODE by the derive, not once as a blanket
+/// `impl<N, P> Descend<M> for Path<N, P>`: `Dispatch` carries `Self: 'a`, and the HRTB needed
+/// to state the blanket is E0311.
+pub trait Descend<M: Bindings>: HasParent + Sized {
+    /// Runs the active binding for `event`, or hands the PARENT back on a miss.
+    fn dispatch(self, event: &M::Event) -> ControlFlow<M::Output, Self::Parent>;
 }
 
 /// The dispatch half. `#[derive(Bind)]` implements it alongside [`EventHandler`].
