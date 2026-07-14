@@ -1,46 +1,83 @@
 # precedence and dispatch
 
-How multiple bindings on the active path resolve to one behavior. Implemented; this records the model and what is still open. Terminology: leafward means closer to the active leaf (the more-specific node), rootward means closer to the root.
+How multiple bindings on the active path resolve to one behavior, or to several. Undecided. A priority model was built and reverted (see "what was tried"); the current leaning is fan-out. This records the discussion so the decision can be made before implementing again.
 
-## The model: priority across the whole path
+Terminology: leafward means closer to the active leaf (the more specific node), rootward means closer to the root.
 
-A trigger tested against an event returns `Match::Handle(Priority) | DontHandle`, where `Priority` is an `i32`, higher wins. Dispatch is two passes over the active path:
+## What ships today
 
-- `winner` reads the tree and returns the highest priority any active binding gives the event.
-- `dispatch_at` runs the binding that handles at exactly that priority, trying the active child first, so among equal priorities the leafward one wins.
+The simplest thing. Dispatch tries the active child first and takes the first binding that matches, so a leafward binding wins by position, and exactly one handler runs. `accumulate` errors (`DuplicateTrigger`) if the same trigger is bound at two levels of the active path.
 
-So the winner is chosen by priority first and position second. That is the whole point, and it is what a bare `bool` and leaf-wins could not express.
+This has one wart, worked around by hand: typing's catch-all (`AnyKey`) sits at the leaf and matches every key, so it shadows the layer-level `escape`. The workaround was to make typing rebind `escape` itself. Broadly, a wildcard nearer the leaf shadows a specific binding nearer the root, and nothing detects it because `accumulate` compares triggers by equality and a wildcard's overlap with a specific key is not equality.
 
-## Why bool was wrong
+## The realization: two kinds of event
 
-The old rule was leafward-wins by position: dispatch tried the active child first and took the first match. That is correct until the leaf's binding is a wildcard. mercury's typing layer binds a catch-all that matches every key, and it sits at the leaf, so under leaf-wins it shadowed the layer-level `escape` binding above it. The workaround was to re-bind `escape` in typing too, which is a wart that scales with every catch-all and every key it should not swallow.
+Keys are commands: one key should do one thing, the most specific binding. That is exclusive dispatch, one winner.
 
-The overlap is invisible to equality. `accumulate` still dedups triggers by `Eq`/`Hash`, and `AnyKey` and `KeyPress(escape)` are different values, so it cannot see that one's match set contains the other's. Detecting overlap in general is undecidable (two predicates over key and press). Priority sidesteps detection entirely: the wildcard declares itself lower, and the specific key wins wherever they overlap, with no comparison of match sets.
+Foreground, and every notification like it (display change, modifier change, focused-element), are not commands. Several layers legitimately react to the same fact: the root records which app is frontmost, the in-app layer retargets its variant, an overlay redraws. That is fan-out, many handlers.
 
-## How a trigger picks its priority
+mercury only has dispatch for the first kind, so it modeled foreground as a command: one handler at the root that does everything, including reaching down to retarget the in-app layer. That central handler, and the sync bugs it caused, exist only because there is no fan-out. With fan-out, the root's handler is just `foregrounded = app` and knows nothing about the in-app layer, which subscribes to foreground for itself.
 
-The trigger's `try_match` returns the priority. In freddie_keys a specific key handles at `SPECIFIC` (0). In mercury the catch-all handles at `WILDCARD` (`SPECIFIC - 1`), one below, so a named key always beats it. A trigger that must never be overridden returns a priority nothing else reaches; a trigger meant as a fallback returns a negative one.
+## The unification: do everything at the winning tier
 
-Priority is a property of the trigger, not the binding site. Two bindings using the same trigger type get the same priority, and ties break leafward. If a specific binding must outrank another specific binding regardless of position, it needs a distinct trigger that returns a higher priority. That is the shape of a global escape hatch: a dedicated trigger at a priority above every layer's.
+Exclusion and fan-out are not two mechanisms. They are one: run every handler at the winning tier, and let ties fan out while gaps exclude.
 
-## What this gives, and what it does not
+- Escape in typing, if typing kept a catch-all: the layer's `escape` is a specific binding, the catch-all is a fallback below it. The specific tier wins, the fallback is below it and excluded. One handler.
+- Foreground: the root and the in-app layer both bind it at the same tier. Both run. Fan-out.
 
-It gives the general answer to "keep this binding from being clobbered": make its priority higher than whatever overlaps it. A wildcard cannot shadow a specific key; a rootward global cannot be shadowed by a leafward wildcard.
+So whether one handler runs or several depends only on whether their tiers tie. Commands are built so they do not tie (one binding per key on the active path), so they stay exclusive. Notifications tie on purpose, so they broadcast.
 
-It does not, on its own, give a truly unclobberable binding against a deliberate leafward binding of the *same* priority, because that is a tie and leafward wins. That is correct: a layer that explicitly rebinds a key is overriding on purpose. A binding that must survive even that needs its own high-priority trigger, which the model supports but mercury has not yet defined.
+## But the catch-all is not a binding
 
-It also does not give the killswitch its replacement for free. A global quit still needs a key the model can recognize, and a modifier chord like ctrl-q is not one event the model sees today, because modifier state is not tracked (modifier-keys.md). The precedence is the mechanism; the trigger for a global quit is the missing piece.
+The only competing pair in all of mercury is typing's catch-all versus the layer's `escape`. And a catch-all is not really a binding: it means "the default for keys I did not name." That belongs as a per-state policy, unhandled key passes through in typing and is swallowed in home, not as a wildcard that competes with real bindings. See the opt-out-of-capture idea in synchronous-dispatch.md.
+
+Reframe the catch-all as a per-state default and mercury has zero competing bindings. Then pure fan-out is correct with no tiers at all: every explicit binding that matches runs, and if none did, the state's default applies.
+
+## Why the priority model was reverted
+
+The reverted commit made a trigger's test return `Handle(Priority) | DontHandle` and dispatched by the highest priority across the path. It fixed the catch-all shadow. But it was still winner-take-all: it ran the one highest-priority handler, never several, so it did not give the foreground fan-out that turned out to be the actual want. It solved a smaller problem, thoroughly, on the wrong axis.
+
+It also over-generalized. "Explicit beats the default" is a two-level priority; the catch-all only ever needed those two levels. An `i32` of priorities is more than the one real case asked for.
+
+So it was reverted, to decide the shape before building it again.
+
+## The one question that decides everything
+
+Does a leaf ever need to override an ancestor's *explicit* binding for the same key, replacing it rather than adding to it?
+
+- If never: fan-out plus a per-state default is complete and simplest. Every real case is one binding, or independent reactors, or explicit-versus-default. No priority tiers.
+- If ever: you need suppression beyond explicit-versus-default, and something like the reverted priority comes back.
+
+The precedence doc's old motivating example, "global escape goes home, but in typing escape should type a character," is achievable with the default policy (typing does not bind escape, so the layer's escape fires) right up until you decide typing's escape should type, at which point you have two handlers for escape and a genuine override. That is a product decision, not yet made. Name a binding where a deeper layer must replace a shallower layer's action for the same physical key; if none exists, fan-out wins.
+
+## The problem that may sink fan-out: mutation invalidates the rest
+
+Fan-out means running several handlers for one event, each mutating the state tree through its path. But the first handler to run can mutate the tree so that the handlers queued after it are invalid: the variant they were going to run on is no longer active, or their path was computed against a tree that has since changed. This is the exact aliasing and staleness that laserbeam's `Path` design exists to prevent, and single-winner dispatch sidesteps it for free by running exactly one handler.
+
+It is not a rootward-versus-leafward choice. Any handler in the fan-out can mutate and invalidate the others, whichever order they run in. Order decides who reads whose write; it does not decide who invalidates whom. So ordering the fan-out does not solve this.
+
+There are three escapes, each with a cost.
+
+A notification handler may only touch its own node's local fields, never restructure the tree or change which variant is active. Then the handlers cannot invalidate each other. Restrictive, and it is unclear it holds: the in-app layer retargeting its own variant on a foreground is a structural change, so even the motivating case may break the rule.
+
+Re-resolve the active path between handlers, so each runs on a fresh valid path. Safe, and it lets an earlier handler legitimately remove a later subscriber (if the root's foreground handler navigates away from the in-app layer, the in-app handler should not run). The cost is a resolve per handler and a moving target for "which subscribers are left".
+
+Collect responses read-only, then apply. Every handler sees the same pre-mutation tree, returns effects or a state delta, and the deltas are applied after. No invalidation, because nothing mutates during the fan-out. But this is the barnum model, handlers returning a value the engine writes back, which freddie deliberately rejected in favour of mutating through the cursor. Fan-out may force that model back for notifications.
+
+This is the strongest argument against fan-out, and it points at the other option.
+
+## The alternative fan-out avoids: derive on resolve
+
+The reason the in-app layer wants a foreground handler is to keep its variant in sync with `foregrounded`. But sync is only needed because the variant is a stored copy. If the in-app layer instead *resolved* to the Chrome child exactly when `foregrounded == Chrome`, computed fresh every dispatch, there would be nothing to keep in sync, no handler, no mutation, and therefore no invalidation. Derivation is idempotent; it cannot invalidate anything.
+
+The cost is the opposite one: `resolve` would have to read state held on an ancestor (the root's `foregrounded`) to pick a child, which laserbeam's resolve does not do today, it descends and each node picks its child from its own fields. This is the ancestor-selector generalization of laserbeam-state-controlled-children.md.
+
+So the two ways to decouple the root from the in-app layer are fan-out, which reintroduces the invalidation problem, and derive-on-resolve, which does not mutate at all. The invalidation problem is a real reason to prefer the second.
+
+## What changes regardless
+
+`accumulate` forbids the same trigger at two levels (`DuplicateTrigger`). Root and the in-app layer both binding `Foregrounded` is exactly that, and is exactly the intentional fan-out. So whichever way the question above goes, `accumulate` has to stop treating "same trigger, two nodes" as an error and start distinguishing intentional sharing from accidental clobber.
 
 ## The road not taken
 
-Two alternatives were considered and are worse for this.
-
-Static winner chosen at accumulation. Pick one handler per trigger up front. But a wildcard and a specific key are different triggers, so this still needs overlap detection, which is the thing priority avoids.
-
-Dynamic fall-through, where a matched handler returns whether it handled the event and dispatch falls through on decline. This is strictly more powerful, since a leafward handler can take some cases and pass the rest rootward. It is also more machinery: a chain kept per trigger and a handler-return protocol. The priority model resolves selection before any handler runs, which is simpler and enough for everything wanted so far. Fall-through remains available as an additive future step if a handler ever needs to conditionally decline.
-
-## Open questions
-
-- A dedicated high-priority trigger for a global escape hatch (the ctrl-q case), gated on modifier state so the chord is one recognizable event.
-- Whether a binding site should be able to override its trigger's priority, for the rare case where the same trigger type wants different precedence in different places.
-- Whether accumulate's `DuplicateTrigger` is still the right guard now that overlap is resolved by priority. Two equal triggers at the same priority on one path is still ambiguous and still an error; the question is only whether that is the useful line.
+Dynamic fall-through, where a matched handler returns whether it handled the event and dispatch falls through on decline, is strictly more powerful than any of the above: a leafward handler can take some cases and pass the rest rootward. It is also the most machinery, a handler-return protocol and a kept chain. Nothing wanted so far needs it, and it composes as an additive step later if it ever does.
