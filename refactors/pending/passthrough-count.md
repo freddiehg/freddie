@@ -185,32 +185,14 @@ move |ev| {
 
 `root.passthrough` is a plain read on the same thread; no atomic, no channel. Keeping the original is what carries Wispr's inline `cmd` flag through; the re-emit dropped it.
 
-Exception: some keys in passthrough are still commands (typing's escape, the `cmd`-`alt`-`p` unpause). Those must NOT be kept — the tap has to drop them so the model acts. So the rule is "keep unless the current passthrough state still claims this key as a command," and how the tap knows that synchronously is the open part.
+The command keys that exit a passthrough state (typing's `cmd`-`escape`, the `cmd`-`alt`-`p` unpause) drop on their own: `dispatch` runs first and flips the state out of passthrough, so `is_active()` is already false by the check and the tap drops that key. No dispatch-result plumbing needed. (A hypothetical command that stayed IN a passthrough layer would need more, but there are none.) The residual is the stuck modifier -- a `cmd` passed through while paused whose up is later swallowed in a command layer -- which is the model's job, not the tap's: emit the corrective release from `held` (`held-modifiers.md`).
 
 ## Held modifiers
 
-`held` is a plain struct with a bool per modifier key, all of them, left and right distinguished, so the model always knows exactly what is down. No `Option<Key>`, no "which cmd" ambiguity.
-
-```rust
-#[derive(Debug, Default)]
-pub struct HeldModifiers {
-    pub meta_left: bool,
-    pub meta_right: bool,
-    pub control_left: bool,
-    pub control_right: bool,
-    pub alt_left: bool,
-    pub alt_right: bool,
-    pub shift_left: bool,
-    pub shift_right: bool,
-}
-```
-
-Modifiers stay ordinary keys: a catch-all handler still matches every key and just branches, `matches!(ev.key, Key::MetaLeft)` and friends, setting the matching bool on each down/up. Making the catch-all trigger itself skip modifiers (a `NonModifierKey`) is a follow-up, not this doc -- `modifier-keys.md`'s point is that modifiers are not special, so nothing at the trigger level should treat them so.
-
-A `u128` bitset over every key, one bit each, is the eventual tighter form (set/test with bit magic), but the explicit bool struct is fine for now.
+`held` is one struct on the root, `control`/`meta`/`alt`/`shift` each a `LeftRightPair` of two bools, with `any_held()` / `hold_left` / `release_left` and friends. It is the single source of truth for what is down; a swallowing transition walks it to emit corrective ups. The struct and methods live in `held-modifiers.md`; this doc just consumes it (the tap reads nothing from it, the layers no longer hold their own copy).
 
 ## Open questions
 
-- The command-key exception in the tap: how it decides keep-vs-drop for keys that are commands even in passthrough (typing's escape, the `cmd`-`alt`-`p` unpause). The `is_active()`-only tap above keeps too much: `cmd` down is kept while paused, then the unpause `p` drops, so the `cmd` up (now in home) is dropped and the modifier is left stuck -- the same stuck-modifier shape as before. The tap needs the dispatch result, not just `is_active()`, to know a key was consumed as a command. Still open.
+- The stuck modifier: `held` on the root makes it fixable but does not close it; the corrective-emit wiring (walk `held`, `release_*` the modifiers a transition swallows) is the actual work. See `held-modifiers.md`. NOT the tap's problem -- the tap's `is_active()`-after-dispatch keep-vs-drop is correct, as the Exception paragraph above lays out.
 - Where `held` lives (root vs the layer that needs it) under one-handler-per-event, and whether that forces the `no-clobber.md` decision. Still open.
-- Deferred follow-ups: the `NonModifierKey` trigger, the `u128` held-keys bitset, and reconciling the emitter's own modifier-flag reconstruction (`self.flags` / `next_flags`) with `held` so modifier state has a single home rather than one tracker in the model and another in the emitter.
+- Deferred follow-ups (own docs): moving passthrough and modifier tracking off the layers to the root, and the `NonModifierKey` trigger (`root-passthrough.md`); the `u128` held-keys form and the emitter-flags reconciliation (`held-modifiers.md`).

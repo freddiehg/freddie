@@ -1,6 +1,6 @@
 # passthrough and modifiers move to the root
 
-Not built. The follow-up to `passthrough-count.md`: take passing-keys-through off the layers entirely and put it, and modifier handling, at the root. The end state is that `TypingLayer` and `Paused` bind only their own commands and are otherwise inert markers; the root does all the passthrough and all the modifier tracking; and modifier keys are not special anywhere.
+Not built, and the deferred follow-up: doing ALL passthrough on the root. `held-modifiers.md` moves the modifier state to the root and keeps the per-layer catch-alls; this doc takes passing-keys-through off the layers entirely and puts it, and the modifier handling, in one root catch-all. The end state is that `TypingLayer` and `Paused` bind only their own commands and are otherwise inert markers; the root does all the passthrough and all the modifier tracking; and modifier keys are not special anywhere. The `HeldModifiers` struct itself is `held-modifiers.md`'s; this doc only moves who updates it.
 
 ## What is still on the layers today
 
@@ -72,5 +72,5 @@ The fall-through is smaller and keeps the dispatch model; the multi-cast is clea
 
 - Fall-through versus multi-cast (the `no-clobber.md` decision), and whether the root's passthrough/modifier logic is a real last-resort handler or a per-event side-channel.
 - Whether the `ActivePassthroughLayer` count survives at all, or is replaced by reading the active layer (and paused-ness) off the tree directly.
-- The command-key exception carried over from `passthrough-count.md`: keys that are commands even in passthrough (typing's escape, the unpause chord) must still be swallowed, and the stuck-modifier hazard when a `cmd` is passed through but its up is later swallowed. The single `held` on the root is what makes it fixable (`held-modifiers.md`).
+- The stuck-modifier hazard when a `cmd` is passed through but its up is later swallowed. The single `held` on the root is a precondition, not the fix; the corrective-emit wiring is the work (`held-modifiers.md`). (The keep-vs-drop for command keys is settled in `passthrough-count.md`: `is_active()`-after-dispatch, not the tap needing the dispatch result.)
 - The single `held` struct, its update site, the emitter-flags reconciliation, and the `u128` form all live in `held-modifiers.md`.
