@@ -15,7 +15,7 @@ use laserbeam::PathMut;
 use crate::handlers::*;
 use crate::{
     AnyKey, App, Foregrounded, ForegroundEvent, MercuryEffect, MercuryEvent, MercuryStruct, Quit,
-    QuitEvent, Toggle, ToggleEvent,
+    QuitEvent,
 };
 
 #[derive(Bind, Debug)]
@@ -24,7 +24,6 @@ use crate::{
 #[bind(
     Foregrounded => on_foregrounded,
     Quit => on_quit,
-    Toggle => on_toggle,
 )]
 pub struct Mercury {
     pub foregrounded: App,
@@ -33,117 +32,14 @@ pub struct Mercury {
     /// old app until the foreground event lands, so the in-app level stays empty
     /// rather than binding the old app in the gap. See [`app_data`].
     pub has_navigated: bool,
-    /// Whether mercury is remapping, and the layer it holds. One source of truth: the layer
-    /// lives inside `power`, not in a field beside a flag. See [`Power`].
+    /// The active layer. The one source of truth for where mercury is; every transition MOVES
+    /// it between variants.
     #[resolve_into]
-    pub power: Power,
+    pub layer: Layer,
 }
 
-/// Unpaused/disabled, carrying the layer in both arms.
-///
-/// The layer lives here rather than in a `Mercury` field next to a flag, so there is one source
-/// of truth and the menu-bar Toggle just MOVES the layer between arms. The two arms differ only
-/// in whether they descend into the layer: [`Unpaused`] does (`#[resolve_into]`), so the layer
-/// tree is live; [`Paused`] does not, so the layer's bindings are off and its catch-all passes
-/// keys through. See `enable-disable.md`.
 #[derive(Bind, Debug)]
 #[node(parent = MercuryPath)]
-#[binds(MercuryStruct)]
-pub enum Power {
-    Unpaused(Unpaused),
-    Paused(Paused),
-}
-
-/// The unpaused arm: descends into the layer, so the layer tree is live.
-#[derive(Bind, Debug)]
-#[node(parent = PowerPath)]
-#[binds(MercuryStruct)]
-pub struct Unpaused {
-    #[resolve_into]
-    pub layer: Layer,
-}
-
-/// The command keys the disabled arm tracks as held, to recognize the re-enable chord
-/// (`cmd`-`alt`-`p`). Each holds WHICH key is down (left or right), so the passthrough can emit
-/// the exact release when the chord fires, and not leave a modifier stuck.
-#[derive(Debug, Default)]
-pub struct HeldModifiers {
-    pub cmd: Option<Key>,
-    pub alt: Option<Key>,
-}
-
-/// The paused arm: holds the layer WITHOUT a `#[resolve_into]`.
-///
-/// So dispatch does not descend into it and the layer's bindings are off. Its own catch-all
-/// passes every key through, so the keyboard is normal while mercury is paused, except the
-/// unpause chord `cmd`-`alt`-`p`. The layer is kept so unpausing resumes it.
-#[derive(Bind, Debug)]
-#[node(parent = PowerPath)]
-#[binds(MercuryStruct)]
-#[bind(AnyKey => pass_through)]
-pub struct Paused {
-    pub layer: Layer,
-    pub held: HeldModifiers,
-}
-
-impl Paused {
-    /// A freshly paused arm holding `layer`, nothing held.
-    const fn new(layer: Layer) -> Self {
-        Self {
-            layer,
-            held: HeldModifiers {
-                cmd: None,
-                alt: None,
-            },
-        }
-    }
-}
-
-impl Power {
-    /// The layer, whichever arm holds it.
-    #[must_use]
-    pub const fn layer(&self) -> &Layer {
-        match self {
-            Self::Unpaused(u) => &u.layer,
-            Self::Paused(p) => &p.layer,
-        }
-    }
-
-    /// The layer mutably, whichever arm holds it.
-    pub const fn layer_mut(&mut self) -> &mut Layer {
-        match self {
-            Self::Unpaused(u) => &mut u.layer,
-            Self::Paused(p) => &mut p.layer,
-        }
-    }
-
-    /// Flips paused/unpaused, keeping the layer.
-    pub(crate) const fn toggle(&mut self) {
-        *self = match std::mem::replace(self, Self::Paused(Paused::new(Layer::Home(HomeLayer {})))) {
-            Self::Unpaused(u) => Self::Paused(Paused::new(u.layer)),
-            Self::Paused(p) => Self::Unpaused(Unpaused { layer: p.layer }),
-        };
-    }
-
-    /// Pauses, keeping the layer. A no-op if already paused.
-    pub(crate) const fn pause(&mut self) {
-        *self = match std::mem::replace(self, Self::Paused(Paused::new(Layer::Home(HomeLayer {})))) {
-            Self::Unpaused(u) => Self::Paused(Paused::new(u.layer)),
-            already @ Self::Paused(_) => already,
-        };
-    }
-
-    /// Unpauses, keeping the layer. A no-op if already unpaused.
-    pub(crate) const fn unpause(&mut self) {
-        *self = match std::mem::replace(self, Self::Paused(Paused::new(Layer::Home(HomeLayer {})))) {
-            Self::Paused(p) => Self::Unpaused(Unpaused { layer: p.layer }),
-            already @ Self::Unpaused(_) => already,
-        };
-    }
-}
-
-#[derive(Bind, Debug)]
-#[node(parent = UnpausedPath)]
 #[binds(MercuryStruct)]
 #[bind(Key::Escape.down() => to_home)]
 pub enum Layer {
@@ -162,7 +58,6 @@ pub enum Layer {
     Key::KeyR.down() => to_resize,
     Key::KeyT.down() => to_typing,
     Key::KeyI.down() => to_inapp,
-    Key::KeyP.down() => pause,
     Key::KeyQ.down() => quit,
 )]
 pub struct HomeLayer {}
@@ -244,9 +139,8 @@ pub enum AppData {
 /// A shared reference, so it cannot mutate: it derives, it does not act. `Zed` and `Other`
 /// bind nothing, so they get no level and no struct.
 const fn app_data(path: &AppLayerPath) -> Option<AppData> {
-    // AppLayer -> Layer -> Unpaused -> Power -> Mercury. (app_data only exists under the enabled
-    // arm, so it always ascends through `Unpaused`.)
-    let root = path.parent().parent().parent().parent();
+    // AppLayer -> Layer -> Mercury.
+    let root = path.parent().parent();
     // A navigation is in flight: the foreground event has not landed, so
     // `foregrounded` is still the previous app. Bind nothing until the watcher
     // confirms the new front app and clears the flag, so a key pressed in the gap
@@ -291,10 +185,7 @@ pub struct GhosttyApp {}
 
 /// The root's path is `&mut Self`; naming it lets the root's children say `parent = MercuryPath`.
 pub type MercuryPath<'a> = &'a mut Mercury;
-pub type PowerPath<'a> = PathMut<Power, MercuryPath<'a>>;
-pub type UnpausedPath<'a> = PathMut<Unpaused, PowerPath<'a>>;
-pub type PausedPath<'a> = PathMut<Paused, PowerPath<'a>>;
-pub type LayerPath<'a> = PathMut<Layer, UnpausedPath<'a>>;
+pub type LayerPath<'a> = PathMut<Layer, MercuryPath<'a>>;
 pub type HomeLayerPath<'a> = PathMut<HomeLayer, LayerPath<'a>>;
 pub type NavLayerPath<'a> = PathMut<NavLayer, LayerPath<'a>>;
 pub type ResizeLayerPath<'a> = PathMut<ResizeLayer, LayerPath<'a>>;
@@ -309,9 +200,7 @@ impl Default for Mercury {
         Self {
             foregrounded: App::Other,
             has_navigated: false,
-            power: Power::Unpaused(Unpaused {
-                layer: Layer::Home(HomeLayer {}),
-            }),
+            layer: Layer::Home(HomeLayer {}),
         }
     }
 }
@@ -324,10 +213,10 @@ impl Mercury {
         bind::dispatch::<MercuryStruct, Self>(self, event)
     }
 
-    /// The active layer, whichever `Power` arm holds it.
+    /// The active layer.
     #[must_use]
     pub const fn layer(&self) -> &Layer {
-        self.power.layer()
+        &self.layer
     }
 }
 
@@ -350,10 +239,4 @@ pub const fn foreground(app: App) -> MercuryEvent {
 #[must_use]
 pub const fn quit_event() -> MercuryEvent {
     MercuryEvent::Quit(QuitEvent)
-}
-
-/// A toggle-request event (the menu bar's Toggle).
-#[must_use]
-pub const fn toggle_event() -> MercuryEvent {
-    MercuryEvent::Toggle(ToggleEvent)
 }

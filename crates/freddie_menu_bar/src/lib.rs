@@ -20,25 +20,21 @@ pub struct MenuBar {
     _tray: TrayIcon,
 }
 
-/// Shows the menu-bar status item with a Toggle and a Quit entry. `on_toggle` and
-/// `on_quit` run, on the main thread, when the user chooses the matching item.
+/// Shows the menu-bar status item with a single Quit entry. `on_quit` runs, on the
+/// main thread, when the user chooses it.
 ///
 /// # Errors
 ///
 /// Returns the underlying error if the menu or the status item cannot be created.
 pub fn show(
-    on_toggle: impl Fn() + Send + Sync + 'static,
     on_quit: impl Fn() + Send + Sync + 'static,
 ) -> Result<MenuBar, Box<dyn std::error::Error + Send + Sync>> {
-    // Each item and its id, so the handler can tell them apart. `None` is the keyboard
+    // The item and its id, so the handler can recognize it. `None` is the keyboard
     // accelerator: a status-item menu does not need one.
-    let toggle = MenuItem::new("Pause / Unpause", true, None);
-    let toggle_id = toggle.id().clone();
     let quit = MenuItem::new("Quit", true, None);
     let quit_id = quit.id().clone();
 
     let menu = Menu::new();
-    menu.append(&toggle)?;
     menu.append(&quit)?;
 
     let tray = TrayIconBuilder::new()
@@ -54,9 +50,7 @@ pub fn show(
     // muda delivers menu events through one global handler. It fires on the main
     // thread, during menu tracking, which the NSApp pump (freddie_main_loop) drives.
     MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
-        if event.id == toggle_id {
-            on_toggle();
-        } else if event.id == quit_id {
+        if event.id == quit_id {
             on_quit();
         }
     }));
