@@ -37,7 +37,7 @@ pub struct Mercury {
 
 ## `HeldModifiers` (`state.rs`)
 
-`track` records each modifier key's up and down. `flags` reads the current state as a bitset. `open` emits a DOWN for every held key, `close` an UP; each swept event carries the flags as they stand after its own change, so a shared left/right bit clears only when both sides are up. `caps_lock` is a lock, not a held key: it changes on press, so it cannot be swept and is not tracked here. It is not a modifier, so `AnyNonModifierKey` matches it and `maybe_passthru` passes it through like any other key.
+`apply` records each modifier key's up and down. `flags` reads the current state as a bitset. `open` emits a DOWN for every held key, `close` an UP; each swept event carries the flags as they stand after its own change, so a shared left/right bit clears only when both sides are up. `caps_lock` is a lock, not a held key: it changes on press, so it cannot be swept and is not tracked here. It is not a modifier, so `AnyNonModifierKey` matches it and `maybe_passthru` passes it through like any other key.
 
 ```rust
 #[derive(Debug, Default, Clone, Copy)]
@@ -69,7 +69,7 @@ pub struct HeldModifiers {
 }
 
 impl HeldModifiers {
-    pub fn track(&mut self, ev: &KeyEvent) {
+    pub fn apply(&mut self, ev: &KeyEvent) {
         let is_down = ev.press == PressType::Down;
         match ev.key {
             Key::ControlLeft  => self.control.set(Side::Left,  is_down),
@@ -92,7 +92,7 @@ impl HeldModifiers {
         let mut out = Vec::new();
         for key in Self::MODIFIER_KEYS {
             if self.is_down(key) {
-                shown.track(&KeyEvent { key, press, flags: ModifierFlags::empty() });
+                shown.apply(&KeyEvent { key, press, flags: ModifierFlags::empty() });
                 out.push(emit(key, press, shown.flags()));
             }
         }
@@ -171,7 +171,7 @@ No layer binds a modifier, so a modifier key falls to the root in every layer. `
 ```rust
 pub(crate) fn on_modifier(ev: &KeyEvent, node: Node<&mut Mercury, ()>) -> Vec<MercuryEffect> {
     let root = node.parent;
-    root.held.track(ev);
+    root.held.apply(ev);
     if root.layer().is_passthrough() {
         vec![emit(ev.key, ev.press, root.held.flags())]
     } else {
