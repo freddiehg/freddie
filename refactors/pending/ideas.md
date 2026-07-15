@@ -119,3 +119,145 @@ A binding that opens the source of the binding you just pressed. The derive know
 Everything above is a source or a sink. The model in the middle does not care, and that is the whole thesis: freddie is not a keyboard remapper. `refactors/past/overall-plan.md` claims a router and a reactive UI are the same machine, and nothing has tested that claim.
 
 The cheapest test is the smallest second consumer. Not figaro, not a browser app. Something like a state machine for a build pipeline, or a vending machine, or a traffic light, written against laserbeam and bind with no keyboard anywhere. If that is awkward, the abstraction is a keyboard remapper wearing a costume, and better to find out now.
+
+-----
+
+_The user wants a broad catalog of what people actually do with Karabiner and similar keyboard/input remapping tools. Let me think about this properly and organize by category. This is a factual/knowledge question, no need to search — I know this domain well.
+
+Let me be comprehensive and cover the real breadth. Let me organize into categories.A catalog, organized by mechanism/category. I've tried to cover the actual breadth including the weird tail, not just the greatest hits. Some of these overlap tools (Karabiner, QMK/ZMK for firmware, Hammerspoon, BetterTouchTool, AutoHotkey, kanata, kmonad, espanso).
+
+## Simple key remaps (1:1)
+1. Caps Lock → Escape
+2. Caps Lock → Control
+3. Caps Lock → Escape (tap) / Control (hold) — the dual-role classic
+4. Caps Lock → Hyper (⌘⌥⌃⇧ all at once)
+5. Right Command → something useful (it's wasted otherwise)
+6. Swap Command and Option (for ex-Windows/Linux users)
+7. Swap Control and Command (partial Emacs-in-everything)
+8. Left Control → Escape or Control dual-role
+9. Enter/Return → Control (hold) / Return (tap)
+10. Both Shifts → Caps Lock (since Caps got stolen)
+11. Fn key relocation / making Fn a real modifier
+12. Backslash or Tab → modifier
+13. Space → Shift (hold) / Space (tap) — "space cadet"
+14. Swap Escape and backtick
+15. Disable a key entirely (e.g. kill Caps, kill the Insert key)
+16. Right Option → compose key / dedicated symbol modifier
+17. Menu key → something (Windows keyboards)
+18. Remap the Globe/Fn behavior on Apple keyboards
+
+## Layers (the core power feature)
+19. Home-row nav layer: hjkl or wasd → arrows under a hold key
+20. Symbol layer: easy access to `{}[]()<>` etc. without reaching
+21. Number/numpad layer over the right hand
+22. Function-key layer (F1–F12 without a function row)
+23. Media layer (play/pause/vol/brightness)
+24. Mouse-move layer (move cursor with keys)
+25. Navigation layer (Home/End/PgUp/PgDn/word-jump)
+26. Window-management layer
+27. Emoji/Unicode/symbol-insertion layer
+28. Momentary vs. toggle/locked layers
+29. One-shot layers (fire once then auto-exit)
+30. Nested layers (layer-tap into another layer)
+31. "Leader key" sequences (vim-style: tap leader, then a sequence)
+32. App-launch layer (one hold + letter = launch/focus app)
+
+## Home-row mods / advanced dual-role
+33. Home-row mods: a/s/d/f and j/k/l/; become Ctrl/Alt/Cmd/Shift on hold
+34. Tap-hold on nearly any key
+35. Modifier-tap: hold for mod, tap for the letter
+36. Tuning tap-hold timing (term, permissive-hold, hold-on-other-press) to kill misfires
+37. Combos/chords: press two adjacent keys together → a third action
+38. Adaptive keys / sequential remaps (key B behaves differently right after key A)
+
+## Modifier-conditional bindings
+39. Simultaneous key press (e.g. `f`+`j` together → Escape)
+40. Long-press vs short-press distinctions
+41. Double-tap Shift → Caps Lock toggle
+42. Triple-tap or N-tap actions
+43. Hold-duration-dependent output (short/medium/long → different keys)
+
+## Per-application / context-conditional
+44. Different bindings per foreground app (the thing you mentioned)
+45. Terminal-only bindings (e.g. make Cmd+K clear behave right)
+46. Browser-only bindings (Cmd+L, tab nav, back/forward)
+47. IDE/editor-specific remaps (VSCode, JetBrains, Vim)
+48. Disable Caps→Ctrl remap *inside* a specific app that needs raw Caps
+49. Per-device rules (external mechanical keyboard vs. laptop keyboard get different maps)
+50. Condition on keyboard type (ANSI vs. ISO, Apple internal vs. third-party)
+51. Condition on connected/paired state (only when docked)
+52. Condition on input source / keyboard language (US vs. non-US layout)
+53. Condition on a variable/mode flag you set yourself
+54. Window-title-based conditions (not just app, but which window)
+55. Gaming profile that disables all your fancy remaps so games see raw keys
+
+## Emacs / readline emulation everywhere
+56. Ctrl+A/E (line start/end) system-wide
+57. Ctrl+P/N/B/F as arrows
+58. Ctrl+H as backspace, Ctrl+W delete-word, Ctrl+U kill-line
+59. Ctrl+D forward-delete
+60. Ctrl+G as Escape
+61. Full readline nav layer bolted onto every text field
+
+## Vim-style anywhere
+62. Global vim navigation mode (hjkl scroll/move outside of Vim)
+63. A "normal mode" toggle for system-wide modal editing
+64. Escape mapped conveniently for heavy Vim users (jk, Caps, etc.)
+
+## Text expansion / macros / typing
+65. Static text expansion (`;email` → your address) — espanso territory
+66. Dynamic snippets (date/time insertion, clipboard, shell output)
+67. Auto-correct personal typos globally
+68. Type Unicode/emoji by name
+69. Accented-character / diacritic input via compose
+70. Insert boilerplate (signatures, code snippets, licenses)
+71. Macro: one key → a sequence of keystrokes
+72. Macro: one key → keystrokes + delays (for dumb apps/games)
+73. Password/2FA-adjacent quick-fill (people do it; security-questionable)
+
+## Window & workspace management
+74. Move/resize windows to halves/quarters/thirds via hotkey
+75. Move window to next display
+76. Switch spaces/desktops
+77. Focus-follows-key app switching (hotkey → specific app)
+78. Tiling-WM-style keyboard control (yabai + skhd combo)
+79. Cycle windows of the same app
+
+## Mouse & pointer from the keyboard
+80. Keyboard-driven mouse movement (with acceleration curves)
+81. Keyboard click / right-click / middle-click
+82. Scroll via keys
+83. Remap actual mouse buttons (side buttons → back/forward, modifiers)
+84. Mouse-button + key combos
+85. Scroll-wheel behavior changes (natural/reverse per device, or → zoom)
+
+## Chording / stenography-adjacent
+86. Custom chord dictionaries (press key-groups → whole words)
+87. Steno-lite input for common phrases
+
+## Media, hardware, system control
+88. Volume/brightness/media on a layer
+89. Launch scripts/shell commands from a key (Hammerspoon, skhd)
+90. Trigger Shortcuts.app / AppleScript / Automator
+91. Toggle system settings (dark mode, do-not-disturb, wifi) from a key
+92. Control external hardware / smart home via a key → script
+93. Sleep display, lock screen, start screensaver hotkeys
+
+## Feedback / visibility / debugging
+94. Display current layer/mode in the menu bar or an overlay (your "url bar" idea — people surface state in Hammerspoon menubar, Übersicht, KeyCastr-style HUDs)
+95. On-screen keystroke display (KeyCastr) for screencasts/demos
+96. Visual layer cheat-sheet overlay that pops on hold
+97. Sound/haptic feedback on layer switch
+98. Event viewer / key-code inspector to build new rules
+
+## Ergonomics / accessibility / niche
+99. Sticky keys done right (one-shot modifiers) to avoid chording strain
+100. Auto-Shift (long-press any letter → capital), key-repeat rate tuning, debounce for failing switches, and "achordion"-style same-hand-mod suppression
+
+A few structuring notes for your demo, since coverage is the goal:
+
+The genuinely load-bearing primitives are tap-hold (dual-role), layers, combos/chords, and per-app conditions. Almost everything above is a composition of those four plus an action type (send key / send sequence / run script / set variable). If your demo makes those four first-class and composable, you cover ~80% of real configs by surface area.
+
+The thing most remapping demos botch is timing semantics. Tap-hold and combos live or die on the resolution rules (permissive hold, hold-on-other-key-press, tapping term, chord timeout). A demo that shows a binding working but hand-waves *how it decides tap vs hold* will read as a toy to anyone who's actually fought Karabiner or QMK. Worth making that visible/tunable even in a demo.
+
+One category you didn't list that's worth including for breadth: **stateful/variable-driven** behavior (set a flag with one key, other keys read it). It's what separates a remapper from a mini programmable input layer, and it's how people build modal systems, leader keys, and "gaming mode" toggles. Also **feedback/visibility** (your url-bar point generalized) — showing internal state is underrepresented in most tools and is a natural differentiator.

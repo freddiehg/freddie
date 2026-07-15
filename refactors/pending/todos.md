@@ -1,5 +1,15 @@
 # todos
 
-Small, easy-to-state items that do not warrant a doc of their own. One line each. Anything big or subtle gets its own doc and comes off this list.
+Blocking "mercury launch"
 
-- Exhaustive dispatch tests: every key in every reachable state, asserting exactly the effects and resulting state. The model is a pure function, so the full table is checkable and doubles as the keymap's documentation.
+- Chrome extension that emits url of current tab
+- new chat in claude
+- run at start, perhaps restart?
+- layer display in icon
+- show overlay (e.g. see what we're doing in voice-mode) - from any state? and from menu bar, overlay closes after some time automatically
+- ensure that this works reasonably for someone without my karabiner keybindings
+  - disable karabiner
+  - caps -> esc, ctrl when pressed
+- audit things
+- documentation
+- website
