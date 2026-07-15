@@ -9,7 +9,7 @@
 //! laserbeam `Path` through the shared `derive_support::Edge`.
 
 use derive_support::{
-    Edge, Via, find_resolve_into, is_root, laserbeam_path, parent_route, single_field_ty, unbox,
+    Edge, Via, find_resolve_into, is_root, node_parent, parent_route, single_field_ty, unbox,
 };
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -20,7 +20,7 @@ use syn::{Data, DeriveInput, Expr, Ident, Path, Token, Type, parse_macro_input};
 
 #[proc_macro_derive(
     Bind,
-    attributes(binds, bind, resolve_into, derived_child, derived_node, laserbeam, laserbeam_root)
+    attributes(binds, bind, resolve_into, derived_child, derived_node, node)
 )]
 pub fn derive_bind(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -59,20 +59,21 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     })
 }
 
-/// Emits `impl bind::Place` for a place node: its path type, from `#[laserbeam(path = P)]` or
-/// `#[laserbeam_root]`. This is the associated type that `Dispatch`, `EventHandler`, and the
+/// Emits `impl bind::Place` for a place node: its path type, `PathMut<Self, Parent>` from
+/// `#[node(parent = P)]`, or `&mut Self` for `#[node(root)]`. This is the associated type that
+/// `Dispatch`, `EventHandler`, and the
 /// place `Descend` impl all name.
 fn place_impl(input: &DeriveInput, name: &Ident) -> syn::Result<TokenStream2> {
     let path_ty = if is_root(&input.attrs) {
         quote!(&'a mut Self)
     } else {
-        let p = laserbeam_path(&input.attrs)?.ok_or_else(|| {
+        let parent = node_parent(&input.attrs)?.ok_or_else(|| {
             syn::Error::new(
                 input.ident.span(),
-                "a bind node needs `#[laserbeam(path = ..)]` or `#[laserbeam_root]`",
+                "a bind node needs `#[node(parent = ..)]` or `#[node(root)]`",
             )
         })?;
-        quote!(#p<'a>)
+        quote!(::laserbeam::PathMut<Self, #parent<'a>>)
     };
     Ok(quote! {
         #[automatically_derived]

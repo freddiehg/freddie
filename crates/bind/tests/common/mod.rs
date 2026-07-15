@@ -110,7 +110,7 @@ pub fn ignore<P>(ev: &KeyEvent, _node: Node<P, ()>) -> usize {
 
 // App -> Layer (enum) -> { Nav (leaf), Typing -> Box<Deep> (leaf) }.
 #[derive(Bind)]
-#[laserbeam_root]
+#[node(root)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("esc") => on_esc)]
 pub struct App {
@@ -120,7 +120,7 @@ pub struct App {
 }
 
 #[derive(Bind)]
-#[laserbeam(path = LayerPath)]
+#[node(parent = AppPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("f1") => on_f1)]
 pub enum Layer {
@@ -129,7 +129,7 @@ pub enum Layer {
 }
 
 #[derive(Bind)]
-#[laserbeam(path = NavPath)]
+#[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("g") => on_g, Foreground("Slack") => on_slack)]
 pub struct Nav {
@@ -137,7 +137,7 @@ pub struct Nav {
 }
 
 #[derive(Bind)]
-#[laserbeam(path = TypingPath)]
+#[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("bksp") => on_bksp)]
 pub struct Typing {
@@ -147,14 +147,15 @@ pub struct Typing {
 }
 
 #[derive(Bind)]
-#[laserbeam(path = DeepPath)]
+#[node(parent = TypingPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("d") => on_d)]
 pub struct Deep {
     pub hits: u32,
 }
 
-pub type LayerPath<'a> = PathMut<Layer, &'a mut App>;
+pub type AppPath<'a> = &'a mut App;
+pub type LayerPath<'a> = PathMut<Layer, AppPath<'a>>;
 pub type NavPath<'a> = PathMut<Nav, LayerPath<'a>>;
 pub type TypingPath<'a> = PathMut<Typing, LayerPath<'a>>;
 pub type DeepPath<'a> = PathMut<Deep, TypingPath<'a>>;
@@ -162,7 +163,7 @@ pub type DeepPath<'a> = PathMut<Deep, TypingPath<'a>>;
 // A tiny second tree for the duplicate-trigger error: parent and child both bind
 // `dup`.
 #[derive(Bind)]
-#[laserbeam_root]
+#[node(root)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("dup") => ignore)]
 pub struct Clash {
@@ -171,22 +172,23 @@ pub struct Clash {
 }
 
 #[derive(Bind)]
-#[laserbeam(path = ClashChildPath)]
+#[node(parent = ClashPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("dup") => ignore)]
 pub struct ClashChild {}
 
-pub type ClashChildPath<'a> = PathMut<ClashChild, &'a mut Clash>;
+pub type ClashPath<'a> = &'a mut Clash;
+pub type ClashChildPath<'a> = PathMut<ClashChild, ClashPath<'a>>;
 // A no-binds leaf root.
 #[derive(Bind)]
-#[laserbeam_root]
+#[node(root)]
 #[binds(MercuryStruct)]
 pub struct Empty {}
 
 // A multi-parent tree: `Title` is reached from both `Album` and `Song` through
 // the `TitleParent` route enum.
 #[derive(Bind)]
-#[laserbeam_root]
+#[node(root)]
 #[binds(MercuryStruct)]
 pub enum Media {
     Album(Album),
@@ -194,7 +196,7 @@ pub enum Media {
 }
 
 #[derive(Bind)]
-#[laserbeam(path = AlbumPath)]
+#[node(parent = MediaPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("a") => ignore)]
 pub struct Album {
@@ -203,7 +205,7 @@ pub struct Album {
 }
 
 #[derive(Bind)]
-#[laserbeam(path = SongPath)]
+#[node(parent = MediaPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("s") => ignore)]
 pub struct Song {
@@ -212,15 +214,16 @@ pub struct Song {
 }
 
 #[derive(Bind)]
-#[laserbeam(path = TitlePath)]
+#[node(parent = TitleParent)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("t") => on_title)]
 pub struct Title {
     pub hits: u32,
 }
 
-pub type AlbumPath<'a> = PathMut<Album, &'a mut Media>;
-pub type SongPath<'a> = PathMut<Song, &'a mut Media>;
+pub type MediaPath<'a> = &'a mut Media;
+pub type AlbumPath<'a> = PathMut<Album, MediaPath<'a>>;
+pub type SongPath<'a> = PathMut<Song, MediaPath<'a>>;
 pub enum TitleParent<'a> {
     Album(AlbumPath<'a>),
     Song(SongPath<'a>),

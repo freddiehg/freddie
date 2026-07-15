@@ -5,7 +5,7 @@ use bind::Bind;
 struct NotBindings;
 
 #[derive(Bind)]
-#[laserbeam_root]
+#[node(root)]
 #[binds(NotBindings)]
 struct Nav {}
 

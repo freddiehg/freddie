@@ -94,39 +94,63 @@ pub fn unbox(ty: &Type) -> (&Type, bool) {
     (ty, false)
 }
 
-/// True when a node is the tree root: it carries `#[laserbeam_root]` rather than
-/// `#[laserbeam(..)]`, and its path is `&mut Self` instead of a [`Path`].
-///
-/// [`Path`]: laserbeam::PathMut
+/// True when a node is the tree root: it carries `#[node(root)]`, and its path is
+/// `&mut Self` instead of a [`PathMut`](laserbeam::PathMut).
 #[must_use]
-/// The path alias named by `#[laserbeam(path = P)]`, if present. `None` for the root, which
-/// carries `#[laserbeam_root]` and has no alias (its path is `&mut Self`).
+pub fn is_root(attrs: &[syn::Attribute]) -> bool {
+    for attr in attrs {
+        if attr.path().is_ident("node") {
+            let mut root = false;
+            let _ = attr.parse_nested_meta(|m| {
+                if m.path.is_ident("root") {
+                    root = true;
+                    Ok(())
+                } else if m.path.is_ident("parent") {
+                    let _: Path = m.value()?.parse()?;
+                    Ok(())
+                } else {
+                    Err(m.error("expected `root` or `parent`"))
+                }
+            });
+            if root {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// The parent path named by `#[node(parent = P)]`. `None` for `#[node(root)]`, whose path is
+/// `&mut Self`, or when there is no `#[node(..)]` at all.
 ///
 /// # Errors
 ///
-/// Errors if `#[laserbeam(..)]` is present without `path = ..`.
-pub fn laserbeam_path(attrs: &[syn::Attribute]) -> syn::Result<Option<Path>> {
+/// Errors if `#[node(..)]` is present without `parent = ..` or `root`.
+pub fn node_parent(attrs: &[syn::Attribute]) -> syn::Result<Option<Path>> {
     for attr in attrs {
-        if attr.path().is_ident("laserbeam") {
-            let mut path = None;
+        if attr.path().is_ident("node") {
+            let mut parent = None;
+            let mut root = false;
             attr.parse_nested_meta(|m| {
-                if m.path.is_ident("path") {
-                    path = Some(m.value()?.parse()?);
+                if m.path.is_ident("parent") {
+                    parent = Some(m.value()?.parse()?);
+                    Ok(())
+                } else if m.path.is_ident("root") {
+                    root = true;
                     Ok(())
                 } else {
-                    Err(m.error("expected `path`"))
+                    Err(m.error("expected `parent = ..` or `root`"))
                 }
             })?;
-            return Ok(Some(path.ok_or_else(|| {
-                syn::Error::new(attr.span(), "laserbeam needs `path = ..`")
+            if root {
+                return Ok(None);
+            }
+            return Ok(Some(parent.ok_or_else(|| {
+                syn::Error::new(attr.span(), "`#[node(..)]` needs `parent = ..` or `root`")
             })?));
         }
     }
     Ok(None)
-}
-
-pub fn is_root(attrs: &[syn::Attribute]) -> bool {
-    attrs.iter().any(|a| a.path().is_ident("laserbeam_root"))
 }
 
 /// How a child hangs off its parent node, for building the descent projection.

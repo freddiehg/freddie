@@ -15,7 +15,7 @@ use laserbeam::PathMut;
 use std::collections::HashSet;
 
 #[derive(Bind)]
-#[laserbeam_root]
+#[node(root)]
 #[binds(MercuryStruct)]
 pub struct Root {
     /// The only copy. The layer stores no app.
@@ -29,7 +29,7 @@ pub struct Chrome {
 }
 
 #[derive(Bind)]
-#[laserbeam(path = ShellPath)]
+#[node(parent = RootPath)]
 #[binds(MercuryStruct)]
 #[derived_child(app_data)]
 #[bind(Keyboard("esc") => on_esc)]
@@ -56,7 +56,8 @@ pub struct TabData {
     pub thread: u32,
 }
 
-pub type ShellPath<'a> = PathMut<Shell, &'a mut Root>;
+pub type RootPath<'a> = &'a mut Root;
+pub type ShellPath<'a> = PathMut<Shell, RootPath<'a>>;
 pub type AppNode<'a> = Node<ShellPath<'a>, AppData>;
 pub type TabNode<'a> = Node<AppNode<'a>, TabData>;
 

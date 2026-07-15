@@ -34,7 +34,7 @@ impl EventTrigger for Weird {
 fn handler(_: &KeyEv, _path: impl Sized) {}
 
 #[derive(Bind)]
-#[laserbeam_root]
+#[node(root)]
 #[binds(M)]
 #[bind(Weird => handler)]
 struct Nav {}

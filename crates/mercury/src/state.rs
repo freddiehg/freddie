@@ -12,7 +12,7 @@ use crate::handlers::*;
 use crate::{AnyKey, App, Foregrounded, ForegroundEvent, MercuryEffect, MercuryEvent, MercuryStruct};
 
 #[derive(Bind, Debug)]
-#[laserbeam_root]
+#[node(root)]
 #[binds(MercuryStruct)]
 #[bind(Foregrounded => on_foregrounded)]
 pub struct Mercury {
@@ -22,7 +22,7 @@ pub struct Mercury {
 }
 
 #[derive(Bind, Debug)]
-#[laserbeam(path = LayerPath)]
+#[node(parent = MercuryPath)]
 #[binds(MercuryStruct)]
 #[bind(Key::Escape.down() => to_home)]
 pub enum Layer {
@@ -34,7 +34,7 @@ pub enum Layer {
 }
 
 #[derive(Bind, Debug)]
-#[laserbeam(path = HomeLayerPath)]
+#[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
     Key::KeyN.down() => to_nav,
@@ -46,7 +46,7 @@ pub enum Layer {
 pub struct HomeLayer {}
 
 #[derive(Bind, Debug)]
-#[laserbeam(path = NavLayerPath)]
+#[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
     Key::KeyC.down() => open_chrome,
@@ -58,7 +58,7 @@ pub struct NavLayer {}
 /// The resize layer: the arrows place the focused window and return home. Like nav, a one-shot
 /// chooser.
 #[derive(Bind, Debug)]
-#[laserbeam(path = ResizeLayerPath)]
+#[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
     Key::UpArrow.down() => maximize,
@@ -81,7 +81,7 @@ pub struct SetOfHeldKeys {
 /// The typing layer: any key passes through, tracking which of the watched keys are held.
 /// `escape` passes through too, unless `cmd` is held, in which case it exits to home.
 #[derive(Bind, Debug, Default)]
-#[laserbeam(path = TypingLayerPath)]
+#[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
     Key::Escape.down() => maybe_go_home,
@@ -95,7 +95,7 @@ pub struct TypingLayer {
 /// builds the app's level from it on every dispatch. There is nothing to keep in sync and
 /// nothing to go stale.
 #[derive(Bind, Debug, Default)]
-#[laserbeam(path = AppLayerPath)]
+#[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[derived_child(app_data)]
 pub struct AppLayer {}
@@ -150,7 +150,9 @@ pub struct ChromeApp {}
 )]
 pub struct GhosttyApp {}
 
-pub type LayerPath<'a> = PathMut<Layer, &'a mut Mercury>;
+/// The root's path is `&mut Self`; naming it lets the root's children say `parent = MercuryPath`.
+pub type MercuryPath<'a> = &'a mut Mercury;
+pub type LayerPath<'a> = PathMut<Layer, MercuryPath<'a>>;
 pub type HomeLayerPath<'a> = PathMut<HomeLayer, LayerPath<'a>>;
 pub type NavLayerPath<'a> = PathMut<NavLayer, LayerPath<'a>>;
 pub type ResizeLayerPath<'a> = PathMut<ResizeLayer, LayerPath<'a>>;
