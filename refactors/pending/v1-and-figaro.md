@@ -17,14 +17,14 @@ Living in the menu bar. Three related items:
 - The icon reflects state (which layer is active): the "later" half of `menu-bar.md`, a pure `label`/`menu` off the state tree.
 - An overlay that shows what mercury is doing (e.g. voice-mode), openable from any state and from the menu bar, auto-closing after a while. No doc yet; this one needs designing.
 
-The off switch. `enable-disable.md`: a global disable that passes keys through with a re-enable chord and menu-bar toggle. It doubles as the motivating case for the state-selected mutable child in laserbeam.
+The off switch. `enable-disable.md`: a global disable that passes keys through with a re-enable chord and menu-bar toggle. It is modeled as an enable/disable enum carrying the layer in both arms, so it needs no laserbeam change and preserves the layer across a toggle.
 
 Polish and outward-facing:
 - Audit: a pass over the bindings and the emitted-key correctness (the stuck-modifier class of bug the `cmd`-`escape` fix closed is the kind to hunt for), and the exhaustive-model standard extended to every reachable state.
 - Documentation: the model is well-documented internally; what is missing is the user-facing "what mercury does and how to drive it."
 - Website: the public front door.
 
-Nothing here is blocked on a laserbeam change except enable-disable (which wants the state-selected mutable child) and the icon-reflects-state item (which is additive, not blocking). The Chrome extension is the critical path.
+Nothing here is blocked on a laserbeam change. The Chrome extension is the critical path.
 
 ## Starting figaro
 
