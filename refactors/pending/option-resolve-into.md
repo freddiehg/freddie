@@ -39,24 +39,24 @@ The consequence, and it is accepted for `Box` already: `type Maybe<T> = Option<T
 
 ## The descent: check, then project
 
-The parent must not lose its path when the child is absent. It does not, because the check borrows and the borrow ends before the path moves.
+The field lives on the node itself, so it is reached with the same `get_mut()` projection every other field descent uses, plus `.as_mut()`. The parent must not lose its path when the child is absent, and does not, because the check's borrow ends before the path moves.
 
 ```rust
-if path.parent().chrome.is_some() {                      // &, ends here
-    let child = <ChromeApp as Dispatch<M>>::dispatch(
-        Path::from_fn(path, |p| {                        // now the path moves
-            p.parent_mut().chrome.as_mut().expect("checked above")
+if path.get_mut().child.is_some() {                             // &mut, ends here
+    let node = <Child as Dispatch<M>>::dispatch(
+        PathMut::from_fn(path, |np| {                           // now the path moves
+            np.get_mut().child.as_mut().expect("checked above")
         }),
         event,
     )?;
-    path = child.into_parent();
+    path = node.into_parent();
 }
 // the parent's own binds run with the path intact, present or absent
 ```
 
-Compiled.
-
-`parent_mut()` is not on `laserbeam::Path` today. `parent()` is. This projection needs the mutable one, which is three lines.
+The derive builds this from the same `derive_support::Edge` projection as a plain field
+(`|np| &mut np.get_mut().child`), with the check and the `.as_mut()` added. No new `PathMut`
+method is needed: `get_mut` and field access already exist.
 
 ## Why not `ControlFlow`
 
