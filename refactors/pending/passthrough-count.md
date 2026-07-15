@@ -1,10 +1,10 @@
 # passthrough as a count at the root
 
-Not built. "Pass keys through untouched" is one global fact, but it lives in per-layer `AnyKey` catch-alls that re-emit a copy, which drops the flags an injected event carries inline (the Wispr fn-a case). Move it to one count at the root, and make passthrough KEEP the original event instead of re-emitting. Modifier state moves to the root too. Below is the shape as before/after; the ascent/borrow details are left rough on purpose.
+Not built. "Pass keys through untouched" is one global fact, but it lives in per-layer `AnyKey` catch-alls that re-emit a copy, which drops the flags an injected event carries inline (the Wispr fn-a case). Move it to one count at the root, and make passthrough KEEP the original event instead of re-emitting. Modifier state moves to the root too. Below is the shape, before/after.
 
 ## The count on the root
 
-A plain `u32`. Single-threaded (dispatch is synchronous, the tap runs the model inline; `synchronous-dispatch.md`), and the handlers that enter and leave typing/paused already hold `&mut Mercury` — they ascend to the root — so they bump it directly. No `Cell`, no `Rc`, no atomic.
+A small newtype, `PassthroughCount`, over a shared `Rc<Cell<u8>>`. Single-threaded (dispatch is synchronous, the tap runs the model inline; `synchronous-dispatch.md`), so `Rc`/`Cell`, not `Arc`/atomic. It is shared rather than a plain field so the guard that raises it can also lower it from `Drop` (below): a guard `Drop` gets only `&mut self`, so it must hold the count, not reach for it.
 
 Before:
 
@@ -29,58 +29,60 @@ pub struct Mercury {
     pub power: Power,
 }
 
-/// The passthrough count, wrapped so nothing can poke the raw integer. Only the guard's
-/// acquire/release move it, so it stays balanced; everyone else only asks `passing()`.
-#[derive(Debug, Default)]
-pub struct PassthroughCount(u8); // at most two sources (typing, paused); u8 is plenty
+/// The passthrough count. `> 0` means keep keys as-is.
+///
+/// Wrapped so nothing pokes the raw integer, and SHARED (`Rc<Cell>`) so a guard's `Drop` can
+/// decrement it. `Drop::drop(&mut self)` gets only `&mut self`, never `&mut Mercury`, so a guard
+/// can't reach a plain count on the root from `Drop` -- it has to CLOSE OVER the count. An
+/// `Rc<Cell>` is exactly that: a handle to the one count the guard holds a clone of and mutates
+/// through, from `Drop`, with nothing else passed in.
+///
+/// Single-threaded (dispatch is synchronous), so `Rc<Cell>`, not `Arc<Atomic>`. `Cell`, not
+/// `RefCell`: the count is a `Copy` `u8` we only get and set wholesale, so there is nothing to
+/// borrow -- `RefCell`'s runtime borrow-checking and `already borrowed` panic buy nothing here.
+/// `u8`: at most two sources (typing, paused).
+#[derive(Clone, Default)]
+pub struct PassthroughCount(Rc<Cell<u8>>);
 
 impl PassthroughCount {
     #[must_use]
-    pub const fn passing(&self) -> bool {
-        self.0 > 0
+    pub fn passing(&self) -> bool {
+        self.0.get() > 0
     }
-    // crate-private, only for the guard:
-    fn increment(&mut self) {
-        self.0 += 1;
+    // crate-private, only for the guard. `&self` (not `&mut`): the Cell is the mutability.
+    fn increment(&self) {
+        self.0.set(self.0.get() + 1);
     }
-    fn decrement(&mut self) {
-        self.0 -= 1;
+    fn decrement(&self) {
+        self.0.set(self.0.get() - 1);
     }
 }
 ```
 
-## The guard is a linear token, released explicitly (`prevent_drop`)
+## The guard closes over the count and decrements on drop
 
-`Drop::drop(&mut self)` gets no `&mut Mercury`, and the count lives on the root, so a guard can't decrement on plain `Drop`. So it is CONSUMED by a `release(self, &mut Mercury)` that decrements, and dropping it instead of releasing is forbidden.
-
-Use the `prevent_drop` crate for that, which is built for exactly this linear-resource case:
-
-- Its generated `Drop` calls an unresolved `extern` symbol, so any drop the linker can SEE is a link error. Leaving the guard un-released fails to build, not at run time.
-- For the paths the linker can't see (a panic unwinding between acquire and release), it falls back to a runtime panic or abort.
-- Its cleanup function may take extra parameters, so `release` takes `&mut Mercury` and decrements. That is the whole reason we can't use ordinary `Drop`.
-
-So, in shape (exact macro API is `prevent_drop`'s):
+`Drop` gets only `&mut self`, so for `Drop` to do the decrement the guard has to HOLD the count, not reach for it. It holds a clone of the `Rc<Cell>` and decrements through it on drop. That is the whole reason for `Rc` over a plain `u8` on the root: it lets an ordinary `Drop` do the right thing.
 
 ```rust
-pub struct PassthroughGuard { /* prevent_drop token, no fields of ours; the count is on the root */ }
+pub struct PassthroughGuard(PassthroughCount); // a clone of the shared count
 
 impl PassthroughGuard {
-    fn acquire(root: &mut Mercury) -> Self {
-        root.passthrough.increment();
-        // ... construct the prevent_drop token ...
-    }
-
-    // the custom cleanup, which prevent_drop lets take parameters:
-    fn release(self, root: &mut Mercury) {
-        root.passthrough.decrement();
-        // ... defuse the token ...
+    fn new(count: &PassthroughCount) -> Self {
+        count.increment();
+        Self(count.clone()) // clone the Rc, so Drop can reach the count
     }
 }
-// a reachable drop is a LINK error; a drop only on a panic-unwind path is a runtime panic/abort;
-// neither is a silent leak of the count.
+
+impl Drop for PassthroughGuard {
+    fn drop(&mut self) {
+        self.0.decrement();
+    }
+}
 ```
 
-A count, not a bool: pausing while the layer is typing has two guards live, and they drop in an order we do not control. `fetch_add`/`fetch_sub` is order-independent; a bool would clear on the first drop.
+Ordinary `Drop`, so nothing infects: `PassthroughGuard` is droppable, therefore `TypingLayer`, `Layer`, `Power`, and `Mercury` all stay droppable, and dropping any of them just runs the decrement. No `prevent_drop` link error, no panic-on-drop, no explicit release.
+
+A count, not a bool: pausing while the layer is typing has two guards live, and they drop in an order we do not control. Increment/decrement is order-independent; a bool would clear on the first drop while the other source still wants passthrough.
 
 ## Typing and Paused hold a guard
 
@@ -101,11 +103,10 @@ After:
 ```rust
 #[bind(Key::Escape.down() => maybe_go_home)]  // only its command stays
 pub struct TypingLayer {
-    passthrough: PassthroughGuard,            // held while typing is live; released on leave
+    _passthrough: PassthroughGuard,           // RAII: decrements the count when dropped
 }
 // SetOfHeldKeys and modify_held_and_pass_through are gone: modifiers are the root's,
-// passthrough is the tap's. The guard is a MANAGED field, not `_passthrough`: leaving
-// typing must call .release(root), or its Drop panics.
+// passthrough is the tap's. `_passthrough` is held only for its Drop; nothing reads it.
 ```
 
 Before:
@@ -123,14 +124,16 @@ After:
 ```rust
 pub struct Paused {
     pub layer: Layer,
-    passthrough: PassthroughGuard,
+    _passthrough: PassthroughGuard,
 }
 // no AnyKey bind (passthrough is the tap); the cmd-alt-p unpause moves to the root.
 ```
 
-## Entering acquires, leaving releases
+## Entering builds the guard; leaving is a normal layer set
 
-The handler that enters typing/paused holds `&mut Mercury` (it ascends to the root), so it acquires the guard there; the variant is built through a method, never a struct literal, so the acquire cannot be skipped.
+Because the guard decrements on `Drop`, leaving is just a normal assignment: reassigning the layer drops the old `TypingLayer`, which drops its guard, which decrements. `go_home` and `unpause` stay plain `*layer = ...`; no release, no special-casing.
+
+Only entering does anything new: build the guard from the root's count. It needs the count (to clone the `Rc`) and then to set the layer, which is two sequential borrows of the root, not the one-expression double-borrow that would not compile.
 
 Enter, before (`to_typing`):
 
@@ -142,18 +145,11 @@ Enter, after:
 
 ```rust
 let root = node.parent.ascend_to::<MercuryPath>();
-// build through the method, which acquires the guard against the root
-root.set_layer(Layer::typing(root)); // roughly; the borrow of root is the fiddly part
+let guard = PassthroughGuard::new(&root.passthrough);        // &root: clone the count, increment
+*root.power.layer_mut() = Layer::Typing(TypingLayer { _passthrough: guard }); // &mut root: set
 ```
 
-```rust
-impl Layer {
-    fn typing(root: &mut Mercury) -> Self {
-        Self::Typing(TypingLayer { passthrough: PassthroughGuard::acquire(root) })
-}
-```
-
-Leaving is the mirror, and it is the fiddly part: a transition away from typing/paused cannot just reassign the layer, because dropping the old `TypingLayer` would drop its guard and panic. The transition has to pull the guard out of the old layer and `release(root)` it first, then set the new layer. So `go_home` and friends grow a "if we're leaving a passthrough layer, release its guard against the root" step. That step is exactly the balance the panic-on-drop is enforcing: forget it and you get a crash, not a stuck count. Same for `Power::unpause` releasing `Paused`'s guard.
+The `&root.passthrough` borrow ends when `new` returns (the guard owns a `clone`, not a borrow), so the `&mut root` assignment that follows is fine. Same shape for `Power::pause` building `Paused`.
 
 ## The tap keeps the original instead of re-emitting
 
