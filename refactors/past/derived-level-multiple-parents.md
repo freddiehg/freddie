@@ -1,5 +1,7 @@
 # multiple parents, and sharing a level between hosts
 
+DO NOT DO. Blocked on Fix B (`ascend-through-derived.md`), which is itself do-not-do. Nothing in mercury wants multiple parents or cross-host sharing.
+
 Not designed. Two problems that look like one.
 
 Background is `resolution.md`.

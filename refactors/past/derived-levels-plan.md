@@ -153,67 +153,17 @@ Does NOT delete `ChromeApp {}` and `GhosttyApp {}`. They become `ChromeInfo` and
 
 They stop being units when mercury tracks something per app (a tab name, a pane index). Punted.
 
-## Downstream
+## Downstream: where each piece landed
 
-NOT BEING WORKED ON. Ordered by when they become possible, not by when they will happen. Nothing below blocks steps 1 through 8.
-
-### 9. `Resolved` is dead weight — DONE
-
-Removed. `resolve()` and `Resolved` are deleted; `laserbeam::Resolve` is gone entirely
-and `type Path` moved onto `bind::Place`; laserbeam is types only and its `Path` is
-renamed `PathMut`. `refactors/past/resolved-is-dead-weight.md`.
-
-### 10. `Option<Child>` on a `#[resolve_into]` field
-
-A place child that may be absent, recognized syntactically the way `Box<Child>` already is. The derive checks, then projects, so the parent never loses its path.
-
-Independent of the design. It deletes the "bindless variant" pattern, which is the only reason an empty struct appears in the tree, so it is worth doing before mercury grows more of them.
-
-Reuses the existing `get_mut` projection, so no new `PathMut` method is needed.
-
-`option-resolve-into.md`.
-
-### 11. Fix B: make `Path` a case of `Node`
-
-DEFERRED, possibly never. Not because it is large.
-
-`Path` and `Node` sit next to a parent and carry one more field each, but the fields are not the same kind of thing. A projection is a MECHANISM for reaching a value in the tree. Data is a VALUE. Collapsing them means `node.data` on a `Path` hands back a function pointer.
-
-It would delete `HasParent`, probably `Descend`, and `#[derived_node]`, and close the `Ascend` gap. It buys that by putting a mechanism where a payload belongs.
-
-The structural similarity is real; the semantic one is not.
-
-`ascend-through-derived.md`.
-
-### 12. Multiple parents, and sharing across hosts
-
-Needs 11. The generic `Descend` impl that would allow it carries an `Ascend` bound, and `Ascend` cannot reach through a `Node` until Fix B lands.
-
-Nothing in mercury wants either today.
-
-`derived-level-multiple-parents.md`.
-
-### 13. Several children from one derived child fn
-
-Needs 7. `Option<T>` is an `IntoIterator<Item = T>`, so the signature generalises without breaking the simple case.
-
-It reintroduces `ControlFlow` inside the framework's loop (build child `i`, dispatch, take the parent back, build child `i + 1`), and it makes iteration order the tie-break rule, which is what `no-clobber.md` exists to forbid.
-
-Not designed. Recorded so the signature does not have to change to get there.
-
-`derived-child-iterator.md`.
-
-### Rejected
-
-`derived-child-persistence.md`. A derived child fn as constructor-on-enter and destructor-on-leave, so its data persists. Persisting means storing, storing means it is in the tree, and then it goes stale, which is the bug being deleted.
-
-## What this means for `Ascend`
-
-With Fix B deferred, a derived level's handler cannot ascend, and that is permanent rather than temporary. It reaches ancestors through `parent` instead:
-
-```rust
-gmail.parent.data.tab            // Chrome's data
-gmail.parent.parent.get_mut()    // the layer
+```
+9   Resolved is dead weight        DONE. refactors/past/resolved-is-dead-weight.md.
+10  Option<Child> on resolve_into   PENDING. refactors/pending/option-resolve-into.md.
+11  Fix B (Path becomes a Node)     DO NOT DO. refactors/past/ascend-through-derived.md.
+12  multiple parents / hosts        DO NOT DO (needs Fix B). refactors/past/derived-level-multiple-parents.md.
+13  several children (IntoIterator) PENDING, recorded. refactors/pending/derived-child-iterator.md.
+    derived-child persistence       DO NOT DO, rejected. refactors/past/derived-child-persistence.md.
 ```
 
-The consequence to accept: a handler cannot be bound at both a place and a derived level, because the two hand it different `Parent` types and only one of them can ascend. Nothing in mercury wants that.
+The eight shipped steps are the design and its adoption; that work is done, so this doc
+moves to `past`. The two items still open (Option on a place field, the iterator
+generalisation) keep their own docs in `pending`.

@@ -1,5 +1,7 @@
 # ascend through a derived level
 
+DO NOT DO. A derived level's handler cannot `Ascend`; it reaches ancestors through `parent` instead, and that is the accepted permanent state. Fix A (combinatorial impls) and Fix B (make `Path` a case of `Node`) are both rejected: a `PathMut` addresses a place and a `Node` carries data, so collapsing them puts a mechanism where a payload belongs.
+
 Not in v0. Recorded so nobody retries it blind and hits E0119.
 
 Background is `resolution.md`: a handler is given a `Node<Parent, Data>`, where `Parent` is a `laserbeam::Path` when the level above is a place and a `Node` when it is derived.

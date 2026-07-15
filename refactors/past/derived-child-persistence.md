@@ -1,5 +1,7 @@
 # derived-child persistence
 
+DO NOT DO. Rejected. A persisting derived child (constructor-on-enter, destructor-on-leave) means storing it, which means it is in the tree, which means it can go stale, which is the bug the derived-child design deletes.
+
 Rejected. Recorded so it does not get re-proposed.
 
 Background is `resolution.md`: a derived child fn builds a derived level's `data` from root state on every dispatch, and that data is owned by the node, so writing it changes nothing outside the dispatch.
