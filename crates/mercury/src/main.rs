@@ -9,12 +9,12 @@
 //! observing it come up (the event) are decoupled the way the model expects.
 //!
 //! Every key goes through the model, so `escape` is handled there (it goes home)
-//! and `q` from home quits. A 60-second timer is the backstop out of the hijack
-//! (hard exit 5s after that).
+//! and `q` from home quits. The menu bar's Quit is a second way out, one that does
+//! not depend on the grabbed keyboard still working.
 //!
 //! Quitting is a `Kill` effect, which ends the effect loop rather than exiting the
 //! process, so the way out runs destructors: the keyboard is released and main's
-//! run loop is stopped. The hard exit is only for a wedged process.
+//! run loop is stopped.
 //!
 //! # Threads
 //!
@@ -36,7 +36,6 @@
 //! On macOS this needs Accessibility (and Input Monitoring). `cargo run -p mercury`
 
 use std::ops::ControlFlow;
-use std::time::Duration;
 
 use freddie_keyboard::Emitter;
 use mercury::{App, Mercury, MercuryEffect, MercuryEvent, Placement, foreground, quit_event};
@@ -165,10 +164,8 @@ async fn run(event_tx: UnboundedSender<MercuryEvent>, event_rx: UnboundedReceive
         }
     });
 
-    spawn_killswitch(effect_tx.clone());
-
-    println!("mercury: hijacking the keyboard; escape then q quits (60s backstop)");
-    info!("hijacking the keyboard; escape then q quits (60s backstop)");
+    println!("mercury: hijacking the keyboard; escape then q, or the menu bar's Quit, exits");
+    info!("hijacking the keyboard; escape then q, or the menu bar's Quit, exits");
     // `select!` rather than `join!`: the effect loop ends on `Kill`, and the event
     // loop never does, because the tap thread holds a sender for as long as the
     // grab is alive.
@@ -185,21 +182,6 @@ async fn run(event_tx: UnboundedSender<MercuryEvent>, event_rx: UnboundedReceive
         () = run_effect_loop(effect_rx, emitter) => {}
     }
     drop(interceptor); // hold the grab until here
-}
-
-/// Dev killswitch: a `Kill` effect after 60s, then a hard exit 5s later if the
-/// clean path never got there.
-///
-/// The hard exit runs no destructors, which is the point: it is the backstop for a
-/// wedged process that is still swallowing the keyboard. Reaching it means the
-/// clean exit failed.
-fn spawn_killswitch(effect_tx: UnboundedSender<MercuryEffect>) {
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_mins(1)).await;
-        let _ = effect_tx.send(MercuryEffect::Kill);
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        std::process::exit(1);
-    });
 }
 
 /// The event loop: read the event channel and dispatch each event.
