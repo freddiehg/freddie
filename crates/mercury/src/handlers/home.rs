@@ -41,7 +41,7 @@ pub(crate) fn to_nav(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<Mercu
 /// `t` in home: enter the typing layer.
 pub(crate) fn to_typing(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
     let mut layer = node.parent.into_parent();
-    *layer.get_mut() = Layer::Typing(TypingLayer {});
+    *layer.get_mut() = Layer::Typing(TypingLayer::default());
     Vec::new()
 }
 

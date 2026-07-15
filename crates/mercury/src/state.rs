@@ -67,15 +67,29 @@ pub struct NavLayer {}
 )]
 pub struct ResizeLayer {}
 
-/// The typing layer: `escape` goes home, any other key passes through.
-#[derive(Bind, Debug)]
+/// The keys typing is tracking as held. Just `cmd` for now; extend it with more fields, or
+/// switch to a `HashSet<Key>`, as more held-key conditions are needed. It is tracked here
+/// rather than at the root because dispatch fires one handler per event and typing's own
+/// catch-all is the handler that sees each key. The known gap: a modifier pressed in typing
+/// and released after leaving typing is not un-tracked here, so its emitted down is not
+/// closed by an emitted up.
+#[derive(Debug, Default)]
+pub struct SetOfHeldKeys {
+    pub cmd: bool,
+}
+
+/// The typing layer: any key passes through, tracking which of the watched keys are held.
+/// `escape` passes through too, unless `cmd` is held, in which case it exits to home.
+#[derive(Bind, Debug, Default)]
 #[laserbeam(path = TypingLayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
-    Key::Escape.down() => to_home,
-    AnyKey => passthru,
+    Key::Escape.down() => maybe_go_home,
+    AnyKey => modify_held_and_pass_through,
 )]
-pub struct TypingLayer {}
+pub struct TypingLayer {
+    pub held: SetOfHeldKeys,
+}
 
 /// The in-app layer. It stores NO app: `root.foregrounded` is the only copy, and [`app_data`]
 /// builds the app's level from it on every dispatch. There is nothing to keep in sync and

@@ -80,11 +80,29 @@ fn typing_passes_any_key_through() {
 }
 
 #[test]
-fn typing_escape_goes_home() {
-    // Typing binds escape explicitly so its catch-all does not shadow the go-home
-    // binding.
+fn typing_plain_escape_passes_through() {
+    // In typing, escape is a normal key: it passes through and stays in typing.
     let mut m = Mercury::default();
     let _ = m.handle(&key(Key::KeyT));
+    assert_eq!(m.handle(&key(Key::Escape)), Some(passed(Key::Escape)));
+    assert!(matches!(m.layer, Layer::Typing(_)));
+}
+
+#[test]
+fn typing_cmd_escape_exits_to_home() {
+    // cmd is held (tracked by the catch-all, which also emits it), then escape exits to home
+    // and is swallowed. The plain escape above still passes through.
+    let mut m = Mercury::default();
+    let _ = m.handle(&key(Key::KeyT));
+
+    // cmd down: tracked, and passed through.
+    assert_eq!(
+        m.handle(&key(Key::MetaLeft)),
+        Some(vec![emit(Key::MetaLeft, PressType::Down)])
+    );
+    assert!(matches!(m.layer, Layer::Typing(_)));
+
+    // escape while cmd held: go home, swallow the escape.
     assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
     assert!(matches!(m.layer, Layer::Home(_)));
 }
