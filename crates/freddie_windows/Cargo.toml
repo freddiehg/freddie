@@ -8,10 +8,12 @@ repository.workspace = true
 
 [dependencies]
 accessibility-sys = "0.1"
+block2 = "0.6"
 core-foundation = { version = "0.10", features = ["link"] }
 core-graphics = { version = "0.25", features = ["link"] }
-objc2-app-kit = { version = "0.3", features = ["NSScreen", "NSWorkspace", "NSRunningApplication"] }
-objc2-foundation = "0.3"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSScreen", "NSWorkspace", "NSRunningApplication", "NSApplication", "NSResponder"] }
+objc2-foundation = { version = "0.3", features = ["NSNotification"] }
 tracing = "0.1"
 
 # Not `workspace = true`: the workspace forbids `unsafe_code`, and `forbid` cannot
