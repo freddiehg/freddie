@@ -90,32 +90,27 @@ impl HeldModifiers {
     fn sweep(&self, press: PressType) -> Vec<MercuryEffect> {
         let mut shown = if press == PressType::Down { Self::default() } else { *self };
         let mut out = Vec::new();
-        for key in Self::MODIFIER_KEYS {
-            if self.is_down(key) {
-                shown.apply(&KeyEvent { key, press, flags: ModifierFlags::empty() });
-                out.push(emit(key, press, shown.flags()));
-            }
+        for key in self.held_keys() {
+            shown.apply(&KeyEvent { key, press, flags: ModifierFlags::empty() });
+            out.push(emit(key, press, shown.flags()));
         }
         out
     }
 
-    const MODIFIER_KEYS: [Key; 8] = [
-        Key::ControlLeft, Key::ControlRight, Key::MetaLeft, Key::MetaRight,
-        Key::AltLeft, Key::AltRight, Key::ShiftLeft, Key::ShiftRight,
-    ];
-
-    fn is_down(&self, key: Key) -> bool {
-        match key {
-            Key::ControlLeft  => self.control.left,
-            Key::ControlRight => self.control.right,
-            Key::MetaLeft     => self.meta.left,
-            Key::MetaRight    => self.meta.right,
-            Key::AltLeft      => self.alt.left,
-            Key::AltRight     => self.alt.right,
-            Key::ShiftLeft    => self.shift.left,
-            Key::ShiftRight   => self.shift.right,
-            _ => false,
-        }
+    /// The modifier keys currently down, pairing each key with its field once.
+    fn held_keys(&self) -> impl Iterator<Item = Key> {
+        [
+            (Key::ControlLeft,  self.control.left),
+            (Key::ControlRight, self.control.right),
+            (Key::MetaLeft,     self.meta.left),
+            (Key::MetaRight,    self.meta.right),
+            (Key::AltLeft,      self.alt.left),
+            (Key::AltRight,     self.alt.right),
+            (Key::ShiftLeft,    self.shift.left),
+            (Key::ShiftRight,   self.shift.right),
+        ]
+        .into_iter()
+        .filter_map(|(key, held)| held.then_some(key))
     }
 
     #[must_use]
