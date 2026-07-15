@@ -126,8 +126,12 @@ fn typing_cmd_escape_exits_to_home() {
     );
     assert!(matches!(m.layer, Layer::Typing(_)));
 
-    // escape while cmd held: go home, swallow the escape.
-    assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
+    // escape while cmd held: go home, swallow the escape, and release the cmd that
+    // was passed through, so it is not left stuck down in the emitted stream.
+    assert_eq!(
+        m.handle(&key(Key::Escape)),
+        Some(vec![emit(Key::MetaLeft, PressType::Up)])
+    );
     assert!(matches!(m.layer, Layer::Home(_)));
 }
 

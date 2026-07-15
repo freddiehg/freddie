@@ -86,12 +86,14 @@ pub struct ResizeLayer {}
 /// The keys typing is tracking as held. Just `cmd` for now; extend it with more fields, or
 /// switch to a `HashSet<Key>`, as more held-key conditions are needed. It is tracked here
 /// rather than at the root because dispatch fires one handler per event and typing's own
-/// catch-all is the handler that sees each key. The known gap: a modifier pressed in typing
-/// and released after leaving typing is not un-tracked here, so its emitted down is not
-/// closed by an emitted up.
+/// catch-all is the handler that sees each key.
+///
+/// `cmd` holds WHICH command key is down (left or right), not just that one is, so that leaving
+/// typing on `cmd`-`escape` can emit the release of the exact key whose down it already emitted,
+/// rather than leaving it stuck in the emitted stream.
 #[derive(Debug, Default)]
 pub struct SetOfHeldKeys {
-    pub cmd: bool,
+    pub cmd: Option<Key>,
 }
 
 /// The typing layer: any key passes through, tracking which of the watched keys are held.
