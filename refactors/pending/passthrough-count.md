@@ -23,33 +23,44 @@ After:
 pub struct Mercury {
     pub foregrounded: App,
     pub has_navigated: bool,
-    pub held: HeldModifiers,          // one copy of what's held, here, not per-layer
-    pub passthrough: PassthroughCount, // > 0 => pass through
+    pub held: HeldModifiers,                 // one copy of what's held, here, not per-layer
+    pub passthrough: ModifierPassthroughFlag, // .passing() => keep keys as-is
     #[resolve_into]
     pub power: Power,
 }
 
-/// The passthrough count. `> 0` means keep keys as-is.
+/// Whether modifiers (and keys) currently pass through. `passing()` is the question everyone
+/// asks; `guard()` is the only way to raise it, and the returned guard lowers it on drop.
 ///
-/// Wrapped so nothing pokes the raw integer, and SHARED (`Rc<Cell>`) so a guard's `Drop` can
-/// decrement it. `Drop::drop(&mut self)` gets only `&mut self`, never `&mut Mercury`, so a guard
-/// can't reach a plain count on the root from `Drop` -- it has to CLOSE OVER the count. An
-/// `Rc<Cell>` is exactly that: a handle to the one count the guard holds a clone of and mutates
-/// through, from `Drop`, with nothing else passed in.
+/// Internally a count, not a bool (`u8` behind `Rc<Cell>`), because overlapping sources (typing,
+/// paused) raise it and drop in an order we don't control; a bool would clear on the first drop
+/// while the other still wants passthrough. That's an impl detail: the API is the drop guard, not
+/// the counter.
 ///
-/// Single-threaded (dispatch is synchronous), so `Rc<Cell>`, not `Arc<Atomic>`. `Cell`, not
-/// `RefCell`: the count is a `Copy` `u8` we only get and set wholesale, so there is nothing to
-/// borrow -- `RefCell`'s runtime borrow-checking and `already borrowed` panic buy nothing here.
-/// `u8`: at most two sources (typing, paused).
+/// SHARED (`Rc<Cell>`) so the guard's `Drop` can lower the count. `Drop::drop(&mut self)` gets
+/// only `&mut self`, never `&mut Mercury`, so the guard has to CLOSE OVER the count rather than
+/// reach for it; an `Rc<Cell>` clone is exactly that handle. Single-threaded (dispatch is
+/// synchronous), so `Rc`/`Cell`, not `Arc`/atomic. `Cell`, not `RefCell`: the `u8` is `Copy` and
+/// swapped wholesale, so there's nothing to borrow and `RefCell`'s runtime checks/panic buy
+/// nothing.
 #[derive(Clone, Default)]
-pub struct PassthroughCount(Rc<Cell<u8>>);
+pub struct ModifierPassthroughFlag(Rc<Cell<u8>>);
 
-impl PassthroughCount {
+impl ModifierPassthroughFlag {
     #[must_use]
     pub fn passing(&self) -> bool {
         self.0.get() > 0
     }
-    // crate-private, only for the guard. `&self` (not `&mut`): the Cell is the mutability.
+
+    /// Raise the flag until the returned guard drops. The only way to raise it, so every raise is
+    /// balanced by a `Drop`.
+    #[must_use]
+    pub fn guard(&self) -> PassthroughGuard {
+        self.increment();
+        PassthroughGuard(self.clone())
+    }
+
+    // internal, the same u8 inc/dec as ever; not the public API. `&self`: the Cell is the mutability.
     fn increment(&self) {
         self.0.set(self.0.get() + 1);
     }
@@ -59,19 +70,11 @@ impl PassthroughCount {
 }
 ```
 
-## The guard closes over the count and decrements on drop
-
-`Drop` gets only `&mut self`, so for `Drop` to do the decrement the guard has to HOLD the count, not reach for it. It holds a clone of the `Rc<Cell>` and decrements through it on drop. That is the whole reason for `Rc` over a plain `u8` on the root: it lets an ordinary `Drop` do the right thing.
+## The guard lowers the flag on drop
 
 ```rust
-pub struct PassthroughGuard(PassthroughCount); // a clone of the shared count
-
-impl PassthroughGuard {
-    fn new(count: &PassthroughCount) -> Self {
-        count.increment();
-        Self(count.clone()) // clone the Rc, so Drop can reach the count
-    }
-}
+/// Holds the flag up while alive, lowers it on drop. Stored on `TypingLayer` and `Paused`.
+pub struct PassthroughGuard(ModifierPassthroughFlag); // a clone of the shared flag
 
 impl Drop for PassthroughGuard {
     fn drop(&mut self) {
@@ -80,9 +83,7 @@ impl Drop for PassthroughGuard {
 }
 ```
 
-Ordinary `Drop`, so nothing infects: `PassthroughGuard` is droppable, therefore `TypingLayer`, `Layer`, `Power`, and `Mercury` all stay droppable, and dropping any of them just runs the decrement. No `prevent_drop` link error, no panic-on-drop, no explicit release.
-
-A count, not a bool: pausing while the layer is typing has two guards live, and they drop in an order we do not control. Increment/decrement is order-independent; a bool would clear on the first drop while the other source still wants passthrough.
+Ordinary `Drop`, so nothing infects: `PassthroughGuard` is droppable, therefore `TypingLayer`, `Layer`, `Power`, and `Mercury` all stay droppable, and dropping any of them just runs the decrement. No `prevent_drop` link error, no panic-on-drop, no explicit release. The guard closing over the flag is what lets `Drop` (which gets only `&mut self`) do the decrement at all.
 
 ## Typing and Paused hold a guard
 
@@ -145,11 +146,11 @@ Enter, after:
 
 ```rust
 let root = node.parent.ascend_to::<MercuryPath>();
-let guard = PassthroughGuard::new(&root.passthrough);        // &root: clone the count, increment
+let guard = root.passthrough.guard();                        // &root: raise the flag, get a guard
 *root.power.layer_mut() = Layer::Typing(TypingLayer { _passthrough: guard }); // &mut root: set
 ```
 
-The `&root.passthrough` borrow ends when `new` returns (the guard owns a `clone`, not a borrow), so the `&mut root` assignment that follows is fine. Same shape for `Power::pause` building `Paused`.
+The `&root.passthrough` borrow ends when `guard()` returns (the guard owns a `clone`, not a borrow), so the `&mut root` assignment that follows is fine. Same shape for `Power::pause` building `Paused`.
 
 ## The tap keeps the original instead of re-emitting
 
