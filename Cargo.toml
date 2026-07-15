@@ -3,7 +3,6 @@ resolver = "3"
 members = [
     "crates/freddie",
     "crates/laserbeam",
-    "crates/laserbeam_macro",
     "crates/derive_support",
     "crates/bind",
     "crates/bind_macro",

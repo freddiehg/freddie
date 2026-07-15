@@ -11,7 +11,7 @@ The state is an outer `Mercury { foregrounded, layer }` that resolves into a `La
 - `Typing`: `a`/`s`/`d`/`f` type themselves.
 - `InApp`: a per-app layer. Chrome rebinds `r` to `cmd`+`r`; the terminals rebind `d` to `cmd`+`d`; an unknown app binds nothing.
 
-`escape` returns to `Home` from anywhere. Every node derives both `Laserbeam` (the paths) and `Bind` (the accumulate and dispatch impls).
+`escape` returns to `Home` from anywhere. Every node derives `Bind`, which emits its path type and its accumulate and dispatch impls.
 
 ## Events, effects, and the loop
 

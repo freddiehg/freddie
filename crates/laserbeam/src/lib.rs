@@ -17,7 +17,6 @@
 //! assert_eq!(album.title, "A Night at the Opera (Remastered)");
 //! ```
 
-pub use laserbeam_macro::Laserbeam;
 
 /// The projection a [`Path`] uses to re-derive its focused node from the parent.
 ///
@@ -113,17 +112,6 @@ impl<Node, Parent> Path<Node, Parent> {
     pub fn into_parent(self) -> Parent {
         self.parent
     }
-}
-
-/// A node's path type, one per node. `#[derive(Laserbeam)]` implements it.
-///
-/// The root's `Path<'a>` is `&'a mut Self`; every other node's is a [`Path`] whose parent is
-/// the node's declared parent type.
-pub trait Resolve {
-    /// This node's path type. The root's is `&'a mut Self`.
-    type Path<'a>
-    where
-        Self: 'a;
 }
 
 #[cfg(test)]

@@ -8,7 +8,9 @@
 //! binding beats an ancestor's), then the node's own binds, building each node's
 //! laserbeam `Path` through the shared `derive_support::Edge`.
 
-use derive_support::{Edge, Via, find_resolve_into, is_root, parent_route, single_field_ty, unbox};
+use derive_support::{
+    Edge, Via, find_resolve_into, is_root, laserbeam_path, parent_route, single_field_ty, unbox,
+};
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
@@ -18,7 +20,7 @@ use syn::{Data, DeriveInput, Expr, Ident, Path, Token, Type, parse_macro_input};
 
 #[proc_macro_derive(
     Bind,
-    attributes(binds, bind, resolve_into, derived_child, derived_node)
+    attributes(binds, bind, resolve_into, derived_child, derived_node, laserbeam, laserbeam_root)
 )]
 pub fn derive_bind(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -45,13 +47,41 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         return derived_node_impl(input, name, &parent, &marker, &binds);
     }
 
+    let place = place_impl(input, name)?;
     let accumulate = accumulate_impl(input, name, &marker, &binds)?;
     let dispatch = dispatch_impl(input, name, &marker, &binds)?;
     let descend = descend_impl(input, name, &marker)?;
     Ok(quote! {
+        #place
         #accumulate
         #dispatch
         #descend
+    })
+}
+
+/// Emits `impl bind::Place` for a place node: its path type, from `#[laserbeam(path = P)]` or
+/// `#[laserbeam_root]`. This is the associated type that `Dispatch`, `EventHandler`, and the
+/// place `Descend` impl all name.
+fn place_impl(input: &DeriveInput, name: &Ident) -> syn::Result<TokenStream2> {
+    let path_ty = if is_root(&input.attrs) {
+        quote!(&'a mut Self)
+    } else {
+        let p = laserbeam_path(&input.attrs)?.ok_or_else(|| {
+            syn::Error::new(
+                input.ident.span(),
+                "a bind node needs `#[laserbeam(path = ..)]` or `#[laserbeam_root]`",
+            )
+        })?;
+        quote!(#p<'a>)
+    };
+    Ok(quote! {
+        #[automatically_derived]
+        impl ::bind::Place for #name {
+            type Path<'a>
+                = #path_ty
+            where
+                Self: 'a;
+        }
     })
 }
 
@@ -304,7 +334,7 @@ fn descend_impl(input: &DeriveInput, name: &Ident, marker: &Path) -> syn::Result
     }
     Ok(quote! {
         #[automatically_derived]
-        impl<'a> ::bind::Descend<#marker> for <#name as ::laserbeam::Resolve>::Path<'a>
+        impl<'a> ::bind::Descend<#marker> for <#name as ::bind::Place>::Path<'a>
         where
             #name: 'a,
         {
@@ -360,10 +390,10 @@ fn accumulate_impl(
         #[allow(clippy::useless_conversion, clippy::implicit_hasher)]
         impl ::bind::EventHandler<#marker> for #name #where_clause {
             fn accumulate<'a>(
-                #binding: <Self as ::laserbeam::Resolve>::Path<'a>,
+                #binding: <Self as ::bind::Place>::Path<'a>,
                 out: &mut ::std::collections::HashSet<<#marker as ::bind::Bindings>::Trigger>,
             ) -> ::core::result::Result<
-                <Self as ::laserbeam::Resolve>::Path<'a>,
+                <Self as ::bind::Place>::Path<'a>,
                 ::bind::BindError,
             >
             where
@@ -504,11 +534,11 @@ fn dispatch_impl(
         #[allow(clippy::useless_conversion)]
         impl ::bind::Dispatch<#marker> for #name #where_clause {
             fn dispatch<'a>(
-                #binding: <Self as ::laserbeam::Resolve>::Path<'a>,
+                #binding: <Self as ::bind::Place>::Path<'a>,
                 event: &<#marker as ::bind::Bindings>::Event,
             ) -> ::core::ops::ControlFlow<
                 <#marker as ::bind::Bindings>::Output,
-                <Self as ::laserbeam::Resolve>::Path<'a>,
+                <Self as ::bind::Place>::Path<'a>,
             >
             where
                 Self: 'a,

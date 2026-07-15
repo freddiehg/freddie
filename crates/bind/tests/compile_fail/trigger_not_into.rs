@@ -2,7 +2,6 @@
 // accumulate half). `Weird` has `EventTrigger` and a valid handler, so dispatch
 // is satisfied and the only failure is the missing `Into`.
 use bind::{Bind, Bindings, EventTrigger};
-use laserbeam::Laserbeam;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Trig;
@@ -34,7 +33,7 @@ impl EventTrigger for Weird {
 
 fn handler(_: &KeyEv, _path: impl Sized) {}
 
-#[derive(Laserbeam, Bind)]
+#[derive(Bind)]
 #[laserbeam_root]
 #[binds(M)]
 #[bind(Weird => handler)]

@@ -1,12 +1,12 @@
 //! A full laserbeam + bind tree shared by the accumulate and dispatch tests.
 //!
-//! Every node derives both `Laserbeam` (the paths the generated `Dispatch`
+//! Every node derives `Bind` (the path type the generated `Dispatch`
 //! needs) and `Bind`. Handlers mutate their node's `hits` where it has one and
 //! return the fired key's length, so a dispatch test can see which handler ran.
 #![allow(dead_code)]
 
 use bind::{Bind, Bindings, EventTrigger, Node};
-use laserbeam::{Laserbeam, Path};
+use laserbeam::{Path};
 
 // Two sources: a keyboard and the foregrounded app.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -109,7 +109,7 @@ pub fn ignore<P>(ev: &KeyEvent, _node: Node<P, ()>) -> usize {
 }
 
 // App -> Layer (enum) -> { Nav (leaf), Typing -> Box<Deep> (leaf) }.
-#[derive(Laserbeam, Bind)]
+#[derive(Bind)]
 #[laserbeam_root]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("esc") => on_esc)]
@@ -119,7 +119,7 @@ pub struct App {
     pub layer: Layer,
 }
 
-#[derive(Laserbeam, Bind)]
+#[derive(Bind)]
 #[laserbeam(path = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("f1") => on_f1)]
@@ -128,7 +128,7 @@ pub enum Layer {
     Typing(Typing),
 }
 
-#[derive(Laserbeam, Bind)]
+#[derive(Bind)]
 #[laserbeam(path = NavPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("g") => on_g, Foreground("Slack") => on_slack)]
@@ -136,7 +136,7 @@ pub struct Nav {
     pub hits: u32,
 }
 
-#[derive(Laserbeam, Bind)]
+#[derive(Bind)]
 #[laserbeam(path = TypingPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("bksp") => on_bksp)]
@@ -146,7 +146,7 @@ pub struct Typing {
     pub deep: Box<Deep>,
 }
 
-#[derive(Laserbeam, Bind)]
+#[derive(Bind)]
 #[laserbeam(path = DeepPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("d") => on_d)]
@@ -161,7 +161,7 @@ pub type DeepPath<'a> = Path<Deep, TypingPath<'a>>;
 
 // A tiny second tree for the duplicate-trigger error: parent and child both bind
 // `dup`.
-#[derive(Laserbeam, Bind)]
+#[derive(Bind)]
 #[laserbeam_root]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("dup") => ignore)]
@@ -170,7 +170,7 @@ pub struct Clash {
     pub child: ClashChild,
 }
 
-#[derive(Laserbeam, Bind)]
+#[derive(Bind)]
 #[laserbeam(path = ClashChildPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("dup") => ignore)]
@@ -178,14 +178,14 @@ pub struct ClashChild {}
 
 pub type ClashChildPath<'a> = Path<ClashChild, &'a mut Clash>;
 // A no-binds leaf root.
-#[derive(Laserbeam, Bind)]
+#[derive(Bind)]
 #[laserbeam_root]
 #[binds(MercuryStruct)]
 pub struct Empty {}
 
 // A multi-parent tree: `Title` is reached from both `Album` and `Song` through
 // the `TitleParent` route enum.
-#[derive(Laserbeam, Bind)]
+#[derive(Bind)]
 #[laserbeam_root]
 #[binds(MercuryStruct)]
 pub enum Media {
@@ -193,7 +193,7 @@ pub enum Media {
     Song(Song),
 }
 
-#[derive(Laserbeam, Bind)]
+#[derive(Bind)]
 #[laserbeam(path = AlbumPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("a") => ignore)]
@@ -202,7 +202,7 @@ pub struct Album {
     pub title: Title,
 }
 
-#[derive(Laserbeam, Bind)]
+#[derive(Bind)]
 #[laserbeam(path = SongPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("s") => ignore)]
@@ -211,7 +211,7 @@ pub struct Song {
     pub title: Title,
 }
 
-#[derive(Laserbeam, Bind)]
+#[derive(Bind)]
 #[laserbeam(path = TitlePath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("t") => on_title)]

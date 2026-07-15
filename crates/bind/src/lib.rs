@@ -71,7 +71,7 @@ pub trait Bindings {
 /// It hands the path back, again like [`Dispatch`], because a node that has descended still
 /// has its own triggers to insert.
 #[cfg(feature = "check")]
-pub trait EventHandler<M: Bindings>: ::laserbeam::Resolve {
+pub trait EventHandler<M: Bindings>: Place {
     /// Adds this node's triggers, and those of its active descendants, to `out`.
     ///
     /// # Errors
@@ -122,6 +122,20 @@ where
     let mut out = HashSet::new();
     <N as EventHandler<M>>::accumulate(path, &mut out)?;
     Ok(out)
+}
+
+/// A place in the tree, and its path type. `#[derive(Bind)]` implements it for every node that
+/// IS in the tree, from the node's `#[laserbeam(path = P)]` or `#[laserbeam_root]`.
+///
+/// This is the one associated type dispatch needs, and it lives here rather than in laserbeam
+/// so that bind depends on laserbeam's TYPES (`laserbeam::Path`) but on none of its traits. A
+/// DERIVED level is not a place: it has no path, so it does not implement `Place`.
+pub trait Place {
+    /// This node's path type. The root's is `&'a mut Self`; every other node's is its declared
+    /// `laserbeam::Path` alias.
+    type Path<'a>
+    where
+        Self: 'a;
 }
 
 /// What a handler is given: a parent, plus the immutable data this level produced.
@@ -197,7 +211,7 @@ pub trait Descend<M: Bindings>: HasParent + Sized {
 /// A derived level's half of THE CHECK. It does not ship, for the same reason
 /// [`EventHandler`] does not.
 ///
-/// A derived level has no [`Resolve`](::laserbeam::Resolve), so it cannot implement
+/// A derived level has no [`Place`], so it cannot implement
 /// `EventHandler`, whose signature is written in terms of `Self::Path`. It carries its
 /// triggers here instead.
 #[cfg(feature = "check")]
@@ -216,7 +230,7 @@ pub trait DerivedHandler<M: Bindings>: HasParent + Sized {
 /// binding takes priority over an ancestor's. [`Break`](ControlFlow::Break)
 /// carries the handler's output up; [`Continue`](ControlFlow::Continue) hands the
 /// node's path back so the parent can walk up (`into_parent`) and take its turn.
-pub trait Dispatch<M: Bindings>: ::laserbeam::Resolve {
+pub trait Dispatch<M: Bindings>: Place {
     /// Runs the active binding for `event`, or hands the path back on a miss.
     fn dispatch<'a>(
         path: Self::Path<'a>,
@@ -260,7 +274,7 @@ pub struct SimpleRunner<'a, M: Bindings, N> {
 impl<'a, M, N> SimpleRunner<'a, M, N>
 where
     M: Bindings,
-    N: Dispatch<M> + for<'b> ::laserbeam::Resolve<Path<'b> = &'b mut N>,
+    N: Dispatch<M> + for<'b> Place<Path<'b> = &'b mut N>,
 {
     /// A runner over the tree rooted at `root`, with an empty queue.
     pub const fn new(root: &'a mut N) -> Self {

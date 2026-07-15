@@ -6,12 +6,12 @@
 
 use bind::{Bind, Node};
 use freddie_keys::{Key, KeyEvent, PressType};
-use laserbeam::{Laserbeam, Path};
+use laserbeam::Path;
 
 use crate::handlers::*;
 use crate::{AnyKey, App, Foregrounded, ForegroundEvent, MercuryEffect, MercuryEvent, MercuryStruct};
 
-#[derive(Laserbeam, Bind, Debug)]
+#[derive(Bind, Debug)]
 #[laserbeam_root]
 #[binds(MercuryStruct)]
 #[bind(Foregrounded => on_foregrounded)]
@@ -21,7 +21,7 @@ pub struct Mercury {
     pub layer: Layer,
 }
 
-#[derive(Laserbeam, Bind, Debug)]
+#[derive(Bind, Debug)]
 #[laserbeam(path = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(Key::Escape.down() => to_home)]
@@ -33,7 +33,7 @@ pub enum Layer {
     InApp(AppLayer),
 }
 
-#[derive(Laserbeam, Bind, Debug)]
+#[derive(Bind, Debug)]
 #[laserbeam(path = HomeLayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
@@ -45,7 +45,7 @@ pub enum Layer {
 )]
 pub struct HomeLayer {}
 
-#[derive(Laserbeam, Bind, Debug)]
+#[derive(Bind, Debug)]
 #[laserbeam(path = NavLayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
@@ -57,7 +57,7 @@ pub struct NavLayer {}
 
 /// The resize layer: the arrows place the focused window and return home. Like nav, a one-shot
 /// chooser.
-#[derive(Laserbeam, Bind, Debug)]
+#[derive(Bind, Debug)]
 #[laserbeam(path = ResizeLayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
@@ -68,7 +68,7 @@ pub struct NavLayer {}
 pub struct ResizeLayer {}
 
 /// The typing layer: `escape` goes home, any other key passes through.
-#[derive(Laserbeam, Bind, Debug)]
+#[derive(Bind, Debug)]
 #[laserbeam(path = TypingLayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
@@ -80,7 +80,7 @@ pub struct TypingLayer {}
 /// The in-app layer. It stores NO app: `root.foregrounded` is the only copy, and [`app_data`]
 /// builds the app's level from it on every dispatch. There is nothing to keep in sync and
 /// nothing to go stale.
-#[derive(Laserbeam, Bind, Debug, Default)]
+#[derive(Bind, Debug, Default)]
 #[laserbeam(path = AppLayerPath)]
 #[binds(MercuryStruct)]
 #[derived_child(app_data)]

@@ -99,6 +99,32 @@ pub fn unbox(ty: &Type) -> (&Type, bool) {
 ///
 /// [`Path`]: laserbeam::Path
 #[must_use]
+/// The path alias named by `#[laserbeam(path = P)]`, if present. `None` for the root, which
+/// carries `#[laserbeam_root]` and has no alias (its path is `&mut Self`).
+///
+/// # Errors
+///
+/// Errors if `#[laserbeam(..)]` is present without `path = ..`.
+pub fn laserbeam_path(attrs: &[syn::Attribute]) -> syn::Result<Option<Path>> {
+    for attr in attrs {
+        if attr.path().is_ident("laserbeam") {
+            let mut path = None;
+            attr.parse_nested_meta(|m| {
+                if m.path.is_ident("path") {
+                    path = Some(m.value()?.parse()?);
+                    Ok(())
+                } else {
+                    Err(m.error("expected `path`"))
+                }
+            })?;
+            return Ok(Some(path.ok_or_else(|| {
+                syn::Error::new(attr.span(), "laserbeam needs `path = ..`")
+            })?));
+        }
+    }
+    Ok(None)
+}
+
 pub fn is_root(attrs: &[syn::Attribute]) -> bool {
     attrs.iter().any(|a| a.path().is_ident("laserbeam_root"))
 }

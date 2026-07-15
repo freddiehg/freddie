@@ -11,10 +11,10 @@ mod common;
 
 use bind::{Bind, Node, accumulate, dispatch};
 use common::{KeyEvent, Keyboard, MercuryEvent, MercuryStruct, kb};
-use laserbeam::{Laserbeam, Path};
+use laserbeam::{Path};
 use std::collections::HashSet;
 
-#[derive(Laserbeam, Bind)]
+#[derive(Bind)]
 #[laserbeam_root]
 #[binds(MercuryStruct)]
 pub struct Root {
@@ -28,7 +28,7 @@ pub struct Chrome {
     pub tab: String,
 }
 
-#[derive(Laserbeam, Bind)]
+#[derive(Bind)]
 #[laserbeam(path = ShellPath)]
 #[binds(MercuryStruct)]
 #[derived_child(app_data)]

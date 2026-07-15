@@ -1,48 +1,48 @@
 error[E0277]: the trait bound `NotBindings: Bindings` is not satisfied
- --> tests/compile_fail/marker_not_bindings.rs:8:21
+ --> tests/compile_fail/marker_not_bindings.rs:7:10
   |
-8 | #[derive(Laserbeam, Bind)]
-  |                     ^^^^ unsatisfied trait bound
+7 | #[derive(Bind)]
+  |          ^^^^ unsatisfied trait bound
   |
 help: the trait `Bindings` is not implemented for `NotBindings`
- --> tests/compile_fail/marker_not_bindings.rs:6:1
+ --> tests/compile_fail/marker_not_bindings.rs:5:1
   |
-6 | struct NotBindings;
+5 | struct NotBindings;
   | ^^^^^^^^^^^^^^^^^^
   = note: this error originates in the derive macro `Bind` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `NotBindings: Bindings` is not satisfied
- --> tests/compile_fail/marker_not_bindings.rs:8:21
+ --> tests/compile_fail/marker_not_bindings.rs:7:10
   |
-8 | #[derive(Laserbeam, Bind)]
-  |                     ^^^^ unsatisfied trait bound
+7 | #[derive(Bind)]
+  |          ^^^^ unsatisfied trait bound
   |
 help: the trait `Bindings` is not implemented for `NotBindings`
- --> tests/compile_fail/marker_not_bindings.rs:6:1
+ --> tests/compile_fail/marker_not_bindings.rs:5:1
   |
-6 | struct NotBindings;
+5 | struct NotBindings;
   | ^^^^^^^^^^^^^^^^^^
 note: required by a bound in `EventHandler`
  --> src/lib.rs
   |
-  | pub trait EventHandler<M: Bindings>: ::laserbeam::Resolve {
+  | pub trait EventHandler<M: Bindings>: Place {
   |                           ^^^^^^^^ required by this bound in `EventHandler`
   = note: this error originates in the derive macro `Bind` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `NotBindings: Bindings` is not satisfied
- --> tests/compile_fail/marker_not_bindings.rs:8:21
+ --> tests/compile_fail/marker_not_bindings.rs:7:10
   |
-8 | #[derive(Laserbeam, Bind)]
-  |                     ^^^^ unsatisfied trait bound
+7 | #[derive(Bind)]
+  |          ^^^^ unsatisfied trait bound
   |
 help: the trait `Bindings` is not implemented for `NotBindings`
- --> tests/compile_fail/marker_not_bindings.rs:6:1
+ --> tests/compile_fail/marker_not_bindings.rs:5:1
   |
-6 | struct NotBindings;
+5 | struct NotBindings;
   | ^^^^^^^^^^^^^^^^^^
 note: required by a bound in `Dispatch`
  --> src/lib.rs
   |
-  | pub trait Dispatch<M: Bindings>: ::laserbeam::Resolve {
+  | pub trait Dispatch<M: Bindings>: Place {
   |                       ^^^^^^^^ required by this bound in `Dispatch`
   = note: this error originates in the derive macro `Bind` (in Nightly builds, run with -Z macro-backtrace for more info)
