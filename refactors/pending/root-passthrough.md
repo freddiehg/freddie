@@ -68,9 +68,23 @@ Two shapes, and the doc has to pick:
 
 The fall-through is smaller and keeps the dispatch model; the multi-cast is cleaner conceptually and is the thing global modifier state really wants. Deciding between them is the crux of this doc.
 
+## Cleaner with multiple children: an `IfActivePassthru`
+
+"Is a passthrough layer active" is checked imperatively above -- the root handler asks the predicate before passing a key through. That is a branch standing in for structure. The cleaner shape makes the predicate be whether a child exists: a node present iff a passthrough layer is active, holding only the passthrough catch-all.
+
+```rust
+// a child of the root, present only while a passthrough layer is active
+#[bind(AnyKey => passthrough)]
+pub struct IfActivePassthru;
+```
+
+The root would then resolve into TWO children at once: the active layer (its commands) and this `IfActivePassthru`. A bound key hits the layer; anything else falls through to `IfActivePassthru`'s catch-all; and when no passthrough layer is active the child is simply absent, so there is no catch-all and the key is swallowed. The predicate moves out of a handler and into whether the child resolves.
+
+laserbeam does not support this. It resolves into exactly ONE active child (an enum variant, or a single `#[resolve_into]`). The conditional-presence half is the `Option<Child>` / fallible resolve from `laserbeam-state-controlled-children.md`, but here the root keeps its layer child too, so it needs MULTIPLE simultaneous children, which is that doc's non-goal and is the `no-clobber.md` multi-cast decision by another name (more than one child seeing the event). So `IfActivePassthru` is the target shape once laserbeam has multiple children; until then the root handler branches on the predicate.
+
 ## Open questions
 
-- Fall-through versus multi-cast (the `no-clobber.md` decision), and whether the root's passthrough/modifier logic is a real last-resort handler or a per-event side-channel.
-- Whether the `ActivePassthroughLayer` count survives at all, or is replaced by reading the active layer (and paused-ness) off the tree directly.
+- Fall-through versus multi-cast (the `no-clobber.md` decision), and whether the root's passthrough/modifier logic is a real last-resort handler or a per-event side-channel. `IfActivePassthru` is the structural form of the multi-cast answer.
+- Whether the `ActivePassthroughLayer` count survives at all, or is replaced by reading the active layer (and paused-ness) off the tree directly, or by `IfActivePassthru`'s presence.
 - The stuck-modifier hazard when a `cmd` is passed through but its up is later swallowed. The single `held` on the root is a precondition, not the fix; the corrective-emit wiring is the work (`held-modifiers.md`). (The keep-vs-drop for command keys is settled in `passthrough-count.md`: `is_active()`-after-dispatch, not the tap needing the dispatch result.)
 - The single `held` struct, its update site, the emitter-flags reconciliation, and the `u128` form all live in `held-modifiers.md`.
