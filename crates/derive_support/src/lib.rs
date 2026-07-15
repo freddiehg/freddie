@@ -97,7 +97,7 @@ pub fn unbox(ty: &Type) -> (&Type, bool) {
 /// True when a node is the tree root: it carries `#[laserbeam_root]` rather than
 /// `#[laserbeam(..)]`, and its path is `&mut Self` instead of a [`Path`].
 ///
-/// [`Path`]: laserbeam::Path
+/// [`Path`]: laserbeam::PathMut
 #[must_use]
 /// The path alias named by `#[laserbeam(path = P)]`, if present. `None` for the root, which
 /// carries `#[laserbeam_root]` and has no alias (its path is `&mut Self`).
@@ -170,7 +170,7 @@ impl Edge<'_> {
             // what `from_fn` builds, so `.into()` is identity.
             None => {
                 let project = self.single_parent_projection(&deref);
-                quote!(::laserbeam::Path::from_fn(#path, #project).into())
+                quote!(::laserbeam::PathMut::from_fn(#path, #project).into())
             }
             // Multi-parent child: wrap this node's path in the route variant named
             // after this node, and re-derive the child through it.
@@ -178,7 +178,7 @@ impl Edge<'_> {
                 let parent = self.parent;
                 let variant = quote!(#route::#parent);
                 let project = self.multi_parent_projection(&variant, &deref);
-                quote!(::laserbeam::Path::from_fn(#variant(#path.into()), #project))
+                quote!(::laserbeam::PathMut::from_fn(#variant(#path.into()), #project))
             }
         }
     }

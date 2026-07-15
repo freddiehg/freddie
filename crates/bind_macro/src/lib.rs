@@ -323,7 +323,7 @@ fn derived_accumulate_descent(input: &DeriveInput, marker: &Path) -> syn::Result
 /// Emits `impl Descend<M>` for a PLACE: delegate to its own `Dispatch`, then hand the parent
 /// back.
 ///
-/// Per node, and not a blanket `impl<N, P> Descend<M> for Path<N, P>`: `Dispatch` carries
+/// Per node, and not a blanket `impl<N, P> Descend<M> for PathMut<N, P>`: `Dispatch` carries
 /// `Self: 'a`, and the HRTB needed to state the blanket is E0311. Here the lifetime is named,
 /// so `Self: 'a` holds.
 ///

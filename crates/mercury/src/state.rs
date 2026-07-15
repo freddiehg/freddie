@@ -6,7 +6,7 @@
 
 use bind::{Bind, Node};
 use freddie_keys::{Key, KeyEvent, PressType};
-use laserbeam::Path;
+use laserbeam::PathMut;
 
 use crate::handlers::*;
 use crate::{AnyKey, App, Foregrounded, ForegroundEvent, MercuryEffect, MercuryEvent, MercuryStruct};
@@ -136,13 +136,13 @@ pub struct ChromeApp {}
 )]
 pub struct GhosttyApp {}
 
-pub type LayerPath<'a> = Path<Layer, &'a mut Mercury>;
-pub type HomeLayerPath<'a> = Path<HomeLayer, LayerPath<'a>>;
-pub type NavLayerPath<'a> = Path<NavLayer, LayerPath<'a>>;
-pub type ResizeLayerPath<'a> = Path<ResizeLayer, LayerPath<'a>>;
-pub type TypingLayerPath<'a> = Path<TypingLayer, LayerPath<'a>>;
-pub type AppLayerPath<'a> = Path<AppLayer, LayerPath<'a>>;
-/// An app's level is not in the tree, so it is a `Node`, not a `Path`.
+pub type LayerPath<'a> = PathMut<Layer, &'a mut Mercury>;
+pub type HomeLayerPath<'a> = PathMut<HomeLayer, LayerPath<'a>>;
+pub type NavLayerPath<'a> = PathMut<NavLayer, LayerPath<'a>>;
+pub type ResizeLayerPath<'a> = PathMut<ResizeLayer, LayerPath<'a>>;
+pub type TypingLayerPath<'a> = PathMut<TypingLayer, LayerPath<'a>>;
+pub type AppLayerPath<'a> = PathMut<AppLayer, LayerPath<'a>>;
+/// An app's level is not in the tree, so it is a `Node`, not a `PathMut`.
 pub type ChromeAppNode<'a> = Node<AppLayerPath<'a>, ChromeApp>;
 pub type GhosttyAppNode<'a> = Node<AppLayerPath<'a>, GhosttyApp>;
 

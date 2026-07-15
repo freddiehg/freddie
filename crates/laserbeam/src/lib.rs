@@ -1,16 +1,16 @@
 //! A mutable typed cursor into a single-owner tree.
 //!
-//! A [`Path`] holds a `&mut` at some node and a projection down to a child. You read or write
-//! the child through [`Path::get_mut`], and walk back up with [`Path::into_parent`], holding
+//! A [`PathMut`] holds a `&mut` at some node and a projection down to a child. You read or write
+//! the child through [`PathMut::get_mut`], and walk back up with [`PathMut::into_parent`], holding
 //! exactly one live `&mut` at a time.
 //!
 //! ```
-//! use laserbeam::Path;
+//! use laserbeam::PathMut;
 //!
 //! struct Album { title: String }
 //! let mut album = Album { title: "A Night at the Opera".to_string() };
 //!
-//! let mut path: Path<String, &mut Album> = Path::from_fn(&mut album, |a| &mut a.title);
+//! let mut path: PathMut<String, &mut Album> = PathMut::from_fn(&mut album, |a| &mut a.title);
 //! path.get_mut().push_str(" (Remastered)");
 //! drop(path);
 //!
@@ -18,15 +18,15 @@
 //! ```
 
 
-/// The projection a [`Path`] uses to re-derive its focused node from the parent.
+/// The projection a [`PathMut`] uses to re-derive its focused node from the parent.
 ///
 /// `Bare` is a function pointer (what the derive emits, since its match and field projections capture nothing). `Dyn` is a boxed closure, for a hand-written projection that closes over data the derive cannot see, such as an externally supplied index.
-enum Proj<Node, Parent> {
+enum ProjMut<Node, Parent> {
     Bare(fn(&mut Parent) -> &mut Node),
     Dyn(Box<dyn for<'p> Fn(&'p mut Parent) -> &'p mut Node>),
 }
 
-impl<Node, Parent> Proj<Node, Parent> {
+impl<Node, Parent> ProjMut<Node, Parent> {
     fn apply<'p>(&self, parent: &'p mut Parent) -> &'p mut Node {
         match self {
             Self::Bare(f) => f(parent),
@@ -37,14 +37,14 @@ impl<Node, Parent> Proj<Node, Parent> {
 
 /// A typed, mutable path to a `Node`: its owned `Parent` plus the projection that re-derives the `Node` from that parent.
 ///
-/// The `Parent` is private, so the only way up is [`into_parent`](Path::into_parent), which consumes the path. That, together with [`get_mut`](Path::get_mut) borrowing the whole path, keeps a stale or aliasing reference from compiling.
+/// The `Parent` is private, so the only way up is [`into_parent`](PathMut::into_parent), which consumes the path. That, together with [`get_mut`](PathMut::get_mut) borrowing the whole path, keeps a stale or aliasing reference from compiling.
 ///
 /// You cannot hold the leaf and walk up at the same time. `get_mut` borrows the whole path, so moving up while the leaf is still borrowed does not compile:
 ///
 /// ```compile_fail
-/// use laserbeam::Path;
+/// use laserbeam::PathMut;
 /// let mut root = 0_u32;
-/// let mut path: Path<u32, &mut u32> = Path::from_fn(&mut root, |r| &mut **r);
+/// let mut path: PathMut<u32, &mut u32> = PathMut::from_fn(&mut root, |r| &mut **r);
 /// let leaf = path.get_mut();
 /// let parent = path.into_parent(); // moves `path` while `leaf` still borrows it
 /// let _ = (leaf, parent);
@@ -53,9 +53,9 @@ impl<Node, Parent> Proj<Node, Parent> {
 /// A path is dead once you walk up from it, so use after `into_parent` does not compile either:
 ///
 /// ```compile_fail
-/// use laserbeam::Path;
+/// use laserbeam::PathMut;
 /// let mut root = 0_u32;
-/// let mut path: Path<u32, &mut u32> = Path::from_fn(&mut root, |r| &mut **r);
+/// let mut path: PathMut<u32, &mut u32> = PathMut::from_fn(&mut root, |r| &mut **r);
 /// let _parent = path.into_parent();
 /// let _leaf = path.get_mut(); // `path` has already been moved
 /// ```
@@ -63,23 +63,23 @@ impl<Node, Parent> Proj<Node, Parent> {
 /// The parent field is private; it is reachable only through the methods:
 ///
 /// ```compile_fail
-/// use laserbeam::Path;
+/// use laserbeam::PathMut;
 /// let mut root = 0_u32;
-/// let path: Path<u32, &mut u32> = Path::from_fn(&mut root, |r| &mut **r);
+/// let path: PathMut<u32, &mut u32> = PathMut::from_fn(&mut root, |r| &mut **r);
 /// let _ = path.parent; // private field
 /// ```
-pub struct Path<Node, Parent> {
+pub struct PathMut<Node, Parent> {
     parent: Parent,
-    projection: Proj<Node, Parent>,
+    projection: ProjMut<Node, Parent>,
 }
 
-impl<Node, Parent> Path<Node, Parent> {
+impl<Node, Parent> PathMut<Node, Parent> {
     /// Builds a path from a parent and a non-capturing projection.
     #[must_use]
     pub const fn from_fn(parent: Parent, projection: fn(&mut Parent) -> &mut Node) -> Self {
         Self {
             parent,
-            projection: Proj::Bare(projection),
+            projection: ProjMut::Bare(projection),
         }
     }
 
@@ -91,7 +91,7 @@ impl<Node, Parent> Path<Node, Parent> {
     ) -> Self {
         Self {
             parent,
-            projection: Proj::Dyn(projection),
+            projection: ProjMut::Dyn(projection),
         }
     }
 
@@ -116,7 +116,7 @@ impl<Node, Parent> Path<Node, Parent> {
 
 #[cfg(test)]
 mod tests {
-    use super::Path;
+    use super::PathMut;
 
     // "Sheer Heart Attack".
     struct Sheer {
@@ -131,7 +131,7 @@ mod tests {
         let mut album = Sheer {
             heart: Attack { length: 1 },
         };
-        let mut path: Path<Attack, &mut Sheer> = Path::from_fn(&mut album, |a| &mut a.heart);
+        let mut path: PathMut<Attack, &mut Sheer> = PathMut::from_fn(&mut album, |a| &mut a.heart);
         path.get_mut().length = 42;
         let recovered = path.into_parent();
         assert_eq!(recovered.heart.length, 42);
@@ -142,7 +142,7 @@ mod tests {
         let mut album = Sheer {
             heart: Attack { length: 7 },
         };
-        let path: Path<Attack, &mut Sheer> = Path::from_fn(&mut album, |a| &mut a.heart);
+        let path: PathMut<Attack, &mut Sheer> = PathMut::from_fn(&mut album, |a| &mut a.heart);
         assert_eq!(path.parent().heart.length, 7);
         // Still usable afterwards because `parent` only borrows.
         assert_eq!(path.parent().heart.length, 7);
@@ -154,7 +154,7 @@ mod tests {
         let mut setlist = vec![10_u32, 20, 30];
         let index = 1_usize;
         {
-            let mut path: Path<u32, &mut Vec<u32>> = Path::from_box(
+            let mut path: PathMut<u32, &mut Vec<u32>> = PathMut::from_box(
                 &mut setlist,
                 Box::new(move |v: &mut &mut Vec<u32>| &mut v[index]),
             );
@@ -168,7 +168,7 @@ mod tests {
 ///
 /// Implemented for every path and for each of its ancestors, to twelve levels, so
 /// a handler can be generic over "any path beneath this node" rather than naming
-/// one. Use [`Path::ascend_to`] to name the target, or let it be inferred.
+/// one. Use [`PathMut::ascend_to`] to name the target, or let it be inferred.
 ///
 /// ```ignore
 /// fn to_home<'a, P: Ascend<LayerPath<'a>>>(path: P) {
@@ -179,7 +179,7 @@ mod tests {
 ///
 /// The impls match on the shape of the path rather than on which node it is, so
 /// no node is named and adding one needs no new impl: `NavLayerPath` is just an
-/// alias for `Path<NavLayer, LayerPath<'a>>`, which is the depth-one shape.
+/// alias for `PathMut<NavLayer, LayerPath<'a>>`, which is the depth-one shape.
 ///
 /// There is one impl per depth, and they cannot overlap. For a single `Self` each
 /// gives a different `Target`, and unifying two of them would need a type that
@@ -188,7 +188,7 @@ mod tests {
 /// no index leaks into the bounds of a handler that uses it.
 ///
 /// Only for trees where every node has one parent. A node with several declares
-/// its parent as a route enum rather than a `Path`, so the shapes stop matching,
+/// its parent as a route enum rather than a `PathMut`, so the shapes stop matching,
 /// and the ascent would not be unique anyway.
 pub trait Ascend<Target> {
     /// Walk up to the target.
@@ -202,7 +202,7 @@ impl<T> Ascend<T> for T {
     }
 }
 
-impl<Node, Parent> Path<Node, Parent> {
+impl<Node, Parent> PathMut<Node, Parent> {
     /// Walk up to `Target`, naming it rather than leaving it to inference.
     ///
     /// Sugar, and the only way to name the target on the right. `Target` is a
@@ -219,11 +219,11 @@ impl<Node, Parent> Path<Node, Parent> {
     }
 }
 
-/// `Path<N0, Path<N1, .. T>>`, one level per type parameter.
+/// `PathMut<N0, PathMut<N1, .. T>>`, one level per type parameter.
 macro_rules! ascend_nest {
     ($t:ident) => { $t };
     ($t:ident, $head:ident $(, $rest:ident)*) => {
-        Path<$head, ascend_nest!($t $(, $rest)*)>
+        PathMut<$head, ascend_nest!($t $(, $rest)*)>
     };
 }
 
@@ -253,11 +253,11 @@ ascend_impls!([], N0, N1, N2, N3, N4, N5, N6, N7, N8, N9, N10, N11);
 #[cfg(test)]
 #[allow(dead_code)] // the impls are asserted at the type level, never called
 mod ascend_tests {
-    use crate::{Ascend, Path};
+    use crate::{Ascend, PathMut};
 
     struct Root;
     struct Target;
-    type TargetPath<'a> = Path<Target, &'a mut Root>;
+    type TargetPath<'a> = PathMut<Target, &'a mut Root>;
 
     struct N1;
     struct N2;
@@ -272,18 +272,18 @@ mod ascend_tests {
     struct N11;
     struct N12;
 
-    type D1<'a> = Path<N1, TargetPath<'a>>;
-    type D2<'a> = Path<N2, D1<'a>>;
-    type D3<'a> = Path<N3, D2<'a>>;
-    type D4<'a> = Path<N4, D3<'a>>;
-    type D5<'a> = Path<N5, D4<'a>>;
-    type D6<'a> = Path<N6, D5<'a>>;
-    type D7<'a> = Path<N7, D6<'a>>;
-    type D8<'a> = Path<N8, D7<'a>>;
-    type D9<'a> = Path<N9, D8<'a>>;
-    type D10<'a> = Path<N10, D9<'a>>;
-    type D11<'a> = Path<N11, D10<'a>>;
-    type D12<'a> = Path<N12, D11<'a>>;
+    type D1<'a> = PathMut<N1, TargetPath<'a>>;
+    type D2<'a> = PathMut<N2, D1<'a>>;
+    type D3<'a> = PathMut<N3, D2<'a>>;
+    type D4<'a> = PathMut<N4, D3<'a>>;
+    type D5<'a> = PathMut<N5, D4<'a>>;
+    type D6<'a> = PathMut<N6, D5<'a>>;
+    type D7<'a> = PathMut<N7, D6<'a>>;
+    type D8<'a> = PathMut<N8, D7<'a>>;
+    type D9<'a> = PathMut<N9, D8<'a>>;
+    type D10<'a> = PathMut<N10, D9<'a>>;
+    type D11<'a> = PathMut<N11, D10<'a>>;
+    type D12<'a> = PathMut<N12, D11<'a>>;
 
     const fn ascends<'a, P: Ascend<TargetPath<'a>>>() {}
 

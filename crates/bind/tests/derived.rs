@@ -11,7 +11,7 @@ mod common;
 
 use bind::{Bind, Node, accumulate, dispatch};
 use common::{KeyEvent, Keyboard, MercuryEvent, MercuryStruct, kb};
-use laserbeam::{Path};
+use laserbeam::PathMut;
 use std::collections::HashSet;
 
 #[derive(Bind)]
@@ -47,7 +47,7 @@ pub struct AppData {
     pub tab: String,
 }
 
-/// A derived level UNDER a derived level. Its parent is a `Node`, not a `Path`.
+/// A derived level UNDER a derived level. Its parent is a `Node`, not a `PathMut`.
 #[derive(Bind)]
 #[derived_node(parent = AppNode)]
 #[binds(MercuryStruct)]
@@ -56,7 +56,7 @@ pub struct TabData {
     pub thread: u32,
 }
 
-pub type ShellPath<'a> = Path<Shell, &'a mut Root>;
+pub type ShellPath<'a> = PathMut<Shell, &'a mut Root>;
 pub type AppNode<'a> = Node<ShellPath<'a>, AppData>;
 pub type TabNode<'a> = Node<AppNode<'a>, TabData>;
 

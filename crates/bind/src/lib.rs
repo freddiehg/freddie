@@ -128,11 +128,11 @@ where
 /// IS in the tree, from the node's `#[laserbeam(path = P)]` or `#[laserbeam_root]`.
 ///
 /// This is the one associated type dispatch needs, and it lives here rather than in laserbeam
-/// so that bind depends on laserbeam's TYPES (`laserbeam::Path`) but on none of its traits. A
+/// so that bind depends on laserbeam's TYPES (`laserbeam::PathMut`) but on none of its traits. A
 /// DERIVED level is not a place: it has no path, so it does not implement `Place`.
 pub trait Place {
     /// This node's path type. The root's is `&'a mut Self`; every other node's is its declared
-    /// `laserbeam::Path` alias.
+    /// `laserbeam::PathMut` alias.
     type Path<'a>
     where
         Self: 'a;
@@ -143,7 +143,7 @@ pub trait Place {
 /// `data` is `()` for every level that is a place in the tree, and it is zero-sized, so a
 /// place pays nothing for the field. A level that is NOT in the tree puts an object there.
 ///
-/// `parent` is a [`laserbeam::Path`](::laserbeam::Path) when the level above is a place, so
+/// `parent` is a [`laserbeam::PathMut`](::laserbeam::PathMut) when the level above is a place, so
 /// `node.parent.get_mut()` reaches it. A `Path` ADDRESSES a place; this type CARRIES data.
 /// They both sit next to a parent, and that is the whole of the resemblance.
 pub struct Node<Parent, Data> {
@@ -159,7 +159,7 @@ pub struct Node<Parent, Data> {
 /// function it cannot know that function's return type, so it asks for `Self::Parent`
 /// instead of writing it.
 pub trait HasParent {
-    /// The parent's type: a [`laserbeam::Path`](::laserbeam::Path) when the level above is a
+    /// The parent's type: a [`laserbeam::PathMut`](::laserbeam::PathMut) when the level above is a
     /// place, a [`Node`] when it is derived.
     type Parent;
     /// Consumes this node and returns the parent, moving one level up.
@@ -173,10 +173,10 @@ impl<Parent, Data> HasParent for Node<Parent, Data> {
     }
 }
 
-impl<N, P> HasParent for ::laserbeam::Path<N, P> {
+impl<N, P> HasParent for ::laserbeam::PathMut<N, P> {
     type Parent = P;
     fn into_parent(self) -> P {
-        ::laserbeam::Path::into_parent(self)
+        ::laserbeam::PathMut::into_parent(self)
     }
 }
 

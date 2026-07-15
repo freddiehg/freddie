@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use bind::{Bind, Bindings, EventTrigger, Node};
-use laserbeam::{Path};
+use laserbeam::PathMut;
 
 // Two sources: a keyboard and the foregrounded app.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -154,10 +154,10 @@ pub struct Deep {
     pub hits: u32,
 }
 
-pub type LayerPath<'a> = Path<Layer, &'a mut App>;
-pub type NavPath<'a> = Path<Nav, LayerPath<'a>>;
-pub type TypingPath<'a> = Path<Typing, LayerPath<'a>>;
-pub type DeepPath<'a> = Path<Deep, TypingPath<'a>>;
+pub type LayerPath<'a> = PathMut<Layer, &'a mut App>;
+pub type NavPath<'a> = PathMut<Nav, LayerPath<'a>>;
+pub type TypingPath<'a> = PathMut<Typing, LayerPath<'a>>;
+pub type DeepPath<'a> = PathMut<Deep, TypingPath<'a>>;
 
 // A tiny second tree for the duplicate-trigger error: parent and child both bind
 // `dup`.
@@ -176,7 +176,7 @@ pub struct Clash {
 #[bind(Keyboard("dup") => ignore)]
 pub struct ClashChild {}
 
-pub type ClashChildPath<'a> = Path<ClashChild, &'a mut Clash>;
+pub type ClashChildPath<'a> = PathMut<ClashChild, &'a mut Clash>;
 // A no-binds leaf root.
 #[derive(Bind)]
 #[laserbeam_root]
@@ -219,13 +219,13 @@ pub struct Title {
     pub hits: u32,
 }
 
-pub type AlbumPath<'a> = Path<Album, &'a mut Media>;
-pub type SongPath<'a> = Path<Song, &'a mut Media>;
+pub type AlbumPath<'a> = PathMut<Album, &'a mut Media>;
+pub type SongPath<'a> = PathMut<Song, &'a mut Media>;
 pub enum TitleParent<'a> {
     Album(AlbumPath<'a>),
     Song(SongPath<'a>),
 }
-pub type TitlePath<'a> = Path<Title, TitleParent<'a>>;
+pub type TitlePath<'a> = PathMut<Title, TitleParent<'a>>;
 pub fn on_title(ev: &KeyEvent, mut node: Node<TitlePath, ()>) -> usize {
     node.parent.get_mut().hits += 1;
     ev.key.len()
