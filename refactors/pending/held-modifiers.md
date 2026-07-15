@@ -107,38 +107,47 @@ fn emit(key: Key, press: PressType) -> MercuryEffect {
 ## The `Passthrough` struct and its guard (`state.rs`)
 
 ```rust
+use std::cell::Cell;
+use std::rc::Rc;
+
 #[derive(Debug, Default)]
 pub struct Passthrough {
     pub held: HeldModifiers,
-    active: u8, // how many passthrough layers are live; nested (paused over typing) is > 1
+    active: Rc<Cell<u8>>, // how many passthrough layers are live; shared with the guards
 }
 
-/// Proof that one passthrough layer is live, stored on `TypingLayer`/`Paused`. Made by `guard`,
-/// consumed by `clear` — both return the flush. `#[must_use]`, so it is not dropped on the floor.
-#[must_use]
-pub struct PassthroughGuard;
+/// Proof that one passthrough layer is live, stored on `TypingLayer`/`Paused`. Its `Drop` is the
+/// ONLY place the count goes down, so reassigning a layer or tearing down the tree keeps the count
+/// correct with nothing to remember. `Rc<Cell>` because the guard outlives the borrow of
+/// `Passthrough` (it lives on the layer), so it owns a handle to the count, not a reference.
+/// Single-threaded dispatch, so `Rc`/`Cell`, not `Arc`/atomic.
+pub struct PassthroughGuard(Rc<Cell<u8>>);
+
+impl Drop for PassthroughGuard {
+    fn drop(&mut self) { self.0.set(self.0.get() - 1); }
+}
 
 impl Passthrough {
-    /// Enter a passthrough layer. Opens the held keys iff this is the first (0 -> 1); empty if one
-    /// was already active.
+    /// Enter a passthrough layer: raise the count, hand back a guard to store on the layer. Opens
+    /// the held keys iff this is the first (0 -> 1); empty if one was already active (paused over
+    /// typing). The guard MUST be stored, or its `Drop` lowers the count right back.
     pub fn guard(&mut self) -> (PassthroughGuard, Vec<MercuryEffect>) {
-        self.active += 1;
-        let opens = if self.active == 1 { self.held.open() } else { Vec::new() };
-        (PassthroughGuard, opens)
+        self.active.set(self.active.get() + 1);
+        let opens = if self.active.get() == 1 { self.held.open() } else { Vec::new() };
+        (PassthroughGuard(Rc::clone(&self.active)), opens)
     }
 
-    /// Leave a passthrough layer, consuming its guard. Closes the held keys iff this was the last
-    /// (1 -> 0); empty otherwise.
+    /// The closes owed when the guard about to drop is the last one (count == 1). A leave site
+    /// calls this, THEN reassigns the layer; the old layer's guard `Drop` lowers the count.
     #[must_use]
-    pub fn clear(&mut self, _guard: PassthroughGuard) -> Vec<MercuryEffect> {
-        self.active -= 1;
-        if self.active == 0 { self.held.close() } else { Vec::new() }
+    pub fn closing(&self) -> Vec<MercuryEffect> {
+        if self.active.get() == 1 { self.held.close() } else { Vec::new() }
     }
 
-    /// The close a shutdown owes the app: close held keys iff we are in a passthrough layer.
+    /// Shutdown: the closes owed iff any passthrough layer is live.
     #[must_use]
     pub fn closing_flush(&self) -> Vec<MercuryEffect> {
-        if self.active > 0 { self.held.close() } else { Vec::new() }
+        if self.active.get() > 0 { self.held.close() } else { Vec::new() }
     }
 }
 ```
@@ -225,7 +234,7 @@ pub struct TypingLayer {
 }
 ```
 
-After (each holds a `PassthroughGuard`; `Paused::new` is gone — building it needs a guard, which only a handler with `&mut Passthrough` can make):
+After (each holds a `PassthroughGuard`; the constructors stay, now taking the guard, so construction is one place and works across modules despite the private field):
 
 ```rust
 #[bind(AnyKey => pass_through)]
@@ -234,12 +243,24 @@ pub struct Paused {
     guard: PassthroughGuard,
 }
 
+impl Paused {
+    pub(crate) fn new(layer: Layer, guard: PassthroughGuard) -> Self {
+        Self { layer, guard }
+    }
+}
+
 #[bind(
     Key::Escape.down() => maybe_go_home,
     AnyKey => pass_through,
 )]
 pub struct TypingLayer {
     guard: PassthroughGuard,
+}
+
+impl TypingLayer {
+    pub(crate) fn new(guard: PassthroughGuard) -> Self {
+        Self { guard }
+    }
 }
 ```
 
@@ -251,9 +272,9 @@ pub(crate) fn pass_through(ev: &KeyEvent, _node: Node<TypingLayerPath, ()>) -> V
 }
 ```
 
-## `Power` transitions make and clear the guard (`state.rs`)
+## `Power` transitions make the guard on enter, drop it on leave (`state.rs`)
 
-`pause`/`unpause`/`toggle` take `&mut Passthrough`, move the layer as before, and make or clear the guard, returning its flush. Before:
+`pause`/`unpause`/`toggle` take `&mut Passthrough` and move the layer as before. Entering makes a guard (`guard()`, which returns the opens). Leaving takes the closes (`closing()`, read while the old arm's guard is still counted) and then drops that guard by dropping the old `Paused` — its `Drop` lowers the count. The `mem::replace` temporary is an `Unpaused`, which holds no guard, so the swap creates no spurious count. Before:
 
 ```rust
 pub(crate) const fn pause(&mut self) {
@@ -265,17 +286,15 @@ pub(crate) const fn pause(&mut self) {
 // unpause, toggle similar
 ```
 
-After (placeholder is `Unpaused`, which needs no guard):
+After:
 
 ```rust
-fn placeholder() -> Power { Power::Unpaused(Unpaused { layer: Layer::Home(HomeLayer {}) }) }
-
 #[must_use]
 pub fn pause(&mut self, passthrough: &mut Passthrough) -> Vec<MercuryEffect> {
-    match std::mem::replace(self, Self::placeholder()) {
+    match std::mem::replace(self, Self::Unpaused(Unpaused { layer: Layer::Home(HomeLayer {}) })) {
         Self::Unpaused(u) => {
             let (guard, opens) = passthrough.guard();
-            *self = Self::Paused(Paused { layer: u.layer, guard });
+            *self = Self::Paused(Paused::new(u.layer, guard));
             opens
         }
         already @ Self::Paused(_) => { *self = already; Vec::new() }
@@ -284,10 +303,11 @@ pub fn pause(&mut self, passthrough: &mut Passthrough) -> Vec<MercuryEffect> {
 
 #[must_use]
 pub fn unpause(&mut self, passthrough: &mut Passthrough) -> Vec<MercuryEffect> {
-    match std::mem::replace(self, Self::placeholder()) {
+    match std::mem::replace(self, Self::Unpaused(Unpaused { layer: Layer::Home(HomeLayer {}) })) {
         Self::Paused(p) => {
-            *self = Self::Unpaused(Unpaused { layer: p.layer });
-            passthrough.clear(p.guard)
+            let closes = passthrough.closing();                  // p's guard still counted here
+            *self = Self::Unpaused(Unpaused { layer: p.layer }); // p's guard drops next -> count--
+            closes
         }
         already @ Self::Unpaused(_) => { *self = already; Vec::new() }
     }
@@ -295,15 +315,16 @@ pub fn unpause(&mut self, passthrough: &mut Passthrough) -> Vec<MercuryEffect> {
 
 #[must_use]
 pub fn toggle(&mut self, passthrough: &mut Passthrough) -> Vec<MercuryEffect> {
-    match std::mem::replace(self, Self::placeholder()) {
+    match std::mem::replace(self, Self::Unpaused(Unpaused { layer: Layer::Home(HomeLayer {}) })) {
         Self::Unpaused(u) => {
             let (guard, opens) = passthrough.guard();
-            *self = Self::Paused(Paused { layer: u.layer, guard });
+            *self = Self::Paused(Paused::new(u.layer, guard));
             opens
         }
         Self::Paused(p) => {
-            *self = Self::Unpaused(Unpaused { layer: p.layer });
-            passthrough.clear(p.guard)
+            let closes = passthrough.closing();
+            *self = Self::Unpaused(Unpaused { layer: p.layer }); // p's guard drops -> count--
+            closes
         }
     }
 }
@@ -335,21 +356,20 @@ pub(crate) fn pause(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<Mercur
 pub(crate) fn to_typing<'a, P: Ascend<LayerPath<'a>>>(_ev: &KeyEvent, node: Node<P, ()>) -> Vec<MercuryEffect> {
     let root = node.parent.ascend().ascend_to::<MercuryPath>();
     let (guard, opens) = root.passthrough.guard();
-    *root.power.layer_mut() = Layer::Typing(TypingLayer { guard });
+    *root.power.layer_mut() = Layer::Typing(TypingLayer::new(guard));
     opens
 }
 ```
 
-`maybe_go_home` (`typing.rs`) takes typing's guard back out on the way to home:
+`maybe_go_home` (`typing.rs`) takes the closes, then reassigns the layer; the old `TypingLayer` (and its guard) is dropped by the reassignment, and the guard's `Drop` lowers the count — no destructure:
 
 ```rust
 pub(crate) fn maybe_go_home(ev: &KeyEvent, node: Node<TypingLayerPath, ()>) -> Vec<MercuryEffect> {
     let root = node.parent.ascend_to::<MercuryPath>();
     if root.passthrough.held.meta.any_held() {
-        let Layer::Typing(TypingLayer { guard }) =
-            std::mem::replace(root.power.layer_mut(), Layer::Home(HomeLayer {}))
-        else { unreachable!("maybe_go_home only runs in typing") };
-        root.passthrough.clear(guard)
+        let closes = root.passthrough.closing();             // typing's guard still counted here
+        *root.power.layer_mut() = Layer::Home(HomeLayer {}); // old TypingLayer's guard drops -> count--
+        closes
     } else {
         vec![MercuryEffect::Emit(ev.clone())] // plain escape passes through
     }
