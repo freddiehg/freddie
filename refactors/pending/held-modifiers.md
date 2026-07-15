@@ -1,40 +1,19 @@
 # physical modifiers at the root, flushed at passthrough boundaries
 
-`held` models the physical modifier keys currently down. It is updated on every key, in every state, unconditionally: it is just the truth about the keyboard, so no handler maintains it.
+The root owns a `Passthrough` struct: the physical modifier keys held, and a count of how many passthrough layers are active. `held` is updated on every key, in every state, unconditionally — it is just the truth about the keyboard, so no handler maintains it.
 
-A passthrough layer (typing, paused) is one where held keys reach the app; a command layer swallows them. So the app's view of what is held should match physical reality while in a passthrough layer and be empty otherwise, kept true by a flush at the boundary:
+A passthrough layer (typing, paused) is one where held keys reach the app; a command layer swallows them. So the app's view of what is held should match physical reality while a passthrough layer is active and be empty otherwise, kept true by flushing at the boundary:
 
-- Entering a passthrough layer: OPEN, emit a down for every held key, so the app catches up (in the command layer we came from these were swallowed).
-- Leaving a passthrough layer: CLOSE, emit an up for every held key, so the app forgets them (the command layer we enter swallows their real ups, so without this they stay stuck).
+- Entering: emit a down for every held key (OPEN), so the app catches up.
+- Leaving: emit an up for every held key (CLOSE), so the app forgets them (the command layer swallows their real ups; without this they stay stuck).
 
-The flush is not written by hand at each transition. Every change to `power` (a layer switch, a pause, an unpause) goes through one primitive, `change_power`, which flushes iff the change crossed the passthrough boundary and RETURNS those effects. `MercuryEffect` is `#[must_use]`, so a handler cannot drop the flush; it has to return it, and it flows out.
+The flush is not written by hand at each transition, and it flushes only on the TRUE boundary. `Passthrough` hands out a guard, stored on the layer. Making a guard returns the opens — empty if a passthrough layer was already active (pausing over typing raises the count 1 to 2, opens nothing). Clearing a guard returns the closes — empty if another passthrough layer is still active. So the count, not each handler, decides whether a flush happens, and only 0↔1 flushes.
+
+`MercuryEffect` is `#[must_use]`, and both guard operations return `Vec<MercuryEffect>`, so a handler cannot drop the flush; it has to return it, and it flows out.
 
 Not in scope, separate follow-ups: keeping the ORIGINAL event so injected inline flags survive (the Wispr fn-a fix, the tap), and handling ALL keys at the root (`root-passthrough.md`).
 
-## Effects are `#[must_use]` (`lib.rs`)
-
-Before:
-
-```rust
-pub enum MercuryEffect {
-    Emit(KeyEvent),
-    Foreground(App),
-    // ...
-}
-```
-
-After:
-
-```rust
-#[must_use]
-pub enum MercuryEffect {
-    Emit(KeyEvent),
-    Foreground(App),
-    // ...
-}
-```
-
-## The struct (`state.rs`)
+## Held modifiers (`state.rs`)
 
 ```rust
 #[derive(Debug, Default)]
@@ -67,7 +46,7 @@ pub struct HeldModifiers {
 }
 
 impl HeldModifiers {
-    /// Record a modifier key event. Non-modifiers are ignored. Called on every key, always.
+    /// Record a modifier key event. Non-modifiers are ignored.
     pub fn track(&mut self, ev: &KeyEvent) {
         let is_down = ev.press == PressType::Down;
         match ev.key {
@@ -84,16 +63,11 @@ impl HeldModifiers {
         }
     }
 
-    /// Emit a DOWN for every held key. Called on ENTERING a passthrough layer. Reads only.
-    #[must_use]
-    pub fn open(&self) -> Vec<MercuryEffect> { self.flush(PressType::Down) }
+    /// A DOWN for every held key, and an UP for every held key. Read-only: a flush emits the
+    /// physical state, it does not change it. Only `track` (a real key event) changes what is held.
+    #[must_use] fn open(&self)  -> Vec<MercuryEffect> { self.flush(PressType::Down) }
+    #[must_use] fn close(&self) -> Vec<MercuryEffect> { self.flush(PressType::Up) }
 
-    /// Emit an UP for every held key. Called on LEAVING a passthrough layer. Reads only.
-    #[must_use]
-    pub fn close(&self) -> Vec<MercuryEffect> { self.flush(PressType::Up) }
-
-    // `&self`: open/close read the physical state and emit; they do NOT change what is held. Only
-    // `track` (a real key event) does.
     fn flush(&self, press: PressType) -> Vec<MercuryEffect> {
         let mut out = Vec::new();
         for (pair, left, right) in [
@@ -109,9 +83,8 @@ impl HeldModifiers {
         out
     }
 
-    /// The modifier flags implied by what is held; the emitter stamps these on what it emits.
-    /// `ModifierFlags` is a portable bitset in `freddie_keys`, mapped to `CGEventFlags` at the
-    /// macOS boundary.
+    /// The modifier flags implied by what is held; the emitter stamps these. `ModifierFlags` is a
+    /// portable bitset in `freddie_keys`, mapped to `CGEventFlags` at the macOS boundary.
     #[must_use]
     pub fn flags(&self) -> ModifierFlags {
         let mut f = ModifierFlags::empty();
@@ -129,9 +102,48 @@ fn emit(key: Key, press: PressType) -> MercuryEffect {
 }
 ```
 
-`fn` is not a `Key` variant, so it is punted; `caps_lock` is a plain bool (no left/right).
+`open`/`close` are private: only `Passthrough` calls them, on the boundary. `fn` is not a `Key` variant, so it is punted; `caps_lock` is a plain bool (no left/right).
 
-## The root gains `held` (`state.rs`)
+## The `Passthrough` struct and its guard (`state.rs`)
+
+```rust
+#[derive(Debug, Default)]
+pub struct Passthrough {
+    pub held: HeldModifiers,
+    active: u8, // how many passthrough layers are live; nested (paused over typing) is > 1
+}
+
+/// Proof that one passthrough layer is live, stored on `TypingLayer`/`Paused`. Made by `guard`,
+/// consumed by `clear` — both return the flush. `#[must_use]`, so it is not dropped on the floor.
+#[must_use]
+pub struct PassthroughGuard;
+
+impl Passthrough {
+    /// Enter a passthrough layer. Opens the held keys iff this is the first (0 -> 1); empty if one
+    /// was already active.
+    pub fn guard(&mut self) -> (PassthroughGuard, Vec<MercuryEffect>) {
+        self.active += 1;
+        let opens = if self.active == 1 { self.held.open() } else { Vec::new() };
+        (PassthroughGuard, opens)
+    }
+
+    /// Leave a passthrough layer, consuming its guard. Closes the held keys iff this was the last
+    /// (1 -> 0); empty otherwise.
+    #[must_use]
+    pub fn clear(&mut self, _guard: PassthroughGuard) -> Vec<MercuryEffect> {
+        self.active -= 1;
+        if self.active == 0 { self.held.close() } else { Vec::new() }
+    }
+
+    /// The close a shutdown owes the app: close held keys iff we are in a passthrough layer.
+    #[must_use]
+    pub fn closing_flush(&self) -> Vec<MercuryEffect> {
+        if self.active > 0 { self.held.close() } else { Vec::new() }
+    }
+}
+```
+
+## The root gains `passthrough` (`state.rs`)
 
 Before:
 
@@ -144,23 +156,23 @@ pub struct Mercury {
 }
 ```
 
-After:
+After (`passthrough` owns held + the count):
 
 ```rust
 pub struct Mercury {
     pub foregrounded: App,
     pub has_navigated: bool,
-    pub held: HeldModifiers,
+    pub passthrough: Passthrough,
     #[resolve_into]
     pub power: Power,
 }
 ```
 
-`Default` for `Mercury` adds `held: HeldModifiers::default(),` in the same position.
+`Default` adds `passthrough: Passthrough::default(),`.
 
-## Track always; one primitive for every power change (`state.rs`, `Mercury`)
+## Track always (`state.rs`, `Mercury::handle`)
 
-`handle` tracks on every key, unconditionally. `change_power` is the single door for changing `power`; it flushes iff the change crossed the passthrough boundary, and is `#[must_use]` so the flush cannot be dropped. `handle`, before:
+Before:
 
 ```rust
 pub fn handle(&mut self, event: &MercuryEvent) -> Option<Vec<MercuryEffect>> {
@@ -168,38 +180,20 @@ pub fn handle(&mut self, event: &MercuryEvent) -> Option<Vec<MercuryEffect>> {
 }
 ```
 
-After (plus the two new methods):
+After:
 
 ```rust
 pub fn handle(&mut self, event: &MercuryEvent) -> Option<Vec<MercuryEffect>> {
     if let MercuryEvent::Key(ev) = event {
-        self.held.track(ev); // physical truth, whatever the layer
+        self.passthrough.held.track(ev); // physical truth, whatever the layer
     }
     bind::dispatch::<MercuryStruct, Self>(self, event)
 }
-
-/// Change `power`, then flush held keys iff that crossed the passthrough boundary. The ONLY way
-/// a handler should mutate `power`. `#[must_use]`: the returned flush has to be returned onward.
-#[must_use]
-pub fn change_power(&mut self, f: impl FnOnce(&mut Power)) -> Vec<MercuryEffect> {
-    let was = self.layer_is_passthrough();
-    f(&mut self.power);
-    match (was, self.layer_is_passthrough()) {
-        (false, true) => self.held.open(),  // entered a passthrough layer
-        (true, false) => self.held.close(), // left one
-        _ => Vec::new(),                     // no boundary crossed (command->command, etc.)
-    }
-}
-
-/// A passthrough layer is one whose keys reach the app: typing, or any paused state.
-const fn layer_is_passthrough(&self) -> bool {
-    matches!(self.power, Power::Paused(_)) || matches!(self.power.layer(), Layer::Typing(_))
-}
 ```
 
-## The layers keep their catch-alls but stop tracking and releasing (`state.rs`, `typing.rs`, `toggle.rs`)
+## The layers hold a guard, lose their own held (`state.rs`)
 
-`SetOfHeldKeys`, the old `HeldModifiers { cmd, alt }`, and every hand-written release go away; the catch-alls stay only to pass in-layer keys through. Before (`state.rs`):
+`SetOfHeldKeys`, the old `HeldModifiers { cmd, alt }`, and every hand-written release go away; the catch-alls stay only to pass in-layer keys through. Before:
 
 ```rust
 #[derive(Debug, Default)]
@@ -231,37 +225,25 @@ pub struct TypingLayer {
 }
 ```
 
-After:
+After (each holds a `PassthroughGuard`; `Paused::new` is gone — building it needs a guard, which only a handler with `&mut Passthrough` can make):
 
 ```rust
 #[bind(AnyKey => pass_through)]
 pub struct Paused {
     pub layer: Layer,
-}
-
-impl Paused {
-    const fn new(layer: Layer) -> Self { Self { layer } }
+    guard: PassthroughGuard,
 }
 
 #[bind(
     Key::Escape.down() => maybe_go_home,
     AnyKey => pass_through,
 )]
-pub struct TypingLayer {}
-```
-
-Typing's catch-all is now a plain pass-through. Before (`modify_held_and_pass_through`, `typing.rs`):
-
-```rust
-pub(crate) fn modify_held_and_pass_through(ev: &KeyEvent, mut node: Node<TypingLayerPath, ()>) -> Vec<MercuryEffect> {
-    if matches!(ev.key, Key::MetaLeft | Key::MetaRight) {
-        node.parent.get_mut().held.cmd = (ev.press == PressType::Down).then_some(ev.key);
-    }
-    vec![MercuryEffect::Emit(ev.clone())]
+pub struct TypingLayer {
+    guard: PassthroughGuard,
 }
 ```
 
-After (renamed `pass_through`):
+Typing's catch-all is now a plain pass-through (`modify_held_and_pass_through` -> `pass_through`):
 
 ```rust
 pub(crate) fn pass_through(ev: &KeyEvent, _node: Node<TypingLayerPath, ()>) -> Vec<MercuryEffect> {
@@ -269,152 +251,144 @@ pub(crate) fn pass_through(ev: &KeyEvent, _node: Node<TypingLayerPath, ()>) -> V
 }
 ```
 
-## Transitions go through `change_power` (`home.rs`, `typing.rs`, `toggle.rs`)
+## `Power` transitions make and clear the guard (`state.rs`)
 
-Every enter/leave routes through `change_power`, so the flush happens automatically and its `#[must_use]` result is what the handler returns.
-
-`to_typing` (`home.rs`), before:
+`pause`/`unpause`/`toggle` take `&mut Passthrough`, move the layer as before, and make or clear the guard, returning its flush. Before:
 
 ```rust
-*node.parent.ascend().get_mut() = Layer::Typing(TypingLayer::default());
-Vec::new()
+pub(crate) const fn pause(&mut self) {
+    *self = match std::mem::replace(self, Self::Paused(Paused::new(Layer::Home(HomeLayer {})))) {
+        Self::Unpaused(u) => Self::Paused(Paused::new(u.layer)),
+        already @ Self::Paused(_) => already,
+    };
+}
+// unpause, toggle similar
 ```
 
-After:
+After (placeholder is `Unpaused`, which needs no guard):
 
 ```rust
-node.parent
-    .ascend()
-    .ascend_to::<MercuryPath>()
-    .change_power(|p| *p.layer_mut() = Layer::Typing(TypingLayer {}))
-```
+fn placeholder() -> Power { Power::Unpaused(Unpaused { layer: Layer::Home(HomeLayer {}) }) }
 
-`pause` (`home.rs`), before:
+#[must_use]
+pub fn pause(&mut self, passthrough: &mut Passthrough) -> Vec<MercuryEffect> {
+    match std::mem::replace(self, Self::placeholder()) {
+        Self::Unpaused(u) => {
+            let (guard, opens) = passthrough.guard();
+            *self = Self::Paused(Paused { layer: u.layer, guard });
+            opens
+        }
+        already @ Self::Paused(_) => { *self = already; Vec::new() }
+    }
+}
 
-```rust
-node.parent.ascend()... .pause();
-Vec::new()
-```
+#[must_use]
+pub fn unpause(&mut self, passthrough: &mut Passthrough) -> Vec<MercuryEffect> {
+    match std::mem::replace(self, Self::placeholder()) {
+        Self::Paused(p) => {
+            *self = Self::Unpaused(Unpaused { layer: p.layer });
+            passthrough.clear(p.guard)
+        }
+        already @ Self::Unpaused(_) => { *self = already; Vec::new() }
+    }
+}
 
-After:
-
-```rust
-node.parent.ascend().ascend_to::<MercuryPath>().change_power(Power::pause)
-```
-
-`on_toggle` (`toggle.rs`), before:
-
-```rust
-let root = node.parent;
-root.power.toggle();
-Vec::new()
-```
-
-After:
-
-```rust
-node.parent.change_power(Power::toggle)
-```
-
-`maybe_go_home` (`typing.rs`), before:
-
-```rust
-pub(crate) fn maybe_go_home(ev: &KeyEvent, mut node: Node<TypingLayerPath, ()>) -> Vec<MercuryEffect> {
-    let cmd = node.parent.get_mut().held.cmd;
-    if let Some(cmd) = cmd {
-        let mut layer = node.parent.into_parent();
-        go_home(&mut layer);
-        vec![MercuryEffect::Emit(KeyEvent { key: cmd, press: PressType::Up })]
-    } else {
-        vec![MercuryEffect::Emit(ev.clone())]
+#[must_use]
+pub fn toggle(&mut self, passthrough: &mut Passthrough) -> Vec<MercuryEffect> {
+    match std::mem::replace(self, Self::placeholder()) {
+        Self::Unpaused(u) => {
+            let (guard, opens) = passthrough.guard();
+            *self = Self::Paused(Paused { layer: u.layer, guard });
+            opens
+        }
+        Self::Paused(p) => {
+            *self = Self::Unpaused(Unpaused { layer: p.layer });
+            passthrough.clear(p.guard)
+        }
     }
 }
 ```
 
-After:
+## Handlers thread the flush out (`home.rs`, `typing.rs`, `toggle.rs`)
+
+`&root.power` and `&mut root.passthrough` are disjoint fields, so both borrows are fine. `on_toggle`:
+
+```rust
+pub(crate) fn on_toggle(_ev: &ToggleEvent, node: Node<&mut Mercury, ()>) -> Vec<MercuryEffect> {
+    let root = node.parent;
+    root.power.toggle(&mut root.passthrough)
+}
+```
+
+`pause` (`home.rs`):
+
+```rust
+pub(crate) fn pause(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
+    let root = node.parent.ascend().ascend_to::<MercuryPath>();
+    root.power.pause(&mut root.passthrough)
+}
+```
+
+`to_typing` (`home.rs`) makes typing's guard directly (it is a layer switch, not a pause):
+
+```rust
+pub(crate) fn to_typing<'a, P: Ascend<LayerPath<'a>>>(_ev: &KeyEvent, node: Node<P, ()>) -> Vec<MercuryEffect> {
+    let root = node.parent.ascend().ascend_to::<MercuryPath>();
+    let (guard, opens) = root.passthrough.guard();
+    *root.power.layer_mut() = Layer::Typing(TypingLayer { guard });
+    opens
+}
+```
+
+`maybe_go_home` (`typing.rs`) takes typing's guard back out on the way to home:
 
 ```rust
 pub(crate) fn maybe_go_home(ev: &KeyEvent, node: Node<TypingLayerPath, ()>) -> Vec<MercuryEffect> {
     let root = node.parent.ascend_to::<MercuryPath>();
-    if root.held.meta.any_held() {
-        // cmd-escape: leave to home; change_power emits the close for the held keys.
-        root.change_power(|p| *p.layer_mut() = Layer::Home(HomeLayer {}))
+    if root.passthrough.held.meta.any_held() {
+        let Layer::Typing(TypingLayer { guard }) =
+            std::mem::replace(root.power.layer_mut(), Layer::Home(HomeLayer {}))
+        else { unreachable!("maybe_go_home only runs in typing") };
+        root.passthrough.clear(guard)
     } else {
         vec![MercuryEffect::Emit(ev.clone())] // plain escape passes through
     }
 }
 ```
 
-Paused's catch-all (`toggle.rs`), before:
-
-```rust
-pub(crate) fn pass_through(ev: &KeyEvent, mut node: Node<PausedPath, ()>) -> Vec<MercuryEffect> {
-    let down = ev.press == PressType::Down;
-    let paused = node.parent.get_mut();
-    match ev.key {
-        Key::MetaLeft | Key::MetaRight => paused.held.cmd = down.then_some(ev.key),
-        Key::AltLeft | Key::AltRight => paused.held.alt = down.then_some(ev.key),
-        _ => {}
-    }
-    if ev.key == Key::KeyP
-        && down
-        && let (Some(cmd), Some(alt)) = (paused.held.cmd, paused.held.alt)
-    {
-        node.parent.ascend_to::<PowerPath>().get_mut().unpause();
-        return vec![
-            MercuryEffect::Emit(KeyEvent { key: cmd, press: PressType::Up }),
-            MercuryEffect::Emit(KeyEvent { key: alt, press: PressType::Up }),
-        ];
-    }
-    vec![MercuryEffect::Emit(ev.clone())]
-}
-```
-
-After:
+Paused's catch-all (`toggle.rs`) reads `root.passthrough.held` for the chord and unpauses through `Power::unpause`:
 
 ```rust
 pub(crate) fn pass_through(ev: &KeyEvent, node: Node<PausedPath, ()>) -> Vec<MercuryEffect> {
     let root = node.parent.ascend_to::<MercuryPath>();
     if ev.key == Key::KeyP
         && ev.press == PressType::Down
-        && root.held.meta.any_held()
-        && root.held.alt.any_held()
+        && root.passthrough.held.meta.any_held()
+        && root.passthrough.held.alt.any_held()
     {
-        // cmd-alt-p: unpause; change_power emits the close; the p is swallowed.
-        return root.change_power(Power::unpause);
+        return root.power.unpause(&mut root.passthrough); // closes on the boundary; p swallowed
     }
     vec![MercuryEffect::Emit(ev.clone())]
 }
 ```
 
-`Power::pause`/`unpause`/`toggle` keep their signatures (`&mut self`), so they pass straight to `change_power`; only `Paused::new` changes, now taking just the layer.
+## Quit and drop
 
-## The invariant, and the two exceptions (quit, drop)
+The flush leaves the model because a fn with `&mut Path` returns `Vec<MercuryEffect>` — the handler signature `fn(&Event, Node<P, ()>) -> Vec<MercuryEffect>` guarantees it — and the guard operations are `#[must_use]` on top. Two places have `&mut` access without that return, and both must close held keys or leave modifiers stuck downstream after mercury is gone:
 
-The flush can always leave the model because of a property mercury already has: a fn with `&mut Path` returns `Vec<MercuryEffect>`. Every handler is `fn(&Event, Node<P, ()>) -> Vec<MercuryEffect>` — the `Node` carries the mutable path, the return carries the effects — so anything that mutates the tree has a channel for what that mutation must emit. `change_power` is `#[must_use]` on top of that, so the flush is not just returnable but un-droppable.
-
-Two places have `&mut` access WITHOUT that return, and both must close the held keys or leave modifiers stuck downstream after mercury is gone:
-
-- Quit. `on_quit` has `&mut Mercury` and returns effects, so it just closes first. A shared helper does the "close iff we are currently passthrough" (the same boundary test), before `Kill`:
+- Quit. `on_quit` has `&mut Mercury` and returns effects, so it closes first:
 
 ```rust
-// Mercury
-#[must_use]
-pub(crate) fn closing_flush(&self) -> Vec<MercuryEffect> {
-    if self.layer_is_passthrough() { self.held.close() } else { Vec::new() }
-}
-
-// on_quit (quit.rs), after
 pub(crate) fn on_quit(_ev: &QuitEvent, node: Node<&mut Mercury, ()>) -> Vec<MercuryEffect> {
     let root = node.parent;
-    let mut effects = root.closing_flush();
+    let mut effects = root.passthrough.closing_flush();
     effects.push(MercuryEffect::Kill);
     effects
 }
 ```
 
-- Drop. `Drop::drop(&mut self)` returns nothing and `Mercury` does not hold the emitter, so it cannot emit. The flush has to be done by the shutdown sequence that owns the emitter (`main.rs`): call `closing_flush` and emit its ups through the `Emitter` before the tree is dropped. "If possible" is exactly this — possible at the orchestration level, not inside `Drop`. A `SIGKILL` gets neither; nothing can.
+- Drop. `Drop::drop(&mut self)` returns nothing and `Mercury` does not hold the emitter, so it cannot emit. The shutdown sequence that owns the emitter (`main.rs`) does it: call `passthrough.closing_flush()` and emit its ups through the `Emitter` before the tree is dropped. "If possible" is exactly this — at the orchestration level, not inside `Drop`. A `SIGKILL` gets neither.
 
 ## Flags are `held.flags()`
 
-The emitter rebuilds its own modifier picture per emitted key (`self.flags` / `next_flags` in `macos.rs`). Delete that and stamp `held.flags()`, so `held` is the one owner. `held` is physical, so `held.flags()` is always the true modifier state; `to_cg` (built from the existing per-key `flag_of`) maps it to `CGEventFlags` at the boundary.
+The emitter rebuilds its own modifier picture per emitted key (`self.flags` / `next_flags` in `macos.rs`). Delete that and stamp `passthrough.held.flags()`, so `held` is the one owner. `held` is physical, so its flags are always the true modifier state; `to_cg` (from the existing per-key `flag_of`) maps to `CGEventFlags` at the boundary.
