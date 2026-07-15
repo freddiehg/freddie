@@ -228,6 +228,40 @@ fn i_enters_inapp_for_the_foregrounded_app() {
     assert_eq!(m.foregrounded, App::Chrome);
 }
 
+// The in-app layer works like home for entering nav and typing: `n` and `t` reach
+// past the app's own bindings (which bind neither) to the layer's.
+#[test]
+fn inapp_n_enters_nav() {
+    let mut m = Mercury::default();
+    let _ = m.handle(&foreground(App::Ghostty));
+    let _ = m.handle(&key(Key::KeyI));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert_eq!(m.handle(&key(Key::KeyN)), Some(vec![]));
+    assert!(matches!(m.layer, Layer::Nav(_)));
+}
+
+#[test]
+fn inapp_t_enters_typing() {
+    let mut m = Mercury::default();
+    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&key(Key::KeyI));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert_eq!(m.handle(&key(Key::KeyT)), Some(vec![]));
+    assert!(matches!(m.layer, Layer::Typing(_)));
+}
+
+// The app's own bindings still win over the layer's: Ghostty binds `j`, so `j` walks
+// its windows rather than doing nothing, and `n`/`t` are the only keys the in-app
+// layer adds on top.
+#[test]
+fn inapp_app_bindings_still_take_precedence() {
+    let mut m = Mercury::default();
+    let _ = m.handle(&foreground(App::Ghostty));
+    let _ = m.handle(&key(Key::KeyI));
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(&[], Key::KeyP)));
+    assert!(matches!(m.layer, Layer::InApp(_)));
+}
+
 #[test]
 fn chrome_r_refreshes() {
     let mut m = Mercury::default();

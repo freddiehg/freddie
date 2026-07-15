@@ -114,6 +114,10 @@ pub struct TypingLayer {
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[derived_child(app_data)]
+#[bind(
+    Key::KeyN.down() => to_nav,
+    Key::KeyT.down() => to_typing,
+)]
 pub struct AppLayer {}
 
 /// The app's level, which is not in the tree. Several possible levels, so the data is an enum;

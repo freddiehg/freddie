@@ -14,7 +14,8 @@
 //! - [`ResizeLayer`] (`r` from home): the arrows place the focused window, up to maximize and
 //!   left and right to the halves, then it goes back to home.
 //! - [`TypingLayer`]: `escape` goes home, any other key passes through.
-//! - [`AppLayer`] (in-app): it stores NO app. A derived child fn reads `root.foregrounded` on
+//! - [`AppLayer`] (in-app): like home, `n` enters nav and `t` enters typing; on top of that it
+//!   stores NO app. A derived child fn reads `root.foregrounded` on
 //!   every dispatch and builds the app's level from it, so there is one copy of the
 //!   foregrounded app and nothing to keep in sync. [`ChromeApp`] binds `r` to a refresh;
 //!   [`GhosttyApp`] binds `j`/`k` to tmux's previous and next window and `1`-`0` to windows one

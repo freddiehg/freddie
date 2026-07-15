@@ -31,17 +31,23 @@ pub(crate) fn to_home<'a, P: Ascend<LayerPath<'a>>>(
     Vec::new()
 }
 
-/// `n` in home: enter the nav layer.
-pub(crate) fn to_nav(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
-    let mut layer = node.parent.into_parent();
-    *layer.get_mut() = Layer::Nav(NavLayer {});
+/// `n`: enter the nav layer. Bound from home and from the in-app layer, so it is
+/// generic over any path that ascends to the layer enum, like [`to_home`].
+pub(crate) fn to_nav<'a, P: Ascend<LayerPath<'a>>>(
+    _ev: &KeyEvent,
+    node: Node<P, ()>,
+) -> Vec<MercuryEffect> {
+    *node.parent.ascend().get_mut() = Layer::Nav(NavLayer {});
     Vec::new()
 }
 
-/// `t` in home: enter the typing layer.
-pub(crate) fn to_typing(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
-    let mut layer = node.parent.into_parent();
-    *layer.get_mut() = Layer::Typing(TypingLayer::default());
+/// `t`: enter the typing layer. Generic over the path, so home and the in-app layer
+/// both bind it.
+pub(crate) fn to_typing<'a, P: Ascend<LayerPath<'a>>>(
+    _ev: &KeyEvent,
+    node: Node<P, ()>,
+) -> Vec<MercuryEffect> {
+    *node.parent.ascend().get_mut() = Layer::Typing(TypingLayer::default());
     Vec::new()
 }
 
