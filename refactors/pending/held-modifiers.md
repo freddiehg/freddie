@@ -192,21 +192,21 @@ A leafward binding still wins: a key the active layer binds runs the layer's com
 
 ## `set_layer` (`state.rs`)
 
-Every transition replaces the active layer through `set_layer`, a method on `Mercury`, since the root owns both `layer` and `held`. It returns the flush for the transition handler to hand back. It checks the old and new layer independently: close if leaving a passthrough layer, open if entering one. A passthrough-to-passthrough change emits a close then an open, which nets to the held state.
+Every transition replaces the active layer through `set_layer`, a method on `Mercury`, since the root owns both `layer` and `held`. It returns the flush for the transition handler to hand back, and only flushes when the passthrough state changed: `close` on leaving a passthrough layer, `open` on entering one, nothing otherwise.
 
 ```rust
 impl Mercury {
     #[must_use = "the returned flush has to be emitted, or a held modifier is stranded down"]
     pub fn set_layer(&mut self, into: impl Into<Layer>) -> Vec<MercuryEffect> {
-        let mut fx = Vec::new();
-        if self.layer.is_passthrough() {
-            fx.extend(self.held.close());
+        let into = into.into();
+        let before_passthru = self.layer.is_passthrough();
+        let after_passthru = into.is_passthrough();
+        self.layer = into;
+        match (before_passthru, after_passthru) {
+            (true, false) => self.held.close(),
+            (false, true) => self.held.open(),
+            _ => Vec::new(),
         }
-        self.layer = into.into();
-        if self.layer.is_passthrough() {
-            fx.extend(self.held.open());
-        }
-        fx
     }
 }
 ```
