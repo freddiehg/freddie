@@ -10,6 +10,9 @@ use crate::{App, MercuryEffect};
 pub(crate) fn open_chrome(_ev: &KeyEvent, node: Node<NavLayerPath, ()>) -> Vec<MercuryEffect> {
     and_go_home(node.parent, vec![MercuryEffect::Foreground(App::Chrome)])
 }
+pub(crate) fn open_finder(_ev: &KeyEvent, node: Node<NavLayerPath, ()>) -> Vec<MercuryEffect> {
+    and_go_home(node.parent, vec![MercuryEffect::Foreground(App::Finder)])
+}
 pub(crate) fn open_ghostty(_ev: &KeyEvent, node: Node<NavLayerPath, ()>) -> Vec<MercuryEffect> {
     and_go_home(node.parent, vec![MercuryEffect::Foreground(App::Ghostty)])
 }

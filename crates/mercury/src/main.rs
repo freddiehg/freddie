@@ -143,8 +143,14 @@ async fn run() {
     // `select!` rather than `join!`: the effect loop ends on `Kill`, and the event
     // loop never does, because the tap thread holds a sender for as long as the
     // grab is alive.
+    // Seed the model with the app that is actually frontmost, rather than defaulting to
+    // `Other`, so the in-app layer resolves correctly before the first foreground event.
+    let mut mercury = Mercury::default();
+    mercury.foregrounded = freddie_app_nav::frontmost()
+        .map_or(App::Other, |bundle_id| App::from_bundle_id(&bundle_id));
+
     tokio::select! {
-        () = run_event_loop(Mercury::default(), event_rx, effect_tx) => {}
+        () = run_event_loop(mercury, event_rx, effect_tx) => {}
         () = run_effect_loop(effect_rx, emitter) => {}
     }
     drop(interceptor); // hold the grab until here

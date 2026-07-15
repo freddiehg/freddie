@@ -50,6 +50,7 @@ pub struct HomeLayer {}
 #[binds(MercuryStruct)]
 #[bind(
     Key::KeyC.down() => open_chrome,
+    Key::KeyF.down() => open_finder,
     Key::KeyG.down() => open_ghostty,
     Key::KeyZ.down() => open_zed,
 )]
@@ -118,7 +119,7 @@ fn app_data(path: &AppLayerPath) -> Option<AppData> {
     match path.parent().parent().foregrounded {
         App::Chrome => Some(AppData::Chrome(ChromeApp {})),
         App::Ghostty => Some(AppData::Ghostty(GhosttyApp {})),
-        App::Zed | App::Other => None,
+        App::Finder | App::Zed | App::Other => None,
     }
 }
 

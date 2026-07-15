@@ -40,6 +40,7 @@ impl EventTrigger for Foregrounded {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum App {
     Chrome,
+    Finder,
     Ghostty,
     Zed,
     Other,
@@ -57,6 +58,7 @@ impl App {
     pub fn from_bundle_id(bundle_id: &str) -> Self {
         match bundle_id {
             "com.google.Chrome" => Self::Chrome,
+            "com.apple.finder" => Self::Finder,
             "com.mitchellh.ghostty" => Self::Ghostty,
             "dev.zed.Zed" => Self::Zed,
             _ => Self::Other,
@@ -70,6 +72,7 @@ impl App {
     pub const fn bundle_id(self) -> Option<&'static str> {
         match self {
             Self::Chrome => Some("com.google.Chrome"),
+            Self::Finder => Some("com.apple.finder"),
             Self::Ghostty => Some("com.mitchellh.ghostty"),
             Self::Zed => Some("dev.zed.Zed"),
             Self::Other => None,
