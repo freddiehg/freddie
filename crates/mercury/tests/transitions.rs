@@ -5,12 +5,16 @@
 
 use bind::SimpleRunner;
 use mercury::{
-    App, AppLayer, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryStruct, Placement,
-    PressType, foreground, key, quit_event,
+    App, AppLayer, Key, KeyEvent, Layer, Mercury, MercuryEffect, ModifierFlags, MercuryStruct,
+    Placement, PressType, foreground, key, quit_event,
 };
 
 const fn emit(key: Key, press: PressType) -> MercuryEffect {
-    MercuryEffect::Emit(KeyEvent { key, press })
+    MercuryEffect::Emit(KeyEvent {
+        key,
+        press,
+        flags: ModifierFlags::empty(),
+    })
 }
 
 // A key passed straight through: the one event it arrived as.

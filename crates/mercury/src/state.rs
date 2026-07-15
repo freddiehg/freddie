@@ -5,7 +5,7 @@
 //! the node's definition site.
 
 use bind::{Bind, Node};
-use freddie_keys::{Key, KeyEvent, PressType};
+use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 use laserbeam::PathMut;
 
 // The derive generates a call to each named handler at its node's definition site below, so
@@ -226,6 +226,7 @@ pub const fn key(key: Key) -> MercuryEvent {
     MercuryEvent::Key(KeyEvent {
         key,
         press: PressType::Down,
+        flags: ModifierFlags::empty(),
     })
 }
 

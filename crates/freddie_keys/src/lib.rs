@@ -128,11 +128,56 @@ pub enum PressType {
     Up,
 }
 
-/// A key going down or coming up.
+/// A key going down or coming up, carrying the modifier flags it should be emitted with.
+///
+/// `flags` matters only on events mercury EMITS: whoever builds the event states the modifiers
+/// it carries (a passed-through key carries what is held, a chord carries its own modifier). An
+/// event coming IN from the keyboard carries [`ModifierFlags::empty`]; the model never reads it.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct KeyEvent {
     pub key: Key,
     pub press: PressType,
+    pub flags: ModifierFlags,
+}
+
+/// The modifier keys an emitted event carries, as a portable bitset. `freddie_keyboard` maps it
+/// to the platform's native flags when it posts the event.
+///
+/// A `CGEvent`'s own flags are baked in from the source's state when it is created, which lags a
+/// modifier posted microseconds earlier, so a chord posted back to back carries the wrong flags.
+/// Stating the flags on the event and applying exactly them makes the emitted stream say what it
+/// means, whatever the source thinks.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub struct ModifierFlags(u8);
+
+impl ModifierFlags {
+    pub const CONTROL: Self = Self(1 << 0);
+    pub const COMMAND: Self = Self(1 << 1);
+    pub const ALT: Self = Self(1 << 2);
+    pub const SHIFT: Self = Self(1 << 3);
+
+    /// No modifiers.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    /// The raw bits, for a backend mapping them to native flags.
+    #[must_use]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// Whether every bit in `flag` is set.
+    #[must_use]
+    pub const fn contains(self, flag: Self) -> bool {
+        self.0 & flag.0 == flag.0
+    }
+
+    /// Set or clear `flag`.
+    pub const fn set(&mut self, flag: Self, on: bool) {
+        self.0 = if on { self.0 | flag.0 } else { self.0 & !flag.0 };
+    }
 }
 
 impl EventTrigger for Key {
@@ -161,6 +206,23 @@ impl Key {
             press: PressType::Up,
         }
     }
+
+    /// Whether this is a modifier key mercury tracks: control, command, alt, or shift, left or
+    /// right. Caps lock (a lock) and fn (no variant) are not modifiers here.
+    #[must_use]
+    pub const fn is_modifier(self) -> bool {
+        matches!(
+            self,
+            Self::ControlLeft
+                | Self::ControlRight
+                | Self::MetaLeft
+                | Self::MetaRight
+                | Self::AltLeft
+                | Self::AltRight
+                | Self::ShiftLeft
+                | Self::ShiftRight
+        )
+    }
 }
 
 /// A trigger matching a key going one direction, from [`Key::down`] or [`Key::up`].
@@ -180,7 +242,7 @@ impl EventTrigger for KeyPress {
 
 #[cfg(test)]
 mod tests {
-    use super::{Key, KeyEvent, PressType};
+    use super::{Key, KeyEvent, ModifierFlags, PressType};
     use bind::EventTrigger;
 
     #[test]
@@ -188,6 +250,7 @@ mod tests {
         let event = KeyEvent {
             key: Key::KeyR,
             press: PressType::Down,
+            flags: ModifierFlags::empty(),
         };
         assert!(Key::KeyR.is_matching(&event));
         assert!(!Key::KeyS.is_matching(&event));
@@ -198,6 +261,7 @@ mod tests {
         let event = KeyEvent {
             key: Key::Raw(64000),
             press: PressType::Down,
+            flags: ModifierFlags::empty(),
         };
         assert!(Key::Raw(64000).is_matching(&event));
         assert!(!Key::Raw(1).is_matching(&event));

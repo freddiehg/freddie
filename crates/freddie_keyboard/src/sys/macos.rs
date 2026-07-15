@@ -15,7 +15,7 @@ use core_graphics::event::{
     CGEventType, CGKeyCode, CallbackResult, EventField, KeyCode,
 };
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-use freddie_keys::{Key, KeyEvent, PressType};
+use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 
 use crate::{CaptureError, EmitError};
 
@@ -237,6 +237,7 @@ pub fn intercept(
                 let input = KeyEvent {
                     key: from_code(code),
                     press,
+                    flags: ModifierFlags::empty(),
                 };
                 // Source PID for telling injected events (a userspace `CGEventPost`, nonzero PID)
                 // from physical HID input (PID 0). Logging only for now, to confirm the split
@@ -563,12 +564,13 @@ mod tests {
 
     use super::{Decision, decide, flag_for, from_code, to_code};
     use core_graphics::event::{CGEventFlags, KeyCode};
-    use freddie_keys::{Key, KeyEvent, PressType};
+    use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 
     fn ev(key: Key) -> KeyEvent {
         KeyEvent {
             key,
             press: PressType::Down,
+            flags: ModifierFlags::empty(),
         }
     }
 
@@ -623,6 +625,7 @@ mod tests {
         let up = KeyEvent {
             key: Key::KeyA,
             press: PressType::Up,
+            flags: ModifierFlags::empty(),
         };
         assert_eq!(decide(&down, Some(up.clone())), Decision::Remap(up));
     }

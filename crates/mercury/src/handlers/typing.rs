@@ -1,7 +1,7 @@
 //! Typing-layer handlers: pass keys through while tracking held keys, and exit on cmd-escape.
 
 use bind::Node;
-use freddie_keys::{Key, KeyEvent, PressType};
+use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 
 use super::go_home;
 use crate::state::TypingLayerPath;
@@ -24,6 +24,7 @@ pub(crate) fn maybe_go_home(
         vec![MercuryEffect::Emit(KeyEvent {
             key: cmd,
             press: PressType::Up,
+            flags: ModifierFlags::empty(),
         })]
     } else {
         vec![MercuryEffect::Emit(ev.clone())]
