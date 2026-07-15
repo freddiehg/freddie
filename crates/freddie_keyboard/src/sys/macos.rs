@@ -238,6 +238,12 @@ pub fn intercept(
                     key: from_code(code),
                     press,
                 };
+                // Source PID for telling injected events (a userspace `CGEventPost`, nonzero PID)
+                // from physical HID input (PID 0). Logging only for now, to confirm the split
+                // before acting on it (see the "pass through injected events" plan).
+                let source_pid =
+                    event.get_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID);
+                tracing::debug!(key = ?input.key, ?press, source_pid, "tap key");
                 match decide(&input, on_key(input.clone())) {
                     Decision::Pass => CallbackResult::Keep,
                     Decision::Drop => CallbackResult::Drop,
