@@ -1,5 +1,7 @@
 # laserbeam: missing features
 
+Superseded. This describes the old `#[derive(Laserbeam)]` and its `resolve()` machinery, which are deleted; `crates/laserbeam_macro` no longer exists. The tree-shape concerns (enum descent, multi-parent, generic nodes) are now bind's, in `crates/bind_macro` and `crates/derive_support`.
+
 What `#[derive(Laserbeam)]` does not handle yet, grouped by how it fails. Each entry notes whether it is a fundamental constraint or just unimplemented, so we know what is cheap to add. This reflects the macro in `crates/laserbeam_macro/src/lib.rs` as of now.
 
 ## Hard rejections
