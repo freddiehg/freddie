@@ -1,6 +1,6 @@
-# passthrough and modifiers move to the root
+# handling all keys at the root
 
-Not built, and the deferred follow-up: doing ALL passthrough on the root. `held-modifiers.md` moves the modifier state to the root and keeps the per-layer catch-alls; this doc takes passing-keys-through off the layers entirely and puts it, and the modifier handling, in one root catch-all. The end state is that `TypingLayer` and `Paused` bind only their own commands and are otherwise inert markers; the root does all the passthrough and all the modifier tracking; and modifier keys are not special anywhere. The `HeldModifiers` struct itself is `held-modifiers.md`'s; this doc only moves who updates it.
+Not built. The one follow-up to `held-modifiers.md`. That doc already handles MODIFIERS at the root (tracked in `Mercury::handle`, passed through by the tap when a passthrough layer is active) and typing/paused already lost their catch-alls. This doc generalizes that to ALL keys: one place at the root that decides pass-through-vs-swallow for every unbound key, so the layers keep only their commands and nothing is per-key special. The possible tighter representation of held state (a `u128` over every key rather than the `LeftRightPair` bools) belongs here too, if it belongs anywhere.
 
 ## What is still on the layers today
 
@@ -85,6 +85,5 @@ laserbeam does not support this. It resolves into exactly ONE active child (an e
 ## Open questions
 
 - Fall-through versus multi-cast (the `no-clobber.md` decision), and whether the root's passthrough/modifier logic is a real last-resort handler or a per-event side-channel. `IfActivePassthru` is the structural form of the multi-cast answer.
-- Whether the `ActivePassthroughLayer` count survives at all, or is replaced by reading the active layer (and paused-ness) off the tree directly, or by `IfActivePassthru`'s presence.
-- The stuck-modifier hazard when a `cmd` is passed through but its up is later swallowed. The single `held` on the root is a precondition, not the fix; the corrective-emit wiring is the work (`held-modifiers.md`). (The keep-vs-drop for command keys is settled in `passthrough-count.md`: `is_active()`-after-dispatch, not the tap needing the dispatch result.)
-- The single `held` struct, its update site, the emitter-flags reconciliation, and the `u128` form all live in `held-modifiers.md`.
+- Whether the `ActivePassthroughLayer` count (from `held-modifiers.md`) survives, or is replaced by reading the active layer off the tree directly, or by `IfActivePassthru`'s presence.
+- The `u128`-over-every-key representation of held state, if handling all keys at the root makes the `LeftRightPair` bools too narrow. Maybe; only if this doc's design forces it.
