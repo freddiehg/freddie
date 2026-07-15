@@ -22,7 +22,7 @@ impl Layer {
     Foregrounded => on_foregrounded,
     Quit => on_quit,
     AnyModifierKey => on_modifier,
-    AnyNonModifierKey => maybe_passthru,
+    AnyNonModifierKey => maybe_pass_through,
 )]
 pub struct Mercury {
     pub foregrounded: App,
@@ -37,7 +37,7 @@ pub struct Mercury {
 
 ## `HeldModifiers` (`state.rs`)
 
-`apply` records each modifier key's up and down. `flags` reads the current state as a bitset. `open` emits a DOWN for every held key, `close` an UP; each synchronization event carries the flags as they stand after its own change, so a shared left/right bit clears only when both sides are up. `caps_lock` is a lock, not a held key: it changes on press, so it has no held down/up to replay and is not tracked here. It is not a modifier, so `AnyNonModifierKey` matches it and `maybe_passthru` passes it through like any other key.
+`apply` records each modifier key's up and down. `flags` reads the current state as a bitset. `open` emits a DOWN for every held key, `close` an UP; each synchronization event carries the flags as they stand after its own change, so a shared left/right bit clears only when both sides are up. `caps_lock` is a lock, not a held key: it changes on press, so it has no held down/up to replay and is not tracked here. It is not a modifier, so `AnyNonModifierKey` matches it and `maybe_pass_through` passes it through like any other key.
 
 ```rust
 #[derive(Debug, Default, Clone, Copy)]
@@ -175,10 +175,10 @@ pub(crate) fn on_modifier(ev: &KeyEvent, node: Node<&mut Mercury, ()>) -> Vec<Me
 }
 ```
 
-`maybe_passthru` passes a non-modifier through while a passthrough layer is active, and swallows it otherwise:
+`maybe_pass_through` passes a non-modifier through while a passthrough layer is active, and swallows it otherwise:
 
 ```rust
-pub(crate) fn maybe_passthru(ev: &KeyEvent, node: Node<&mut Mercury, ()>) -> Vec<MercuryEffect> {
+pub(crate) fn maybe_pass_through(ev: &KeyEvent, node: Node<&mut Mercury, ()>) -> Vec<MercuryEffect> {
     let root = node.parent;
     if root.layer().is_passthrough() {
         vec![emit(ev.key, ev.press, root.held.flags())]
@@ -199,10 +199,10 @@ impl Mercury {
     #[must_use = "the returned flush has to be emitted, or a held modifier is stranded down"]
     pub fn set_layer(&mut self, into: impl Into<Layer>) -> Vec<MercuryEffect> {
         let into = into.into();
-        let before_passthru = self.layer.is_passthrough();
-        let after_passthru = into.is_passthrough();
+        let before_passthrough = self.layer.is_passthrough();
+        let after_passthrough = into.is_passthrough();
         self.layer = into;
-        match (before_passthru, after_passthru) {
+        match (before_passthrough, after_passthrough) {
             (true, false) => self.held.close(),
             (false, true) => self.held.open(),
             _ => Vec::new(),
@@ -263,7 +263,7 @@ pub struct KeyEvent {
 
 Whoever builds the event sets its flags:
 
-- a passed-through key (`maybe_passthru`, `on_modifier`, `maybe_go_home`'s plain escape): `held.flags()`.
+- a passed-through key (`maybe_pass_through`, `on_modifier`, `maybe_go_home`'s plain escape): `held.flags()`.
 - a flush (`open`/`close`): the per-event `shown.flags()` `emit_synchronization_events` stamps.
 - a synthesized chord (`refresh`'s `cmd`-`r`): its own flags, independent of `held`.
 
