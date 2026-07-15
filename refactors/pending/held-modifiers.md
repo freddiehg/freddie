@@ -88,15 +88,15 @@ impl HeldModifiers {
     pub fn close(&self) -> Vec<MercuryEffect> { self.sweep(PressType::Up) }
 
     fn sweep(&self, press: PressType) -> Vec<MercuryEffect> {
-        let seed = if press == PressType::Down { Self::default() } else { *self };
-        Self::MODIFIER_KEYS
-            .into_iter()
-            .filter(|&key| self.is_down(key))
-            .scan(seed, |shown, key| {
+        let mut shown = if press == PressType::Down { Self::default() } else { *self };
+        let mut out = Vec::new();
+        for key in Self::MODIFIER_KEYS {
+            if self.is_down(key) {
                 shown.apply(&KeyEvent { key, press, flags: ModifierFlags::empty() });
-                Some(emit(key, press, shown.flags()))
-            })
-            .collect()
+                out.push(emit(key, press, shown.flags()));
+            }
+        }
+        out
     }
 
     const MODIFIER_KEYS: [Key; 8] = [
