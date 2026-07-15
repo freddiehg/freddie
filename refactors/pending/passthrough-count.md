@@ -23,10 +23,29 @@ After:
 pub struct Mercury {
     pub foregrounded: App,
     pub has_navigated: bool,
-    pub held: HeldModifiers,  // one copy of what's held, here, not per-layer
-    pub passthrough: u32,     // > 0 => pass through
+    pub held: HeldModifiers,          // one copy of what's held, here, not per-layer
+    pub passthrough: PassthroughCount, // > 0 => pass through
     #[resolve_into]
     pub power: Power,
+}
+
+/// The passthrough count, wrapped so nothing can poke the raw integer. Only the guard's
+/// acquire/release move it, so it stays balanced; everyone else only asks `passing()`.
+#[derive(Debug, Default)]
+pub struct PassthroughCount(u8); // at most two sources (typing, paused); u8 is plenty
+
+impl PassthroughCount {
+    #[must_use]
+    pub const fn passing(&self) -> bool {
+        self.0 > 0
+    }
+    // crate-private, only for the guard:
+    fn increment(&mut self) {
+        self.0 += 1;
+    }
+    fn decrement(&mut self) {
+        self.0 -= 1;
+    }
 }
 ```
 
@@ -47,13 +66,13 @@ pub struct PassthroughGuard { /* prevent_drop token, no fields of ours; the coun
 
 impl PassthroughGuard {
     fn acquire(root: &mut Mercury) -> Self {
-        root.passthrough += 1;
+        root.passthrough.increment();
         // ... construct the prevent_drop token ...
     }
 
     // the custom cleanup, which prevent_drop lets take parameters:
     fn release(self, root: &mut Mercury) {
-        root.passthrough -= 1;
+        root.passthrough.decrement();
         // ... defuse the token ...
     }
 }
@@ -152,7 +171,7 @@ After (synchronous dispatch, so `on_key` runs the model inline and holds the roo
 ```rust
 move |ev| {
     dispatch(&mut root, &MercuryEvent::Key(ev.clone())); // commands, state, guard inc/dec
-    if root.passthrough > 0 {
+    if root.passthrough.passing() {
         Some(ev) // Some(same) => decide() => Pass => tap KEEPS the original, flags intact
     } else {
         None     // command mode: drop
@@ -192,7 +211,6 @@ impl EventTrigger for AnyKey {
 
 ## Open questions
 
-- `Arc<AtomicU32>` in the state tree versus explicit increment/decrement in the transition methods without `Drop` (keeps the tree pure values, loses "can't forget").
-- The command-key exception in the tap: how it knows synchronously which keys the current passthrough state still owns.
+- The command-key exception in the tap: how it knows synchronously which keys the current passthrough state still owns (typing's escape, the `cmd`-`alt`-`p` unpause), so it drops those rather than keeping them.
+- The release-on-leave borrow: a transition needs `&mut root` (to decrement) and the old layer (to pull the guard out) at once. Working that out against the path types is the fiddly part.
 - Held modifiers at the root under one-handler-per-event, and whether this forces the `no-clobber.md` decision; the `cmd`-`alt`-`p` unpause and typing's escape also move to the root.
-- `u8` versus `u32` for the count (two sources today; it does not matter).
