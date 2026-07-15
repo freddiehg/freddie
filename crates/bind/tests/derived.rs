@@ -15,7 +15,7 @@ use laserbeam::{Laserbeam, Path};
 use std::collections::HashSet;
 
 #[derive(Laserbeam, Bind)]
-#[laserbeam_root(resolved = R)]
+#[laserbeam_root]
 #[binds(MercuryStruct)]
 pub struct Root {
     /// The only copy. The layer stores no app.
@@ -29,7 +29,7 @@ pub struct Chrome {
 }
 
 #[derive(Laserbeam, Bind)]
-#[laserbeam(path = ShellPath, resolved = R)]
+#[laserbeam(path = ShellPath)]
 #[binds(MercuryStruct)]
 #[derived_child(app_data)]
 #[bind(Keyboard("esc") => on_esc)]

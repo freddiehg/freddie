@@ -1,5 +1,0 @@
-error: missing a `laserbeam_root` or `laserbeam` attribute
- --> tests/compile_fail/no_role.rs:4:1
-  |
-4 | struct Missing {
-  | ^^^^^^

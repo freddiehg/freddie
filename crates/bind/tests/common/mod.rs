@@ -110,7 +110,7 @@ pub fn ignore<P>(ev: &KeyEvent, _node: Node<P, ()>) -> usize {
 
 // App -> Layer (enum) -> { Nav (leaf), Typing -> Box<Deep> (leaf) }.
 #[derive(Laserbeam, Bind)]
-#[laserbeam_root(resolved = Resolved)]
+#[laserbeam_root]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("esc") => on_esc)]
 pub struct App {
@@ -120,7 +120,7 @@ pub struct App {
 }
 
 #[derive(Laserbeam, Bind)]
-#[laserbeam(path = LayerPath, resolved = Resolved)]
+#[laserbeam(path = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("f1") => on_f1)]
 pub enum Layer {
@@ -129,7 +129,7 @@ pub enum Layer {
 }
 
 #[derive(Laserbeam, Bind)]
-#[laserbeam(path = NavPath, resolved = Resolved)]
+#[laserbeam(path = NavPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("g") => on_g, Foreground("Slack") => on_slack)]
 pub struct Nav {
@@ -137,7 +137,7 @@ pub struct Nav {
 }
 
 #[derive(Laserbeam, Bind)]
-#[laserbeam(path = TypingPath, resolved = Resolved)]
+#[laserbeam(path = TypingPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("bksp") => on_bksp)]
 pub struct Typing {
@@ -147,7 +147,7 @@ pub struct Typing {
 }
 
 #[derive(Laserbeam, Bind)]
-#[laserbeam(path = DeepPath, resolved = Resolved)]
+#[laserbeam(path = DeepPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("d") => on_d)]
 pub struct Deep {
@@ -159,15 +159,10 @@ pub type NavPath<'a> = Path<Nav, LayerPath<'a>>;
 pub type TypingPath<'a> = Path<Typing, LayerPath<'a>>;
 pub type DeepPath<'a> = Path<Deep, TypingPath<'a>>;
 
-pub enum Resolved<'a> {
-    Nav(NavPath<'a>),
-    Deep(DeepPath<'a>),
-}
-
 // A tiny second tree for the duplicate-trigger error: parent and child both bind
 // `dup`.
 #[derive(Laserbeam, Bind)]
-#[laserbeam_root(resolved = ClashResolved)]
+#[laserbeam_root]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("dup") => ignore)]
 pub struct Clash {
@@ -176,30 +171,22 @@ pub struct Clash {
 }
 
 #[derive(Laserbeam, Bind)]
-#[laserbeam(path = ClashChildPath, resolved = ClashResolved)]
+#[laserbeam(path = ClashChildPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("dup") => ignore)]
 pub struct ClashChild {}
 
 pub type ClashChildPath<'a> = Path<ClashChild, &'a mut Clash>;
-pub enum ClashResolved<'a> {
-    ClashChild(ClashChildPath<'a>),
-}
-
 // A no-binds leaf root.
 #[derive(Laserbeam, Bind)]
-#[laserbeam_root(resolved = EmptyResolved)]
+#[laserbeam_root]
 #[binds(MercuryStruct)]
 pub struct Empty {}
-
-pub enum EmptyResolved<'a> {
-    Empty(&'a mut Empty),
-}
 
 // A multi-parent tree: `Title` is reached from both `Album` and `Song` through
 // the `TitleParent` route enum.
 #[derive(Laserbeam, Bind)]
-#[laserbeam_root(resolved = MediaResolved)]
+#[laserbeam_root]
 #[binds(MercuryStruct)]
 pub enum Media {
     Album(Album),
@@ -207,7 +194,7 @@ pub enum Media {
 }
 
 #[derive(Laserbeam, Bind)]
-#[laserbeam(path = AlbumPath, resolved = MediaResolved)]
+#[laserbeam(path = AlbumPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("a") => ignore)]
 pub struct Album {
@@ -216,7 +203,7 @@ pub struct Album {
 }
 
 #[derive(Laserbeam, Bind)]
-#[laserbeam(path = SongPath, resolved = MediaResolved)]
+#[laserbeam(path = SongPath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("s") => ignore)]
 pub struct Song {
@@ -225,7 +212,7 @@ pub struct Song {
 }
 
 #[derive(Laserbeam, Bind)]
-#[laserbeam(path = TitlePath, resolved = MediaResolved)]
+#[laserbeam(path = TitlePath)]
 #[binds(MercuryStruct)]
 #[bind(Keyboard("t") => on_title)]
 pub struct Title {
@@ -239,10 +226,6 @@ pub enum TitleParent<'a> {
     Song(SongPath<'a>),
 }
 pub type TitlePath<'a> = Path<Title, TitleParent<'a>>;
-pub enum MediaResolved<'a> {
-    Title(TitlePath<'a>),
-}
-
 pub fn on_title(ev: &KeyEvent, mut node: Node<TitlePath, ()>) -> usize {
     node.parent.get_mut().hits += 1;
     ev.key.len()

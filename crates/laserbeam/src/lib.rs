@@ -1,51 +1,20 @@
-//! Mutable resolved paths into a single-owner tree.
+//! A mutable typed cursor into a single-owner tree.
 //!
-//! From a `&mut Root` you resolve a typed [`Path`] to the single active leaf, mutate that leaf through [`Path::get_mut`], and walk back up with [`Path::into_parent`], holding exactly one live `&mut` at a time.
-//!
-//! The [`Resolve`] trait, one per node, is what `#[derive(Laserbeam)]` implements; the running example lives in the `freddie` workspace's design notes.
-//!
-//! # Example
+//! A [`Path`] holds a `&mut` at some node and a projection down to a child. You read or write
+//! the child through [`Path::get_mut`], and walk back up with [`Path::into_parent`], holding
+//! exactly one live `&mut` at a time.
 //!
 //! ```
-//! use laserbeam::{Path, Laserbeam, Resolve};
+//! use laserbeam::Path;
 //!
-//! #[derive(Laserbeam)]
-//! #[laserbeam_root(resolved = Resolved)]
-//! enum MediaType {
-//!     Album(Album),
-//!     Single(Single),
-//! }
+//! struct Album { title: String }
+//! let mut album = Album { title: "A Night at the Opera".to_string() };
 //!
-//! #[derive(Laserbeam)]
-//! #[laserbeam(path = AlbumPath, resolved = Resolved)]
-//! struct Album {
-//!     title: String,
-//! }
+//! let mut path: Path<String, &mut Album> = Path::from_fn(&mut album, |a| &mut a.title);
+//! path.get_mut().push_str(" (Remastered)");
+//! drop(path);
 //!
-//! #[derive(Laserbeam)]
-//! #[laserbeam(path = SinglePath, resolved = Resolved)]
-//! struct Single {
-//!     title: String,
-//! }
-//!
-//! type AlbumPath<'a> = Path<Album, &'a mut MediaType>;
-//! type SinglePath<'a> = Path<Single, &'a mut MediaType>;
-//!
-//! enum Resolved<'a> {
-//!     Album(AlbumPath<'a>),
-//!     Single(SinglePath<'a>),
-//! }
-//!
-//! let mut media = MediaType::Single(Single { title: "Bohemian Rhapsody".to_string() });
-//!
-//! // Resolve to the active leaf, mutate it.
-//! match <MediaType as Resolve>::resolve(&mut media) {
-//!     Resolved::Single(mut path) => path.get_mut().title.push_str(" (Remastered)"),
-//!     Resolved::Album(_) => unreachable!("built a single"),
-//! }
-//!
-//! let MediaType::Single(s) = &media else { unreachable!() };
-//! assert_eq!(s.title, "Bohemian Rhapsody (Remastered)");
+//! assert_eq!(album.title, "A Night at the Opera (Remastered)");
 //! ```
 
 pub use laserbeam_macro::Laserbeam;
@@ -146,20 +115,13 @@ impl<Node, Parent> Path<Node, Parent> {
     }
 }
 
-/// Resolves the active leaf of a node, given that node's [`Path`]. Implemented at every layer of the tree.
+/// A node's path type, one per node. `#[derive(Laserbeam)]` implements it.
 ///
-/// The root's `Path<'a>` is `&'a mut Self`; every other node's is a [`Path`] whose parent is the node's declared parent type. `resolve` takes the path by value rather than `&mut self`, which is what lets the `&mut` move down the tree without two live borrows existing at once.
+/// The root's `Path<'a>` is `&'a mut Self`; every other node's is a [`Path`] whose parent is
+/// the node's declared parent type.
 pub trait Resolve {
     /// This node's path type. The root's is `&'a mut Self`.
     type Path<'a>
-    where
-        Self: 'a;
-    /// The shared enum of every leaf the tree can resolve to.
-    type Resolved<'a>
-    where
-        Self: 'a;
-    /// Resolves the active leaf from this node's path.
-    fn resolve<'a>(path: Self::Path<'a>) -> Self::Resolved<'a>
     where
         Self: 'a;
 }

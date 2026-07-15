@@ -6,7 +6,7 @@ use laserbeam::Laserbeam;
 struct NotBindings;
 
 #[derive(Laserbeam, Bind)]
-#[laserbeam_root(resolved = R)]
+#[laserbeam_root]
 #[binds(NotBindings)]
 struct Nav {}
 

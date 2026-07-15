@@ -1,5 +1,0 @@
-error: use exactly one of `laserbeam_root` or `laserbeam`
- --> tests/compile_fail/both_role_attrs.rs:5:1
-  |
-5 | #[laserbeam(path = P, resolved = R)]
-  | ^

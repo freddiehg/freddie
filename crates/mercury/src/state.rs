@@ -12,7 +12,7 @@ use crate::handlers::*;
 use crate::{AnyKey, App, Foregrounded, ForegroundEvent, MercuryEffect, MercuryEvent, MercuryStruct};
 
 #[derive(Laserbeam, Bind, Debug)]
-#[laserbeam_root(resolved = Resolved)]
+#[laserbeam_root]
 #[binds(MercuryStruct)]
 #[bind(Foregrounded => on_foregrounded)]
 pub struct Mercury {
@@ -22,7 +22,7 @@ pub struct Mercury {
 }
 
 #[derive(Laserbeam, Bind, Debug)]
-#[laserbeam(path = LayerPath, resolved = Resolved)]
+#[laserbeam(path = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(Key::Escape.down() => to_home)]
 pub enum Layer {
@@ -34,7 +34,7 @@ pub enum Layer {
 }
 
 #[derive(Laserbeam, Bind, Debug)]
-#[laserbeam(path = HomeLayerPath, resolved = Resolved)]
+#[laserbeam(path = HomeLayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
     Key::KeyN.down() => to_nav,
@@ -46,7 +46,7 @@ pub enum Layer {
 pub struct HomeLayer {}
 
 #[derive(Laserbeam, Bind, Debug)]
-#[laserbeam(path = NavLayerPath, resolved = Resolved)]
+#[laserbeam(path = NavLayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
     Key::KeyC.down() => open_chrome,
@@ -58,7 +58,7 @@ pub struct NavLayer {}
 /// The resize layer: the arrows place the focused window and return home. Like nav, a one-shot
 /// chooser.
 #[derive(Laserbeam, Bind, Debug)]
-#[laserbeam(path = ResizeLayerPath, resolved = Resolved)]
+#[laserbeam(path = ResizeLayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
     Key::UpArrow.down() => maximize,
@@ -69,7 +69,7 @@ pub struct ResizeLayer {}
 
 /// The typing layer: `escape` goes home, any other key passes through.
 #[derive(Laserbeam, Bind, Debug)]
-#[laserbeam(path = TypingLayerPath, resolved = Resolved)]
+#[laserbeam(path = TypingLayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
     Key::Escape.down() => to_home,
@@ -81,7 +81,7 @@ pub struct TypingLayer {}
 /// builds the app's level from it on every dispatch. There is nothing to keep in sync and
 /// nothing to go stale.
 #[derive(Laserbeam, Bind, Debug, Default)]
-#[laserbeam(path = AppLayerPath, resolved = Resolved)]
+#[laserbeam(path = AppLayerPath)]
 #[binds(MercuryStruct)]
 #[derived_child(app_data)]
 pub struct AppLayer {}
@@ -145,19 +145,6 @@ pub type AppLayerPath<'a> = Path<AppLayer, LayerPath<'a>>;
 /// An app's level is not in the tree, so it is a `Node`, not a `Path`.
 pub type ChromeAppNode<'a> = Node<AppLayerPath<'a>, ChromeApp>;
 pub type GhosttyAppNode<'a> = Node<AppLayerPath<'a>, GhosttyApp>;
-
-/// The active leaf the tree resolves to.
-///
-/// An app's level is not in the tree, so it cannot appear here: `Resolved` is an enum of
-/// `Path`s and a derived level has none. Nothing calls `resolve()` anyway; see
-/// `refactors/pending/resolved-is-dead-weight.md`.
-pub enum Resolved<'a> {
-    HomeLayer(HomeLayerPath<'a>),
-    NavLayer(NavLayerPath<'a>),
-    ResizeLayer(ResizeLayerPath<'a>),
-    TypingLayer(TypingLayerPath<'a>),
-    AppLayer(AppLayerPath<'a>),
-}
 
 impl Default for Mercury {
     fn default() -> Self {

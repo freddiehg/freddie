@@ -49,5 +49,5 @@ pub use model::{MercuryEvent, MercuryStruct, MercuryTrigger};
 pub use sources::{AnyKey, App, ForegroundEvent, Foregrounded};
 pub use state::{
     AppData, AppLayer, ChromeApp, GhosttyApp, HomeLayer, Layer, Mercury, NavLayer, ResizeLayer,
-    Resolved, TypingLayer, foreground, key,
+    TypingLayer, foreground, key,
 };

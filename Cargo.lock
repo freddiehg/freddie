@@ -277,14 +277,12 @@ name = "laserbeam"
 version = "0.0.1"
 dependencies = [
  "laserbeam_macro",
- "trybuild",
 ]
 
 [[package]]
 name = "laserbeam_macro"
 version = "0.0.1"
 dependencies = [
- "derive_support",
  "proc-macro2",
  "quote",
  "syn",
