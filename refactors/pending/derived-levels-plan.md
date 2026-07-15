@@ -169,7 +169,7 @@ A place child that may be absent, recognized syntactically the way `Box<Child>` 
 
 Independent of the design. It deletes the "bindless variant" pattern, which is the only reason an empty struct appears in the tree, so it is worth doing before mercury grows more of them.
 
-Needs `laserbeam::Path::parent_mut()`, three lines. Nothing else needs that method.
+Reuses the existing `get_mut` projection, so no new `PathMut` method is needed.
 
 `option-resolve-into.md`.
 
