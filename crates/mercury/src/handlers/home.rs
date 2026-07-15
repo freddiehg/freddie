@@ -9,13 +9,19 @@ use laserbeam::Ascend;
 
 use super::go_home;
 use crate::state::{
-    AppLayer, HomeLayerPath, Layer, LayerPath, NavLayer, ResizeLayer, TypingLayer,
+    AppLayer, HomeLayerPath, Layer, LayerPath, NavLayer, PowerPath, ResizeLayer, TypingLayer,
 };
 use crate::MercuryEffect;
 
 /// `q` in home: quit.
 pub(crate) fn quit(_ev: &KeyEvent, _node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
     vec![MercuryEffect::Kill]
+}
+
+/// `p` in home: pause mercury. The layer is kept, so unpausing (cmd-alt-p) resumes it.
+pub(crate) fn pause(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
+    node.parent.ascend_to::<PowerPath>().get_mut().pause();
+    Vec::new()
 }
 
 /// `escape` anywhere: go back to the home layer.

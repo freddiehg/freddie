@@ -5,7 +5,7 @@
 //! [`Layer`] it resolves into:
 //!
 //! - [`HomeLayer`] (the default): `n` enters nav, `t` enters typing, `i` enters the in-app
-//!   layer for whatever app is foregrounded.
+//!   layer for whatever app is foregrounded, and `p` pauses mercury (`cmd`-`alt`-`p` unpauses).
 //! - [`NavLayer`]: `c`/`f`/`g`/`z` foreground Chrome/Finder/Ghostty/Zed and land in the in-app
 //!   layer for that app. Nav is a one-shot chooser: it picks once and leaves. The app is not
 //!   recorded on the choice; the watcher reports the app that comes up, and until it does the
@@ -53,6 +53,6 @@ pub use effect::{MercuryEffect, Placement};
 pub use model::{MercuryEvent, MercuryStruct, MercuryTrigger};
 pub use sources::{AnyKey, App, ForegroundEvent, Foregrounded, Quit, QuitEvent, Toggle, ToggleEvent};
 pub use state::{
-    AppData, AppLayer, ChromeApp, Disabled, Enabled, GhosttyApp, HomeLayer, Layer, Mercury,
-    NavLayer, Power, ResizeLayer, TypingLayer, foreground, key, quit_event, toggle_event,
+    AppData, AppLayer, ChromeApp, GhosttyApp, HomeLayer, Layer, Mercury, NavLayer, Paused, Power,
+    ResizeLayer, TypingLayer, Unpaused, foreground, key, quit_event, toggle_event,
 };

@@ -5,7 +5,7 @@
 
 use bind::SimpleRunner;
 use mercury::{
-    App, AppLayer, Enabled, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryStruct, Placement,
+    App, AppLayer, Unpaused, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryStruct, Placement,
     Power, PressType, foreground, key, quit_event, toggle_event,
 };
 
@@ -63,29 +63,72 @@ fn quit_event_kills_from_home() {
 #[test]
 fn toggle_flips_power_and_preserves_the_layer() {
     let mut m = Mercury::default();
-    assert!(matches!(m.power, Power::Enabled(_)));
+    assert!(matches!(m.power, Power::Unpaused(_)));
     // Enter nav, so there is layer state that must survive the toggle.
     let _ = m.handle(&key(Key::KeyN));
     assert!(matches!(m.layer(), Layer::Nav(_)));
 
     assert_eq!(m.handle(&toggle_event()), Some(vec![]));
-    assert!(matches!(m.power, Power::Disabled(_)));
-    assert!(matches!(m.layer(), Layer::Nav(_)), "the layer is not reset by disabling");
+    assert!(matches!(m.power, Power::Paused(_)));
+    assert!(matches!(m.layer(), Layer::Nav(_)), "the layer is not reset by pausing");
 
     assert_eq!(m.handle(&toggle_event()), Some(vec![]));
-    assert!(matches!(m.power, Power::Enabled(_)));
+    assert!(matches!(m.power, Power::Unpaused(_)));
     assert!(matches!(m.layer(), Layer::Nav(_)));
 }
 
-// While disabled the layer is not descended into: keys pass through untouched and no
+// While paused the layer is not descended into: keys pass through untouched and no
 // layer binding fires, so `n` is emitted rather than entering nav.
 #[test]
-fn disabled_passes_keys_through() {
+fn paused_passes_keys_through() {
     let mut m = Mercury::default();
     let _ = m.handle(&toggle_event());
-    assert!(matches!(m.power, Power::Disabled(_)));
+    assert!(matches!(m.power, Power::Paused(_)));
     assert_eq!(m.handle(&key(Key::KeyN)), Some(passed(Key::KeyN)));
     assert!(matches!(m.layer(), Layer::Home(_)), "the layer did not change");
+}
+
+// `p` in home pauses, keeping the layer.
+#[test]
+fn home_p_pauses() {
+    let mut m = Mercury::default();
+    assert_eq!(m.handle(&key(Key::KeyP)), Some(vec![]));
+    assert!(matches!(m.power, Power::Paused(_)));
+    assert!(matches!(m.layer(), Layer::Home(_)), "the layer is kept");
+}
+
+// cmd-alt-p while paused unpauses: cmd and alt pass through, then p fires the chord,
+// releasing the held modifiers and swallowing the p.
+#[test]
+fn cmd_alt_p_unpauses() {
+    let mut m = Mercury::default();
+    let _ = m.handle(&key(Key::KeyP)); // pause from home
+    assert!(matches!(m.power, Power::Paused(_)));
+
+    // cmd and alt pass through while paused.
+    assert_eq!(m.handle(&key(Key::MetaLeft)), Some(passed(Key::MetaLeft)));
+    assert_eq!(m.handle(&key(Key::AltLeft)), Some(passed(Key::AltLeft)));
+    // p with both held: unpause, and release the modifiers rather than emit p.
+    assert_eq!(
+        m.handle(&key(Key::KeyP)),
+        Some(vec![
+            emit(Key::MetaLeft, PressType::Up),
+            emit(Key::AltLeft, PressType::Up),
+        ])
+    );
+    assert!(matches!(m.power, Power::Unpaused(_)));
+    // Back in the layer: p now pauses again rather than passing through.
+    assert_eq!(m.handle(&key(Key::KeyP)), Some(vec![]));
+    assert!(matches!(m.power, Power::Paused(_)));
+}
+
+// p while paused WITHOUT the modifiers is a plain passthrough, not the chord.
+#[test]
+fn plain_p_while_paused_passes_through() {
+    let mut m = Mercury::default();
+    let _ = m.handle(&key(Key::KeyP)); // pause
+    assert_eq!(m.handle(&key(Key::KeyP)), Some(passed(Key::KeyP)));
+    assert!(matches!(m.power, Power::Paused(_)), "still paused");
 }
 
 #[test]
@@ -622,7 +665,7 @@ fn reported_bundle_ids_map() {
 fn the_inapp_layers_bindings_follow_the_root_with_no_resync() {
     let mut m = Mercury {
         foregrounded: App::Chrome,
-        power: Power::Enabled(Enabled {
+        power: Power::Unpaused(Unpaused {
             layer: Layer::InApp(AppLayer::default()),
         }),
         ..Default::default()

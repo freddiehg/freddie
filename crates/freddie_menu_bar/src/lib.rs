@@ -32,7 +32,7 @@ pub fn show(
 ) -> Result<MenuBar, Box<dyn std::error::Error + Send + Sync>> {
     // Each item and its id, so the handler can tell them apart. `None` is the keyboard
     // accelerator: a status-item menu does not need one.
-    let toggle = MenuItem::new("Toggle Enabled", true, None);
+    let toggle = MenuItem::new("Pause / Unpause", true, None);
     let toggle_id = toggle.id().clone();
     let quit = MenuItem::new("Quit", true, None);
     let quit_id = quit.id().clone();
