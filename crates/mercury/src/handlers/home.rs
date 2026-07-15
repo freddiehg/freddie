@@ -53,8 +53,7 @@ pub(crate) fn to_typing<'a, P: Ascend<LayerPath<'a>>>(
 
 /// `i` in home: enter the in-app layer for whatever app is foregrounded.
 pub(crate) fn to_inapp(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
-    let mercury = node.parent.into_parent().into_parent();
-    mercury.layer = Layer::InApp(AppLayer {});
+    *node.parent.ascend_to::<LayerPath>().get_mut() = Layer::InApp(AppLayer {});
     Vec::new()
 }
 

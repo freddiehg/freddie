@@ -9,14 +9,16 @@
 use bind::Node;
 use freddie_keys::KeyEvent;
 
-use crate::state::{AppLayer, Layer, NavLayerPath};
+use crate::state::{AppLayer, Layer, MercuryPath, NavLayerPath};
 use crate::{App, MercuryEffect};
 
 /// Foreground `app` and enter the in-app layer, with the navigation marked in flight.
 fn navigate(path: NavLayerPath<'_>, app: App) -> Vec<MercuryEffect> {
-    let root = path.into_parent().into_parent();
+    // Ascend to the root regardless of the levels between: `has_navigated` is on it, and the
+    // layer is under `power`.
+    let root = path.ascend_to::<MercuryPath>();
     root.has_navigated = true;
-    root.layer = Layer::InApp(AppLayer {});
+    *root.power.layer_mut() = Layer::InApp(AppLayer {});
     vec![MercuryEffect::Foreground(app)]
 }
 

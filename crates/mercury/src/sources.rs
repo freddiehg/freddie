@@ -52,6 +52,22 @@ impl EventTrigger for Quit {
     }
 }
 
+/// A trigger that matches a toggle request (enable/disable), wherever it came from
+/// (the menu bar for now). Layer-independent, like [`Quit`].
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct Toggle;
+
+/// A fired toggle request.
+#[derive(Debug)]
+pub struct ToggleEvent;
+
+impl EventTrigger for Toggle {
+    type Event = ToggleEvent;
+    fn is_matching(&self, _ev: &ToggleEvent) -> bool {
+        true
+    }
+}
+
 /// The apps Mercury knows about. `Other` is anything it has no bindings for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum App {

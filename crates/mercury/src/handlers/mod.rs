@@ -10,6 +10,7 @@ mod home;
 mod nav;
 mod quit;
 mod resize;
+mod toggle;
 mod typing;
 
 pub(crate) use app::*;
@@ -18,6 +19,7 @@ pub(crate) use home::*;
 pub(crate) use nav::*;
 pub(crate) use quit::*;
 pub(crate) use resize::*;
+pub(crate) use toggle::*;
 pub(crate) use typing::*;
 
 use laserbeam::Ascend;

@@ -5,8 +5,8 @@
 
 use bind::SimpleRunner;
 use mercury::{
-    App, AppLayer, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryStruct, Placement,
-    PressType, foreground, key, quit_event,
+    App, AppLayer, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryStruct, Placement, Power,
+    PressType, foreground, key, quit_event, toggle_event,
 };
 
 const fn emit(key: Key, press: PressType) -> MercuryEffect {
@@ -36,14 +36,14 @@ fn cmd_r() -> Vec<MercuryEffect> {
 fn home_n_enters_nav() {
     let mut m = Mercury::default();
     assert_eq!(m.handle(&key(Key::KeyN)), Some(vec![]));
-    assert!(matches!(m.layer, Layer::Nav(_)));
+    assert!(matches!(m.layer(), Layer::Nav(_)));
 }
 
 #[test]
 fn home_t_enters_typing() {
     let mut m = Mercury::default();
     assert_eq!(m.handle(&key(Key::KeyT)), Some(vec![]));
-    assert!(matches!(m.layer, Layer::Typing(_)));
+    assert!(matches!(m.layer(), Layer::Typing(_)));
 }
 
 #[test]
@@ -57,7 +57,35 @@ fn quit_event_kills_from_home() {
     let mut m = Mercury::default();
     assert_eq!(m.handle(&quit_event()), Some(vec![MercuryEffect::Kill]));
     // No layer change: quit is an effect, not a transition.
-    assert!(matches!(m.layer, Layer::Home(_)));
+    assert!(matches!(m.layer(), Layer::Home(_)));
+}
+
+#[test]
+fn toggle_flips_power_and_preserves_the_layer() {
+    let mut m = Mercury::default();
+    assert!(matches!(m.power, Power::Enabled(_)));
+    // Enter nav, so there is layer state that must survive the toggle.
+    let _ = m.handle(&key(Key::KeyN));
+    assert!(matches!(m.layer(), Layer::Nav(_)));
+
+    assert_eq!(m.handle(&toggle_event()), Some(vec![]));
+    assert!(matches!(m.power, Power::Disabled(_)));
+    assert!(matches!(m.layer(), Layer::Nav(_)), "the layer is not reset by disabling");
+
+    assert_eq!(m.handle(&toggle_event()), Some(vec![]));
+    assert!(matches!(m.power, Power::Enabled(_)));
+    assert!(matches!(m.layer(), Layer::Nav(_)));
+}
+
+// Nothing gates on Power yet, so both arms descend into the layer: a key works the
+// same disabled as enabled. (Gating is enable-disable.md.)
+#[test]
+fn disabled_still_dispatches_for_now() {
+    let mut m = Mercury::default();
+    let _ = m.handle(&toggle_event());
+    assert!(matches!(m.power, Power::Disabled(_)));
+    assert_eq!(m.handle(&key(Key::KeyN)), Some(vec![]));
+    assert!(matches!(m.layer(), Layer::Nav(_)));
 }
 
 #[test]
@@ -82,16 +110,16 @@ fn home_escape_does_nothing() {
     // no visible change.
     let mut m = Mercury::default();
     assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
-    assert!(matches!(m.layer, Layer::Home(_)));
+    assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
 #[test]
 fn escape_goes_home_from_a_sublayer() {
     let mut m = Mercury::default();
     let _ = m.handle(&key(Key::KeyN));
-    assert!(matches!(m.layer, Layer::Nav(_)));
+    assert!(matches!(m.layer(), Layer::Nav(_)));
     assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
-    assert!(matches!(m.layer, Layer::Home(_)));
+    assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
 #[test]
@@ -100,7 +128,7 @@ fn typing_passes_any_key_through() {
     let _ = m.handle(&key(Key::KeyT));
     assert_eq!(m.handle(&key(Key::KeyA)), Some(passed(Key::KeyA)));
     assert_eq!(m.handle(&key(Key::KeyZ)), Some(passed(Key::KeyZ)));
-    assert!(matches!(m.layer, Layer::Typing(_)));
+    assert!(matches!(m.layer(), Layer::Typing(_)));
 }
 
 #[test]
@@ -109,7 +137,7 @@ fn typing_plain_escape_passes_through() {
     let mut m = Mercury::default();
     let _ = m.handle(&key(Key::KeyT));
     assert_eq!(m.handle(&key(Key::Escape)), Some(passed(Key::Escape)));
-    assert!(matches!(m.layer, Layer::Typing(_)));
+    assert!(matches!(m.layer(), Layer::Typing(_)));
 }
 
 #[test]
@@ -124,7 +152,7 @@ fn typing_cmd_escape_exits_to_home() {
         m.handle(&key(Key::MetaLeft)),
         Some(vec![emit(Key::MetaLeft, PressType::Down)])
     );
-    assert!(matches!(m.layer, Layer::Typing(_)));
+    assert!(matches!(m.layer(), Layer::Typing(_)));
 
     // escape while cmd held: go home, swallow the escape, and release the cmd that
     // was passed through, so it is not left stuck down in the emitted stream.
@@ -132,7 +160,7 @@ fn typing_cmd_escape_exits_to_home() {
         m.handle(&key(Key::Escape)),
         Some(vec![emit(Key::MetaLeft, PressType::Up)])
     );
-    assert!(matches!(m.layer, Layer::Home(_)));
+    assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
 // Nav is a one-shot chooser: picking an app emits the effect and lands in the in-app
@@ -145,7 +173,7 @@ fn nav_c_foregrounds_chrome_and_enters_inapp() {
         m.handle(&key(Key::KeyC)),
         Some(vec![MercuryEffect::Foreground(App::Chrome)])
     );
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     // The effect is inert: nothing is foregrounded until the watcher reports it, and
     // the navigation is pending until then.
     assert_eq!(m.foregrounded, App::Other);
@@ -162,12 +190,12 @@ fn every_nav_choice_enters_inapp() {
     ] {
         let mut m = Mercury::default();
         let _ = m.handle(&key(Key::KeyN));
-        assert!(matches!(m.layer, Layer::Nav(_)));
+        assert!(matches!(m.layer(), Layer::Nav(_)));
         assert_eq!(
             m.handle(&key(k)),
             Some(vec![MercuryEffect::Foreground(app)])
         );
-        assert!(matches!(m.layer, Layer::InApp(_)), "{app:?} left nav");
+        assert!(matches!(m.layer(), Layer::InApp(_)), "{app:?} left nav");
         assert!(m.has_navigated, "{app:?} did not mark the nav pending");
     }
 }
@@ -182,7 +210,7 @@ fn n_c_then_foreground_then_r_refreshes_chrome() {
         m.handle(&key(Key::KeyC)),
         Some(vec![MercuryEffect::Foreground(App::Chrome)])
     );
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
 
     let _ = m.handle(&foreground(App::Chrome)); // the watcher reports it
     assert_eq!(m.foregrounded, App::Chrome);
@@ -200,7 +228,7 @@ fn a_pending_nav_binds_nothing_until_the_foreground_event() {
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyN)); // home -> nav
     let _ = m.handle(&key(Key::KeyC)); // navigate to Chrome; foregrounded still Ghostty
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     assert!(m.has_navigated);
     assert_eq!(m.foregrounded, App::Ghostty);
     // Ghostty's `j` does not apply, even though Ghostty is still `foregrounded`.
@@ -209,7 +237,7 @@ fn a_pending_nav_binds_nothing_until_the_foreground_event() {
     assert_eq!(m.handle(&key(Key::KeyR)), None);
 
     let _ = m.handle(&foreground(App::Chrome)); // the watcher catches up
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foregrounded, App::Chrome);
     assert!(!m.has_navigated);
     assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
@@ -220,7 +248,7 @@ fn foreground_records_the_app_without_changing_layer() {
     let mut m = Mercury::default();
     assert_eq!(m.handle(&foreground(App::Zed)), Some(vec![]));
     assert_eq!(m.foregrounded, App::Zed);
-    assert!(matches!(m.layer, Layer::Home(_)));
+    assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
 #[test]
@@ -228,7 +256,7 @@ fn i_enters_inapp_for_the_foregrounded_app() {
     let mut m = Mercury::default();
     let _ = m.handle(&foreground(App::Chrome));
     assert_eq!(m.handle(&key(Key::KeyI)), Some(vec![]));
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foregrounded, App::Chrome);
 }
 
@@ -239,9 +267,9 @@ fn inapp_n_enters_nav() {
     let mut m = Mercury::default();
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.handle(&key(Key::KeyN)), Some(vec![]));
-    assert!(matches!(m.layer, Layer::Nav(_)));
+    assert!(matches!(m.layer(), Layer::Nav(_)));
 }
 
 #[test]
@@ -249,9 +277,9 @@ fn inapp_t_enters_typing() {
     let mut m = Mercury::default();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.handle(&key(Key::KeyT)), Some(vec![]));
-    assert!(matches!(m.layer, Layer::Typing(_)));
+    assert!(matches!(m.layer(), Layer::Typing(_)));
 }
 
 // The app's own bindings still win over the layer's: Ghostty binds `j`, so `j` walks
@@ -263,7 +291,7 @@ fn inapp_app_bindings_still_take_precedence() {
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(&[], Key::KeyP)));
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
 }
 
 #[test]
@@ -279,7 +307,7 @@ fn inapp_other_app_ignores_keys() {
     let mut m = Mercury::default();
     let _ = m.handle(&foreground(App::Zed));
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     assert!(matches!(m.foregrounded, App::Zed | App::Other));
     assert_eq!(m.handle(&key(Key::KeyR)), None);
 }
@@ -303,7 +331,7 @@ fn i_enters_ghostty_in_app_when_ghostty_is_frontmost() {
     let mut m = Mercury::default();
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foregrounded, App::Ghostty);
 }
 
@@ -316,7 +344,7 @@ fn ghostty_j_is_previous_window_and_k_is_next() {
     assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(&[], Key::KeyP)));
     assert_eq!(m.handle(&key(Key::KeyK)), Some(tmux(&[], Key::KeyN)));
     // Still in Ghostty's layer, so windows can be walked without re-entering.
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foregrounded, App::Ghostty);
 }
 
@@ -352,11 +380,11 @@ fn foregrounding_ghostty_retargets_the_inapp_layer() {
     let mut m = Mercury::default();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foregrounded, App::Chrome);
 
     let _ = m.handle(&foreground(App::Ghostty));
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foregrounded, App::Ghostty);
     assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(&[], Key::KeyP)));
 }
@@ -382,7 +410,7 @@ fn the_digits_select_a_tmux_window_and_return_home() {
             "{k:?}"
         );
         // Choosing a window is a choice, not something you repeat.
-        assert!(matches!(m.layer, Layer::Home(_)), "{k:?} stayed in ghostty");
+        assert!(matches!(m.layer(), Layer::Home(_)), "{k:?} stayed in ghostty");
     }
 }
 
@@ -421,10 +449,10 @@ fn walking_stays_but_jumping_leaves() {
     let _ = m.handle(&key(Key::KeyI));
 
     let _ = m.handle(&key(Key::KeyJ));
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foregrounded, App::Ghostty);
     let _ = m.handle(&key(Key::Num3));
-    assert!(matches!(m.layer, Layer::Home(_)));
+    assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
 // The digits belong to Ghostty, not to home or to Chrome.
@@ -445,7 +473,7 @@ fn the_digits_are_unbound_outside_ghostty() {
 fn home_r_enters_resize() {
     let mut m = Mercury::default();
     assert_eq!(m.handle(&key(Key::KeyR)), Some(vec![]));
-    assert!(matches!(m.layer, Layer::Resize(_)));
+    assert!(matches!(m.layer(), Layer::Resize(_)));
 }
 
 // Resize is a one-shot chooser, like nav: each arrow emits its placement and lands
@@ -459,14 +487,14 @@ fn the_arrows_place_the_window_and_return_home() {
     ] {
         let mut m = Mercury::default();
         let _ = m.handle(&key(Key::KeyR));
-        assert!(matches!(m.layer, Layer::Resize(_)));
+        assert!(matches!(m.layer(), Layer::Resize(_)));
 
         assert_eq!(
             m.handle(&key(k)),
             Some(vec![MercuryEffect::Place(placement)]),
             "{k:?}"
         );
-        assert!(matches!(m.layer, Layer::Home(_)), "{k:?} stayed in resize");
+        assert!(matches!(m.layer(), Layer::Home(_)), "{k:?} stayed in resize");
     }
 }
 
@@ -475,10 +503,10 @@ fn the_arrows_place_the_window_and_return_home() {
 fn escape_leaves_resize() {
     let mut m = Mercury::default();
     let _ = m.handle(&key(Key::KeyR));
-    assert!(matches!(m.layer, Layer::Resize(_)));
+    assert!(matches!(m.layer(), Layer::Resize(_)));
 
     assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
-    assert!(matches!(m.layer, Layer::Home(_)));
+    assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
 // Placing twice means entering resize twice: `r up r left`.
@@ -495,7 +523,7 @@ fn placing_twice_re_enters_resize() {
         m.handle(&key(Key::LeftArrow)),
         Some(vec![MercuryEffect::Place(Placement::LeftHalf)])
     );
-    assert!(matches!(m.layer, Layer::Home(_)));
+    assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
 // The arrows mean nothing outside resize, so they do not place a window by
@@ -516,7 +544,7 @@ fn r_still_refreshes_chrome_in_app() {
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foregrounded, App::Chrome);
 }
 
@@ -558,7 +586,7 @@ fn foregrounding_chrome_is_reported_back() {
     assert_eq!(m.foregrounded, App::Chrome);
     // Nav landed in Chrome's in-app layer, and the reported-back event cleared the
     // pending flag so Chrome's bindings are live.
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     assert!(!m.has_navigated);
 }
 
@@ -594,7 +622,7 @@ fn reported_bundle_ids_map() {
 fn the_inapp_layers_bindings_follow_the_root_with_no_resync() {
     let mut m = Mercury {
         foregrounded: App::Chrome,
-        layer: Layer::InApp(AppLayer::default()),
+        power: Power::Enabled(Layer::InApp(AppLayer::default())),
         ..Default::default()
     };
     // Chrome binds `r`.
@@ -619,12 +647,12 @@ fn foreground_retargets_the_inapp_layer() {
     let mut m = Mercury::default();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foregrounded, App::Chrome);
 
     assert_eq!(m.handle(&foreground(App::Zed)), Some(vec![]));
     assert_eq!(m.foregrounded, App::Zed);
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     assert!(matches!(m.foregrounded, App::Zed | App::Other));
     // Chrome's refresh is gone now that Chrome is not the front app.
     assert_eq!(m.handle(&key(Key::KeyR)), None);
@@ -636,11 +664,11 @@ fn foreground_back_to_chrome_restores_its_bindings() {
     let mut m = Mercury::default();
     let _ = m.handle(&foreground(App::Zed));
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     assert!(matches!(m.foregrounded, App::Zed | App::Other));
 
     let _ = m.handle(&foreground(App::Chrome));
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foregrounded, App::Chrome);
     assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
 }
@@ -651,11 +679,11 @@ fn foreground_back_to_chrome_restores_its_bindings() {
 fn foreground_outside_inapp_does_not_change_layer() {
     let mut m = Mercury::default();
     let _ = m.handle(&key(Key::KeyN));
-    assert!(matches!(m.layer, Layer::Nav(_)));
+    assert!(matches!(m.layer(), Layer::Nav(_)));
 
     assert_eq!(m.handle(&foreground(App::Chrome)), Some(vec![]));
     assert_eq!(m.foregrounded, App::Chrome);
-    assert!(matches!(m.layer, Layer::Nav(_)));
+    assert!(matches!(m.layer(), Layer::Nav(_)));
 }
 
 // The full loop: foreground Chrome from nav (reported back), enter its in-app
@@ -673,11 +701,11 @@ fn inapp_follows_the_front_app_across_a_switch() {
             settle(&mut runner, &mut performed);
         }
     }
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foregrounded, App::Chrome);
     // The user switches to Zed outside mercury; the watcher reports it.
     let _ = m.handle(&foreground(App::Zed));
     assert_eq!(m.foregrounded, App::Zed);
-    assert!(matches!(m.layer, Layer::InApp(_)));
+    assert!(matches!(m.layer(), Layer::InApp(_)));
     assert!(matches!(m.foregrounded, App::Zed | App::Other));
 }

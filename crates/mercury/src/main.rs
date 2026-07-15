@@ -38,7 +38,9 @@
 use std::ops::ControlFlow;
 
 use freddie_keyboard::Emitter;
-use mercury::{App, Mercury, MercuryEffect, MercuryEvent, Placement, foreground, quit_event};
+use mercury::{
+    App, Mercury, MercuryEffect, MercuryEvent, Placement, foreground, quit_event, toggle_event,
+};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tracing::{debug, error, info, warn};
 
@@ -80,12 +82,20 @@ fn main() {
     // `Kill`, which ends the effect loop, releases the keyboard, and drops the
     // stopper. So Quit is the mouse-reachable way out even if the grabbed keyboard
     // is wedged.
-    let menu_bar = freddie_menu_bar::show({
-        let event_tx = event_tx.clone();
-        move || {
-            let _ = event_tx.send(quit_event());
-        }
-    });
+    let menu_bar = freddie_menu_bar::show(
+        {
+            let event_tx = event_tx.clone();
+            move || {
+                let _ = event_tx.send(toggle_event());
+            }
+        },
+        {
+            let event_tx = event_tx.clone();
+            move || {
+                let _ = event_tx.send(quit_event());
+            }
+        },
+    );
     let menu_bar = match menu_bar {
         Ok(bar) => bar,
         Err(e) => {
