@@ -37,7 +37,7 @@ pub struct Mercury {
 
 ## `HeldModifiers` (`state.rs`)
 
-`apply` records each modifier key's up and down. `flags` reads the current state as a bitset. `open` emits a DOWN for every held key, `close` an UP; each swept event carries the flags as they stand after its own change, so a shared left/right bit clears only when both sides are up. `caps_lock` is a lock, not a held key: it changes on press, so it cannot be swept and is not tracked here. It is not a modifier, so `AnyNonModifierKey` matches it and `maybe_passthru` passes it through like any other key.
+`apply` records each modifier key's up and down. `flags` reads the current state as a bitset. `open` emits a DOWN for every held key, `close` an UP; each synchronization event carries the flags as they stand after its own change, so a shared left/right bit clears only when both sides are up. `caps_lock` is a lock, not a held key: it changes on press, so it has no held down/up to replay and is not tracked here. It is not a modifier, so `AnyNonModifierKey` matches it and `maybe_passthru` passes it through like any other key.
 
 ```rust
 #[derive(Debug, Default, Clone, Copy)]
@@ -84,10 +84,10 @@ impl HeldModifiers {
         }
     }
 
-    pub fn open(&self)  -> Vec<MercuryEffect> { self.sweep(PressType::Down) }
-    pub fn close(&self) -> Vec<MercuryEffect> { self.sweep(PressType::Up) }
+    pub fn open(&self)  -> Vec<MercuryEffect> { self.emit_synchronization_events(PressType::Down) }
+    pub fn close(&self) -> Vec<MercuryEffect> { self.emit_synchronization_events(PressType::Up) }
 
-    fn sweep(&self, press: PressType) -> Vec<MercuryEffect> {
+    fn emit_synchronization_events(&self, press: PressType) -> Vec<MercuryEffect> {
         let mut shown = if press == PressType::Down { Self::default() } else { *self };
         let mut out = Vec::new();
         for key in self.held_keys() {
@@ -129,7 +129,7 @@ fn emit(key: Key, press: PressType, flags: ModifierFlags) -> MercuryEffect {
 }
 ```
 
-`sweep` needs `HeldModifiers: Copy` for the leaving snapshot; it is all-bool, so `Clone, Copy` on it and `LeftRightPair`.
+`emit_synchronization_events` needs `HeldModifiers: Copy` for the leaving snapshot; it is all-bool, so `Clone, Copy` on it and `LeftRightPair`.
 
 `held` lives on the root, not on typing: the flush reads it as typing is entered and left, so it has to outlive the layer.
 
@@ -264,7 +264,7 @@ pub struct KeyEvent {
 Whoever builds the event sets its flags:
 
 - a passed-through key (`maybe_passthru`, `on_modifier`, `maybe_go_home`'s plain escape): `held.flags()`.
-- a flush (`open`/`close`): the per-event `shown.flags()` the sweep stamps.
+- a flush (`open`/`close`): the per-event `shown.flags()` `emit_synchronization_events` stamps.
 - a synthesized chord (`refresh`'s `cmd`-`r`): its own flags, independent of `held`.
 
 The emitter applies the event's flags and nothing else:
