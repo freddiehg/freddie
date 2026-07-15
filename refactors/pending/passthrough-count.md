@@ -56,8 +56,7 @@ impl ActivePassthroughLayer {
     /// balanced by a `Drop`.
     #[must_use]
     pub fn guard(&self) -> PassthroughLayerGuard {
-        self.increment();
-        PassthroughLayerGuard(self.clone())
+        PassthroughLayerGuard::new(self)
     }
 
     // internal, the same u8 inc/dec as ever; not the public API. `&self`: the Cell is the mutability.
@@ -75,6 +74,14 @@ impl ActivePassthroughLayer {
 ```rust
 /// Holds the flag up while alive, lowers it on drop. Stored on `TypingLayer` and `Paused`.
 pub struct PassthroughLayerGuard(ActivePassthroughLayer); // a clone of the shared flag
+
+impl PassthroughLayerGuard {
+    fn new(flag: &ActivePassthroughLayer) -> Self {
+        let guard = Self(flag.clone());
+        guard.0.increment();
+        guard
+    }
+}
 
 impl Drop for PassthroughLayerGuard {
     fn drop(&mut self) {
