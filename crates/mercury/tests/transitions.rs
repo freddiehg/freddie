@@ -5,8 +5,8 @@
 
 use bind::SimpleRunner;
 use mercury::{
-    App, AppLayer, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryStruct, Placement, Power,
-    PressType, foreground, key, quit_event, toggle_event,
+    App, AppLayer, Enabled, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryStruct, Placement,
+    Power, PressType, foreground, key, quit_event, toggle_event,
 };
 
 const fn emit(key: Key, press: PressType) -> MercuryEffect {
@@ -77,15 +77,15 @@ fn toggle_flips_power_and_preserves_the_layer() {
     assert!(matches!(m.layer(), Layer::Nav(_)));
 }
 
-// Nothing gates on Power yet, so both arms descend into the layer: a key works the
-// same disabled as enabled. (Gating is enable-disable.md.)
+// While disabled the layer is not descended into: keys pass through untouched and no
+// layer binding fires, so `n` is emitted rather than entering nav.
 #[test]
-fn disabled_still_dispatches_for_now() {
+fn disabled_passes_keys_through() {
     let mut m = Mercury::default();
     let _ = m.handle(&toggle_event());
     assert!(matches!(m.power, Power::Disabled(_)));
-    assert_eq!(m.handle(&key(Key::KeyN)), Some(vec![]));
-    assert!(matches!(m.layer(), Layer::Nav(_)));
+    assert_eq!(m.handle(&key(Key::KeyN)), Some(passed(Key::KeyN)));
+    assert!(matches!(m.layer(), Layer::Home(_)), "the layer did not change");
 }
 
 #[test]
@@ -622,7 +622,9 @@ fn reported_bundle_ids_map() {
 fn the_inapp_layers_bindings_follow_the_root_with_no_resync() {
     let mut m = Mercury {
         foregrounded: App::Chrome,
-        power: Power::Enabled(Layer::InApp(AppLayer::default())),
+        power: Power::Enabled(Enabled {
+            layer: Layer::InApp(AppLayer::default()),
+        }),
         ..Default::default()
     };
     // Chrome binds `r`.

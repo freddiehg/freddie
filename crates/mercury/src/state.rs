@@ -42,15 +42,38 @@ pub struct Mercury {
 /// Enabled/disabled, carrying the layer in both arms.
 ///
 /// The layer lives here rather than in a `Mercury` field next to a flag, so there is one source
-/// of truth and the menu-bar Toggle just MOVES the layer between arms. Both arms descend into
-/// the layer for now, so toggling changes no behavior; when the disabled behavior lands,
-/// `Disabled` stops descending and binds a passthrough instead. See `enable-disable.md`.
+/// of truth and the menu-bar Toggle just MOVES the layer between arms. The two arms differ only
+/// in whether they descend into the layer: [`Enabled`] does (`#[resolve_into]`), so the layer
+/// tree is live; [`Disabled`] does not, so the layer's bindings are off and its catch-all passes
+/// keys through. See `enable-disable.md`.
 #[derive(Bind, Debug)]
 #[node(parent = MercuryPath)]
 #[binds(MercuryStruct)]
 pub enum Power {
-    Enabled(Layer),
-    Disabled(Layer),
+    Enabled(Enabled),
+    Disabled(Disabled),
+}
+
+/// The enabled arm: descends into the layer, so the layer tree is live.
+#[derive(Bind, Debug)]
+#[node(parent = PowerPath)]
+#[binds(MercuryStruct)]
+pub struct Enabled {
+    #[resolve_into]
+    pub layer: Layer,
+}
+
+/// The disabled arm: holds the layer WITHOUT a `#[resolve_into]`.
+///
+/// So dispatch does not descend into it and the layer's bindings are off. Its own catch-all
+/// passes every key through, so the keyboard is normal while mercury is disabled. The layer is
+/// kept so re-enabling resumes it.
+#[derive(Bind, Debug)]
+#[node(parent = PowerPath)]
+#[binds(MercuryStruct)]
+#[bind(AnyKey => pass_through)]
+pub struct Disabled {
+    pub layer: Layer,
 }
 
 impl Power {
@@ -58,28 +81,33 @@ impl Power {
     #[must_use]
     pub const fn layer(&self) -> &Layer {
         match self {
-            Self::Enabled(layer) | Self::Disabled(layer) => layer,
+            Self::Enabled(e) => &e.layer,
+            Self::Disabled(d) => &d.layer,
         }
     }
 
     /// The layer mutably, whichever arm holds it.
     pub const fn layer_mut(&mut self) -> &mut Layer {
         match self {
-            Self::Enabled(layer) | Self::Disabled(layer) => layer,
+            Self::Enabled(e) => &mut e.layer,
+            Self::Disabled(d) => &mut d.layer,
         }
     }
 
     /// Flips enabled/disabled, keeping the layer.
     pub(crate) const fn toggle(&mut self) {
-        *self = match std::mem::replace(self, Self::Disabled(Layer::Home(HomeLayer {}))) {
-            Self::Enabled(layer) => Self::Disabled(layer),
-            Self::Disabled(layer) => Self::Enabled(layer),
+        let placeholder = Self::Disabled(Disabled {
+            layer: Layer::Home(HomeLayer {}),
+        });
+        *self = match std::mem::replace(self, placeholder) {
+            Self::Enabled(e) => Self::Disabled(Disabled { layer: e.layer }),
+            Self::Disabled(d) => Self::Enabled(Enabled { layer: d.layer }),
         };
     }
 }
 
 #[derive(Bind, Debug)]
-#[node(parent = PowerPath)]
+#[node(parent = EnabledPath)]
 #[binds(MercuryStruct)]
 #[bind(Key::Escape.down() => to_home)]
 pub enum Layer {
@@ -179,8 +207,9 @@ pub enum AppData {
 /// A shared reference, so it cannot mutate: it derives, it does not act. `Zed` and `Other`
 /// bind nothing, so they get no level and no struct.
 const fn app_data(path: &AppLayerPath) -> Option<AppData> {
-    // AppLayer -> Layer -> Power -> Mercury.
-    let root = path.parent().parent().parent();
+    // AppLayer -> Layer -> Enabled -> Power -> Mercury. (app_data only exists under the enabled
+    // arm, so it always ascends through `Enabled`.)
+    let root = path.parent().parent().parent().parent();
     // A navigation is in flight: the foreground event has not landed, so
     // `foregrounded` is still the previous app. Bind nothing until the watcher
     // confirms the new front app and clears the flag, so a key pressed in the gap
@@ -226,7 +255,9 @@ pub struct GhosttyApp {}
 /// The root's path is `&mut Self`; naming it lets the root's children say `parent = MercuryPath`.
 pub type MercuryPath<'a> = &'a mut Mercury;
 pub type PowerPath<'a> = PathMut<Power, MercuryPath<'a>>;
-pub type LayerPath<'a> = PathMut<Layer, PowerPath<'a>>;
+pub type EnabledPath<'a> = PathMut<Enabled, PowerPath<'a>>;
+pub type DisabledPath<'a> = PathMut<Disabled, PowerPath<'a>>;
+pub type LayerPath<'a> = PathMut<Layer, EnabledPath<'a>>;
 pub type HomeLayerPath<'a> = PathMut<HomeLayer, LayerPath<'a>>;
 pub type NavLayerPath<'a> = PathMut<NavLayer, LayerPath<'a>>;
 pub type ResizeLayerPath<'a> = PathMut<ResizeLayer, LayerPath<'a>>;
@@ -241,7 +272,9 @@ impl Default for Mercury {
         Self {
             foregrounded: App::Other,
             has_navigated: false,
-            power: Power::Enabled(Layer::Home(HomeLayer {})),
+            power: Power::Enabled(Enabled {
+                layer: Layer::Home(HomeLayer {}),
+            }),
         }
     }
 }

@@ -53,6 +53,6 @@ pub use effect::{MercuryEffect, Placement};
 pub use model::{MercuryEvent, MercuryStruct, MercuryTrigger};
 pub use sources::{AnyKey, App, ForegroundEvent, Foregrounded, Quit, QuitEvent, Toggle, ToggleEvent};
 pub use state::{
-    AppData, AppLayer, ChromeApp, GhosttyApp, HomeLayer, Layer, Mercury, NavLayer, Power,
-    ResizeLayer, TypingLayer, foreground, key, quit_event, toggle_event,
+    AppData, AppLayer, ChromeApp, Disabled, Enabled, GhosttyApp, HomeLayer, Layer, Mercury,
+    NavLayer, Power, ResizeLayer, TypingLayer, foreground, key, quit_event, toggle_event,
 };
