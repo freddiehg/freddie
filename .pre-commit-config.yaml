@@ -21,3 +21,9 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
+      - id: cargo-lock-sync
+        name: cargo lock in sync
+        entry: bash -c 'cargo metadata --format-version 1 --locked >/dev/null'
+        language: system
+        files: (^|/)Cargo\.(toml|lock)$
+        pass_filenames: false
