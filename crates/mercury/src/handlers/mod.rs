@@ -31,16 +31,12 @@ pub(crate) fn go_home(layer: &mut LayerPath<'_>) {
 /// Ask for `effects` and return home.
 ///
 /// A layer stays only if its actions make sense to do repeatedly. Walking tmux's panes and
-/// refreshing Chrome do, so the in-app layers stay. Choosing an app or a window placement does
-/// not: repeating it is a no-op, and anything else is a different choice. So nav and resize are
-/// one-shot choosers, and this is how they leave.
+/// refreshing Chrome do, so the in-app layers stay. Placing a window does not: repeating it is
+/// a no-op, and anything else is a different choice. So resize is a one-shot chooser, and this
+/// is how it leaves. (Nav also leaves after one choice, but into the in-app layer rather than
+/// home; see [`super::nav`].)
 ///
 /// Generic over the path, so every chooser binds it from its own node.
-///
-/// The layer change is immediate; the effect is not. Foregrounding an app records it only
-/// later, when the watcher reports what actually came up, so a following `i` may briefly
-/// resolve the in-app layer against the old app. [`on_foregrounded`] retargets it when the
-/// real event lands.
 pub(crate) fn and_go_home<'a, P: Ascend<LayerPath<'a>>>(
     path: P,
     effects: Vec<MercuryEffect>,

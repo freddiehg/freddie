@@ -6,8 +6,11 @@
 //!
 //! - [`HomeLayer`] (the default): `n` enters nav, `t` enters typing, `i` enters the in-app
 //!   layer for whatever app is foregrounded.
-//! - [`NavLayer`]: `c`/`g`/`z` foreground Chrome/Ghostty/Zed and go back to home. Nav is a
-//!   one-shot chooser, so `n c i r` navigates to Chrome and refreshes it.
+//! - [`NavLayer`]: `c`/`f`/`g`/`z` foreground Chrome/Finder/Ghostty/Zed and land in the in-app
+//!   layer for that app. Nav is a one-shot chooser: it picks once and leaves. The app is not
+//!   recorded on the choice; the watcher reports the app that comes up, and until it does the
+//!   in-app level is empty. So `n c` foregrounds Chrome and, once it is frontmost, `r`
+//!   refreshes it, with no separate `i`.
 //! - [`ResizeLayer`] (`r` from home): the arrows place the focused window, up to maximize and
 //!   left and right to the halves, then it goes back to home.
 //! - [`TypingLayer`]: `escape` goes home, any other key passes through.
@@ -19,7 +22,8 @@
 //!
 //! A layer stays only if its actions make sense to do repeatedly. Walking panes and refreshing
 //! a page do, so the in-app layers stay put. Choosing an app or a window placement does not, so
-//! nav and resize are one-shot choosers that return home.
+//! nav and resize are one-shot choosers: resize returns home, and nav lands in the in-app layer
+//! for the app it chose.
 //!
 //! `escape` goes back to the home layer from every sub-layer, and is a no-op in home (it
 //! re-enters home). Typing binds it explicitly so its catch-all does not shadow the go-home

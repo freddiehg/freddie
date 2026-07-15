@@ -17,6 +17,11 @@ use crate::{AnyKey, App, Foregrounded, ForegroundEvent, MercuryEffect, MercuryEv
 #[bind(Foregrounded => on_foregrounded)]
 pub struct Mercury {
     pub foregrounded: App,
+    /// Set when a nav choice foregrounds an app, cleared when the watcher reports the
+    /// front app. True means a navigation is in flight: `foregrounded` is still the
+    /// old app until the foreground event lands, so the in-app level stays empty
+    /// rather than binding the old app in the gap. See [`app_data`].
+    pub has_navigated: bool,
     #[resolve_into]
     pub layer: Layer,
 }
@@ -116,7 +121,15 @@ pub enum AppData {
 /// A shared reference, so it cannot mutate: it derives, it does not act. `Zed` and `Other`
 /// bind nothing, so they get no level and no struct.
 fn app_data(path: &AppLayerPath) -> Option<AppData> {
-    match path.parent().parent().foregrounded {
+    let root = path.parent().parent();
+    // A navigation is in flight: the foreground event has not landed, so
+    // `foregrounded` is still the previous app. Bind nothing until the watcher
+    // confirms the new front app and clears the flag, so a key pressed in the gap
+    // does not reach the old app's bindings.
+    if root.has_navigated {
+        return None;
+    }
+    match root.foregrounded {
         App::Chrome => Some(AppData::Chrome(ChromeApp {})),
         App::Ghostty => Some(AppData::Ghostty(GhosttyApp {})),
         App::Finder | App::Zed | App::Other => None,
@@ -167,6 +180,7 @@ impl Default for Mercury {
     fn default() -> Self {
         Self {
             foregrounded: App::Other,
+            has_navigated: false,
             layer: Layer::Home(HomeLayer {}),
         }
     }
