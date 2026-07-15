@@ -157,15 +157,11 @@ They stop being units when mercury tracks something per app (a tab name, a pane 
 
 NOT BEING WORKED ON. Ordered by when they become possible, not by when they will happen. Nothing below blocks steps 1 through 8.
 
-### 9. `Resolved` is dead weight
+### 9. `Resolved` is dead weight — DONE
 
-`Resolve::Resolved` and `resolve()` have no callers outside laserbeam's own tests. `bind` uses `Resolve::Path` and never `Resolved`. Mercury declares a `Resolved` enum with a variant per leaf, passes `resolved = Resolved` on ten nodes, and never touches a variant.
-
-Independent of everything. Could land at any point, including before step 1. It is listed here because it is cleanup, not capability.
-
-Steps 1 through 8 make it slightly worse, since `Resolved` is an enum of `Path`s and a derived level has none, but they do not depend on it.
-
-`resolved-is-dead-weight.md`.
+Removed. `resolve()` and `Resolved` are deleted; `laserbeam::Resolve` is gone entirely
+and `type Path` moved onto `bind::Place`; laserbeam is types only and its `Path` is
+renamed `PathMut`. `refactors/past/resolved-is-dead-weight.md`.
 
 ### 10. `Option<Child>` on a `#[resolve_into]` field
 
