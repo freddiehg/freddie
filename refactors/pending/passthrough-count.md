@@ -187,34 +187,31 @@ move |ev| {
 
 Exception: some keys in passthrough are still commands (typing's escape, the `cmd`-`alt`-`p` unpause). Those must NOT be kept — the tap has to drop them so the model acts. So the rule is "keep unless the current passthrough state still claims this key as a command," and how the tap knows that synchronously is the open part.
 
-## AnyKey stops matching modifiers
+## Held modifiers
 
-Before (`sources.rs`):
+`held` is a plain struct with a bool per modifier key, all of them, left and right distinguished, so the model always knows exactly what is down. No `Option<Key>`, no "which cmd" ambiguity.
 
 ```rust
-impl EventTrigger for AnyKey {
-    type Event = KeyEvent;
-    fn is_matching(&self, _ev: &KeyEvent) -> bool {
-        true
-    }
+#[derive(Debug, Default)]
+pub struct HeldModifiers {
+    pub meta_left: bool,
+    pub meta_right: bool,
+    pub control_left: bool,
+    pub control_right: bool,
+    pub alt_left: bool,
+    pub alt_right: bool,
+    pub shift_left: bool,
+    pub shift_right: bool,
 }
 ```
 
-After:
+Modifiers stay ordinary keys: a catch-all handler still matches every key and just branches, `matches!(ev.key, Key::MetaLeft)` and friends, setting the matching bool on each down/up. Making the catch-all trigger itself skip modifiers (a `NonModifierKey`) is a follow-up, not this doc -- `modifier-keys.md`'s point is that modifiers are not special, so nothing at the trigger level should treat them so.
 
-```rust
-impl EventTrigger for AnyKey {
-    type Event = KeyEvent;
-    fn is_matching(&self, ev: &KeyEvent) -> bool {
-        !ev.key.is_modifier() // modifiers are the root's business, never a layer catch-all's
-    }
-}
-```
-
-(`Key::is_modifier` is a small helper to add in `freddie_keys`.)
+A `u128` bitset over every key, one bit each, is the eventual tighter form (set/test with bit magic), but the explicit bool struct is fine for now.
 
 ## Open questions
 
 - The command-key exception in the tap: how it knows synchronously which keys the current passthrough state still owns (typing's escape, the `cmd`-`alt`-`p` unpause), so it drops those rather than keeping them.
 - The release-on-leave borrow: a transition needs `&mut root` (to decrement) and the old layer (to pull the guard out) at once. Working that out against the path types is the fiddly part.
-- Held modifiers at the root under one-handler-per-event, and whether this forces the `no-clobber.md` decision; the `cmd`-`alt`-`p` unpause and typing's escape also move to the root.
+- Where `held` lives (root vs the layer that needs it) under one-handler-per-event, and whether that forces the `no-clobber.md` decision.
+- Deferred follow-ups: the `NonModifierKey` trigger, the `u128` held-keys bitset, and reconciling the emitter's own modifier-flag reconstruction (`self.flags` / `next_flags`) with `held` so modifier state has a single home rather than one tracker in the model and another in the emitter.
