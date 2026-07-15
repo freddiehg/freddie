@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 tray-icon = "0.24"
+image = { version = "0.25", default-features = false, features = ["png"] }
 tracing = "0.1"
 
 [lints]

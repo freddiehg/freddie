@@ -13,7 +13,7 @@
 //! macOS only.
 
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
-use tray_icon::{TrayIcon, TrayIconBuilder};
+use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 /// A live status item. Holding it keeps the icon up; dropping it takes the icon down.
 pub struct MenuBar {
@@ -37,11 +37,13 @@ pub fn show(
     let menu = Menu::new();
     menu.append(&quit)?;
 
-    // A title rather than an icon for v0: text in the menu bar needs no image asset.
-    // `\u{263F}` is ☿, the mercury symbol.
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_title("\u{263F}")
+        .with_icon(mercury_icon()?)
+        // A template image: macOS ignores the RGB and renders the alpha mask in the
+        // menu bar's own color (white on a dark bar, black on a light one), so the
+        // black glyph shows correctly on either without inverting it.
+        .with_icon_as_template(true)
         .with_tooltip("mercury")
         .build()?;
 
@@ -54,4 +56,52 @@ pub fn show(
     }));
 
     Ok(MenuBar { _tray: tray })
+}
+
+/// The ☿ status-item icon: the bundled glyph, trimmed to its shape and sized for the
+/// menu bar, as a template (alpha mask, recolored by macOS).
+///
+/// The source PNG is a black glyph on a transparent background at 800x800 with wide
+/// margins. Trimming to the glyph's bounds and then scaling makes the glyph fill the
+/// bar rather than sit tiny inside the margins; a few pixels of padding keep it off
+/// the bar's top and bottom.
+fn mercury_icon() -> Result<Icon, Box<dyn std::error::Error + Send + Sync>> {
+    let img = image::load_from_memory(include_bytes!("../assets/mercury.png"))?.into_rgba8();
+    let glyph = crop_to_alpha(&img);
+
+    // tray-icon renders the icon at 18pt tall; a ~2x pixel height keeps it crisp on a
+    // Retina bar. The glyph is portrait, so width follows from its aspect.
+    let glyph_h: u32 = 30;
+    let glyph_w = (glyph.width() * glyph_h).div_ceil(glyph.height().max(1)).max(1);
+    let scaled = image::imageops::resize(
+        &glyph,
+        glyph_w,
+        glyph_h,
+        image::imageops::FilterType::Lanczos3,
+    );
+
+    let pad: u32 = 4;
+    let mut canvas = image::RgbaImage::new(glyph_w + 2 * pad, glyph_h + 2 * pad);
+    image::imageops::overlay(&mut canvas, &scaled, i64::from(pad), i64::from(pad));
+
+    let (w, h) = (canvas.width(), canvas.height());
+    Ok(Icon::from_rgba(canvas.into_raw(), w, h)?)
+}
+
+/// Crops an image to the bounding box of its non-transparent pixels. Returns a clone
+/// unchanged if the image is fully transparent.
+fn crop_to_alpha(img: &image::RgbaImage) -> image::RgbaImage {
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (u32::MAX, u32::MAX, 0_u32, 0_u32);
+    for (x, y, px) in img.enumerate_pixels() {
+        if px.0[3] > 16 {
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    }
+    if min_x > max_x {
+        return img.clone();
+    }
+    image::imageops::crop_imm(img, min_x, min_y, max_x - min_x + 1, max_y - min_y + 1).to_image()
 }
