@@ -1,8 +1,8 @@
-# laserbeam: missing features
+# derive: missing features
 
-Superseded. This describes the old `#[derive(Laserbeam)]` and its `resolve()` machinery, which are deleted; `crates/laserbeam_macro` no longer exists. The tree-shape concerns (enum descent, multi-parent, generic nodes) are now bind's, in `crates/bind_macro` and `crates/derive_support`.
+What the tree derive does not handle yet, grouped by how it fails. Each entry notes whether it is a fundamental constraint or just unimplemented, so we know what is cheap to add.
 
-What `#[derive(Laserbeam)]` does not handle yet, grouped by how it fails. Each entry notes whether it is a fundamental constraint or just unimplemented, so we know what is cheap to add. This reflects the macro in `crates/laserbeam_macro/src/lib.rs` as of now.
+The tree shape is now `#[derive(Bind)]`, in `crates/bind_macro` with the descent helpers in `crates/derive_support` (`find_resolve_into`, `single_field_ty`, `unbox`, `parent_route`, `Edge`). `laserbeam` is types only (`PathMut`, `Ascend`) and no longer has a derive; the old `resolve()`/`Resolved` machinery this doc used to describe is deleted.
 
 ## Hard rejections
 
@@ -10,7 +10,7 @@ These produce a clear compile error from the macro itself.
 
 ### Generic nodes
 
-`node_impl` rejects any node with generic parameters: "laserbeam nodes may not be generic". The path alias is emitted as `#p<'a>`, threading exactly one lifetime and no type params, so a node like `struct Single<T> { .. }` cannot derive. The path alias also cannot carry an unused type parameter (Rust's E0091), so you cannot smuggle a type in that way either. Monomorphize the node instead.
+The derive rejects any node with generic parameters: "bind nodes may not be generic". The path alias is emitted as `#p<'a>`, threading exactly one lifetime and no type params, so a node like `struct Single<T> { .. }` cannot derive. The path alias also cannot carry an unused type parameter (Rust's E0091), so you cannot smuggle a type in that way either. Monomorphize the node instead.
 
 Status: fundamental to the current single-lifetime path shape. Supporting generic nodes means changing `#p<'a>` and the rejection guard together.
 
@@ -32,9 +32,9 @@ These compile, but the generated code fails to type-check, so the user gets a co
 
 ### Collections and optionals as the descent target
 
-The macro descends into exactly one child: for an enum, the active variant; for a struct, its one `#[resolve_into]` field. There is no "which of N children is active" or "is the child present" logic. A field typed `Vec<Child>` or `Option<Child>` is passed through as the child type (only `Box` is unwrapped), so the generated `<Vec<Child> as Resolve>::resolve(..)` does not compile.
+The macro descends into exactly one child: for an enum, the active variant; for a struct, its one `#[resolve_into]` field. There is no "which of N children is active" or "is the child present" logic. A field typed `Vec<Child>` or `Option<Child>` is passed through as the child type (only `Box` is unwrapped), so the generated descent into `<Vec<Child> as Dispatch<M>>::dispatch(..)` does not compile.
 
-This is the biggest gap for a real tree. isograph handles it: `resolve_position_macro` recognizes `Vec<T>` and `Option<T>`, iterates, and uses `span.contains(position)` to pick the active child. laserbeam has no equivalent active-child selection, because mutably it would need a way to say which index/variant is live.
+This is the biggest gap for a real tree. isograph handles it: `resolve_position_macro` recognizes `Vec<T>` and `Option<T>`, iterates, and uses `span.contains(position)` to pick the active child. the derive has no equivalent active-child selection, because mutably it would need a way to say which index/variant is live.
 
 Status: a genuine missing feature, not a rough edge. Needs an "active child" mechanism (an index, a predicate, or an explicit cursor field) plus iteration in the generated descent. Scoped in `laserbeam-state-controlled-children.md`.
 
@@ -54,10 +54,6 @@ Status: easy to add (index the unnamed field) if a tuple-struct node ever needs 
 
 These work, but the surrounding types must be written a specific way; a mismatch is a compile error.
 
-### `resolved` must be an enum, variant-per-leaf
-
-The leaf body emits `#resolved::#name(path)`, so `resolved` must be an enum with a variant named exactly after each leaf type (`Resolved::Credit(..)`). It cannot be a plain struct. There is a `POTENTIAL` note in `struct_body` to emit `path.into()` instead, which would let `resolved` be a struct with a `From<LeafPath>` impl.
-
 ### Route enums must have a variant named after each parent
 
 Both the struct and enum multi-parent descents construct `#route::#name(path.into())`, where `#name` is the parent node's own identifier. The route enum must therefore have a variant named exactly after each parent node (`AskToLetGoParent::RefuseToLetGo`, `TrackParent::Discography`). A mismatch is a compile error. The variant payload type is the parent's path (or `Box<ParentPath>` for a recursive chain); `path.into()` adapts via `From<T> for T` or `From<T> for Box<T>`.
@@ -70,10 +66,9 @@ A path alias is referenced as `#p<'a>`, so it must take exactly one lifetime and
 
 So the boundaries are clear, the following all work and are covered by tests:
 
-- Single-parent and multi-parent nodes, the multi-parent parent expressed as a route enum in the `Parent` slot (`Path<Node, ParentEnum>`).
+- Single-parent and multi-parent nodes, the multi-parent parent expressed as a route enum in the `Parent` slot (`PathMut<Node, ParentEnum>`).
 - Recursive data, broken with `Box` in a struct field, an enum variant, or a route-enum variant; the macro dereferences each.
 - Multi-parent descent from a struct field, a non-root enum variant, and a root enum variant.
-- Re-resolving from a mid-tree path after mutating which branch is active.
 
 ## Future: type-level enumeration of all states
 
