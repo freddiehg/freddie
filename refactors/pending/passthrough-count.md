@@ -1,60 +1,189 @@
 # passthrough as a count at the root
 
-Not built. A cleanup of how mercury decides to pass keys through, and where held-modifier state lives.
+Not built. "Pass keys through untouched" is one global fact, but it lives in per-layer `AnyKey` catch-alls that re-emit a copy, which drops the flags an injected event carries inline (the Wispr fn-a case). Move it to one count at the root, and make passthrough KEEP the original event instead of re-emitting. Modifier state moves to the root too. Below is the shape as before/after; the ascent/borrow details are left rough on purpose.
 
-## The problem
+## The count and the modifier state on the root
 
-Two things are scattered that are really one fact each.
+The count is read by the tap thread (synchronously, per key) and written by the model (the guards), so it is an `Arc<AtomicU32>`, not a plain field.
 
-Held modifiers are tracked in two places: typing's `SetOfHeldKeys { cmd }` and the paused arm's `HeldModifiers { cmd, alt }`. What is physically held is one global fact, but each layer that cares keeps its own copy, because with one-handler-per-event dispatch a root-level modifier handler never fires when a layer also handles the key (see `no-clobber.md`). So the natural home for modifier state, the root, is the one place that cannot currently see every key.
+Before:
 
-"Pass this key through untouched" is re-implemented per layer: typing's `AnyKey` catch-all emits, and the paused arm's `AnyKey` catch-all emits. Whether mercury is in passthrough is one global fact too, but it lives in whichever layers happen to want it.
+```rust
+pub struct Mercury {
+    pub foregrounded: App,
+    pub has_navigated: bool,
+    #[resolve_into]
+    pub power: Power,
+}
+```
 
-## The design: one passthrough count at the root
+After:
 
-`Mercury` gains a passthrough count, a small unsigned integer, next to the held-modifier state (two separate fields, not one object). Passthrough is on while the count is greater than zero.
+```rust
+pub struct Mercury {
+    pub foregrounded: App,
+    pub has_navigated: bool,
+    pub held: HeldModifiers,          // one copy of what's held, here, not per-layer
+    pub passthrough: Arc<AtomicU32>,  // > 0 => pass through; a clone lives on the tap
+    #[resolve_into]
+    pub power: Power,
+}
+```
 
-Two states want passthrough: the typing layer, and the paused state (the typing layer only exists while unpaused; paused is its own state). Each holds a `Passthrough` item, a guard that increments the count when it comes into existence and decrements it when it is dropped. `TypingLayer` has one; `Paused` has one. Entering typing bumps the count; leaving typing drops the `TypingLayer`, and its `Passthrough` un-bumps it; pausing bumps it; unpausing drops `Paused`, and its `Passthrough` un-bumps it.
+## The guard
 
-It is a count, not a bool, because the two sources overlap and drop in an order we do not control. Pausing while the layer underneath is typing has both guards live at once; a bool would be cleared by whichever drops first even though the other still wants passthrough. A count is order-independent: passthrough is on while any source is live, off only when the last one drops.
+New:
 
-## Construction discipline: only through a method
+```rust
+/// Raises the passthrough count while alive, lowers it on drop.
+pub struct PassthroughGuard(Arc<AtomicU32>);
 
-`TypingLayer` and the paused state must not be constructed directly, no struct literal. They are built by a method that wires the guard, so the increment cannot be forgotten, and their `Drop` does the decrement. A direct construction would make one without a guard and desync the count.
+impl PassthroughGuard {
+    fn new(count: &Arc<AtomicU32>) -> Self {
+        count.fetch_add(1, Ordering::Release);
+        Self(Arc::clone(count))
+    }
+}
 
-So entering typing goes through a `Layer` method rather than assigning `Layer::Typing(TypingLayer { .. })`, and pausing goes through a `Power` method. Entering a layer is already method-shaped (the transition handlers), so this is where the guard is created; the raw variant construction is what goes away.
+impl Drop for PassthroughGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
+    }
+}
+```
 
-## Modifiers move to the root
+A count, not a bool: pausing while the layer is typing has two guards live, and they drop in an order we do not control. `fetch_add`/`fetch_sub` is order-independent; a bool would clear on the first drop.
 
-No layer binds `cmd`, `alt`, or `opt`. The root owns the held-modifier state and the modifier keys' handlers, and matches on the active layer where the behavior needs to differ.
+## Typing and Paused hold a guard
 
-Layers bind only their own commands. A key a layer does not bind falls through to the root; when the passthrough count is greater than zero the root emits it, otherwise it is swallowed (command mode). This replaces the per-layer emit-everything catch-alls (typing's `AnyKey`, the paused arm's `AnyKey`). The paused arm stops needing `HeldModifiers`, and typing stops needing `SetOfHeldKeys`.
+Before:
 
-`AnyKey` now excludes modifiers. Today it matches every key; it gains a "not a modifier" condition, so a modifier is never caught by a layer's `AnyKey` binding and always falls through to the root's modifier handling. A modifier is the root's business in every layer, so no layer-level catch-all should intercept one.
+```rust
+#[bind(
+    Key::Escape.down() => maybe_go_home,
+    AnyKey => modify_held_and_pass_through,
+)]
+pub struct TypingLayer {
+    pub held: SetOfHeldKeys,
+}
+```
 
-## Passthrough keeps the original event; it does not re-emit a copy
+After:
 
-This is the other half, and it is why Wispr Flow breaks today. Typing (and the paused arm) implement passthrough by returning `Emit(ev.clone())`: the tap drops the original key and the effect loop posts a fresh copy. mercury re-emits by keycode and rebuilds the modifier flags only from the separate modifier events it saw. An injected event that carries its flags inline defeats that: Wispr Flow posts the `v` keydown with the command flag already set on it, no separate `cmd`-down event, so mercury sees a bare `KeyV`, re-emits a bare `KeyV`, and the command flag is gone. `cmd`-`v` comes out as a lone "v" — exactly the symptom (fn-a release types "v" instead of pasting). The re-emit also loses any Unicode payload and can reorder a fast burst. So the path named "pass through" mangles the one thing it should leave alone.
+```rust
+#[bind(Key::Escape.down() => maybe_go_home)]  // only its command stays
+pub struct TypingLayer {
+    _passthrough: PassthroughGuard,           // raises the count while typing is live
+}
+// SetOfHeldKeys and modify_held_and_pass_through are gone: modifiers are the root's,
+// passthrough is the tap's.
+```
 
-Passthrough should KEEP the original event instead. The tap already has the path: when `on_key` returns the same event it received, `decide` returns `Pass` and the tap keeps the original (`CallbackResult::Keep`) rather than reposting. mercury never uses it, because its `on_key` always returns `None` (drop) and re-emits asynchronously. Keeping the original preserves the inline command flag, the Unicode, and the ordering, because it is the OS's own event going through untouched.
+Before:
 
-The tap decides this synchronously from the passthrough count (via the shared cell it already reads; see below): count above zero means keep the original, count zero means drop and let the async model handle it as now. So the `Passthrough` guard on `TypingLayer` and `Paused` (see the count section) is the whole mechanism: its existence raises the count, the raised count both puts the layer in passthrough and tells the tap to keep originals, and dropping it lowers the count and returns to normal dispatch. No separate global marker, and no re-emit.
+```rust
+#[bind(AnyKey => pass_through)]
+pub struct Paused {
+    pub layer: Layer,
+    pub held: HeldModifiers,
+}
+```
 
-The subtlety: even in passthrough some keys are commands (typing's escape, the `cmd`-`alt`-`p` unpause chord), and those must still reach the model and be swallowed rather than kept. So "keep the original" is really "keep everything except the few keys the current passthrough state still claims as commands." Working out that exception set, and whether the tap can know it synchronously or must still round-trip those specific keys, is the open part.
+After:
 
-## The mechanism to settle
+```rust
+pub struct Paused {
+    pub layer: Layer,
+    _passthrough: PassthroughGuard,
+}
+// no AnyKey bind (passthrough is the tap); the cmd-alt-p unpause moves to the root.
+```
 
-The guard has to reach the root's count from its `Drop`, which a plain field in a value tree does not give it. The straightforward way is a shared cell: `passthrough: Rc<Cell<u32>>` on the root, each guard holding a clone, incrementing on construction and decrementing on drop. That puts shared mutable state into a tree that is otherwise pure values, which is the cost to weigh. The alternative is explicit increment/decrement in the transition methods without `Drop`, which keeps the tree pure but loses the "cannot forget" that `Drop` buys.
+## Construction goes through a method
 
-## How today's features land on it
+The guard needs the root's count, so the variant is built by a method that can reach it, never a struct literal.
 
-- Typing passthrough: the typing guard keeps the count up; typing's escape and cmd-escape stay as its own binds; its `AnyKey` catch-all is replaced by fall-through to the root's passthrough.
-- Paused passthrough: the paused guard keeps the count up; the layer underneath is not descended into, so the root's passthrough is what emits keys.
-- The `cmd`-`alt`-`p` unpause chord: the root holds the modifier state now, so it recognizes the chord while paused and unpauses (dropping the paused guard). The chord logic moves to the root with everything else.
+Before (`to_typing`):
+
+```rust
+*node.parent.ascend().get_mut() = Layer::Typing(TypingLayer::default());
+```
+
+After:
+
+```rust
+let count = node.parent.ascend_to::<MercuryPath>().passthrough.clone(); // roughly
+// ... then set the Layer via the ascent, built through the method:
+Layer::typing(&count)
+```
+
+```rust
+impl Layer {
+    fn typing(count: &Arc<AtomicU32>) -> Self {
+        Self::Typing(TypingLayer { _passthrough: PassthroughGuard::new(count) })
+    }
+}
+```
+
+The increment can't be forgotten (it is in the constructor), and leaving the layer drops the `TypingLayer`, whose guard decrements. Same for `Power::pause` building `Paused` through a method.
+
+## The tap keeps the original instead of re-emitting
+
+Before (`main.rs`):
+
+```rust
+move |ev| {
+    let _ = event_tx.send(MercuryEvent::Key(ev));
+    None // always drop; the effect loop re-emits a copy, losing inline flags
+}
+```
+
+After:
+
+```rust
+move |ev| {
+    let _ = event_tx.send(MercuryEvent::Key(ev.clone())); // model still sees it (commands, state)
+    if passthrough.load(Ordering::Acquire) > 0 {
+        Some(ev) // Some(same) => decide() => Pass => tap KEEPS the original, flags intact
+    } else {
+        None     // command mode: drop, the async model handles it
+    }
+}
+```
+
+`passthrough` is a clone of the root's `Arc<AtomicU32>`, read on the tap thread. Keeping the original is what carries Wispr's inline `cmd` flag through; the re-emit dropped it.
+
+Exception: some keys in passthrough are still commands (typing's escape, the `cmd`-`alt`-`p` unpause). Those must NOT be kept — the tap has to drop them so the model acts. So the rule is "keep unless the current passthrough state still claims this key as a command," and how the tap knows that synchronously is the open part.
+
+## AnyKey stops matching modifiers
+
+Before (`sources.rs`):
+
+```rust
+impl EventTrigger for AnyKey {
+    type Event = KeyEvent;
+    fn is_matching(&self, _ev: &KeyEvent) -> bool {
+        true
+    }
+}
+```
+
+After:
+
+```rust
+impl EventTrigger for AnyKey {
+    type Event = KeyEvent;
+    fn is_matching(&self, ev: &KeyEvent) -> bool {
+        !ev.key.is_modifier() // modifiers are the root's business, never a layer catch-all's
+    }
+}
+```
+
+(`Key::is_modifier` is a small helper to add in `freddie_keys`.)
 
 ## Open questions
 
-- The shared-cell mechanism versus explicit increment/decrement, and whether keeping the state tree pure values is worth giving up `Drop`'s safety.
-- Which modifiers the root tracks (cmd, alt, opt, ctrl, shift) and which of them passthrough actually cares about.
-- How the root matches on the active layer for per-layer modifier behavior under one-handler-per-event, and whether this is the case that finally forces the `no-clobber.md` decision (letting the root always see modifiers, instead of the fall-through dance).
-- The integer width (`u8` is plenty for two sources; it does not matter much).
+- `Arc<AtomicU32>` in the state tree versus explicit increment/decrement in the transition methods without `Drop` (keeps the tree pure values, loses "can't forget").
+- The command-key exception in the tap: how it knows synchronously which keys the current passthrough state still owns.
+- Held modifiers at the root under one-handler-per-event, and whether this forces the `no-clobber.md` decision; the `cmd`-`alt`-`p` unpause and typing's escape also move to the root.
+- `u8` versus `u32` for the count (two sources today; it does not matter).
