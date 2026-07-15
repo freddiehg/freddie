@@ -9,6 +9,8 @@
 
 mod common;
 
+use std::fmt::Write as _;
+
 use bind::{Bind, Node, accumulate, dispatch};
 use common::{KeyEvent, Keyboard, MercuryEvent, MercuryStruct, kb};
 use laserbeam::PathMut;
@@ -89,11 +91,7 @@ fn on_r(ev: &KeyEvent, mut node: AppNode) -> usize {
 fn on_g(ev: &KeyEvent, mut node: TabNode) -> usize {
     let thread = node.data.thread;
     let tab = node.parent.data.tab.clone();
-    node.parent
-        .parent
-        .get_mut()
-        .log
-        .push_str(&format!("{tab}{thread}"));
+    let _ = write!(node.parent.parent.get_mut().log, "{tab}{thread}");
     ev.key.len()
 }
 
@@ -102,7 +100,7 @@ fn on_esc(ev: &KeyEvent, mut node: Node<ShellPath, ()>) -> usize {
     ev.key.len()
 }
 
-fn key(k: &'static str) -> MercuryEvent {
+const fn key(k: &'static str) -> MercuryEvent {
     MercuryEvent::Keyboard(KeyEvent { key: k })
 }
 

@@ -37,3 +37,7 @@ cargo_common_metadata = "allow"
 # The root cursor is a `&mut Root`, so a projection over it is `&mut &mut Root`.
 # That double reference is intrinsic to the first level and appears in generated code.
 mut_mut = "allow"
+# The codebase uses `pub(crate)` deliberately to mark crate-internal items, including inside
+# private modules where `pub` would be equivalent. That intent is worth keeping over the lint's
+# preference for the shorter `pub`.
+redundant_pub_crate = "allow"

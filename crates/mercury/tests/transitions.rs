@@ -5,8 +5,8 @@
 
 use bind::SimpleRunner;
 use mercury::{
-    App, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryStruct, Placement, PressType,
-    foreground, key,
+    App, AppLayer, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryStruct, Placement,
+    PressType, foreground, key,
 };
 
 const fn emit(key: Key, press: PressType) -> MercuryEffect {
@@ -532,7 +532,7 @@ fn reported_bundle_ids_map() {
 fn the_inapp_layers_bindings_follow_the_root_with_no_resync() {
     let mut m = Mercury {
         foregrounded: App::Chrome,
-        layer: Layer::InApp(Default::default()),
+        layer: Layer::InApp(AppLayer::default()),
         ..Default::default()
     };
     // Chrome binds `r`.

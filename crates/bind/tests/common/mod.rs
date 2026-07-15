@@ -81,8 +81,9 @@ impl Bindings for MercuryStruct {
 }
 
 // Handlers. Each takes its node's path and returns the fired key's length.
-pub fn on_esc(ev: &KeyEvent, node: Node<&mut App, ()>) -> usize {
-    node.parent.hits += 1;
+pub const fn on_esc(ev: &KeyEvent, node: Node<&mut App, ()>) -> usize {
+    let app = node.parent;
+    app.hits += 1;
     ev.key.len()
 }
 pub fn on_f1(ev: &KeyEvent, _node: Node<LayerPath, ()>) -> usize {

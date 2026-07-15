@@ -176,7 +176,7 @@ impl<Parent, Data> HasParent for Node<Parent, Data> {
 impl<N, P> HasParent for ::laserbeam::PathMut<N, P> {
     type Parent = P;
     fn into_parent(self) -> P {
-        ::laserbeam::PathMut::into_parent(self)
+        Self::into_parent(self)
     }
 }
 

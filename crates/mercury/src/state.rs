@@ -8,6 +8,10 @@ use bind::{Bind, Node};
 use freddie_keys::{Key, KeyEvent, PressType};
 use laserbeam::PathMut;
 
+// The derive generates a call to each named handler at its node's definition site below, so
+// every handler has to be in scope here. A glob keeps this in step with the handler set instead
+// of a name-by-name list that drifts.
+#[allow(clippy::wildcard_imports)]
 use crate::handlers::*;
 use crate::{AnyKey, App, Foregrounded, ForegroundEvent, MercuryEffect, MercuryEvent, MercuryStruct};
 
@@ -120,7 +124,7 @@ pub enum AppData {
 ///
 /// A shared reference, so it cannot mutate: it derives, it does not act. `Zed` and `Other`
 /// bind nothing, so they get no level and no struct.
-fn app_data(path: &AppLayerPath) -> Option<AppData> {
+const fn app_data(path: &AppLayerPath) -> Option<AppData> {
     let root = path.parent().parent();
     // A navigation is in flight: the foreground event has not landed, so
     // `foregrounded` is still the previous app. Bind nothing until the watcher

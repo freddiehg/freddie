@@ -50,7 +50,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let place = place_impl(input, name)?;
     let accumulate = accumulate_impl(input, name, &marker, &binds)?;
     let dispatch = dispatch_impl(input, name, &marker, &binds)?;
-    let descend = descend_impl(input, name, &marker)?;
+    let descend = descend_impl(input, name, &marker);
     Ok(quote! {
         #place
         #accumulate
@@ -138,6 +138,76 @@ fn derived_child_fn(attrs: &[syn::Attribute]) -> syn::Result<Option<Path>> {
     Ok(found)
 }
 
+/// The enum case of [`derived_node_impl`]: one dispatch/accumulate arm per variant, each
+/// rebuilding the node with the variant's `Data` and the shared parent.
+fn derived_enum_node_impl(
+    input: &DeriveInput,
+    name: &Ident,
+    parent: &Path,
+    marker: &Path,
+    binds: &[Binding],
+    e: &syn::DataEnum,
+) -> syn::Result<TokenStream2> {
+    if !binds.is_empty() {
+        return Err(syn::Error::new(
+            input.span(),
+            "an enum of derived levels binds nothing itself; put the binds on its variants",
+        ));
+    }
+    let mut dispatch_arms = Vec::new();
+    let mut acc_arms = Vec::new();
+    for v in &e.variants {
+        let vi = &v.ident;
+        single_field_ty(&v.fields)?; // one Data per variant
+        dispatch_arms.push(quote! {
+            #name::#vi(data) => ::bind::Descend::<#marker>::dispatch(
+                ::bind::Node { parent, data },
+                event,
+            ),
+        });
+        acc_arms.push(quote! {
+            #name::#vi(data) => ::bind::DerivedHandler::<#marker>::accumulate(
+                ::bind::Node { parent, data },
+                out,
+            ),
+        });
+    }
+    Ok(quote! {
+        #[automatically_derived]
+        impl<'a> ::bind::Descend<#marker> for ::bind::Node<#parent<'a>, #name> {
+            fn dispatch(
+                self,
+                event: &<#marker as ::bind::Bindings>::Event,
+            ) -> ::core::ops::ControlFlow<
+                <#marker as ::bind::Bindings>::Output,
+                <Self as ::bind::HasParent>::Parent,
+            > {
+                let ::bind::Node { parent, data } = self;
+                match data { #(#dispatch_arms)* }
+            }
+        }
+
+        ::bind::check_only! {
+        #[automatically_derived]
+        #[allow(clippy::implicit_hasher)]
+        impl<'a> ::bind::DerivedHandler<#marker> for ::bind::Node<#parent<'a>, #name> {
+            fn accumulate(
+                self,
+                out: &mut ::std::collections::HashSet<
+                    <#marker as ::bind::Bindings>::Trigger,
+                >,
+            ) -> ::core::result::Result<
+                <Self as ::bind::HasParent>::Parent,
+                ::bind::BindError,
+            > {
+                let ::bind::Node { parent, data } = self;
+                match data { #(#acc_arms)* }
+            }
+        }
+        }
+    })
+}
+
 /// Emits `Descend` (and the check's half) for a DERIVED level: its own child, then its own
 /// binds, then hand the parent back.
 ///
@@ -154,64 +224,7 @@ fn derived_node_impl(
     // destructures per variant and rebuilds the node, so each variant's handler gets its own
     // `Data` and the parent is shared by construction.
     if let Data::Enum(e) = &input.data {
-        if !binds.is_empty() {
-            return Err(syn::Error::new(
-                input.span(),
-                "an enum of derived levels binds nothing itself; put the binds on its variants",
-            ));
-        }
-        let mut dispatch_arms = Vec::new();
-        let mut acc_arms = Vec::new();
-        for v in &e.variants {
-            let vi = &v.ident;
-            single_field_ty(&v.fields)?; // one Data per variant
-            dispatch_arms.push(quote! {
-                #name::#vi(data) => ::bind::Descend::<#marker>::dispatch(
-                    ::bind::Node { parent, data },
-                    event,
-                ),
-            });
-            acc_arms.push(quote! {
-                #name::#vi(data) => ::bind::DerivedHandler::<#marker>::accumulate(
-                    ::bind::Node { parent, data },
-                    out,
-                ),
-            });
-        }
-        return Ok(quote! {
-            #[automatically_derived]
-            impl<'a> ::bind::Descend<#marker> for ::bind::Node<#parent<'a>, #name> {
-                fn dispatch(
-                    self,
-                    event: &<#marker as ::bind::Bindings>::Event,
-                ) -> ::core::ops::ControlFlow<
-                    <#marker as ::bind::Bindings>::Output,
-                    <Self as ::bind::HasParent>::Parent,
-                > {
-                    let ::bind::Node { parent, data } = self;
-                    match data { #(#dispatch_arms)* }
-                }
-            }
-
-            ::bind::check_only! {
-            #[automatically_derived]
-            #[allow(clippy::implicit_hasher)]
-            impl<'a> ::bind::DerivedHandler<#marker> for ::bind::Node<#parent<'a>, #name> {
-                fn accumulate(
-                    self,
-                    out: &mut ::std::collections::HashSet<
-                        <#marker as ::bind::Bindings>::Trigger,
-                    >,
-                ) -> ::core::result::Result<
-                    <Self as ::bind::HasParent>::Parent,
-                    ::bind::BindError,
-                > {
-                    let ::bind::Node { parent, data } = self;
-                    match data { #(#acc_arms)* }
-                }
-            }
-            }
-        });
+        return derived_enum_node_impl(input, name, parent, marker, binds, e);
     }
 
     let descend = derived_dispatch_descent(input, marker)?;
@@ -308,17 +321,13 @@ fn derived_child_accumulate(f: &Path, marker: &Path, place: &TokenStream2) -> To
 }
 
 fn derived_dispatch_descent(input: &DeriveInput, marker: &Path) -> syn::Result<TokenStream2> {
-    Ok(match derived_child_fn(&input.attrs)? {
-        Some(f) => derived_child_descent(&f, marker, &quote!(node)),
-        None => quote!(),
-    })
+    Ok(derived_child_fn(&input.attrs)?
+        .map_or_else(|| quote!(), |f| derived_child_descent(&f, marker, &quote!(node))))
 }
 
 fn derived_accumulate_descent(input: &DeriveInput, marker: &Path) -> syn::Result<TokenStream2> {
-    Ok(match derived_child_fn(&input.attrs)? {
-        Some(f) => derived_child_accumulate(&f, marker, &quote!(node)),
-        None => quote!(),
-    })
+    Ok(derived_child_fn(&input.attrs)?
+        .map_or_else(|| quote!(), |f| derived_child_accumulate(&f, marker, &quote!(node))))
 }
 
 /// Emits `impl Descend<M>` for a PLACE: delegate to its own `Dispatch`, then hand the parent
@@ -329,11 +338,11 @@ fn derived_accumulate_descent(input: &DeriveInput, marker: &Path) -> syn::Result
 /// so `Self: 'a` holds.
 ///
 /// The root has no parent to hand back, so it gets none.
-fn descend_impl(input: &DeriveInput, name: &Ident, marker: &Path) -> syn::Result<TokenStream2> {
+fn descend_impl(input: &DeriveInput, name: &Ident, marker: &Path) -> TokenStream2 {
     if is_root(&input.attrs) {
-        return Ok(quote!());
+        return quote!();
     }
-    Ok(quote! {
+    quote! {
         #[automatically_derived]
         impl<'a> ::bind::Descend<#marker> for <#name as ::bind::Place>::Path<'a>
         where
@@ -358,7 +367,7 @@ fn descend_impl(input: &DeriveInput, name: &Ident, marker: &Path) -> syn::Result
                 }
             }
         }
-    })
+    }
 }
 
 /// Emits `impl EventHandler<M>`: insert this node's triggers, then recurse.
