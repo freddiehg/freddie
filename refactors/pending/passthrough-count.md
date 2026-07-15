@@ -211,7 +211,6 @@ A `u128` bitset over every key, one bit each, is the eventual tighter form (set/
 
 ## Open questions
 
-- The command-key exception in the tap: how it knows synchronously which keys the current passthrough state still owns (typing's escape, the `cmd`-`alt`-`p` unpause), so it drops those rather than keeping them.
-- The release-on-leave borrow: a transition needs `&mut root` (to decrement) and the old layer (to pull the guard out) at once. Working that out against the path types is the fiddly part.
-- Where `held` lives (root vs the layer that needs it) under one-handler-per-event, and whether that forces the `no-clobber.md` decision.
+- The command-key exception in the tap: how it decides keep-vs-drop for keys that are commands even in passthrough (typing's escape, the `cmd`-`alt`-`p` unpause). The `is_active()`-only tap above keeps too much: `cmd` down is kept while paused, then the unpause `p` drops, so the `cmd` up (now in home) is dropped and the modifier is left stuck -- the same stuck-modifier shape as before. The tap needs the dispatch result, not just `is_active()`, to know a key was consumed as a command. Still open.
+- Where `held` lives (root vs the layer that needs it) under one-handler-per-event, and whether that forces the `no-clobber.md` decision. Still open.
 - Deferred follow-ups: the `NonModifierKey` trigger, the `u128` held-keys bitset, and reconciling the emitter's own modifier-flag reconstruction (`self.flags` / `next_flags`) with `held` so modifier state has a single home rather than one tracker in the model and another in the emitter.
