@@ -399,8 +399,10 @@ name = "freddie_windows"
 version = "0.0.1"
 dependencies = [
  "accessibility-sys",
+ "block2",
  "core-foundation",
  "core-graphics",
+ "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "tracing",

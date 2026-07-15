@@ -1,5 +1,15 @@
 # menu bar v0: implementation
 
+Built and verified working (icon shows, Quit exits cleanly). The plan below is as written; a few details diverged in the build, recorded here.
+
+As built, deltas from the plan:
+- tray-icon is 0.24, not 0.19; the API (`TrayIconBuilder`, `tray_icon::menu::{Menu, MenuItem, MenuEvent}`) matched.
+- The icon is the bundled mercury glyph (`assets/mercury.png`) as a template image, not a text title: `freddie_menu_bar` pulls in `image` (png only), decodes the PNG, trims it to the glyph's alpha bounds, scales it, and sets it with `with_icon_as_template(true)` so macOS recolors the alpha mask for the light or dark bar. The tooltip is "Mercury".
+- In objc2-app-kit 0.3, `finishLaunching` and `sendEvent` are safe; only the `nextEventMatchingMask` dequeue stayed `unsafe`. The NSApp pump replacing the bare `CFRunLoop` is exactly as planned, and it does deliver status-item clicks.
+- The 60s dev killswitch was removed afterward (a separate change), so a run now lasts until Quit.
+
+The rest of this doc is the original step-by-step.
+
 The minimal version: a macOS status item that shows in the menu bar for the whole run, with a one-item dropdown, "Quit", that emits a quit event through the model. This is the step-by-step for it. The design and the rationale are in `menu-bar.md`; this doc is the exact diff. Follow it top to bottom. Commit after each numbered step (the repo commits atomically, per `freddie/CLAUDE.md`).
 
 Two facts drive the whole shape:

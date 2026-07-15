@@ -53,6 +53,8 @@ When the projection returns `None`, resolve lands on the root, so the root's own
 
 Enable/disable is also a natural menu-bar item, a checkbox, the same event-source shape as Quit: an `Enable`/`Disable` event bound at the root, alongside the keyboard toggle. So the switch has two sources, a chord and the menu bar, and the menu-bar one keeps working no matter what the keyboard is doing.
 
+This part is downstream of making the menu bar reflect state (the "later" half of `menu-bar.md`, the `label`/`menu` derived from the state tree). The toggle needs the menu to carry a checked item whose state follows `enabled`, and ideally the icon to show disabled at a glance. So the keyboard side of enable/disable can land on its own, but the menu-bar side rides on the state-reflecting menu-bar content, and should be sequenced after it.
+
 ## Open questions
 
 - Disabled in the model versus disabled at the tap. Passing keys through IN the model still intercepts every key (the tap runs, the model re-emits), which is what keeps a keyboard re-enable chord working. Stopping the `CGEventTap` entirely is zero-overhead true passthrough but means no key events at all, so re-enable can then only come from the menu bar. Leaning toward model-passthrough so the chord survives; revisit if the tap overhead while disabled matters.
