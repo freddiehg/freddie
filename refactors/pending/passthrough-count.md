@@ -4,7 +4,7 @@ Not built. "Pass keys through untouched" is one global fact, but it lives in per
 
 ## The count on the root
 
-A small newtype, `PassthroughCount`, over a shared `Rc<Cell<u8>>`. Single-threaded (dispatch is synchronous, the tap runs the model inline; `synchronous-dispatch.md`), so `Rc`/`Cell`, not `Arc`/atomic. It is shared rather than a plain field so the guard that raises it can also lower it from `Drop` (below): a guard `Drop` gets only `&mut self`, so it must hold the count, not reach for it.
+A small newtype, `ActivePassthroughLayer`, over a shared `Rc<Cell<u8>>`, exposed as a drop guard (`is_active()` to ask, `guard()` to raise). Single-threaded (dispatch is synchronous, the tap runs the model inline; `synchronous-dispatch.md`), so `Rc`/`Cell`, not `Arc`/atomic. It is shared rather than a plain field so the guard that raises it can also lower it from `Drop` (below): a guard `Drop` gets only `&mut self`, so it must hold the count, not reach for it.
 
 Before:
 
@@ -24,12 +24,12 @@ pub struct Mercury {
     pub foregrounded: App,
     pub has_navigated: bool,
     pub held: HeldModifiers,                 // one copy of what's held, here, not per-layer
-    pub passthrough: ModifierPassthroughFlag, // .passing() => keep keys as-is
+    pub passthrough: ActivePassthroughLayer, // .is_active() => modifiers are emitted
     #[resolve_into]
     pub power: Power,
 }
 
-/// Whether modifiers (and keys) currently pass through. `passing()` is the question everyone
+/// Whether modifiers (and keys) currently pass through. `is_active()` is the question everyone
 /// asks; `guard()` is the only way to raise it, and the returned guard lowers it on drop.
 ///
 /// Internally a count, not a bool (`u8` behind `Rc<Cell>`), because overlapping sources (typing,
@@ -44,20 +44,20 @@ pub struct Mercury {
 /// swapped wholesale, so there's nothing to borrow and `RefCell`'s runtime checks/panic buy
 /// nothing.
 #[derive(Clone, Default)]
-pub struct ModifierPassthroughFlag(Rc<Cell<u8>>);
+pub struct ActivePassthroughLayer(Rc<Cell<u8>>);
 
-impl ModifierPassthroughFlag {
+impl ActivePassthroughLayer {
     #[must_use]
-    pub fn passing(&self) -> bool {
+    pub fn is_active(&self) -> bool {
         self.0.get() > 0
     }
 
     /// Raise the flag until the returned guard drops. The only way to raise it, so every raise is
     /// balanced by a `Drop`.
     #[must_use]
-    pub fn guard(&self) -> PassthroughGuard {
+    pub fn guard(&self) -> PassthroughLayerGuard {
         self.increment();
-        PassthroughGuard(self.clone())
+        PassthroughLayerGuard(self.clone())
     }
 
     // internal, the same u8 inc/dec as ever; not the public API. `&self`: the Cell is the mutability.
@@ -74,16 +74,16 @@ impl ModifierPassthroughFlag {
 
 ```rust
 /// Holds the flag up while alive, lowers it on drop. Stored on `TypingLayer` and `Paused`.
-pub struct PassthroughGuard(ModifierPassthroughFlag); // a clone of the shared flag
+pub struct PassthroughLayerGuard(ActivePassthroughLayer); // a clone of the shared flag
 
-impl Drop for PassthroughGuard {
+impl Drop for PassthroughLayerGuard {
     fn drop(&mut self) {
         self.0.decrement();
     }
 }
 ```
 
-Ordinary `Drop`, so nothing infects: `PassthroughGuard` is droppable, therefore `TypingLayer`, `Layer`, `Power`, and `Mercury` all stay droppable, and dropping any of them just runs the decrement. No `prevent_drop` link error, no panic-on-drop, no explicit release. The guard closing over the flag is what lets `Drop` (which gets only `&mut self`) do the decrement at all.
+Ordinary `Drop`, so nothing infects: `PassthroughLayerGuard` is droppable, therefore `TypingLayer`, `Layer`, `Power`, and `Mercury` all stay droppable, and dropping any of them just runs the decrement. No `prevent_drop` link error, no panic-on-drop, no explicit release. The guard closing over the flag is what lets `Drop` (which gets only `&mut self`) do the decrement at all.
 
 ## Typing and Paused hold a guard
 
@@ -104,7 +104,7 @@ After:
 ```rust
 #[bind(Key::Escape.down() => maybe_go_home)]  // only its command stays
 pub struct TypingLayer {
-    _passthrough: PassthroughGuard,           // RAII: decrements the count when dropped
+    _passthrough: PassthroughLayerGuard,           // RAII: decrements the count when dropped
 }
 // SetOfHeldKeys and modify_held_and_pass_through are gone: modifiers are the root's,
 // passthrough is the tap's. `_passthrough` is held only for its Drop; nothing reads it.
@@ -125,7 +125,7 @@ After:
 ```rust
 pub struct Paused {
     pub layer: Layer,
-    _passthrough: PassthroughGuard,
+    _passthrough: PassthroughLayerGuard,
 }
 // no AnyKey bind (passthrough is the tap); the cmd-alt-p unpause moves to the root.
 ```
@@ -168,7 +168,7 @@ After (synchronous dispatch, so `on_key` runs the model inline and holds the roo
 ```rust
 move |ev| {
     dispatch(&mut root, &MercuryEvent::Key(ev.clone())); // commands, state, guard inc/dec
-    if root.passthrough.passing() {
+    if root.passthrough.is_active() {
         Some(ev) // Some(same) => decide() => Pass => tap KEEPS the original, flags intact
     } else {
         None     // command mode: drop
