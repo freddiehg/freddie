@@ -39,7 +39,7 @@ use std::ops::ControlFlow;
 use std::time::Duration;
 
 use freddie_keyboard::Emitter;
-use mercury::{App, Mercury, MercuryEffect, MercuryEvent, Placement, foreground};
+use mercury::{App, Mercury, MercuryEffect, MercuryEvent, Placement, foreground, quit_event};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tracing::{debug, error, info, warn};
 
@@ -65,7 +65,36 @@ fn main() {
         error!(error = %e, "window placement unavailable");
     }
 
+    // NSApp as an accessory (menu-bar) app, before the status item is created and
+    // before the loop pumps its events.
+    freddie_main_loop::init_menu_bar_app();
+
     let (main_loop, stopper) = freddie_main_loop::main_loop();
+
+    // The event channel is created here, not in `run`: the menu bar's Quit handler
+    // runs on THIS (main) thread and needs a sender, while the event loop on the
+    // worker owns the receiver.
+    let (event_tx, event_rx) = unbounded_channel::<MercuryEvent>();
+
+    // The status item, on the main thread now that NSApp exists. A Quit click
+    // enqueues the same kind of event any source does; the model turns it into
+    // `Kill`, which ends the effect loop, releases the keyboard, and drops the
+    // stopper. So Quit is the mouse-reachable way out even if the grabbed keyboard
+    // is wedged.
+    let menu_bar = freddie_menu_bar::show({
+        let event_tx = event_tx.clone();
+        move || {
+            let _ = event_tx.send(quit_event());
+        }
+    });
+    let menu_bar = match menu_bar {
+        Ok(bar) => bar,
+        Err(e) => {
+            eprintln!("menu bar: {e}");
+            error!(error = %e, "could not create the menu bar");
+            return;
+        }
+    };
 
     let worker = std::thread::Builder::new()
         .name("mercury-runtime".to_owned())
@@ -75,12 +104,13 @@ fn main() {
                 .enable_all()
                 .build()
                 .expect("a current-thread runtime with no reactor cannot fail to build");
-            runtime.block_on(run());
+            runtime.block_on(run(event_tx, event_rx));
         })
         .expect("spawning the runtime thread");
 
-    main_loop.run(); // services AppKit sources until the worker drops the stopper
+    main_loop.run(); // pumps AppKit events until the worker drops the stopper
     let _ = worker.join();
+    drop(menu_bar); // held until the loop returns, so the icon is up for the whole run
 }
 
 /// Everything mercury does, on the worker thread.
@@ -93,8 +123,7 @@ fn main() {
 /// `block_on`ed by the worker's current-thread runtime and never crosses a
 /// thread.
 #[allow(clippy::future_not_send)]
-async fn run() {
-    let (event_tx, event_rx) = unbounded_channel::<MercuryEvent>();
+async fn run(event_tx: UnboundedSender<MercuryEvent>, event_rx: UnboundedReceiver<MercuryEvent>) {
     let (effect_tx, effect_rx) = unbounded_channel::<MercuryEffect>();
 
     // Grab the keyboard: swallow every key and forward it to the model, which

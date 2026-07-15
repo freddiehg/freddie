@@ -6,7 +6,7 @@
 use bind::SimpleRunner;
 use mercury::{
     App, AppLayer, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryStruct, Placement,
-    PressType, foreground, key,
+    PressType, foreground, key, quit_event,
 };
 
 const fn emit(key: Key, press: PressType) -> MercuryEffect {
@@ -50,6 +50,30 @@ fn home_t_enters_typing() {
 fn home_q_quits() {
     let mut m = Mercury::default();
     assert_eq!(m.handle(&key(Key::KeyQ)), Some(vec![MercuryEffect::Kill]));
+}
+
+#[test]
+fn quit_event_kills_from_home() {
+    let mut m = Mercury::default();
+    assert_eq!(m.handle(&quit_event()), Some(vec![MercuryEffect::Kill]));
+    // No layer change: quit is an effect, not a transition.
+    assert!(matches!(m.layer, Layer::Home(_)));
+}
+
+#[test]
+fn quit_event_kills_from_every_layer() {
+    // The menu-bar Quit is a recovery path: it must kill from any layer, not just
+    // home. One case per layer. Typing matters most: its `AnyKey` catch-all must not
+    // swallow the quit event (a different event type), so quit still reaches the root.
+    for enter in [Key::KeyN, Key::KeyT, Key::KeyR, Key::KeyI] {
+        let mut m = Mercury::default();
+        let _ = m.handle(&key(enter));
+        assert_eq!(
+            m.handle(&quit_event()),
+            Some(vec![MercuryEffect::Kill]),
+            "quit from the layer entered by {enter:?}",
+        );
+    }
 }
 
 #[test]

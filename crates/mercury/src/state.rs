@@ -13,12 +13,18 @@ use laserbeam::PathMut;
 // of a name-by-name list that drifts.
 #[allow(clippy::wildcard_imports)]
 use crate::handlers::*;
-use crate::{AnyKey, App, Foregrounded, ForegroundEvent, MercuryEffect, MercuryEvent, MercuryStruct};
+use crate::{
+    AnyKey, App, Foregrounded, ForegroundEvent, MercuryEffect, MercuryEvent, MercuryStruct, Quit,
+    QuitEvent,
+};
 
 #[derive(Bind, Debug)]
 #[node(root)]
 #[binds(MercuryStruct)]
-#[bind(Foregrounded => on_foregrounded)]
+#[bind(
+    Foregrounded => on_foregrounded,
+    Quit => on_quit,
+)]
 pub struct Mercury {
     pub foregrounded: App,
     /// Set when a nav choice foregrounds an app, cleared when the watcher reports the
@@ -212,4 +218,10 @@ pub const fn key(key: Key) -> MercuryEvent {
 #[must_use]
 pub const fn foreground(app: App) -> MercuryEvent {
     MercuryEvent::Foreground(ForegroundEvent { app })
+}
+
+/// A quit-request event (the menu bar's Quit).
+#[must_use]
+pub const fn quit_event() -> MercuryEvent {
+    MercuryEvent::Quit(QuitEvent)
 }

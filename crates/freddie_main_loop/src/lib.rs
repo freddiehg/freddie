@@ -5,6 +5,13 @@
 //! observe `NSWorkspace`, own an `NSStatusItem`, or touch `AppKit` at all must
 //! park its main thread in [`MainLoop::run`] and do its real work elsewhere.
 //!
+//! [`MainLoop::run`] pumps `NSApplication` events (`nextEventMatchingMask` then
+//! `sendEvent`), rather than a bare `CFRunLoop`. A bare `CFRunLoop` services
+//! run-loop sources, which is enough for `NSWorkspace` notifications, but it never
+//! dispatches the window-server `NSEvent`s that a status item's clicks and menu
+//! tracking need. Pumping `NSApp` delivers both. Call [`init_menu_bar_app`] once,
+//! on the main thread, before creating a status item.
+//!
 //! ```no_run
 //! let (main_loop, stopper) = freddie_main_loop::main_loop();
 //!
@@ -28,7 +35,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use core_foundation::base::TCFType;
-use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
+use core_foundation::runloop::CFRunLoop;
+use objc2::MainThreadMarker;
+use objc2::rc::autoreleasepool;
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSEventMask};
+use objc2_foundation::{NSDate, NSDefaultRunLoopMode};
 
 /// How long the main thread stays inside the run loop before surfacing to check
 /// whether it has been stopped.
@@ -39,6 +50,28 @@ use core_foundation::runloop::{CFRunLoop, kCFRunLoopDefaultMode};
 /// against a loop that has not started yet is a no-op, so a worker that fails
 /// before [`MainLoop::run`] is reached would otherwise leave main asleep forever.
 const SLICE: Duration = Duration::from_millis(100);
+
+/// Initializes `NSApplication` as an accessory (menu-bar) app. Call once, on the
+/// main thread, before creating any status item.
+///
+/// Accessory policy keeps the process out of the Dock and the cmd-tab switcher,
+/// which is what a menu-bar-only app wants. `finishLaunching` posts the launch
+/// notifications `AppKit` expects before it delivers events; `[NSApp run]` would do
+/// this, but [`MainLoop::run`] pumps the loop itself, so it is done here.
+///
+/// Separate from [`main_loop`] on purpose: the tests run off the main thread and
+/// call `main_loop` to exercise the stop machinery; they must not touch `NSApp`.
+///
+/// # Panics
+///
+/// Panics if called off the main thread.
+pub fn init_menu_bar_app() {
+    let mtm =
+        MainThreadMarker::new().expect("init_menu_bar_app must be called on the main thread");
+    let app = NSApplication::sharedApplication(mtm);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    app.finishLaunching();
+}
 
 /// Creates the main loop and the handle that stops it.
 ///
@@ -79,12 +112,31 @@ impl MainLoop {
             is_main_thread(),
             "MainLoop::run must be called on the main thread: AppKit delivers only there"
         );
+        let mtm = MainThreadMarker::new().expect("run is on the main thread; asserted above");
+        let app = NSApplication::sharedApplication(mtm);
         while !self.stop.load(Ordering::Acquire) {
-            // SAFETY: `kCFRunLoopDefaultMode` is an immutable extern static
-            // `CFStringRef` that CoreFoundation initializes before `main`.
-            #[allow(unsafe_code)]
-            let mode = unsafe { kCFRunLoopDefaultMode };
-            CFRunLoop::run_in_mode(mode, SLICE, false);
+            autoreleasepool(|_| {
+                // One event per slice, dequeued and dispatched. This is the pump a bare
+                // CFRunLoop was missing: `nextEventMatchingMask` pulls a window-server
+                // event and `sendEvent` delivers it, so a status-item click reaches the
+                // menu. The SLICE deadline bounds how long a stopped loop takes to notice;
+                // the `Stopper` also breaks the run loop, and the deadline is the floor.
+                #[allow(unsafe_code)]
+                // SAFETY: on the main thread; dequeuing one event with a 100ms deadline.
+                let event = unsafe {
+                    let deadline = NSDate::dateWithTimeIntervalSinceNow(SLICE.as_secs_f64());
+                    app.nextEventMatchingMask_untilDate_inMode_dequeue(
+                        NSEventMask::Any,
+                        Some(&deadline),
+                        NSDefaultRunLoopMode,
+                        true,
+                    )
+                };
+                if let Some(event) = event {
+                    // dispatching the event we just dequeued, on the main thread.
+                    app.sendEvent(&event);
+                }
+            });
         }
     }
 }

@@ -1,0 +1,14 @@
+[package]
+name = "freddie_menu_bar"
+description = "A macOS menu-bar status item with a Quit menu, for freddie."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tray-icon = "0.24"
+tracing = "0.1"
+
+[lints]
+workspace = true

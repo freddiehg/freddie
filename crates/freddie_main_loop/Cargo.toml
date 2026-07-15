@@ -8,6 +8,9 @@ repository.workspace = true
 
 [dependencies]
 core-foundation = { version = "0.10", features = ["link"] }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSResponder", "NSEvent", "NSRunningApplication"] }
+objc2-foundation = { version = "0.3", features = ["NSDate", "NSRunLoop"] }
 
 # Not `workspace = true`: the workspace forbids `unsafe_code`, and `forbid` cannot
 # be relaxed from inside the crate. Reading `kCFRunLoopDefaultMode`, an extern
