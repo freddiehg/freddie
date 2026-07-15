@@ -4,6 +4,15 @@ Show the current state in the macOS menu bar: which layer Mercury is in, which a
 
 Two stages. Stage 1 is the title: a string that tracks state. Stage 2 is a dropdown: clicking the item opens a menu whose entries execute things in process (dispatch an event, run an effect). The architecture below is shaped so stage 2 is additive, not a rewrite. The one commitment that buys that: the model's render output is a structured value and the crate is a source as well as a sink, from the start, even while stage 1 only uses the title.
 
+## Minimal cut: a present icon and a Quit item
+
+The smallest useful version, and a strict subset of the above: an icon that exists in the menu bar for as long as mercury runs, with a one-item dropdown that quits. No state label, no `menu()` vocabulary, nothing per-layer.
+
+- Create one `NSStatusItem` on the main thread with a fixed title or a template image (an SF Symbol or a short glyph). It stays alive as long as mercury holds it, which is the whole run, so the icon marks that the keyboard grab is active.
+- Set an `NSMenu` on it with a single `NSMenuItem`, "Quit", whose action feeds the existing quit path: enqueue the event that a handler turns into `MercuryEffect::Kill`, the same effect `escape` then `q` produces today. AppKit fires the action on the main thread, so the action just sends into `event_tx` like any other source (see "A click is just another event source").
+
+That is one `NSStatusItem`, a fixed title, a one-row `NSMenu`, and one target/action. It is stage 2 with a hardcoded menu instead of a state-derived one, so the `Menu`/`MenuItem`/`Command` types below are not needed until the menu should reflect state. The value beyond aesthetics: a running mercury has grabbed the keyboard, and a visible icon plus a mouse-reachable Quit is a recovery path that does not depend on the keyboard working.
+
 ## The label comes from state
 
 `Mercury` grows one method:
@@ -79,11 +88,11 @@ The click callback needs a target object that implements the action selector and
 
 `tray-icon` (Tauri's crate) wraps `NSStatusItem` cross-platform and gives both `set_title` and a menu with click events already wired, which removes exactly the target-action objc2 code above. That is the strongest argument for `tray-icon` over raw objc2 once we want a dropdown; weigh it then. Default to raw objc2 for stage 1; reconsider `tray-icon` at stage 2 if the target-action wiring is more than we want to own.
 
-## The one real cost: the main-thread run loop
+## The main-thread run loop: already paid
 
-`NSStatusItem` is an AppKit UI object, so it must be created and mutated on the main thread, and keeping it live means the process runs an AppKit run loop (`NSApplication::run`) on the main thread. That is the whole cost of going native, and it is a one-time structural change, not per-update overhead.
+`NSStatusItem` is an AppKit UI object, so it must be created and mutated on the main thread, and keeping it live means a run loop turns on the main thread. When this doc was written that was framed as the whole cost, a one-time inversion of main-thread ownership. That inversion has since happened for the app-nav watcher: `crates/mercury/src/main.rs` runs `main_loop.run()` (a `CFRunLoop` via `freddie_main_loop`) on the main thread and runs the tokio event/effect loops on a spawned thread. The keyboard tap is on its own thread with its own run loop. So main-thread ownership already belongs to a run loop, and the status item slots into it rather than forcing a restructure.
 
-mercury today runs `tokio` (`current_thread`) on the main thread and the keyboard tap on its own thread with its own `CFRunLoop`. Adding the status item inverts main-thread ownership: AppKit takes the main thread via `app.run()`, and the tokio event/effect loops move to a spawned thread. The keyboard tap is unaffected; it is already off-main on its own run loop.
+The one thing left to confirm, and it is the real open question now: mercury runs `CFRunLoop::run_in_mode`, not `NSApplication::run`. `NSWorkspace` notifications (the app-nav watcher) are delivered fine under a bare `CFRunLoop`, but an `NSStatusItem`'s button and `NSMenu` tracking dispatch `NSEvent`s, which are normally pumped by `NSApplication`'s event loop. Whether the current `CFRunLoop` loop pumps status-item clicks and menu tracking, or whether the item needs `NSApplication` initialized (`NSApp`, an accessory activation policy so no Dock icon, possibly `app.run()` instead of `run_in_mode`) is the thing to verify before writing the FFI. It may be free; it may require swapping the main loop from `CFRunLoop::run_in_mode` to `NSApplication::run`, which `freddie_main_loop` would then own.
 
 The crate hides the main-thread affinity. `MenuBar::new` is created on the main thread (objc2's `MainThreadMarker` enforces this at the type level, which is the reason to prefer objc2 over hand-rolled FFI). `render`, called from the tokio thread after a dispatch, marshals the update to the main queue (`dispatch2`'s main-queue async, or a channel the run loop drains). So the event loop calls `bar.render(&state.menu())` from wherever it runs and the crate gets it onto the main thread.
 
