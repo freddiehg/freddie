@@ -366,6 +366,7 @@ dependencies = [
  "core-foundation",
  "core-graphics",
  "freddie_keys",
+ "tracing",
 ]
 
 [[package]]
