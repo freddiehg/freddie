@@ -44,7 +44,7 @@ pub fn show(
         // menu bar's own color (white on a dark bar, black on a light one), so the
         // black glyph shows correctly on either without inverting it.
         .with_icon_as_template(true)
-        .with_tooltip("mercury")
+        .with_tooltip("Mercury")
         .build()?;
 
     // muda delivers menu events through one global handler. It fires on the main
