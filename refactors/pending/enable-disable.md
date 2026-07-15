@@ -6,6 +6,8 @@ Disabling must NOT lose where you were. If you are three keys into a nav and you
 
 ## The design: an enable/disable enum that carries the layer in both arms
 
+This is the workaround that ships now. The real fix is `custom-resolve-into.md` (an `enabled: bool` and a `resolve_into` that declines to descend when disabled); the enum below trades that cleaner shape for needing no laserbeam change, and can be deleted for the real fix later.
+
 Wrap the layer in a two-variant enum, and give BOTH variants the layer state. It is a bit weird, but it unblocks the feature with no laserbeam change:
 
 ```rust
