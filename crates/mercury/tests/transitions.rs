@@ -250,7 +250,7 @@ fn n_c_then_foreground_then_r_refreshes_chrome() {
     assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
 }
 
-// While a nav is pending, the in-app level is empty: `foregrounded` is still the old
+// While a nav is pending, the in-app level is empty: `foreground.app()` is still the old
 // app, so its bindings must not apply in the gap. A key pressed before the foreground
 // event lands is unbound; once the event lands, the chosen app's bindings apply.
 #[test]
@@ -259,11 +259,11 @@ fn a_pending_nav_binds_nothing_until_the_foreground_event() {
     // Ghostty is frontmost, an app that has in-app bindings.
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyN)); // home -> nav
-    let _ = m.handle(&key(Key::KeyC)); // navigate to Chrome; foregrounded still Ghostty
+    let _ = m.handle(&key(Key::KeyC)); // navigate to Chrome; the front app is still Ghostty
     assert!(matches!(m.layer(), Layer::InApp(_)));
     assert!(m.foreground.navigating());
     assert_eq!(m.foreground.app(), App::Ghostty);
-    // Ghostty's `j` does not apply, even though Ghostty is still `foregrounded`.
+    // Ghostty's `j` does not apply, even though Ghostty is still the (stale) front app.
     assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
     // Chrome's `r` does not apply yet either: nothing binds while the nav is pending.
     assert_eq!(m.handle(&key(Key::KeyR)), Some(vec![]));
@@ -647,7 +647,7 @@ fn reported_bundle_ids_map() {
     assert_eq!(App::from_bundle_id("Google Chrome"), App::Other);
 }
 
-// The in-app layer holds no app. Its bindings come from `root.foregrounded`, read on every
+// The in-app layer holds no app. Its bindings come from `root.foreground`, read on every
 // dispatch, so changing the root changes what binds WITHOUT anything re-entering the layer
 // and without any resync. There is no copy to go stale.
 #[test]
