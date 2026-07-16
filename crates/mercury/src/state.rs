@@ -284,10 +284,11 @@ pub struct HeldModifiers {
 }
 
 impl std::fmt::Debug for HeldModifiers {
-    /// Only the held modifiers, each with its side(s): `HeldModifiers { Meta(L,R), Alt(L) }`.
+    /// Only the held modifiers, each with its side(s): `HeldModifiers { Meta(L,R), Alt(L) }`, or
+    /// `HeldModifiers {}` when nothing is held.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "HeldModifiers {{")?;
-        let mut sep = " ";
+        let mut any = false;
         for (name, pair) in [
             ("Control", self.control),
             ("Meta", self.meta),
@@ -300,10 +301,10 @@ impl std::fmt::Debug for HeldModifiers {
                 (false, true) => "(R)",
                 (false, false) => continue,
             };
-            write!(f, "{sep}{name}{sides}")?;
-            sep = ", ";
+            write!(f, "{}{name}{sides}", if any { ", " } else { " " })?;
+            any = true;
         }
-        f.write_str(" }")
+        f.write_str(if any { " }" } else { "}" })
     }
 }
 
