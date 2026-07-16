@@ -15,10 +15,10 @@ So a single physical event is offered to a chain of `is_matching` checks, leafwa
 
 A handler's outputs are its returned `Vec<MercuryEffect>` and its mutations through `node` (the `&mut` path). The event is an input it reads, not something it owns or stores.
 
-Most handlers ignore it: they bind `_ev` (`home.rs`, `nav.rs`, `resize.rs`, `app.rs` all take `_ev: &KeyEvent`). The two that read it touch only a field or two:
+Most handlers ignore it: the layer transitions and app commands bind `_ev` (`home.rs`, `nav.rs`, `resize.rs`, `app.rs`). The ones that read it are the root passthrough and typing's escape, and they touch only fields:
 
-- `modify_held_and_pass_through` (`mercury/src/handlers/typing.rs:37`) reads `ev.key` and `ev.press` to update `held.cmd`, then emits.
-- `pass_through` (`mercury/src/handlers/toggle.rs:26`) reads the event to re-emit it.
+- `on_modifier` and `maybe_pass_through` (`mercury/src/handlers/root.rs`) read `ev.key`, `ev.press`, and `ev.flags` to re-emit the key; `on_modifier` also feeds `ev` to `HeldModifiers::apply` to track the modifier.
+- `maybe_go_home` (`mercury/src/handlers/typing.rs`) reads them to re-emit a plain escape.
 
 A shared borrow is exactly the access they need. The unified event is even extracted as a reference: the trigger does `TryFrom<&Event> for &SourceEvent` (the type match described at `bind/src/lib.rs:183`), so the borrow flows through the type match as a `&`.
 
@@ -29,8 +29,8 @@ A shared borrow is exactly the access they need. The unified event is even extra
 
 What ownership would buy, and why it is not taken:
 
-- The only saving is a clone. `KeyEvent` is `Clone` but not `Copy` (`freddie_keys/src/lib.rs:132`, deriving `Clone, PartialEq, Eq, Debug`). `modify_held_and_pass_through` builds `MercuryEffect::Emit(ev.clone())` and `pass_through` does the same; an owned event would let those two `Emit(ev)` without the clone.
-- It is not worth it. `KeyEvent` is a `Key` plus a `PressType`, two small enums, so the clone is a few bytes in exactly the two emit handlers. Every other handler ignores the event, and a shared ref they drop for free is a lighter contract than owning-and-dropping.
-- Moving the source event out would also mean owning and destructuring the unified event enum instead of the current `&`-conversion (`TryFrom<&Event> for &SourceEvent`), more dispatch machinery for a clone that costs nothing.
+- There is not even a clone to save. `KeyEvent` is `Clone` (a `Key`, a `PressType`, and `ModifierFlags`, all `Copy`, though the struct is not `#[derive(Copy)]`), and no handler clones it: the passthrough handlers read `ev.key`/`ev.press`/`ev.flags` and build a fresh event through the `emit` helper. An owned event would let a straight passthrough do `Emit(ev)` (a move) instead of reconstructing, which copies the same few bytes either way.
+- It is not worth it. Every other handler ignores the event, and a shared ref they drop for free is a lighter contract than owning-and-dropping.
+- Moving the source event out would also mean owning and destructuring the unified event enum instead of the current `&`-conversion (`TryFrom<&Event> for &SourceEvent`), more dispatch machinery for a move that costs nothing.
 
-So the event is borrowed because dispatch offers one event to many matchers and only a borrow can be shared across that walk. Ownership is possible with a dispatch redesign that moves the event into the matched arm; it would remove one small clone in two handlers and is not worth the added complexity.
+So the event is borrowed because dispatch offers one event to many matchers and only a borrow can be shared across that walk. Ownership is possible with a dispatch redesign that moves the event into the matched arm, but with no clone to remove it buys nothing and is not worth the complexity.
