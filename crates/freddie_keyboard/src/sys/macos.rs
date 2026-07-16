@@ -235,14 +235,17 @@ pub fn intercept(
                 let input = KeyEvent {
                     key: from_code(code),
                     press,
-                    flags: ModifierFlags::empty(),
+                    // The modifiers baked onto this event by its source. A modifier delivered as
+                    // a flag rather than as its own key (an injected `cmd`-`v`, or `fn`) lives
+                    // only here, so read it or it is lost.
+                    flags: from_cg(event.get_flags()),
                 };
                 // Source PID for telling injected events (a userspace `CGEventPost`, nonzero PID)
                 // from physical HID input (PID 0). Logging only for now, to confirm the split
                 // before acting on it (see the "pass through injected events" plan).
                 let source_pid =
                     event.get_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID);
-                tracing::debug!(key = ?input.key, ?press, source_pid, "tap key");
+                tracing::debug!(key = ?input.key, ?press, flags = ?input.flags, source_pid, "tap key");
                 match decide(&input, on_key(input.clone())) {
                     Decision::Pass => CallbackResult::Keep,
                     Decision::Drop => CallbackResult::Drop,
@@ -263,7 +266,7 @@ pub fn intercept(
     let Ok(Ok(run_loop)) = ready_rx.recv() else {
         return Err(CaptureError);
     };
-    let source = CGEventSource::new(CGEventSourceStateID::Private).map_err(|()| CaptureError)?;
+    let source = CGEventSource::new(CGEventSourceStateID::Private).map_err(|_| CaptureError)?;
     let interceptor = Interceptor {
         run_loop,
         thread: Some(thread),
@@ -299,25 +302,31 @@ const MODIFIERS: CGEventFlags = CGEventFlags::from_bits_truncate(
         | CGEventFlags::CGEventFlagSecondaryFn.bits(),
 );
 
-/// The native flags for a portable [`ModifierFlags`].
+/// The portable/native flag pairs mercury maps between, both ways.
+const FLAG_PAIRS: [(ModifierFlags, CGEventFlags); 5] = [
+    (ModifierFlags::CONTROL, CGEventFlags::CGEventFlagControl),
+    (ModifierFlags::COMMAND, CGEventFlags::CGEventFlagCommand),
+    (ModifierFlags::ALT, CGEventFlags::CGEventFlagAlternate),
+    (ModifierFlags::SHIFT, CGEventFlags::CGEventFlagShift),
+    (ModifierFlags::FN, CGEventFlags::CGEventFlagSecondaryFn),
+];
+
+/// The native flags for a portable [`ModifierFlags`], for an emitted event.
 fn to_cg(flags: ModifierFlags) -> CGEventFlags {
     let mut out = CGEventFlags::empty();
-    out.set(
-        CGEventFlags::CGEventFlagControl,
-        flags.contains(ModifierFlags::CONTROL),
-    );
-    out.set(
-        CGEventFlags::CGEventFlagCommand,
-        flags.contains(ModifierFlags::COMMAND),
-    );
-    out.set(
-        CGEventFlags::CGEventFlagAlternate,
-        flags.contains(ModifierFlags::ALT),
-    );
-    out.set(
-        CGEventFlags::CGEventFlagShift,
-        flags.contains(ModifierFlags::SHIFT),
-    );
+    for (portable, native) in FLAG_PAIRS {
+        out.set(native, flags.contains(portable));
+    }
+    out
+}
+
+/// The portable flags an incoming event carries, so a passed-through key keeps a modifier that
+/// was baked onto it (an injected `cmd`-`v`, or `fn`) rather than delivered as its own key.
+fn from_cg(flags: CGEventFlags) -> ModifierFlags {
+    let mut out = ModifierFlags::empty();
+    for (portable, native) in FLAG_PAIRS {
+        out.set(portable, flags.contains(native));
+    }
     out
 }
 
@@ -335,7 +344,7 @@ impl EmitterState {
     fn post(&self, key: Key, down: bool, flags: ModifierFlags) -> Result<(), EmitError> {
         let code = to_code(key).ok_or(EmitError::Unmappable(key))?;
         let event = CGEvent::new_keyboard_event(self.source.clone(), code, down)
-            .map_err(|()| EmitError::Post)?;
+            .map_err(|_| EmitError::Post)?;
         let untouched = event.get_flags() & !MODIFIERS;
         event.set_flags(untouched | to_cg(flags));
         event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, self.tag);

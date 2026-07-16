@@ -14,7 +14,7 @@ pub(crate) fn on_modifier(ev: &KeyEvent, node: Node<&mut Mercury, ()>) -> Vec<Me
     let root = node.parent;
     root.held.apply(ev);
     if root.layer().is_passthrough() {
-        vec![emit(ev.key, ev.press, root.held.flags())]
+        vec![emit(ev.key, ev.press, root.held.flags().union(ev.flags))]
     } else {
         Vec::new()
     }
@@ -22,13 +22,16 @@ pub(crate) fn on_modifier(ev: &KeyEvent, node: Node<&mut Mercury, ()>) -> Vec<Me
 
 /// Any non-modifier key the active layer did not bind. Pass it through while a passthrough layer
 /// is active; swallow it otherwise.
+///
+/// The emitted flags are the tracked held modifiers UNION the modifiers baked onto this event, so
+/// a modifier that never arrived as its own key (an injected `cmd`-`v`, or `fn`) still rides along.
 pub(crate) fn maybe_pass_through(
     ev: &KeyEvent,
     node: Node<&mut Mercury, ()>,
 ) -> Vec<MercuryEffect> {
     let root = node.parent;
     if root.layer().is_passthrough() {
-        vec![emit(ev.key, ev.press, root.held.flags())]
+        vec![emit(ev.key, ev.press, root.held.flags().union(ev.flags))]
     } else {
         Vec::new()
     }

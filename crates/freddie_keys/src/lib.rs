@@ -155,11 +155,20 @@ impl ModifierFlags {
     pub const COMMAND: Self = Self(1 << 1);
     pub const ALT: Self = Self(1 << 2);
     pub const SHIFT: Self = Self(1 << 3);
+    /// The `fn` (Globe) modifier. Not a key mercury tracks (it arrives only as a flag on other
+    /// events), so it rides through solely on this bit.
+    pub const FN: Self = Self(1 << 4);
 
     /// No modifiers.
     #[must_use]
     pub const fn empty() -> Self {
         Self(0)
+    }
+
+    /// The union of two flag sets.
+    #[must_use]
+    pub const fn union(self, other: Self) -> Self {
+        Self(self.0 | other.0)
     }
 
     /// The raw bits, for a backend mapping them to native flags.

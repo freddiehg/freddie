@@ -5,8 +5,8 @@
 
 use bind::SimpleRunner;
 use mercury::{
-    App, AppLayer, Key, KeyEvent, Layer, Mercury, MercuryEffect, ModifierFlags, MercuryStruct,
-    Placement, PressType, foreground, key, quit_event,
+    App, AppLayer, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryEvent, ModifierFlags,
+    MercuryStruct, Placement, PressType, foreground, key, quit_event,
 };
 
 const fn emit(key: Key, press: PressType) -> MercuryEffect {
@@ -118,6 +118,27 @@ fn typing_passes_any_key_through() {
     assert_eq!(m.handle(&key(Key::KeyA)), Some(passed(Key::KeyA)));
     assert_eq!(m.handle(&key(Key::KeyZ)), Some(passed(Key::KeyZ)));
     assert!(matches!(m.layer(), Layer::Typing(_)));
+}
+
+#[test]
+fn typing_passes_a_baked_modifier_through() {
+    // A modifier baked onto the event itself, never arriving as its own key (an injected cmd-v,
+    // or fn), rides through instead of being dropped.
+    let mut m = Mercury::default();
+    let _ = m.handle(&key(Key::KeyT));
+    let cmd_v = MercuryEvent::Key(KeyEvent {
+        key: Key::KeyV,
+        press: PressType::Down,
+        flags: ModifierFlags::COMMAND,
+    });
+    assert_eq!(
+        m.handle(&cmd_v),
+        Some(vec![emit_with(
+            Key::KeyV,
+            PressType::Down,
+            ModifierFlags::COMMAND
+        )])
+    );
 }
 
 #[test]
