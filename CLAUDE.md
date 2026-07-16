@@ -21,3 +21,9 @@ mercury writes its tracing output to `~/Library/Logs/mercury/mercury.log`, alway
 The file always records down to `debug`, whatever the terminal is set to, so a run is always reconstructable afterwards. It holds one record per dispatched event, carrying the event, the effects it produced, and the resulting state on a single line, plus each key emitted, each app foregrounded, and the raw frontmost-app changes `freddie_app_nav` observed.
 
 `LOG_LEVEL` sets what the terminal shows and nothing else, defaulting to `info`. So `LOG_LEVEL=error cargo run -p mercury` gives a quiet terminal and a full log file. Watch it live from another pane: `tail -f ~/Library/Logs/mercury/mercury.log`.
+
+## Coding standards
+
+- Maintainability is the most important standard. And that specifically means one thing: make impossible states unrepresentable and use the correct underlying representation. If a field is not used when a boolean is true/false, use an option, for example.
+- If we have to do extra refactoring work to maintain the above, we should do the extra work.
+- If we need a more performant, but less idiomatic impl, then create a newtype/struct/enum that encapsulates the ugly complexity but exposes an idiomatic API.
