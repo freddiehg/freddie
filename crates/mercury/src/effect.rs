@@ -13,7 +13,7 @@ pub enum Placement {
 
 /// What a handler asks the consumer to do. Inert data; performing it is the consumer's job,
 /// and it never mutates Mercury's state directly.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug)]
 pub enum MercuryEffect {
     /// Bring an app to the foreground.
     Foreground(super::App),
