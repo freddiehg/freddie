@@ -15,9 +15,23 @@ repos:
       - id: trailing-whitespace
   - repo: local
     hooks:
+      # These three mirror .github/workflows/ci.yml exactly, so a commit that would
+      # fail CI fails here first.
       - id: cargo-fmt
         name: cargo fmt
         entry: cargo fmt --all -- --check
+        language: system
+        types: [rust]
+        pass_filenames: false
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --all-targets --all-features -- -D warnings
+        language: system
+        types: [rust]
+        pass_filenames: false
+      - id: cargo-test
+        name: cargo test
+        entry: cargo test --all --all-features
         language: system
         types: [rust]
         pass_filenames: false
