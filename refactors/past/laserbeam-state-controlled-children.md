@@ -1,5 +1,7 @@
 # laserbeam: state-controlled children
 
+> Implemented, via derived children (`derived-levels-plan.md`): a `#[derived_child]` fn computes the active child from state and returns `None` when none is focused, which is the state-selected, fallible descent this doc argues for. The mechanism sketched below predates two refactors and does NOT match how it shipped: `Resolved`/`Resolve::resolve()` were removed as dead weight (`resolved-is-dead-weight.md`), so there is no `Resolved` enum to gain a node-as-leaf variant, and dispatch is `ControlFlow`-based, descending one level at a time and running each node's own binds on a miss rather than resolving to a single leaf. And "two ways today" (below) is three now: enum variant, `#[resolve_into]` field, and derived child. Kept as the design thinking that led there.
+
 ## The realization
 
 "What is focused" is state, not always an enum variant. laserbeam picks the active child two ways today: an enum's active variant, or a struct's single `#[resolve_into]` field. Both are static in shape, with the type tag as the discriminator. The general case is that the discriminator is ordinary state: a browser's focused element is an id held in state, not a distinct type per element. The design already names this case ("a state tag/index over stored children" picks the active leaf); this makes it real. The enum-variant descent is the special case where the selector happens to be the type discriminant.
