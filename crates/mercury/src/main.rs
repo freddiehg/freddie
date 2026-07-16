@@ -165,7 +165,6 @@ async fn run(event_tx: UnboundedSender<MercuryEvent>, event_rx: UnboundedReceive
     });
 
     println!("mercury: hijacking the keyboard; escape then q, or the menu bar's Quit, exits");
-    info!("hijacking the keyboard; escape then q, or the menu bar's Quit, exits");
     // `select!` rather than `join!`: the effect loop ends on `Kill`, and the event
     // loop never does, because the tap thread holds a sender for as long as the
     // grab is alive.
