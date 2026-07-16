@@ -29,12 +29,8 @@ use crate::{
     AnyNonModifierKey => maybe_pass_through,
 )]
 pub struct Mercury {
-    pub foregrounded: App,
-    /// Set when a nav choice foregrounds an app, cleared when the watcher reports the
-    /// front app. True means a navigation is in flight: `foregrounded` is still the
-    /// old app until the foreground event lands, so the in-app level stays empty
-    /// rather than binding the old app in the gap. See [`app_data`].
-    pub has_navigated: bool,
+    /// The frontmost app and whether a nav is in flight. See [`Foreground`].
+    pub foreground: Foreground,
     /// The physical truth about which modifier keys are down, updated by [`on_modifier`] on every
     /// modifier event in every layer. It has to outlive the layer, because entering and leaving a
     /// passthrough layer reads it to synchronize the app's modifier view. See [`HeldModifiers`].
@@ -43,6 +39,55 @@ pub struct Mercury {
     /// no transition can change the layer without going through the modifier flush.
     #[resolve_into]
     layer: Layer,
+}
+
+/// The frontmost app, and whether a navigation is in flight.
+///
+/// While `navigating`, `app` is the PREVIOUS app: a nav choice foregrounded a new one, but the
+/// watcher has not reported it yet, so the in-app level binds nothing until it does (see
+/// [`app_data`]). The fields are private; the handlers drive it through the methods below.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Foreground {
+    app: App,
+    navigating: bool,
+}
+
+impl Foreground {
+    /// A nav choice foregrounded an app; the watcher has not confirmed it, so `app` stays stale
+    /// until it does. From [`on_navigate`](crate::handlers).
+    pub const fn on_navigation(&mut self) {
+        self.navigating = true;
+    }
+
+    /// The watcher reported the front app: record it and end any pending navigation. From
+    /// [`on_foregrounded`](crate::handlers).
+    pub const fn on_foregrounded_app_event(&mut self, app: App) {
+        self.app = app;
+        self.navigating = false;
+    }
+
+    /// The confirmed front app, or `None` while a navigation is in flight, so a key pressed in the
+    /// gap does not reach the old app's bindings.
+    #[must_use]
+    pub const fn confirmed(&self) -> Option<App> {
+        if self.navigating {
+            None
+        } else {
+            Some(self.app)
+        }
+    }
+
+    /// The app the model believes is frontmost. Stale while [`navigating`](Self::navigating).
+    #[must_use]
+    pub const fn app(&self) -> App {
+        self.app
+    }
+
+    /// Whether a nav choice is still awaiting the watcher's confirmation.
+    #[must_use]
+    pub const fn navigating(&self) -> bool {
+        self.navigating
+    }
 }
 
 #[derive(Bind, Debug, derive_more::From)]
@@ -132,24 +177,18 @@ pub enum AppData {
     Ghostty(GhosttyApp),
 }
 
-/// Reads `root.foregrounded`, the only copy, and builds the level for it.
+/// Reads the confirmed front app, the only copy, and builds the level for it.
 ///
-/// A shared reference, so it cannot mutate: it derives, it does not act. `Zed` and `Other`
-/// bind nothing, so they get no level and no struct.
+/// A shared reference, so it cannot mutate: it derives, it does not act. `None` while a nav is in
+/// flight (the old app must not bind in the gap), and `Zed`/`Other` bind nothing, so all three get
+/// no level and no struct.
 const fn app_data(path: &AppLayerPath) -> Option<AppData> {
     // AppLayer -> Layer -> Mercury.
     let root = path.parent().parent();
-    // A navigation is in flight: the foreground event has not landed, so
-    // `foregrounded` is still the previous app. Bind nothing until the watcher
-    // confirms the new front app and clears the flag, so a key pressed in the gap
-    // does not reach the old app's bindings.
-    if root.has_navigated {
-        return None;
-    }
-    match root.foregrounded {
-        App::Chrome => Some(AppData::Chrome(ChromeApp {})),
-        App::Ghostty => Some(AppData::Ghostty(GhosttyApp {})),
-        App::Finder | App::Zed | App::Other => None,
+    match root.foreground.confirmed() {
+        Some(App::Chrome) => Some(AppData::Chrome(ChromeApp {})),
+        Some(App::Ghostty) => Some(AppData::Ghostty(GhosttyApp {})),
+        _ => None,
     }
 }
 
@@ -196,8 +235,7 @@ pub type GhosttyAppNode<'a> = Node<AppLayerPath<'a>, GhosttyApp>;
 impl Default for Mercury {
     fn default() -> Self {
         Self {
-            foregrounded: App::Other,
-            has_navigated: false,
+            foreground: Foreground::default(),
             held: HeldModifiers::default(),
             layer: Layer::Home(HomeLayer {}),
         }

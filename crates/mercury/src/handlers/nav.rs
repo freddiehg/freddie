@@ -14,10 +14,10 @@ use crate::{App, MercuryEffect};
 
 /// Foreground `app` and enter the in-app layer, with the navigation marked in flight.
 fn navigate(path: NavLayerPath<'_>, app: App) -> Vec<MercuryEffect> {
-    // Ascend to the root regardless of the levels between: `has_navigated` and the layer both
-    // live on it.
+    // Ascend to the root regardless of the levels between: `foreground` and the layer both live
+    // on it.
     let root = path.ascend_to::<MercuryPath>();
-    root.has_navigated = true;
+    root.foreground.on_navigation();
     let mut effects = root.set_layer(AppLayer {});
     effects.push(MercuryEffect::Foreground(app));
     effects

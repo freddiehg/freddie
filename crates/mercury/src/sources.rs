@@ -67,12 +67,13 @@ impl EventTrigger for Quit {
 }
 
 /// The apps Mercury knows about. `Other` is anything it has no bindings for.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum App {
     Chrome,
     Finder,
     Ghostty,
     Zed,
+    #[default]
     Other,
 }
 

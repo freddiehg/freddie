@@ -55,6 +55,6 @@ pub use sources::{
     AnyModifierKey, AnyNonModifierKey, App, ForegroundEvent, Foregrounded, Quit, QuitEvent,
 };
 pub use state::{
-    AppData, AppLayer, ChromeApp, GhosttyApp, HomeLayer, Layer, Mercury, NavLayer, ResizeLayer,
-    TypingLayer, foreground, key, quit_event,
+    AppData, AppLayer, ChromeApp, Foreground, GhosttyApp, HomeLayer, Layer, Mercury, NavLayer,
+    ResizeLayer, TypingLayer, foreground, key, quit_event,
 };
