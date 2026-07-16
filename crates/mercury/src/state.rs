@@ -275,12 +275,36 @@ impl LeftRightPair {
 
 /// The physical truth about which modifier keys are down. `caps_lock` is a lock, not a held key,
 /// so it is not here: it changes on press and has no held down/up to replay.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Default, Clone, Copy)]
 pub struct HeldModifiers {
     pub control: LeftRightPair,
     pub meta: LeftRightPair,
     pub alt: LeftRightPair,
     pub shift: LeftRightPair,
+}
+
+impl std::fmt::Debug for HeldModifiers {
+    /// Only the held modifiers, each with its side(s): `HeldModifiers { Meta(L,R), Alt(L) }`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "HeldModifiers {{")?;
+        let mut sep = " ";
+        for (name, pair) in [
+            ("Control", self.control),
+            ("Meta", self.meta),
+            ("Alt", self.alt),
+            ("Shift", self.shift),
+        ] {
+            let sides = match (pair.left, pair.right) {
+                (true, true) => "(L,R)",
+                (true, false) => "(L)",
+                (false, true) => "(R)",
+                (false, false) => continue,
+            };
+            write!(f, "{sep}{name}{sides}")?;
+            sep = ", ";
+        }
+        f.write_str(" }")
+    }
 }
 
 impl HeldModifiers {
