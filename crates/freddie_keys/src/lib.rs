@@ -128,11 +128,11 @@ pub enum PressType {
     Up,
 }
 
-/// A key going down or coming up, carrying the modifier flags it should be emitted with.
+/// A key going down or coming up, carrying its modifier flags.
 ///
-/// `flags` matters only on events mercury EMITS: whoever builds the event states the modifiers
-/// it carries (a passed-through key carries what is held, a chord carries its own modifier). An
-/// event coming IN from the keyboard carries [`ModifierFlags::empty`]; the model never reads it.
+/// The flags are authoritative: the source stamps them at creation (macOS from the hardware
+/// modifier state for a physical key, the posting app for an injected one). A passed-through key
+/// carries exactly these; a sync sweep or a chord builds its own.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct KeyEvent {
     pub key: Key,
@@ -163,12 +163,6 @@ impl ModifierFlags {
     #[must_use]
     pub const fn empty() -> Self {
         Self(0)
-    }
-
-    /// The union of two flag sets.
-    #[must_use]
-    pub const fn union(self, other: Self) -> Self {
-        Self(self.0 | other.0)
     }
 
     /// The raw bits, for a backend mapping them to native flags.

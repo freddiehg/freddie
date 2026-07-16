@@ -235,17 +235,16 @@ pub fn intercept(
                 let input = KeyEvent {
                     key: from_code(code),
                     press,
-                    // The modifiers baked onto this event by its source. A modifier delivered as
-                    // a flag rather than as its own key (an injected `cmd`-`v`, or `fn`) lives
-                    // only here, so read it or it is lost.
+                    // The modifiers the source baked onto this event. A modifier delivered as a
+                    // flag rather than as its own key (an injected `cmd`-`v`, or `fn`) lives only
+                    // here, so read it or it is lost.
                     flags: from_cg(event.get_flags()),
                 };
-                // Source PID for telling injected events (a userspace `CGEventPost`, nonzero PID)
-                // from physical HID input (PID 0). Logging only for now, to confirm the split
-                // before acting on it (see the "pass through injected events" plan).
+                // Physical HID input is PID 0; a userspace `CGEventPost` (another app) is nonzero.
+                // Logged only, for now. (Our own emits are tagged and returned above.)
                 let source_pid =
                     event.get_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID);
-                tracing::debug!(key = ?input.key, ?press, flags = ?input.flags, source_pid, "tap key");
+                tracing::trace!(?input, source_pid, "tap");
                 match decide(&input, on_key(input.clone())) {
                     Decision::Pass => CallbackResult::Keep,
                     Decision::Drop => CallbackResult::Drop,

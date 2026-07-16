@@ -157,9 +157,15 @@ fn typing_cmd_escape_exits_to_home() {
     let mut m = Mercury::default();
     let _ = m.handle(&key(Key::KeyT));
 
-    // cmd down: tracked, and passed through carrying its own flag.
+    // cmd down arrives carrying the command flag (as its flagsChanged does). It is tracked in
+    // held (for the exit sweep) and passed through with that flag.
+    let cmd_down = MercuryEvent::Key(KeyEvent {
+        key: Key::MetaLeft,
+        press: PressType::Down,
+        flags: ModifierFlags::COMMAND,
+    });
     assert_eq!(
-        m.handle(&key(Key::MetaLeft)),
+        m.handle(&cmd_down),
         Some(vec![emit_with(
             Key::MetaLeft,
             PressType::Down,

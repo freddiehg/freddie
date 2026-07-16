@@ -8,30 +8,29 @@ use crate::effect::emit;
 use crate::state::Mercury;
 use crate::MercuryEffect;
 
-/// Any modifier key. Record it in `held` (always, in every layer, so `held` stays accurate), then
-/// pass it through while a passthrough layer is active; swallow it in a command layer.
+/// Any modifier key. Record it in `held` (which feeds the open/close sync sweeps), then pass it
+/// through while a passthrough layer is active, carrying exactly the flags it arrived with. Its
+/// flags are authoritative; `held` is for the sweeps, not for stamping this.
 pub(crate) fn on_modifier(ev: &KeyEvent, node: Node<&mut Mercury, ()>) -> Vec<MercuryEffect> {
     let root = node.parent;
     root.held.apply(ev);
     if root.layer().is_passthrough() {
-        vec![emit(ev.key, ev.press, root.held.flags().union(ev.flags))]
+        vec![emit(ev.key, ev.press, ev.flags)]
     } else {
         Vec::new()
     }
 }
 
-/// Any non-modifier key the active layer did not bind. Pass it through while a passthrough layer
-/// is active; swallow it otherwise.
-///
-/// The emitted flags are the tracked held modifiers UNION the modifiers baked onto this event, so
-/// a modifier that never arrived as its own key (an injected `cmd`-`v`, or `fn`) still rides along.
+/// Any non-modifier key the active layer did not bind. Pass it through, carrying exactly the flags
+/// it arrived with, while a passthrough layer is active; swallow it otherwise. The source stamped
+/// the flags at creation, so a baked-on modifier (an injected `cmd`-`v`, or `fn`) rides along.
 pub(crate) fn maybe_pass_through(
     ev: &KeyEvent,
     node: Node<&mut Mercury, ()>,
 ) -> Vec<MercuryEffect> {
     let root = node.parent;
     if root.layer().is_passthrough() {
-        vec![emit(ev.key, ev.press, root.held.flags().union(ev.flags))]
+        vec![emit(ev.key, ev.press, ev.flags)]
     } else {
         Vec::new()
     }
