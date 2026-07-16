@@ -12,9 +12,12 @@ use super::go_home;
 use crate::state::{AppLayer, HomeLayerPath, MercuryPath, NavLayer, ResizeLayer, TypingLayer};
 use crate::MercuryEffect;
 
-/// `q` in home: quit.
-pub(crate) fn quit(_ev: &KeyEvent, _node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
-    vec![MercuryEffect::Kill]
+/// `q` in home: quit. Emit the held modifiers' downs first (see [`super::on_quit`]) so the app is
+/// left knowing what is physically held once the grab is released.
+pub(crate) fn quit(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
+    let mut effects = node.parent.ascend_to::<MercuryPath>().held.open();
+    effects.push(MercuryEffect::Kill);
+    effects
 }
 
 /// `escape` anywhere: go back to the home layer.

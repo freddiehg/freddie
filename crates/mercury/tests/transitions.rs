@@ -62,6 +62,22 @@ fn quit_event_kills_from_home() {
 }
 
 #[test]
+fn quit_emits_held_modifiers_so_the_app_learns_the_physical_state() {
+    // cmd held in home is swallowed, so the app never saw its down. On quit the grab is
+    // released and no further down is coming, so emit the down before Kill or the app is left
+    // thinking a physically-held cmd is up.
+    let mut m = Mercury::default();
+    let _ = m.handle(&key(Key::MetaLeft)); // tracked, swallowed in home
+    assert_eq!(
+        m.handle(&quit_event()),
+        Some(vec![
+            emit_with(Key::MetaLeft, PressType::Down, ModifierFlags::COMMAND),
+            MercuryEffect::Kill,
+        ])
+    );
+}
+
+#[test]
 fn quit_event_kills_from_every_layer() {
     // The menu-bar Quit is a recovery path: it must kill from any layer, not just
     // home. One case per layer. Typing matters most: its `AnyKey` catch-all must not
