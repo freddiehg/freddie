@@ -9,7 +9,7 @@
 use bind::Node;
 use freddie_keys::KeyEvent;
 
-use crate::state::{AppLayer, Layer, MercuryPath, NavLayerPath};
+use crate::state::{AppLayer, MercuryPath, NavLayerPath};
 use crate::{App, MercuryEffect};
 
 /// Foreground `app` and enter the in-app layer, with the navigation marked in flight.
@@ -18,8 +18,9 @@ fn navigate(path: NavLayerPath<'_>, app: App) -> Vec<MercuryEffect> {
     // live on it.
     let root = path.ascend_to::<MercuryPath>();
     root.has_navigated = true;
-    root.layer = Layer::InApp(AppLayer {});
-    vec![MercuryEffect::Foreground(app)]
+    let mut effects = root.set_layer(AppLayer {});
+    effects.push(MercuryEffect::Foreground(app));
+    effects
 }
 
 pub(crate) fn open_chrome(_ev: &KeyEvent, node: Node<NavLayerPath, ()>) -> Vec<MercuryEffect> {

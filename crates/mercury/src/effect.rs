@@ -1,6 +1,6 @@
 //! What a handler asks the consumer to do, and the window placement it can request.
 
-use freddie_keys::{Key, KeyEvent};
+use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 
 /// Where a window should go. Mercury's own, mirroring `freddie_windows::Placement` so the
 /// model stays free of the OS crates, the way `App` is free of bundle ids.
@@ -41,4 +41,10 @@ pub(crate) fn tap(modifiers: &[Key], key: Key) -> MercuryEffect {
         modifiers: modifiers.to_vec(),
         key,
     }
+}
+
+/// Emit one key event carrying `flags`. The building block for passing a key through and for the
+/// modifier synchronization sweeps.
+pub(crate) fn emit(key: Key, press: PressType, flags: ModifierFlags) -> MercuryEffect {
+    MercuryEffect::Emit(KeyEvent { key, press, flags })
 }

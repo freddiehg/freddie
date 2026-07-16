@@ -10,6 +10,7 @@ mod home;
 mod nav;
 mod quit;
 mod resize;
+mod root;
 mod typing;
 
 pub(crate) use app::*;
@@ -18,19 +19,21 @@ pub(crate) use home::*;
 pub(crate) use nav::*;
 pub(crate) use quit::*;
 pub(crate) use resize::*;
+pub(crate) use root::*;
 pub(crate) use typing::*;
 
 use laserbeam::Ascend;
 
-use crate::state::{HomeLayer, Layer, LayerPath};
+use crate::state::{HomeLayer, Mercury, MercuryPath};
 use crate::MercuryEffect;
 
-/// Put the layer back in home. The one place the home layer is entered.
-pub(crate) fn go_home(layer: &mut LayerPath<'_>) {
-    *layer.get_mut() = Layer::Home(HomeLayer {});
+/// Go to the home layer, returning the modifier flush (empty unless leaving a passthrough layer).
+/// The one place the home layer is entered.
+pub(crate) fn go_home(root: &mut Mercury) -> Vec<MercuryEffect> {
+    root.set_layer(HomeLayer {})
 }
 
-/// Ask for `effects` and return home.
+/// Ask for `effects`, then return home.
 ///
 /// A layer stays only if its actions make sense to do repeatedly. Walking tmux's panes and
 /// refreshing Chrome do, so the in-app layers stay. Placing a window does not: repeating it is
@@ -39,10 +42,10 @@ pub(crate) fn go_home(layer: &mut LayerPath<'_>) {
 /// home; see [`super::nav`].)
 ///
 /// Generic over the path, so every chooser binds it from its own node.
-pub(crate) fn and_go_home<'a, P: Ascend<LayerPath<'a>>>(
+pub(crate) fn and_go_home<'a, P: Ascend<MercuryPath<'a>>>(
     path: P,
-    effects: Vec<MercuryEffect>,
+    mut effects: Vec<MercuryEffect>,
 ) -> Vec<MercuryEffect> {
-    go_home(&mut path.ascend());
+    effects.extend(go_home(path.ascend()));
     effects
 }

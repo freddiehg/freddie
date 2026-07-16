@@ -1,47 +1,20 @@
-//! Typing-layer handlers: pass keys through while tracking held keys, and exit on cmd-escape.
+//! Typing-layer handler: leave to home on cmd-escape, otherwise pass the escape through.
 
 use bind::Node;
-use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
+use freddie_keys::KeyEvent;
 
-use super::go_home;
-use crate::state::TypingLayerPath;
+use crate::effect::emit;
+use crate::state::{HomeLayer, MercuryPath, TypingLayerPath};
 use crate::MercuryEffect;
 
-/// `escape` in typing. If `cmd` is held it exits to home and swallows the escape; otherwise
-/// escape is a normal key and passes through.
-///
-/// Exiting emits the release of the held `cmd`. `cmd` was passed through when it was pressed, so
-/// its down is already in the emitted stream; without this up it would stay stuck down, and the
-/// keys the user types next would all carry `cmd`. The escape itself is swallowed.
-pub(crate) fn maybe_go_home(
-    ev: &KeyEvent,
-    mut node: Node<TypingLayerPath, ()>,
-) -> Vec<MercuryEffect> {
-    let cmd = node.parent.get_mut().held.cmd;
-    if let Some(cmd) = cmd {
-        let mut layer = node.parent.into_parent();
-        go_home(&mut layer);
-        vec![MercuryEffect::Emit(KeyEvent {
-            key: cmd,
-            press: PressType::Up,
-            flags: ModifierFlags::empty(),
-        })]
+/// `escape` in typing. If `cmd` is held it leaves to home, and `set_layer`'s close releases every
+/// held modifier (the escape itself is swallowed). Otherwise the escape passes through: it is a
+/// bound key, so it clobbered the root passthrough and typing has to re-emit it by hand.
+pub(crate) fn maybe_go_home(ev: &KeyEvent, node: Node<TypingLayerPath, ()>) -> Vec<MercuryEffect> {
+    let root = node.parent.ascend_to::<MercuryPath>();
+    if root.held.meta.any_held() {
+        root.set_layer(HomeLayer {})
     } else {
-        vec![MercuryEffect::Emit(ev.clone())]
+        vec![emit(ev.key, ev.press, root.held.flags())]
     }
-}
-
-/// Any key in typing. Update the held set for the keys we track, then pass the key through.
-///
-/// This is the one handler that fires for every non-escape key, so it is where held-key state
-/// is maintained: dispatch runs a single handler per event, and this catch-all is it.
-pub(crate) fn modify_held_and_pass_through(
-    ev: &KeyEvent,
-    mut node: Node<TypingLayerPath, ()>,
-) -> Vec<MercuryEffect> {
-    if matches!(ev.key, Key::MetaLeft | Key::MetaRight) {
-        // Remember WHICH command key, so the exit handler can release the exact one.
-        node.parent.get_mut().held.cmd = (ev.press == PressType::Down).then_some(ev.key);
-    }
-    vec![MercuryEffect::Emit(ev.clone())]
 }

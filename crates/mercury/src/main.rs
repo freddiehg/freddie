@@ -171,11 +171,9 @@ async fn run(event_tx: UnboundedSender<MercuryEvent>, event_rx: UnboundedReceive
     // grab is alive.
     // Seed the model with the app that is actually frontmost, rather than defaulting to
     // `Other`, so the in-app layer resolves correctly before the first foreground event.
-    let mercury = Mercury {
-        foregrounded: freddie_app_nav::frontmost()
-            .map_or(App::Other, |bundle_id| App::from_bundle_id(&bundle_id)),
-        ..Default::default()
-    };
+    let mut mercury = Mercury::default();
+    mercury.foregrounded = freddie_app_nav::frontmost()
+        .map_or(App::Other, |bundle_id| App::from_bundle_id(&bundle_id));
 
     tokio::select! {
         () = run_event_loop(mercury, event_rx, effect_tx) => {}

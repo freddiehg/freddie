@@ -10,11 +10,11 @@ use mercury::{
 };
 
 const fn emit(key: Key, press: PressType) -> MercuryEffect {
-    MercuryEffect::Emit(KeyEvent {
-        key,
-        press,
-        flags: ModifierFlags::empty(),
-    })
+    emit_with(key, press, ModifierFlags::empty())
+}
+
+const fn emit_with(key: Key, press: PressType, flags: ModifierFlags) -> MercuryEffect {
+    MercuryEffect::Emit(KeyEvent { key, press, flags })
 }
 
 // A key passed straight through: the one event it arrived as.
@@ -123,10 +123,14 @@ fn typing_cmd_escape_exits_to_home() {
     let mut m = Mercury::default();
     let _ = m.handle(&key(Key::KeyT));
 
-    // cmd down: tracked, and passed through.
+    // cmd down: tracked, and passed through carrying its own flag.
     assert_eq!(
         m.handle(&key(Key::MetaLeft)),
-        Some(vec![emit(Key::MetaLeft, PressType::Down)])
+        Some(vec![emit_with(
+            Key::MetaLeft,
+            PressType::Down,
+            ModifierFlags::COMMAND
+        )])
     );
     assert!(matches!(m.layer(), Layer::Typing(_)));
 
@@ -208,9 +212,9 @@ fn a_pending_nav_binds_nothing_until_the_foreground_event() {
     assert!(m.has_navigated);
     assert_eq!(m.foregrounded, App::Ghostty);
     // Ghostty's `j` does not apply, even though Ghostty is still `foregrounded`.
-    assert_eq!(m.handle(&key(Key::KeyJ)), None);
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
     // Chrome's `r` does not apply yet either: nothing binds while the nav is pending.
-    assert_eq!(m.handle(&key(Key::KeyR)), None);
+    assert_eq!(m.handle(&key(Key::KeyR)), Some(vec![]));
 
     let _ = m.handle(&foreground(App::Chrome)); // the watcher catches up
     assert!(matches!(m.layer(), Layer::InApp(_)));
@@ -285,13 +289,13 @@ fn inapp_other_app_ignores_keys() {
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(m.layer(), Layer::InApp(_)));
     assert!(matches!(m.foregrounded, App::Zed | App::Other));
-    assert_eq!(m.handle(&key(Key::KeyR)), None);
+    assert_eq!(m.handle(&key(Key::KeyR)), Some(vec![]));
 }
 
 #[test]
 fn unbound_key_is_none() {
     let mut m = Mercury::default();
-    assert_eq!(m.handle(&key(Key::KeyX)), None);
+    assert_eq!(m.handle(&key(Key::KeyX)), Some(vec![]));
 }
 
 // ---- ghostty: j/k walk tmux's windows, digits jump to one ----
@@ -345,8 +349,8 @@ fn j_and_k_are_unbound_in_chrome_in_app() {
     let mut m = Mercury::default();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
-    assert_eq!(m.handle(&key(Key::KeyJ)), None);
-    assert_eq!(m.handle(&key(Key::KeyK)), None);
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyK)), Some(vec![]));
 }
 
 // Foregrounding Ghostty while in-app retargets to its layer, so its bindings
@@ -435,12 +439,12 @@ fn walking_stays_but_jumping_leaves() {
 #[test]
 fn the_digits_are_unbound_outside_ghostty() {
     let mut m = Mercury::default();
-    assert_eq!(m.handle(&key(Key::Num1)), None);
+    assert_eq!(m.handle(&key(Key::Num1)), Some(vec![]));
 
     let mut m = Mercury::default();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
-    assert_eq!(m.handle(&key(Key::Num1)), None);
+    assert_eq!(m.handle(&key(Key::Num1)), Some(vec![]));
 }
 
 // ---- resize: `r` from home, then the arrows place the focused window ----
@@ -507,9 +511,9 @@ fn placing_twice_re_enters_resize() {
 #[test]
 fn the_arrows_are_unbound_in_home() {
     let mut m = Mercury::default();
-    assert_eq!(m.handle(&key(Key::UpArrow)), None);
-    assert_eq!(m.handle(&key(Key::LeftArrow)), None);
-    assert_eq!(m.handle(&key(Key::RightArrow)), None);
+    assert_eq!(m.handle(&key(Key::UpArrow)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::LeftArrow)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::RightArrow)), Some(vec![]));
 }
 
 // `r` is Chrome's refresh in the in-app layer, and resize's entry from home. The
@@ -596,11 +600,8 @@ fn reported_bundle_ids_map() {
 // and without any resync. There is no copy to go stale.
 #[test]
 fn the_inapp_layers_bindings_follow_the_root_with_no_resync() {
-    let mut m = Mercury {
-        foregrounded: App::Chrome,
-        layer: Layer::InApp(AppLayer::default()),
-        ..Default::default()
-    };
+    let mut m = Mercury::with_layer(Layer::InApp(AppLayer::default()));
+    m.foregrounded = App::Chrome;
     // Chrome binds `r`.
     assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
 
@@ -608,12 +609,12 @@ fn the_inapp_layers_bindings_follow_the_root_with_no_resync() {
     m.foregrounded = App::Ghostty;
 
     // Chrome's `r` is gone and Ghostty's `j` is live, with no re-entry and no resync.
-    assert_eq!(m.handle(&key(Key::KeyR)), None);
+    assert_eq!(m.handle(&key(Key::KeyR)), Some(vec![]));
     assert!(m.handle(&key(Key::KeyJ)).is_some());
 
     // An app with no bindings has no level at all.
     m.foregrounded = App::Zed;
-    assert_eq!(m.handle(&key(Key::KeyJ)), None);
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
 }
 
 // In the in-app layer, foregrounding a different app retargets the layer to it, so
@@ -631,7 +632,7 @@ fn foreground_retargets_the_inapp_layer() {
     assert!(matches!(m.layer(), Layer::InApp(_)));
     assert!(matches!(m.foregrounded, App::Zed | App::Other));
     // Chrome's refresh is gone now that Chrome is not the front app.
-    assert_eq!(m.handle(&key(Key::KeyR)), None);
+    assert_eq!(m.handle(&key(Key::KeyR)), Some(vec![]));
 }
 
 // Foregrounding Chrome again while in-app restores its bindings.

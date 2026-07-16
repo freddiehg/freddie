@@ -6,17 +6,31 @@ use freddie_keys::KeyEvent;
 // A specific key is its own trigger: `Key::KeyR` binds that key. The type and its
 // `EventTrigger` impl live in `freddie_keys`, so no wrapper is needed here.
 
-/// A keyboard trigger that matches every key, on either press.
+/// A keyboard trigger matching every modifier key (control/command/alt/shift, either side), on
+/// either press.
 ///
-/// A catch-all: when a layer binds it, it shadows an ancestor's binding for the same key
-/// (dispatch is leafward). There is no ordering between it and a specific-key trigger, so
-/// binding both on one active path is a shadow, not a conflict.
+/// Bound at the root: no layer binds a modifier, so a modifier always falls past the active layer
+/// to the root, which is where `held` is kept and where the modifier is passed through.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct AnyKey;
-impl EventTrigger for AnyKey {
+pub struct AnyModifierKey;
+impl EventTrigger for AnyModifierKey {
     type Event = KeyEvent;
-    fn is_matching(&self, _ev: &KeyEvent) -> bool {
-        true
+    fn is_matching(&self, ev: &KeyEvent) -> bool {
+        ev.key.is_modifier()
+    }
+}
+
+/// A keyboard trigger matching every NON-modifier key, on either press.
+///
+/// Bound at the root as the last resort (dispatch is leafward, so a key the active layer binds
+/// wins). A key no layer claimed falls here and is passed through in a passthrough layer, or
+/// swallowed otherwise. Caps lock, not a modifier, rides this like any other key.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct AnyNonModifierKey;
+impl EventTrigger for AnyNonModifierKey {
+    type Event = KeyEvent;
+    fn is_matching(&self, ev: &KeyEvent) -> bool {
+        !ev.key.is_modifier()
     }
 }
 
