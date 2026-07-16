@@ -294,6 +294,7 @@ pub struct LeftRightPair {
 }
 
 /// Which physical key of a left/right modifier pair.
+#[derive(Clone, Copy)]
 pub enum Side {
     Left,
     Right,
@@ -301,7 +302,7 @@ pub enum Side {
 
 impl LeftRightPair {
     #[must_use]
-    pub const fn any_held(&self) -> bool {
+    pub const fn any_held(self) -> bool {
         self.left || self.right
     }
 
@@ -367,23 +368,23 @@ impl HeldModifiers {
 
     /// Entering a passthrough layer: a DOWN for every held key, so the app catches up.
     #[must_use]
-    pub fn open(&self) -> Vec<MercuryEffect> {
+    pub fn open(self) -> Vec<MercuryEffect> {
         self.emit_synchronization_events(PressType::Down)
     }
 
     /// Leaving one: an UP for every held key, so the app forgets them.
     #[must_use]
-    pub fn close(&self) -> Vec<MercuryEffect> {
+    pub fn close(self) -> Vec<MercuryEffect> {
         self.emit_synchronization_events(PressType::Up)
     }
 
     /// Emit `press` for every held key, each carrying the flags as they stand after its own
     /// change, so a shared left/right bit clears only when both sides are up.
-    fn emit_synchronization_events(&self, press: PressType) -> Vec<MercuryEffect> {
+    fn emit_synchronization_events(self, press: PressType) -> Vec<MercuryEffect> {
         let mut shown = if press == PressType::Down {
             Self::default()
         } else {
-            *self
+            self
         };
         let mut out = Vec::new();
         for key in self.held_keys() {
@@ -415,7 +416,7 @@ impl HeldModifiers {
 
     /// The current modifier state as flags, for stamping on an emitted event.
     #[must_use]
-    pub fn flags(&self) -> ModifierFlags {
+    pub const fn flags(self) -> ModifierFlags {
         let mut f = ModifierFlags::empty();
         f.set(ModifierFlags::CONTROL, self.control.any_held());
         f.set(ModifierFlags::COMMAND, self.meta.any_held());

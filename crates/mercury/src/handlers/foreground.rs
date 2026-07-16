@@ -15,6 +15,7 @@ pub(crate) const fn on_foregrounded(
     ev: &ForegroundEvent,
     node: Node<&mut Mercury, ()>,
 ) -> Vec<MercuryEffect> {
-    node.parent.foreground.on_foregrounded_app_event(ev.app);
+    let root = node.parent;
+    root.foreground.on_foregrounded_app_event(ev.app);
     Vec::new()
 }

@@ -28,7 +28,7 @@ fn passed(key: Key) -> Vec<MercuryEffect> {
     vec![emit(key, PressType::Down)]
 }
 
-fn tap(key: Key, flags: ModifierFlags) -> MercuryEffect {
+const fn tap(key: Key, flags: ModifierFlags) -> MercuryEffect {
     MercuryEffect::Tap { key, flags }
 }
 

@@ -42,3 +42,6 @@ mut_mut = "allow"
 # private modules where `pub` would be equivalent. That intent is worth keeping over the lint's
 # preference for the shorter `pub`.
 redundant_pub_crate = "allow"
+# `.map_err(|_| E)` reads fine; we do not want to spell the ignored unit as `|()|`. (Only fires
+# from clippy 1.97 on; kept explicit so the lint stays off whatever the toolchain.)
+ignored_unit_patterns = "allow"

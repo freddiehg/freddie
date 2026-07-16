@@ -1,0 +1,6 @@
+# The single source of truth for the toolchain, used both locally (so pre-commit
+# runs cargo fmt/clippy against the same rustc as CI) and by CI itself. Keep this
+# in step with .github/workflows/ci.yml and .pre-commit-config.yaml.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]

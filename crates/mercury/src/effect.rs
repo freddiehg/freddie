@@ -36,12 +36,12 @@ pub enum MercuryEffect {
 }
 
 /// Tap `key` with `flags` baked in.
-pub(crate) fn tap(key: Key, flags: ModifierFlags) -> MercuryEffect {
+pub(crate) const fn tap(key: Key, flags: ModifierFlags) -> MercuryEffect {
     MercuryEffect::Tap { key, flags }
 }
 
 /// Emit one key event carrying `flags`. The building block for passing a key through and for the
 /// modifier synchronization sweeps.
-pub(crate) fn emit(key: Key, press: PressType, flags: ModifierFlags) -> MercuryEffect {
+pub(crate) const fn emit(key: Key, press: PressType, flags: ModifierFlags) -> MercuryEffect {
     MercuryEffect::Emit(KeyEvent { key, press, flags })
 }
