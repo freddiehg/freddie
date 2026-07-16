@@ -83,7 +83,6 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          cargo publish -p laserbeam_macro --allow-dirty
           cargo publish -p laserbeam --allow-dirty
           cargo publish -p freddie --allow-dirty
 
@@ -120,6 +119,5 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          cargo publish -p laserbeam_macro --allow-dirty
           cargo publish -p laserbeam --allow-dirty
           cargo publish -p freddie --allow-dirty
