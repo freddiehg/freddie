@@ -4,9 +4,9 @@ Run mercury as a per-user LaunchAgent that starts with the session and restarts 
 
 ## Boot into typing
 
-`Mercury::default()` starts in `Layer::Home`, which swallows every key it does not bind. That cannot be the login state, or the keyboard is dead until you guess a Home key. The launchd build boots into `Layer::Typing`: it binds only `escape` and passes everything else through, so the keyboard is normal at login. `main.rs` already overrides the default at startup (it seeds the real frontmost app), so it also builds `Mercury::with_layer(Layer::Typing(TypingLayer {}))`.
+`Mercury::default()` boots into `Layer::Typing`, the passthrough layer: it binds only `escape` and passes everything else through, so the keyboard is normal at login. Nothing extra is needed; the launchd build just runs the default. (Home, the command layer, swallows every key it does not bind, which is why it cannot be the boot state.)
 
-There is no dedicated off state; typing, the passthrough layer, is the login-safe boot state.
+There is no dedicated off state; typing IS the login-safe boot state.
 
 The hole: `escape` in typing drops to Home, the dead-keyboard state. So the recovery paths below are load-bearing, not nice-to-haves.
 

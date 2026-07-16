@@ -237,7 +237,9 @@ impl Default for Mercury {
         Self {
             foreground: Foreground::default(),
             held: HeldModifiers::default(),
-            layer: Layer::Home(HomeLayer {}),
+            // Typing, the passthrough layer, so a fresh mercury (and one launched at login) leaves
+            // the keyboard working rather than swallowing everything in Home. See launch-at-login.
+            layer: Layer::Typing(TypingLayer {}),
         }
     }
 }

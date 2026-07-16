@@ -5,9 +5,15 @@
 
 use bind::SimpleRunner;
 use mercury::{
-    App, AppLayer, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryEvent, ModifierFlags,
-    MercuryStruct, Placement, PressType, foreground, key, quit_event,
+    App, AppLayer, HomeLayer, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryEvent,
+    ModifierFlags, MercuryStruct, Placement, PressType, foreground, key, quit_event,
 };
+
+// A mercury in Home, the command layer. The default is Typing (passthrough), but most per-event
+// tests exercise Home's command bindings, so they start here.
+fn home() -> Mercury {
+    Mercury::with_layer(Layer::Home(HomeLayer {}))
+}
 
 const fn emit(key: Key, press: PressType) -> MercuryEffect {
     emit_with(key, press, ModifierFlags::empty())
@@ -34,28 +40,34 @@ fn cmd_r() -> Vec<MercuryEffect> {
 // ---- per-event: send an event, assert the effect ----
 
 #[test]
+fn default_boots_into_typing() {
+    // A fresh mercury is in typing (passthrough), the login-safe state, not command-mode Home.
+    assert!(matches!(Mercury::default().layer(), Layer::Typing(_)));
+}
+
+#[test]
 fn home_n_enters_nav() {
-    let mut m = Mercury::default();
+    let mut m = home();
     assert_eq!(m.handle(&key(Key::KeyN)), Some(vec![]));
     assert!(matches!(m.layer(), Layer::Nav(_)));
 }
 
 #[test]
 fn home_t_enters_typing() {
-    let mut m = Mercury::default();
+    let mut m = home();
     assert_eq!(m.handle(&key(Key::KeyT)), Some(vec![]));
     assert!(matches!(m.layer(), Layer::Typing(_)));
 }
 
 #[test]
 fn home_q_quits() {
-    let mut m = Mercury::default();
+    let mut m = home();
     assert_eq!(m.handle(&key(Key::KeyQ)), Some(vec![MercuryEffect::Kill]));
 }
 
 #[test]
 fn quit_event_kills_from_home() {
-    let mut m = Mercury::default();
+    let mut m = home();
     assert_eq!(m.handle(&quit_event()), Some(vec![MercuryEffect::Kill]));
     // No layer change: quit is an effect, not a transition.
     assert!(matches!(m.layer(), Layer::Home(_)));
@@ -66,7 +78,7 @@ fn quit_emits_held_modifiers_so_the_app_learns_the_physical_state() {
     // cmd held in home is swallowed, so the app never saw its down. On quit the grab is
     // released and no further down is coming, so emit the down before Kill or the app is left
     // thinking a physically-held cmd is up.
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&key(Key::MetaLeft)); // tracked, swallowed in home
     assert_eq!(
         m.handle(&quit_event()),
@@ -83,7 +95,7 @@ fn quit_event_kills_from_every_layer() {
     // home. One case per layer. Typing matters most: its `AnyKey` catch-all must not
     // swallow the quit event (a different event type), so quit still reaches the root.
     for enter in [Key::KeyN, Key::KeyT, Key::KeyR, Key::KeyI] {
-        let mut m = Mercury::default();
+        let mut m = home();
         let _ = m.handle(&key(enter));
         assert_eq!(
             m.handle(&quit_event()),
@@ -97,14 +109,14 @@ fn quit_event_kills_from_every_layer() {
 fn home_escape_does_nothing() {
     // In home, escape re-enters home (the layer-level go-home binding): no effect,
     // no visible change.
-    let mut m = Mercury::default();
+    let mut m = home();
     assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
 #[test]
 fn escape_goes_home_from_a_sublayer() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&key(Key::KeyN));
     assert!(matches!(m.layer(), Layer::Nav(_)));
     assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
@@ -113,7 +125,7 @@ fn escape_goes_home_from_a_sublayer() {
 
 #[test]
 fn typing_passes_any_key_through() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&key(Key::KeyT));
     assert_eq!(m.handle(&key(Key::KeyA)), Some(passed(Key::KeyA)));
     assert_eq!(m.handle(&key(Key::KeyZ)), Some(passed(Key::KeyZ)));
@@ -124,7 +136,7 @@ fn typing_passes_any_key_through() {
 fn typing_passes_a_baked_modifier_through() {
     // A modifier baked onto the event itself, never arriving as its own key (an injected cmd-v,
     // or fn), rides through instead of being dropped.
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&key(Key::KeyT));
     let cmd_v = MercuryEvent::Key(KeyEvent {
         key: Key::KeyV,
@@ -144,7 +156,7 @@ fn typing_passes_a_baked_modifier_through() {
 #[test]
 fn typing_plain_escape_passes_through() {
     // In typing, escape is a normal key: it passes through and stays in typing.
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&key(Key::KeyT));
     assert_eq!(m.handle(&key(Key::Escape)), Some(passed(Key::Escape)));
     assert!(matches!(m.layer(), Layer::Typing(_)));
@@ -154,7 +166,7 @@ fn typing_plain_escape_passes_through() {
 fn typing_cmd_escape_exits_to_home() {
     // cmd is held (tracked by the catch-all, which also emits it), then escape exits to home
     // and is swallowed. The plain escape above still passes through.
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&key(Key::KeyT));
 
     // cmd down arrives carrying the command flag (as its flagsChanged does). It is tracked in
@@ -187,7 +199,7 @@ fn typing_cmd_escape_exits_to_home() {
 // layer, with the navigation marked pending until the watcher reports the app.
 #[test]
 fn nav_c_foregrounds_chrome_and_enters_inapp() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&key(Key::KeyN));
     assert_eq!(
         m.handle(&key(Key::KeyC)),
@@ -208,7 +220,7 @@ fn every_nav_choice_enters_inapp() {
         (Key::KeyG, App::Ghostty),
         (Key::KeyZ, App::Zed),
     ] {
-        let mut m = Mercury::default();
+        let mut m = home();
         let _ = m.handle(&key(Key::KeyN));
         assert!(matches!(m.layer(), Layer::Nav(_)));
         assert_eq!(
@@ -224,7 +236,7 @@ fn every_nav_choice_enters_inapp() {
 // refreshes it. No separate `i`.
 #[test]
 fn n_c_then_foreground_then_r_refreshes_chrome() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&key(Key::KeyN));
     assert_eq!(
         m.handle(&key(Key::KeyC)),
@@ -243,7 +255,7 @@ fn n_c_then_foreground_then_r_refreshes_chrome() {
 // event lands is unbound; once the event lands, the chosen app's bindings apply.
 #[test]
 fn a_pending_nav_binds_nothing_until_the_foreground_event() {
-    let mut m = Mercury::default();
+    let mut m = home();
     // Ghostty is frontmost, an app that has in-app bindings.
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyN)); // home -> nav
@@ -265,7 +277,7 @@ fn a_pending_nav_binds_nothing_until_the_foreground_event() {
 
 #[test]
 fn foreground_records_the_app_without_changing_layer() {
-    let mut m = Mercury::default();
+    let mut m = home();
     assert_eq!(m.handle(&foreground(App::Zed)), Some(vec![]));
     assert_eq!(m.foreground.app(), App::Zed);
     assert!(matches!(m.layer(), Layer::Home(_)));
@@ -273,7 +285,7 @@ fn foreground_records_the_app_without_changing_layer() {
 
 #[test]
 fn i_enters_inapp_for_the_foregrounded_app() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&foreground(App::Chrome));
     assert_eq!(m.handle(&key(Key::KeyI)), Some(vec![]));
     assert!(matches!(m.layer(), Layer::InApp(_)));
@@ -284,7 +296,7 @@ fn i_enters_inapp_for_the_foregrounded_app() {
 // past the app's own bindings (which bind neither) to the layer's.
 #[test]
 fn inapp_n_enters_nav() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(m.layer(), Layer::InApp(_)));
@@ -294,7 +306,7 @@ fn inapp_n_enters_nav() {
 
 #[test]
 fn inapp_t_enters_typing() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(m.layer(), Layer::InApp(_)));
@@ -307,7 +319,7 @@ fn inapp_t_enters_typing() {
 // layer adds on top.
 #[test]
 fn inapp_app_bindings_still_take_precedence() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(ModifierFlags::empty(), Key::KeyP)));
@@ -316,7 +328,7 @@ fn inapp_app_bindings_still_take_precedence() {
 
 #[test]
 fn chrome_r_refreshes() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
@@ -324,7 +336,7 @@ fn chrome_r_refreshes() {
 
 #[test]
 fn inapp_other_app_ignores_keys() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&foreground(App::Zed));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(m.layer(), Layer::InApp(_)));
@@ -334,7 +346,7 @@ fn inapp_other_app_ignores_keys() {
 
 #[test]
 fn unbound_key_is_none() {
-    let mut m = Mercury::default();
+    let mut m = home();
     assert_eq!(m.handle(&key(Key::KeyX)), Some(vec![]));
 }
 
@@ -348,7 +360,7 @@ fn tmux(flags: ModifierFlags, command: Key) -> Vec<MercuryEffect> {
 
 #[test]
 fn i_enters_ghostty_in_app_when_ghostty_is_frontmost() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(m.layer(), Layer::InApp(_)));
@@ -357,7 +369,7 @@ fn i_enters_ghostty_in_app_when_ghostty_is_frontmost() {
 
 #[test]
 fn ghostty_j_is_previous_window_and_k_is_next() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
 
@@ -373,7 +385,7 @@ fn ghostty_j_is_previous_window_and_k_is_next() {
 // the prefix is one tap and the command is another.
 #[test]
 fn the_tmux_command_is_a_bare_tap() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
     let effects = m.handle(&key(Key::KeyJ)).expect("j is bound");
@@ -386,7 +398,7 @@ fn the_tmux_command_is_a_bare_tap() {
 // j and k belong to Ghostty, not to every app.
 #[test]
 fn j_and_k_are_unbound_in_chrome_in_app() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
@@ -397,7 +409,7 @@ fn j_and_k_are_unbound_in_chrome_in_app() {
 // follow the front app the way Chrome's do.
 #[test]
 fn foregrounding_ghostty_retargets_the_inapp_layer() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(m.layer(), Layer::InApp(_)));
@@ -420,7 +432,7 @@ fn the_digits_select_a_tmux_window_and_return_home() {
         (Key::Num9, Key::Num9),
         (Key::Num0, Key::Num0),
     ] {
-        let mut m = Mercury::default();
+        let mut m = home();
         let _ = m.handle(&foreground(App::Ghostty));
         let _ = m.handle(&key(Key::KeyI));
 
@@ -450,7 +462,7 @@ fn all_ten_digits_are_bound_in_ghostty() {
         Key::Num0,
     ];
     for digit in digits {
-        let mut m = Mercury::default();
+        let mut m = home();
         let _ = m.handle(&foreground(App::Ghostty));
         let _ = m.handle(&key(Key::KeyI));
         assert_eq!(
@@ -464,7 +476,7 @@ fn all_ten_digits_are_bound_in_ghostty() {
 // Walking windows repeats, so j and k stay; jumping to one does not, so it leaves.
 #[test]
 fn walking_stays_but_jumping_leaves() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
 
@@ -478,10 +490,10 @@ fn walking_stays_but_jumping_leaves() {
 // The digits belong to Ghostty, not to home or to Chrome.
 #[test]
 fn the_digits_are_unbound_outside_ghostty() {
-    let mut m = Mercury::default();
+    let mut m = home();
     assert_eq!(m.handle(&key(Key::Num1)), Some(vec![]));
 
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(m.handle(&key(Key::Num1)), Some(vec![]));
@@ -491,7 +503,7 @@ fn the_digits_are_unbound_outside_ghostty() {
 
 #[test]
 fn home_r_enters_resize() {
-    let mut m = Mercury::default();
+    let mut m = home();
     assert_eq!(m.handle(&key(Key::KeyR)), Some(vec![]));
     assert!(matches!(m.layer(), Layer::Resize(_)));
 }
@@ -505,7 +517,7 @@ fn the_arrows_place_the_window_and_return_home() {
         (Key::LeftArrow, Placement::LeftHalf),
         (Key::RightArrow, Placement::RightHalf),
     ] {
-        let mut m = Mercury::default();
+        let mut m = home();
         let _ = m.handle(&key(Key::KeyR));
         assert!(matches!(m.layer(), Layer::Resize(_)));
 
@@ -521,7 +533,7 @@ fn the_arrows_place_the_window_and_return_home() {
 // Escape leaves resize without placing anything.
 #[test]
 fn escape_leaves_resize() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&key(Key::KeyR));
     assert!(matches!(m.layer(), Layer::Resize(_)));
 
@@ -532,7 +544,7 @@ fn escape_leaves_resize() {
 // Placing twice means entering resize twice: `r up r left`.
 #[test]
 fn placing_twice_re_enters_resize() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&key(Key::KeyR));
     assert_eq!(
         m.handle(&key(Key::UpArrow)),
@@ -550,7 +562,7 @@ fn placing_twice_re_enters_resize() {
 // accident from home.
 #[test]
 fn the_arrows_are_unbound_in_home() {
-    let mut m = Mercury::default();
+    let mut m = home();
     assert_eq!(m.handle(&key(Key::UpArrow)), Some(vec![]));
     assert_eq!(m.handle(&key(Key::LeftArrow)), Some(vec![]));
     assert_eq!(m.handle(&key(Key::RightArrow)), Some(vec![]));
@@ -560,7 +572,7 @@ fn the_arrows_are_unbound_in_home() {
 // layers keep them apart.
 #[test]
 fn r_still_refreshes_chrome_in_app() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
@@ -593,7 +605,7 @@ fn settle(
 // records it: after n, c the effect is Foreground(Chrome) and Chrome is recorded.
 #[test]
 fn foregrounding_chrome_is_reported_back() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let mut performed = Vec::new();
     {
         let mut runner = SimpleRunner::<MercuryStruct, _>::new(&mut m);
@@ -661,7 +673,7 @@ fn the_inapp_layers_bindings_follow_the_root_with_no_resync() {
 // the old app's bindings drop and the new app's apply.
 #[test]
 fn foreground_retargets_the_inapp_layer() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(m.layer(), Layer::InApp(_)));
@@ -678,7 +690,7 @@ fn foreground_retargets_the_inapp_layer() {
 // Foregrounding Chrome again while in-app restores its bindings.
 #[test]
 fn foreground_back_to_chrome_restores_its_bindings() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&foreground(App::Zed));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(m.layer(), Layer::InApp(_)));
@@ -694,7 +706,7 @@ fn foreground_back_to_chrome_restores_its_bindings() {
 // between layers.
 #[test]
 fn foreground_outside_inapp_does_not_change_layer() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let _ = m.handle(&key(Key::KeyN));
     assert!(matches!(m.layer(), Layer::Nav(_)));
 
@@ -707,7 +719,7 @@ fn foreground_outside_inapp_does_not_change_layer() {
 // layer, then the OS switches the front app to Zed and the in-app layer follows.
 #[test]
 fn inapp_follows_the_front_app_across_a_switch() {
-    let mut m = Mercury::default();
+    let mut m = home();
     let mut performed = Vec::new();
     {
         let mut runner = SimpleRunner::<MercuryStruct, _>::new(&mut m);
