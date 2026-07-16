@@ -22,16 +22,13 @@ fn passed(key: Key) -> Vec<MercuryEffect> {
     vec![emit(key, PressType::Down)]
 }
 
-fn tap(modifiers: &[Key], key: Key) -> MercuryEffect {
-    MercuryEffect::Tap {
-        modifiers: modifiers.to_vec(),
-        key,
-    }
+fn tap(key: Key, flags: ModifierFlags) -> MercuryEffect {
+    MercuryEffect::Tap { key, flags }
 }
 
 // cmd-r, one chord.
 fn cmd_r() -> Vec<MercuryEffect> {
-    vec![tap(&[Key::MetaLeft], Key::KeyR)]
+    vec![tap(Key::KeyR, ModifierFlags::COMMAND)]
 }
 
 // ---- per-event: send an event, assert the effect ----
@@ -270,7 +267,7 @@ fn inapp_app_bindings_still_take_precedence() {
     let mut m = Mercury::default();
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(&[], Key::KeyP)));
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(ModifierFlags::empty(), Key::KeyP)));
     assert!(matches!(m.layer(), Layer::InApp(_)));
 }
 
@@ -302,8 +299,8 @@ fn unbound_key_is_none() {
 
 // tmux's prefix is a chord, and the command is a bare tap. If the prefix were held
 // through the command, tmux would see `ctrl-p` rather than `p`.
-fn tmux(modifiers: &[Key], command: Key) -> Vec<MercuryEffect> {
-    vec![tap(&[Key::ControlLeft], Key::KeyA), tap(modifiers, command)]
+fn tmux(flags: ModifierFlags, command: Key) -> Vec<MercuryEffect> {
+    vec![tap(Key::KeyA, ModifierFlags::CONTROL), tap(command, flags)]
 }
 
 #[test]
@@ -321,8 +318,8 @@ fn ghostty_j_is_previous_window_and_k_is_next() {
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
 
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(&[], Key::KeyP)));
-    assert_eq!(m.handle(&key(Key::KeyK)), Some(tmux(&[], Key::KeyN)));
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(ModifierFlags::empty(), Key::KeyP)));
+    assert_eq!(m.handle(&key(Key::KeyK)), Some(tmux(ModifierFlags::empty(), Key::KeyN)));
     // Still in Ghostty's layer, so windows can be walked without re-entering.
     assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foregrounded, App::Ghostty);
@@ -339,8 +336,8 @@ fn the_tmux_command_is_a_bare_tap() {
     let effects = m.handle(&key(Key::KeyJ)).expect("j is bound");
 
     assert_eq!(effects.len(), 2, "a prefix and a command");
-    assert_eq!(effects[0], tap(&[Key::ControlLeft], Key::KeyA));
-    assert_eq!(effects[1], tap(&[], Key::KeyP));
+    assert_eq!(effects[0], tap(Key::KeyA, ModifierFlags::CONTROL));
+    assert_eq!(effects[1], tap(Key::KeyP, ModifierFlags::empty()));
 }
 
 // j and k belong to Ghostty, not to every app.
@@ -366,7 +363,7 @@ fn foregrounding_ghostty_retargets_the_inapp_layer() {
     let _ = m.handle(&foreground(App::Ghostty));
     assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foregrounded, App::Ghostty);
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(&[], Key::KeyP)));
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(ModifierFlags::empty(), Key::KeyP)));
 }
 
 // The digits jump to a tmux window with the *shifted* symbol, because that is what
@@ -386,7 +383,7 @@ fn the_digits_select_a_tmux_window_and_return_home() {
 
         assert_eq!(
             m.handle(&key(k)),
-            Some(tmux(&[Key::ShiftLeft], expected)),
+            Some(tmux(ModifierFlags::SHIFT, expected)),
             "{k:?}"
         );
         // Choosing a window is a choice, not something you repeat.
@@ -415,7 +412,7 @@ fn all_ten_digits_are_bound_in_ghostty() {
         let _ = m.handle(&key(Key::KeyI));
         assert_eq!(
             m.handle(&key(digit)),
-            Some(tmux(&[Key::ShiftLeft], digit)),
+            Some(tmux(ModifierFlags::SHIFT, digit)),
             "{digit:?} is unbound"
         );
     }

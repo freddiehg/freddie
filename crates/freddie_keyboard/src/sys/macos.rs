@@ -2,8 +2,6 @@
 //! pass/remap/drop decision, the modifier flags) are unit-tested below; the tap
 //! and the posting are FFI that needs a real keyboard to exercise.
 
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher, RandomState};
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -270,12 +268,7 @@ pub fn intercept(
         run_loop,
         thread: Some(thread),
     };
-    let emitter = Emitter(Rc::new(EmitterState {
-        source,
-        tag,
-        held: RefCell::new(HashMap::new()),
-        flags: Cell::new(CGEventFlags::CGEventFlagNull),
-    }));
+    let emitter = Emitter(Rc::new(EmitterState { source, tag }));
     Ok((interceptor, emitter))
 }
 
@@ -306,57 +299,45 @@ const MODIFIERS: CGEventFlags = CGEventFlags::from_bits_truncate(
         | CGEventFlags::CGEventFlagSecondaryFn.bits(),
 );
 
-/// The modifier bit a key sets while it is down, if it is a modifier at all.
-const fn flag_of(key: Key) -> Option<CGEventFlags> {
-    Some(match key {
-        Key::ShiftLeft | Key::ShiftRight => CGEventFlags::CGEventFlagShift,
-        Key::ControlLeft | Key::ControlRight => CGEventFlags::CGEventFlagControl,
-        Key::AltLeft | Key::AltRight => CGEventFlags::CGEventFlagAlternate,
-        Key::MetaLeft | Key::MetaRight => CGEventFlags::CGEventFlagCommand,
-        Key::CapsLock => CGEventFlags::CGEventFlagAlphaShift,
-        _ => return None,
-    })
-}
-
-/// The flags after `key` goes down or comes up. A non-modifier changes nothing.
-fn next_flags(current: CGEventFlags, key: Key, down: bool) -> CGEventFlags {
-    let mut flags = current;
-    if let Some(flag) = flag_of(key) {
-        flags.set(flag, down);
-    }
-    flags
+/// The native flags for a portable [`ModifierFlags`].
+fn to_cg(flags: ModifierFlags) -> CGEventFlags {
+    let mut out = CGEventFlags::empty();
+    out.set(
+        CGEventFlags::CGEventFlagControl,
+        flags.contains(ModifierFlags::CONTROL),
+    );
+    out.set(
+        CGEventFlags::CGEventFlagCommand,
+        flags.contains(ModifierFlags::COMMAND),
+    );
+    out.set(
+        CGEventFlags::CGEventFlagAlternate,
+        flags.contains(ModifierFlags::ALT),
+    );
+    out.set(
+        CGEventFlags::CGEventFlagShift,
+        flags.contains(ModifierFlags::SHIFT),
+    );
+    out
 }
 
 struct EmitterState {
     source: CGEventSource,
     tag: i64,
-    held: RefCell<HashMap<Key, usize>>,
-    /// The modifiers this emitter believes are down, from what it has emitted.
-    ///
-    /// A `CGEvent`'s modifier flags are baked in when it is created, from the event
-    /// source's state, and that state only catches up once a posted modifier key
-    /// has been *processed*. So a chord posted back to back, `ctrl` down then `a`,
-    /// creates the `a` microseconds later and it carries no `ctrl`. Tracking the
-    /// flags here and setting them on every event makes the emitted stream say what
-    /// it means, whatever the source thinks and however fast we post.
-    flags: Cell<CGEventFlags>,
 }
 
 impl EmitterState {
-    /// Emit `key`, going down or coming up, with the modifiers we are holding.
-    fn emit(&self, key: Key, down: bool) -> Result<(), EmitError> {
+    /// Post `key` going down or coming up, carrying exactly `flags`.
+    ///
+    /// A `CGEvent`'s own flags are baked in from the source's state when it is created, which
+    /// lags a modifier posted microseconds earlier. So the event states its own modifiers rather
+    /// than trusting the source: whoever built it said what it carries, and we apply exactly that.
+    fn post(&self, key: Key, down: bool, flags: ModifierFlags) -> Result<(), EmitError> {
         let code = to_code(key).ok_or(EmitError::Unmappable(key))?;
-        // A modifier's own event carries its new state: `ctrl` down has the control
-        // bit set, `ctrl` up has it clear, which is what a real one looks like.
-        self.flags.set(next_flags(self.flags.get(), key, down));
-        self.post(code, down)
-    }
-
-    fn post(&self, code: CGKeyCode, down: bool) -> Result<(), EmitError> {
         let event = CGEvent::new_keyboard_event(self.source.clone(), code, down)
             .map_err(|()| EmitError::Post)?;
         let untouched = event.get_flags() & !MODIFIERS;
-        event.set_flags(untouched | self.flags.get());
+        event.set_flags(untouched | to_cg(flags));
         event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, self.tag);
         event.post(CGEventTapLocation::Session);
         Ok(())
@@ -367,201 +348,30 @@ impl EmitterState {
 pub struct Emitter(Rc<EmitterState>);
 
 impl Emitter {
-    /// Emit one key event, a press or a release.
+    /// Emit one key event, a press or a release, carrying `flags`.
     ///
     /// # Errors
     ///
     /// Returns [`EmitError`] if the key has no code on this OS or could not be posted.
-    pub fn emit(&self, key: Key, press: PressType) -> Result<(), EmitError> {
-        self.0.emit(key, press == PressType::Down)
+    pub fn emit(&self, key: Key, press: PressType, flags: ModifierFlags) -> Result<(), EmitError> {
+        self.0.post(key, press == PressType::Down, flags)
     }
 
-    /// Press then release a key.
+    /// Press then release `key`, both halves carrying `flags`. A chord: `cmd`-`r` is
+    /// `tap(Key::KeyR, ModifierFlags::COMMAND)`, the key with the modifier baked into its flags,
+    /// so no synthetic modifier event strands a modifier the user is really holding.
     ///
     /// # Errors
     ///
     /// Returns [`EmitError`] if the key has no code on this OS or could not be posted.
-    pub fn tap(&self, key: Key) -> Result<(), EmitError> {
-        self.emit(key, PressType::Down)?;
-        self.emit(key, PressType::Up)
-    }
-
-    /// Hold `modifiers` down for the duration of `f`, then release them in reverse.
-    ///
-    /// This is how a chord should be emitted. Holding is structural, so the release
-    /// cannot be forgotten, and a key cannot carry a modifier that was never
-    /// pressed: the flags an event gets are the modifiers this emitter is holding.
-    ///
-    /// ```ignore
-    /// emitter.with_modifiers(&[Key::MetaLeft], |e| e.tap(Key::KeyR))?; // cmd-r
-    /// ```
-    ///
-    /// The modifiers are released even if `f` fails.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EmitError`] if a modifier or the key has no code on this OS, or
-    /// could not be posted. Propagates whatever `f` returns.
-    pub fn with_modifiers<F, R>(&self, modifiers: &[Key], f: F) -> Result<R, EmitError>
-    where
-        F: FnOnce(&Self) -> Result<R, EmitError>,
-    {
-        let mut held = Vec::with_capacity(modifiers.len());
-        for &modifier in modifiers {
-            held.push(self.press(modifier)?);
-        }
-        let out = f(self);
-        // Reverse order, the way a person lets go: the last pressed is the first
-        // released. `Vec`'s own drop would go the other way.
-        while held.pop().is_some() {}
-        out
-    }
-
-    /// Hold a key down until the last [`Held`] for it drops. Ref-counted per key.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EmitError`] if the key has no code on this OS or could not be posted.
-    pub fn press(&self, key: Key) -> Result<Held, EmitError> {
-        to_code(key).ok_or(EmitError::Unmappable(key))?;
-        let mut held = self.0.held.borrow_mut();
-        let count = held.entry(key).or_insert(0);
-        if *count == 0 {
-            self.0.emit(key, true)?;
-        }
-        *count += 1;
-        drop(held);
-        Ok(Held {
-            state: Rc::clone(&self.0),
-            key,
-        })
-    }
-}
-
-/// A held key. The key stays down while any `Held` for it is alive.
-pub struct Held {
-    state: Rc<EmitterState>,
-    key: Key,
-}
-
-impl Clone for Held {
-    fn clone(&self) -> Self {
-        *self.state.held.borrow_mut().entry(self.key).or_insert(0) += 1;
-        Self {
-            state: Rc::clone(&self.state),
-            key: self.key,
-        }
-    }
-}
-
-impl Drop for Held {
-    fn drop(&mut self) {
-        let mut held = self.state.held.borrow_mut();
-        if let Some(count) = held.get_mut(&self.key) {
-            *count -= 1;
-            if *count == 0 {
-                let _ = self.state.emit(self.key, false);
-            }
-        }
+    pub fn tap(&self, key: Key, flags: ModifierFlags) -> Result<(), EmitError> {
+        self.emit(key, PressType::Down, flags)?;
+        self.emit(key, PressType::Up, flags)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MODIFIERS, flag_of, next_flags};
-
-    #[test]
-    fn only_modifiers_have_a_flag() {
-        assert_eq!(
-            flag_of(Key::ControlLeft),
-            Some(CGEventFlags::CGEventFlagControl)
-        );
-        assert_eq!(
-            flag_of(Key::ControlRight),
-            Some(CGEventFlags::CGEventFlagControl)
-        );
-        assert_eq!(
-            flag_of(Key::MetaLeft),
-            Some(CGEventFlags::CGEventFlagCommand)
-        );
-        assert_eq!(flag_of(Key::KeyA), None);
-        assert_eq!(flag_of(Key::KeyP), None);
-    }
-
-    #[test]
-    fn a_modifier_sets_its_flag_while_it_is_down() {
-        let none = CGEventFlags::CGEventFlagNull;
-        let down = next_flags(none, Key::ControlLeft, true);
-        assert!(down.contains(CGEventFlags::CGEventFlagControl));
-        let up = next_flags(down, Key::ControlLeft, false);
-        assert!(!up.contains(CGEventFlags::CGEventFlagControl));
-    }
-
-    #[test]
-    fn an_ordinary_key_leaves_the_flags_alone() {
-        let ctrl = next_flags(CGEventFlags::CGEventFlagNull, Key::ControlLeft, true);
-        assert_eq!(next_flags(ctrl, Key::KeyA, true), ctrl);
-        assert_eq!(next_flags(ctrl, Key::KeyA, false), ctrl);
-    }
-
-    /// The whole point: through `ctrl` down, `a` down, `a` up, `ctrl` up, `p` down,
-    /// the `a` carries control and the `p` does not. Relying on the event source to
-    /// notice the posted `ctrl` leaves the `a` bare, because a chord is posted far
-    /// faster than the source is updated.
-    #[test]
-    fn the_tmux_prefix_carries_control_and_the_command_does_not() {
-        let mut flags = CGEventFlags::CGEventFlagNull;
-        let ctrl = CGEventFlags::CGEventFlagControl;
-
-        flags = next_flags(flags, Key::ControlLeft, true);
-        assert!(flags.contains(ctrl), "ctrl down carries control");
-
-        flags = next_flags(flags, Key::KeyA, true);
-        assert!(flags.contains(ctrl), "a is pressed with control held");
-        flags = next_flags(flags, Key::KeyA, false);
-        assert!(
-            flags.contains(ctrl),
-            "a is released with control still held"
-        );
-
-        flags = next_flags(flags, Key::ControlLeft, false);
-        assert!(!flags.contains(ctrl), "ctrl up clears control");
-
-        flags = next_flags(flags, Key::KeyP, true);
-        assert!(!flags.contains(ctrl), "p is a bare p, not ctrl-p");
-    }
-
-    #[test]
-    fn several_modifiers_stack_and_unstack_independently() {
-        let mut flags = CGEventFlags::CGEventFlagNull;
-        flags = next_flags(flags, Key::MetaLeft, true);
-        flags = next_flags(flags, Key::ShiftLeft, true);
-        assert!(flags.contains(CGEventFlags::CGEventFlagCommand));
-        assert!(flags.contains(CGEventFlags::CGEventFlagShift));
-
-        flags = next_flags(flags, Key::ShiftLeft, false);
-        assert!(flags.contains(CGEventFlags::CGEventFlagCommand));
-        assert!(!flags.contains(CGEventFlags::CGEventFlagShift));
-    }
-
-    #[test]
-    fn the_modifier_mask_covers_every_flag_a_key_can_set() {
-        for key in [
-            Key::ShiftLeft,
-            Key::ShiftRight,
-            Key::ControlLeft,
-            Key::ControlRight,
-            Key::AltLeft,
-            Key::AltRight,
-            Key::MetaLeft,
-            Key::MetaRight,
-            Key::CapsLock,
-        ] {
-            let flag = flag_of(key).expect("a modifier");
-            assert!(MODIFIERS.contains(flag), "{key:?} escapes the mask");
-        }
-    }
-
     use super::{Decision, decide, flag_for, from_code, to_code};
     use core_graphics::event::{CGEventFlags, KeyCode};
     use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};

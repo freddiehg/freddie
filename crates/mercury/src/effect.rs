@@ -17,12 +17,12 @@ pub enum Placement {
 pub enum MercuryEffect {
     /// Bring an app to the foreground.
     Foreground(super::App),
-    /// Tap `key` while `modifiers` are held. The chord.
+    /// Tap `key` with `flags` baked into both halves. The chord.
     ///
-    /// The modifiers are pressed, the key is tapped, and they are released, so a key cannot
-    /// carry a modifier that was never pressed. Prefer this to a hand-written sequence of
-    /// [`Emit`](Self::Emit)s.
-    Tap { modifiers: Vec<Key>, key: Key },
+    /// `cmd`-`r` is `Tap { key: KeyR, flags: COMMAND }`: one key carrying the modifier as a flag,
+    /// not a synthetic `cmd` down and up around it. A synthetic modifier event would strand the
+    /// modifier the user is really holding (the app counts the extra up and thinks it released).
+    Tap { key: Key, flags: ModifierFlags },
     /// Emit one raw key event, a press or a release on its own.
     ///
     /// The escape hatch, for the one case that is genuinely a lone half of a keypress: passing
@@ -35,12 +35,9 @@ pub enum MercuryEffect {
     Kill,
 }
 
-/// Tap `key` while `modifiers` are held.
-pub(crate) fn tap(modifiers: &[Key], key: Key) -> MercuryEffect {
-    MercuryEffect::Tap {
-        modifiers: modifiers.to_vec(),
-        key,
-    }
+/// Tap `key` with `flags` baked in.
+pub(crate) fn tap(key: Key, flags: ModifierFlags) -> MercuryEffect {
+    MercuryEffect::Tap { key, flags }
 }
 
 /// Emit one key event carrying `flags`. The building block for passing a key through and for the

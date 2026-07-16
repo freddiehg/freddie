@@ -1,6 +1,6 @@
 //! In-app handlers: Chrome's refresh, and Ghostty's tmux window navigation.
 
-use freddie_keys::{Key, KeyEvent};
+use freddie_keys::{Key, KeyEvent, ModifierFlags};
 
 use super::and_go_home;
 use crate::effect::tap;
@@ -9,7 +9,7 @@ use crate::MercuryEffect;
 
 /// `r` in Chrome: cmd-r, a refresh.
 pub(crate) fn refresh(_ev: &KeyEvent, _node: ChromeAppNode) -> Vec<MercuryEffect> {
-    vec![tap(&[Key::MetaLeft], Key::KeyR)]
+    vec![tap(Key::KeyR, ModifierFlags::COMMAND)]
 }
 
 /// A tmux command: the `ctrl-a` prefix, then the command key.
@@ -17,18 +17,18 @@ pub(crate) fn refresh(_ev: &KeyEvent, _node: ChromeAppNode) -> Vec<MercuryEffect
 /// Two taps rather than one chord, because the prefix has to be let go before the command or
 /// tmux sees `ctrl-p` rather than `p`. Which is now what the shape says, rather than something
 /// the order of six raw events has to get right.
-fn tmux(modifiers: &[Key], command: Key) -> Vec<MercuryEffect> {
-    vec![tap(&[Key::ControlLeft], Key::KeyA), tap(modifiers, command)]
+fn tmux(flags: ModifierFlags, command: Key) -> Vec<MercuryEffect> {
+    vec![tap(Key::KeyA, ModifierFlags::CONTROL), tap(command, flags)]
 }
 
 /// `j` in Ghostty: tmux's previous window. Stays, because walking windows repeats.
 pub(crate) fn previous_window(_ev: &KeyEvent, _node: GhosttyAppNode) -> Vec<MercuryEffect> {
-    tmux(&[], Key::KeyP)
+    tmux(ModifierFlags::empty(), Key::KeyP)
 }
 
 /// `k` in Ghostty: tmux's next window.
 pub(crate) fn next_window(_ev: &KeyEvent, _node: GhosttyAppNode) -> Vec<MercuryEffect> {
-    tmux(&[], Key::KeyN)
+    tmux(ModifierFlags::empty(), Key::KeyN)
 }
 
 /// The digits in Ghostty: jump straight to a tmux window, then go home.
@@ -42,7 +42,7 @@ pub(crate) fn next_window(_ev: &KeyEvent, _node: GhosttyAppNode) -> Vec<MercuryE
 macro_rules! select_window {
     ($($handler:ident => $digit:ident),* $(,)?) => {$(
         pub(crate) fn $handler(_ev: &KeyEvent, node: GhosttyAppNode) -> Vec<MercuryEffect> {
-            and_go_home(node.parent, tmux(&[Key::ShiftLeft], Key::$digit))
+            and_go_home(node.parent, tmux(ModifierFlags::SHIFT, Key::$digit))
         }
     )*};
 }

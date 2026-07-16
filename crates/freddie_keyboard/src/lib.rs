@@ -11,7 +11,7 @@ use std::fmt;
 pub use freddie_keys::{Key, KeyEvent, PressType};
 
 mod sys;
-pub use sys::{Emitter, Held, Interceptor, intercept};
+pub use sys::{Emitter, Interceptor, intercept};
 
 /// The keyboard could not be intercepted. On macOS this usually means
 /// Accessibility (or Input Monitoring) is not granted.

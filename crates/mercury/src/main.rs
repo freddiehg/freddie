@@ -233,13 +233,11 @@ async fn run_effect_loop(mut effect_rx: UnboundedReceiver<MercuryEffect>, emitte
 fn perform_effect(effect: &MercuryEffect, emitter: &Emitter) -> ControlFlow<()> {
     match effect {
         MercuryEffect::Foreground(app) => foreground_app(*app),
-        MercuryEffect::Tap { modifiers, key } => {
-            match emitter.with_modifiers(modifiers, |e| e.tap(*key)) {
-                Ok(()) => debug!(?modifiers, ?key, "tapped"),
-                Err(e) => warn!(?modifiers, ?key, error = %e, "tap failed"),
-            }
-        }
-        MercuryEffect::Emit(ke) => match emitter.emit(ke.key, ke.press) {
+        MercuryEffect::Tap { key, flags } => match emitter.tap(*key, *flags) {
+            Ok(()) => debug!(?key, ?flags, "tapped"),
+            Err(e) => warn!(?key, ?flags, error = %e, "tap failed"),
+        },
+        MercuryEffect::Emit(ke) => match emitter.emit(ke.key, ke.press, ke.flags) {
             Ok(()) => debug!(key = ?ke.key, press = ?ke.press, "emitted"),
             Err(e) => warn!(key = ?ke.key, press = ?ke.press, error = %e, "emit failed"),
         },
