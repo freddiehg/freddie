@@ -11,11 +11,11 @@ use laserbeam::PathMut;
 // The derive generates a call to each named handler at its node's definition site below, so
 // every handler has to be in scope here. A glob keeps this in step with the handler set instead
 // of a name-by-name list that drifts.
+use crate::effect::emit;
 #[allow(clippy::wildcard_imports)]
 use crate::handlers::*;
-use crate::effect::emit;
 use crate::{
-    AnyModifierKey, AnyNonModifierKey, App, Foregrounded, ForegroundEvent, MercuryEffect,
+    AnyModifierKey, AnyNonModifierKey, App, ForegroundEvent, Foregrounded, MercuryEffect,
     MercuryEvent, MercuryStruct, Quit, QuitEvent,
 };
 

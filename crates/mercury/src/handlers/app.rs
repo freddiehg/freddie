@@ -3,9 +3,9 @@
 use freddie_keys::{Key, KeyEvent, ModifierFlags};
 
 use super::and_go_home;
+use crate::MercuryEffect;
 use crate::effect::tap;
 use crate::state::{ChromeAppNode, GhosttyAppNode};
-use crate::MercuryEffect;
 
 /// `r` in Chrome: cmd-r, a refresh.
 pub(crate) fn refresh(_ev: &KeyEvent, _node: ChromeAppNode) -> Vec<MercuryEffect> {

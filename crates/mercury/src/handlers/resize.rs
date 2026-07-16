@@ -14,5 +14,8 @@ pub(crate) fn left_half(_ev: &KeyEvent, node: Node<ResizeLayerPath, ()>) -> Vec<
     and_go_home(node.parent, vec![MercuryEffect::Place(Placement::LeftHalf)])
 }
 pub(crate) fn right_half(_ev: &KeyEvent, node: Node<ResizeLayerPath, ()>) -> Vec<MercuryEffect> {
-    and_go_home(node.parent, vec![MercuryEffect::Place(Placement::RightHalf)])
+    and_go_home(
+        node.parent,
+        vec![MercuryEffect::Place(Placement::RightHalf)],
+    )
 }

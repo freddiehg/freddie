@@ -189,7 +189,11 @@ fn read_monitors(mtm: MainThreadMarker) -> Vec<Monitor> {
 
 /// Replaces the cached monitors.
 fn store_monitors(monitors: Vec<Monitor>) {
-    tracing::debug!(count = monitors.len(), ?monitors, "monitors, in accessibility coordinates");
+    tracing::debug!(
+        count = monitors.len(),
+        ?monitors,
+        "monitors, in accessibility coordinates"
+    );
     if let Ok(mut guard) = MONITORS.write() {
         *guard = monitors;
     }

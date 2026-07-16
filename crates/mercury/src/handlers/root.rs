@@ -4,9 +4,9 @@
 use bind::Node;
 use freddie_keys::KeyEvent;
 
+use crate::MercuryEffect;
 use crate::effect::emit;
 use crate::state::Mercury;
-use crate::MercuryEffect;
 
 /// Any modifier key. Record it in `held` (which feeds the open/close sync sweeps), then pass it
 /// through while a passthrough layer is active, carrying exactly the flags it arrived with. Its

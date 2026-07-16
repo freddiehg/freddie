@@ -171,7 +171,8 @@ async fn run(event_tx: UnboundedSender<MercuryEvent>, event_rx: UnboundedReceive
     // `Other`, so the in-app layer resolves correctly before the first foreground event.
     let mut mercury = Mercury::default();
     mercury.foreground.on_foregrounded_app_event(
-        freddie_app_nav::frontmost().map_or(App::Other, |bundle_id| App::from_bundle_id(&bundle_id)),
+        freddie_app_nav::frontmost()
+            .map_or(App::Other, |bundle_id| App::from_bundle_id(&bundle_id)),
     );
 
     tokio::select! {

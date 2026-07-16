@@ -4,7 +4,8 @@ use bind::Bindings;
 use freddie_keys::{Key, KeyEvent, KeyPress};
 
 use crate::{
-    AnyModifierKey, AnyNonModifierKey, Foregrounded, ForegroundEvent, MercuryEffect, Quit, QuitEvent,
+    AnyModifierKey, AnyNonModifierKey, ForegroundEvent, Foregrounded, MercuryEffect, Quit,
+    QuitEvent,
 };
 
 /// Every trigger Mercury can register, one variant per source.

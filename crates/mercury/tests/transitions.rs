@@ -6,7 +6,7 @@
 use bind::SimpleRunner;
 use mercury::{
     App, AppLayer, HomeLayer, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryEvent,
-    ModifierFlags, MercuryStruct, Placement, PressType, foreground, key, quit_event,
+    MercuryStruct, ModifierFlags, Placement, PressType, foreground, key, quit_event,
 };
 
 // A mercury in Home, the command layer. The default is Typing (passthrough), but most per-event
@@ -228,7 +228,10 @@ fn every_nav_choice_enters_inapp() {
             Some(vec![MercuryEffect::Foreground(app)])
         );
         assert!(matches!(m.layer(), Layer::InApp(_)), "{app:?} left nav");
-        assert!(m.foreground.navigating(), "{app:?} did not mark the nav pending");
+        assert!(
+            m.foreground.navigating(),
+            "{app:?} did not mark the nav pending"
+        );
     }
 }
 
@@ -322,7 +325,10 @@ fn inapp_app_bindings_still_take_precedence() {
     let mut m = home();
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(ModifierFlags::empty(), Key::KeyP)));
+    assert_eq!(
+        m.handle(&key(Key::KeyJ)),
+        Some(tmux(ModifierFlags::empty(), Key::KeyP))
+    );
     assert!(matches!(m.layer(), Layer::InApp(_)));
 }
 
@@ -373,8 +379,14 @@ fn ghostty_j_is_previous_window_and_k_is_next() {
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
 
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(ModifierFlags::empty(), Key::KeyP)));
-    assert_eq!(m.handle(&key(Key::KeyK)), Some(tmux(ModifierFlags::empty(), Key::KeyN)));
+    assert_eq!(
+        m.handle(&key(Key::KeyJ)),
+        Some(tmux(ModifierFlags::empty(), Key::KeyP))
+    );
+    assert_eq!(
+        m.handle(&key(Key::KeyK)),
+        Some(tmux(ModifierFlags::empty(), Key::KeyN))
+    );
     // Still in Ghostty's layer, so windows can be walked without re-entering.
     assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foreground.app(), App::Ghostty);
@@ -418,7 +430,10 @@ fn foregrounding_ghostty_retargets_the_inapp_layer() {
     let _ = m.handle(&foreground(App::Ghostty));
     assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foreground.app(), App::Ghostty);
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(tmux(ModifierFlags::empty(), Key::KeyP)));
+    assert_eq!(
+        m.handle(&key(Key::KeyJ)),
+        Some(tmux(ModifierFlags::empty(), Key::KeyP))
+    );
 }
 
 // The digits jump to a tmux window with the *shifted* symbol, because that is what
@@ -442,7 +457,10 @@ fn the_digits_select_a_tmux_window_and_return_home() {
             "{k:?}"
         );
         // Choosing a window is a choice, not something you repeat.
-        assert!(matches!(m.layer(), Layer::Home(_)), "{k:?} stayed in ghostty");
+        assert!(
+            matches!(m.layer(), Layer::Home(_)),
+            "{k:?} stayed in ghostty"
+        );
     }
 }
 
@@ -526,7 +544,10 @@ fn the_arrows_place_the_window_and_return_home() {
             Some(vec![MercuryEffect::Place(placement)]),
             "{k:?}"
         );
-        assert!(matches!(m.layer(), Layer::Home(_)), "{k:?} stayed in resize");
+        assert!(
+            matches!(m.layer(), Layer::Home(_)),
+            "{k:?} stayed in resize"
+        );
     }
 }
 

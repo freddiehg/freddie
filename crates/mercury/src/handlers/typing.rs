@@ -3,9 +3,9 @@
 use bind::Node;
 use freddie_keys::KeyEvent;
 
+use crate::MercuryEffect;
 use crate::effect::emit;
 use crate::state::{HomeLayer, MercuryPath, TypingLayerPath};
-use crate::MercuryEffect;
 
 /// `escape` in typing. If `cmd` is held it leaves to home, and `set_layer`'s close releases every
 /// held modifier (the escape itself is swallowed). Otherwise the escape passes through: it is a

@@ -321,13 +321,17 @@ fn derived_child_accumulate(f: &Path, marker: &Path, place: &TokenStream2) -> To
 }
 
 fn derived_dispatch_descent(input: &DeriveInput, marker: &Path) -> syn::Result<TokenStream2> {
-    Ok(derived_child_fn(&input.attrs)?
-        .map_or_else(|| quote!(), |f| derived_child_descent(&f, marker, &quote!(node))))
+    Ok(derived_child_fn(&input.attrs)?.map_or_else(
+        || quote!(),
+        |f| derived_child_descent(&f, marker, &quote!(node)),
+    ))
 }
 
 fn derived_accumulate_descent(input: &DeriveInput, marker: &Path) -> syn::Result<TokenStream2> {
-    Ok(derived_child_fn(&input.attrs)?
-        .map_or_else(|| quote!(), |f| derived_child_accumulate(&f, marker, &quote!(node))))
+    Ok(derived_child_fn(&input.attrs)?.map_or_else(
+        || quote!(),
+        |f| derived_child_accumulate(&f, marker, &quote!(node)),
+    ))
 }
 
 /// Emits `impl Descend<M>` for a PLACE: delegate to its own `Dispatch`, then hand the parent

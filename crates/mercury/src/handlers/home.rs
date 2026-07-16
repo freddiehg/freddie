@@ -9,8 +9,8 @@ use freddie_keys::KeyEvent;
 use laserbeam::Ascend;
 
 use super::go_home;
-use crate::state::{AppLayer, HomeLayerPath, MercuryPath, NavLayer, ResizeLayer, TypingLayer};
 use crate::MercuryEffect;
+use crate::state::{AppLayer, HomeLayerPath, MercuryPath, NavLayer, ResizeLayer, TypingLayer};
 
 /// `q` in home: quit. Emit the held modifiers' downs first (see [`super::on_quit`]) so the app is
 /// left knowing what is physically held once the grab is released.
@@ -51,10 +51,14 @@ pub(crate) fn to_typing<'a, P: Ascend<MercuryPath<'a>>>(
 
 /// `i` in home: enter the in-app layer for whatever app is foregrounded.
 pub(crate) fn to_inapp(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
-    node.parent.ascend_to::<MercuryPath>().set_layer(AppLayer {})
+    node.parent
+        .ascend_to::<MercuryPath>()
+        .set_layer(AppLayer {})
 }
 
 /// `r` in home: enter the resize layer.
 pub(crate) fn to_resize(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
-    node.parent.ascend_to::<MercuryPath>().set_layer(ResizeLayer {})
+    node.parent
+        .ascend_to::<MercuryPath>()
+        .set_layer(ResizeLayer {})
 }

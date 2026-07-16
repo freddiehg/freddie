@@ -24,8 +24,8 @@ pub(crate) use typing::*;
 
 use laserbeam::Ascend;
 
-use crate::state::{HomeLayer, Mercury, MercuryPath};
 use crate::MercuryEffect;
+use crate::state::{HomeLayer, Mercury, MercuryPath};
 
 /// Go to the home layer, returning the modifier flush (empty unless leaving a passthrough layer).
 /// The one place the home layer is entered.

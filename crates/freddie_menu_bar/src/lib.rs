@@ -72,7 +72,9 @@ fn mercury_icon() -> Result<Icon, Box<dyn std::error::Error + Send + Sync>> {
     // tray-icon renders the icon at 18pt tall; a ~2x pixel height keeps it crisp on a
     // Retina bar. The glyph is portrait, so width follows from its aspect.
     let glyph_h: u32 = 30;
-    let glyph_w = (glyph.width() * glyph_h).div_ceil(glyph.height().max(1)).max(1);
+    let glyph_w = (glyph.width() * glyph_h)
+        .div_ceil(glyph.height().max(1))
+        .max(1);
     let scaled = image::imageops::resize(
         &glyph,
         glyph_w,

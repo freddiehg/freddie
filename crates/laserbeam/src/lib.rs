@@ -17,7 +17,6 @@
 //! assert_eq!(album.title, "A Night at the Opera (Remastered)");
 //! ```
 
-
 /// The projection a [`PathMut`] uses to re-derive its focused node from the parent.
 ///
 /// `Bare` is a function pointer (what the derive emits, since its match and field projections capture nothing). `Dyn` is a boxed closure, for a hand-written projection that closes over data the derive cannot see, such as an externally supplied index.

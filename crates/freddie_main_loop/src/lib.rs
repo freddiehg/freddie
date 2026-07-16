@@ -66,8 +66,7 @@ const SLICE: Duration = Duration::from_millis(100);
 ///
 /// Panics if called off the main thread.
 pub fn init_menu_bar_app() {
-    let mtm =
-        MainThreadMarker::new().expect("init_menu_bar_app must be called on the main thread");
+    let mtm = MainThreadMarker::new().expect("init_menu_bar_app must be called on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
     app.finishLaunching();

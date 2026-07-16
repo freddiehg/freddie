@@ -179,7 +179,11 @@ impl ModifierFlags {
 
     /// Set or clear `flag`.
     pub const fn set(&mut self, flag: Self, on: bool) {
-        self.0 = if on { self.0 | flag.0 } else { self.0 & !flag.0 };
+        self.0 = if on {
+            self.0 | flag.0
+        } else {
+            self.0 & !flag.0
+        };
     }
 }
 
