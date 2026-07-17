@@ -137,7 +137,7 @@ pub fn init() -> Result<(), WindowError> {
     let mtm = MainThreadMarker::new().ok_or(WindowError::NotMainThread)?;
 
     // SAFETY: a plain C predicate over process state; takes no arguments.
-    #[allow(unsafe_code)]
+    #[expect(unsafe_code)]
     if !unsafe { AXIsProcessTrusted() } {
         return Err(WindowError::NotTrusted);
     }
@@ -214,7 +214,7 @@ fn register_screen_change_observer() {
     // SAFETY: `NSApplicationDidChangeScreenParametersNotification` is an immutable
     // extern static. The block captures nothing and is invoked on the main thread.
     // The token and block are leaked so the observation lasts the process.
-    #[allow(unsafe_code)]
+    #[expect(unsafe_code)]
     let token = unsafe {
         NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
             Some(NSApplicationDidChangeScreenParametersNotification),
@@ -245,7 +245,7 @@ pub fn place(placement: Placement) -> Result<(), WindowError> {
     set_frame(window, target);
 
     // SAFETY: `focused_window` returned a +1 reference; this balances it.
-    #[allow(unsafe_code)]
+    #[expect(unsafe_code)]
     unsafe {
         CFRelease(window.cast());
     }
@@ -272,7 +272,7 @@ fn window_origin(window: AXUIElementRef) -> Option<CGPoint> {
     let mut value: *const c_void = std::ptr::null();
     // SAFETY: `window` is a live element and `attribute` a live string. On success
     // the out-parameter receives a +1 `AXValue`; on failure it is untouched.
-    #[allow(unsafe_code)]
+    #[expect(unsafe_code)]
     let status = unsafe {
         AXUIElementCopyAttributeValue(
             window,
@@ -287,7 +287,7 @@ fn window_origin(window: AXUIElementRef) -> Option<CGPoint> {
     let mut point = CGPoint::new(0.0, 0.0);
     // SAFETY: `value` is a +1 `AXValue` of CGPoint type; `AXValueGetValue` copies it
     // into `point`. The value is released afterward.
-    #[allow(unsafe_code)]
+    #[expect(unsafe_code)]
     let got = unsafe {
         let ok = AXValueGetValue(
             value.cast_mut().cast(),
@@ -308,14 +308,14 @@ fn focused_window() -> Option<AXUIElementRef> {
 
     // SAFETY: `pid` names a live process, and `AXUIElementCreateApplication` takes
     // no ownership of it. The returned element is +1 and released below.
-    #[allow(unsafe_code)]
+    #[expect(unsafe_code)]
     let app = unsafe { AXUIElementCreateApplication(pid) };
 
     let attribute = CFString::new(kAXFocusedWindowAttribute);
     let mut window: *const c_void = std::ptr::null();
     // SAFETY: `app` is a live element and `attribute` a live string. On success the
     // out-parameter receives a +1 reference; on failure it is untouched.
-    #[allow(unsafe_code)]
+    #[expect(unsafe_code)]
     let status = unsafe {
         let s = AXUIElementCopyAttributeValue(
             app,
@@ -341,7 +341,7 @@ fn set_frame(window: AXUIElementRef, frame: Frame) {
         // SAFETY: `AXValueCreate` copies out of the pointer it is given, and both
         // values live for the call. Each returned value is +1 and released here.
         // `window` is a live element; setting an attribute takes no ownership.
-        #[allow(unsafe_code)]
+        #[expect(unsafe_code)]
         unsafe {
             let position = AXValueCreate(kAXValueTypeCGPoint, (&raw const origin).cast());
             let extent = AXValueCreate(kAXValueTypeCGSize, (&raw const size).cast());
@@ -364,7 +364,7 @@ fn set_frame(window: AXUIElementRef, frame: Frame) {
 #[cfg(test)]
 // The frames here are halves of integers, exactly representable, so the
 // placements are exact and comparing them exactly is the point.
-#[allow(clippy::float_cmp)]
+#[expect(clippy::float_cmp)]
 mod tests {
     use super::{Frame, Placement};
 

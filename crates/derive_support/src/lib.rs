@@ -185,7 +185,7 @@ impl Edge<'_> {
     /// build the identical path.
     // The single/multi-parent `match` reads better than the `map_or_else` clippy
     // wants, given the multi-line `quote!` arms.
-    #[allow(clippy::option_if_let_else)]
+    #[expect(clippy::option_if_let_else)]
     #[must_use]
     pub fn child_path(&self, path: &TokenStream2) -> TokenStream2 {
         let deref = if self.boxed { quote!(*) } else { quote!() };
@@ -211,7 +211,7 @@ impl Edge<'_> {
     /// way back up (`dispatch` only). A single-parent child's `into_parent` is the
     /// parent path directly; a multi-parent child's is the route enum, matched
     /// back to this node's variant.
-    #[allow(clippy::option_if_let_else)]
+    #[expect(clippy::option_if_let_else)]
     #[must_use]
     pub fn recover_parent(&self, child: &TokenStream2) -> TokenStream2 {
         match self.route {

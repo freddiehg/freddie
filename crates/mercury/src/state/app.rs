@@ -21,7 +21,6 @@ use super::{AppLayerPath, LayerPath, arm_return_home};
 )]
 pub struct AppLayer {
     // Held for its `Drop`: dropping the guard cancels the in-app layer's return-home timer.
-    #[allow(dead_code)]
     timeout: TimerGuard,
 }
 

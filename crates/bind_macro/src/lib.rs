@@ -189,7 +189,7 @@ fn derived_enum_node_impl(
 
         ::bind::check_only! {
         #[automatically_derived]
-        #[allow(clippy::implicit_hasher)]
+        #[expect(clippy::implicit_hasher)]
         impl<'a> ::bind::DerivedHandler<#marker> for ::bind::Node<#parent<'a>, #name> {
             fn accumulate(
                 self,
@@ -246,7 +246,7 @@ fn derived_node_impl(
     let triggers = binds.iter().map(|b| &b.trigger);
     Ok(quote! {
         #[automatically_derived]
-        #[allow(clippy::useless_conversion)]
+        #[expect(clippy::useless_conversion)]
         impl<'a> ::bind::Descend<#marker> for ::bind::Node<#parent<'a>, #name> {
             fn dispatch(
                 self,
@@ -264,7 +264,7 @@ fn derived_node_impl(
 
         ::bind::check_only! {
         #[automatically_derived]
-        #[allow(clippy::useless_conversion, clippy::implicit_hasher)]
+        #[expect(clippy::useless_conversion, clippy::implicit_hasher)]
         impl<'a> ::bind::DerivedHandler<#marker> for ::bind::Node<#parent<'a>, #name> {
             fn accumulate(
                 self,
@@ -401,7 +401,7 @@ fn accumulate_impl(
     Ok(quote! {
         ::bind::check_only! {
         #[automatically_derived]
-        #[allow(clippy::useless_conversion, clippy::implicit_hasher)]
+        #[expect(clippy::useless_conversion, clippy::implicit_hasher)]
         impl ::bind::EventHandler<#marker> for #name #where_clause {
             fn accumulate<'a>(
                 #binding: <Self as ::bind::Place>::Path<'a>,
@@ -426,7 +426,6 @@ fn accumulate_impl(
 
 /// The accumulate recursion, the child types to bound, and whether the path binding needs
 /// `mut`. Mirrors `dispatch_body`, minus the `ControlFlow`: accumulate never stops early.
-#[allow(clippy::option_if_let_else)]
 fn accumulate_body(
     input: &DeriveInput,
     name: &Ident,
@@ -545,7 +544,7 @@ fn dispatch_impl(
     });
     Ok(quote! {
         #[automatically_derived]
-        #[allow(clippy::useless_conversion)]
+        #[expect(clippy::useless_conversion)]
         impl ::bind::Dispatch<#marker> for #name #where_clause {
             fn dispatch<'a>(
                 #binding: <Self as ::bind::Place>::Path<'a>,
@@ -567,7 +566,6 @@ fn dispatch_impl(
 
 /// The dispatch recursion into the active child, the child types to bound, and
 /// whether the path binding needs `mut` (any node that descends reassigns it).
-#[allow(clippy::option_if_let_else)]
 fn dispatch_body(
     input: &DeriveInput,
     name: &Ident,

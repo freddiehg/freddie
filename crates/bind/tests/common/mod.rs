@@ -3,7 +3,7 @@
 //! Every node derives `Bind` (the path type the generated `Dispatch`
 //! needs) and `Bind`. Handlers mutate their node's `hits` where it has one and
 //! return the fired key's length, so a dispatch test can see which handler ran.
-#![allow(dead_code)]
+#![expect(dead_code)]
 
 use bind::{Bind, Bindings, EventTrigger, Node};
 use laserbeam::PathMut;

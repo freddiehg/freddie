@@ -121,7 +121,7 @@ fn activated_bundle_id(notif: &NSNotification) -> Option<String> {
     let info = notif.userInfo()?;
     // SAFETY: `NSWorkspaceApplicationKey` is an immutable extern static `NSString`
     // that AppKit initializes before any notification can be delivered.
-    #[allow(unsafe_code)]
+    #[expect(unsafe_code)]
     let key = unsafe { NSWorkspaceApplicationKey };
     let app = info
         .objectForKey(key)?
@@ -152,7 +152,7 @@ where
     let block = RcBlock::new(move |notif: NonNull<NSNotification>| {
         // SAFETY: Foundation hands the block a valid, retained notification, live
         // for the duration of this call.
-        #[allow(unsafe_code)]
+        #[expect(unsafe_code)]
         let notif = unsafe { notif.as_ref() };
         if let Some(bundle_id) = activated_bundle_id(notif) {
             tracing::debug!(app = %bundle_id, "frontmost app changed");
@@ -164,7 +164,7 @@ where
     // extern static. The block is `Send` because `F` is, which is what makes it
     // sound for Foundation to invoke it on the main thread. `Watcher` owns both the
     // token and the block, and removes the observer before either is dropped.
-    #[allow(unsafe_code)]
+    #[expect(unsafe_code)]
     let token = unsafe {
         NSWorkspace::sharedWorkspace()
             .notificationCenter()
@@ -205,7 +205,7 @@ impl Drop for Watcher {
         let observer: &AnyObject = (*self.token).as_ref();
         // SAFETY: `token` is what `addObserverForName...` returned and it is still
         // registered, so this is the documented way to deregister it.
-        #[allow(unsafe_code)]
+        #[expect(unsafe_code)]
         unsafe {
             NSWorkspace::sharedWorkspace()
                 .notificationCenter()

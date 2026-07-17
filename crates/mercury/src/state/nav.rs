@@ -19,7 +19,7 @@ use super::{LayerPath, arm_return_home};
 )]
 pub struct NavLayer {
     // Held for its `Drop`: dropping the guard cancels nav's return-home timer.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     timeout: TimerGuard,
 }
 

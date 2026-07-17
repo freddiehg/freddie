@@ -120,7 +120,7 @@ impl MainLoop {
                 // event and `sendEvent` delivers it, so a status-item click reaches the
                 // menu. The SLICE deadline bounds how long a stopped loop takes to notice;
                 // the `Stopper` also breaks the run loop, and the deadline is the floor.
-                #[allow(unsafe_code)]
+                #[expect(unsafe_code)]
                 // SAFETY: on the main thread; dequeuing one event with a 100ms deadline.
                 let event = unsafe {
                     let deadline = NSDate::dateWithTimeIntervalSinceNow(SLICE.as_secs_f64());

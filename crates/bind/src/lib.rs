@@ -18,7 +18,7 @@
 //! With `default-features = false` the check does not exist. [`EventHandler`],
 //! [`accumulate()`], and [`BindError`] are not compiled, and `#[derive(Bind)]` emits no
 //! `EventHandler` impl, because it wraps that impl in [`check_only!`].
-#![allow(clippy::implicit_hasher)]
+#![expect(clippy::implicit_hasher)]
 
 #[cfg(feature = "check")]
 use std::collections::HashSet;
@@ -305,7 +305,7 @@ where
     /// Processes exactly one queued event. The outer `None` means the queue was
     /// empty; the inner is what [`dispatch`] returned for the event (`None` when
     /// no binding matched, `Some` with the output otherwise).
-    #[allow(clippy::should_implement_trait)]
+    #[expect(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Option<Option<M::Output>> {
         let event = self.queue.pop_front()?;
         Some(dispatch::<M, N>(&mut *self.root, &event))

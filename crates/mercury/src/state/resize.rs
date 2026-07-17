@@ -20,7 +20,7 @@ use super::{LayerPath, arm_return_home};
 )]
 pub struct ResizeLayer {
     // Held for its `Drop`: dropping the guard cancels resize's return-home timer.
-    #[allow(dead_code)]
+    #[expect(dead_code)]
     timeout: TimerGuard,
 }
 

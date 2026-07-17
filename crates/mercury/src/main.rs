@@ -123,7 +123,7 @@ fn main() {
 /// Which is exactly why this future is `!Send`, and why that is fine: it is
 /// `block_on`ed by the worker's current-thread runtime and never crosses a
 /// thread.
-#[allow(clippy::future_not_send)]
+#[expect(clippy::future_not_send)]
 async fn run(event_tx: UnboundedSender<MercuryEvent>, event_rx: UnboundedReceiver<MercuryEvent>) {
     let (effect_tx, effect_rx) = unbounded_channel::<MercuryEffect>();
 
@@ -217,7 +217,7 @@ fn dispatch_event(
 ///
 /// The `Emitter` is `!Send` by design, so this future is `!Send`; it runs on the
 /// worker thread that created the `Emitter` and never crosses a thread.
-#[allow(clippy::future_not_send)]
+#[expect(clippy::future_not_send)]
 async fn run_effect_loop(
     mut effect_rx: UnboundedReceiver<MercuryEffect>,
     emitter: Emitter,
