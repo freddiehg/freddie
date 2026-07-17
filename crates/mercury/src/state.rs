@@ -24,7 +24,7 @@ use crate::{
 #[binds(MercuryStruct)]
 #[bind(
     Foregrounded => record_front_app,
-    Quit => kill,
+    Quit => quit,
     AnyModifierKey => track_modifier,
     AnyNonModifierKey => maybe_pass_through,
 )]

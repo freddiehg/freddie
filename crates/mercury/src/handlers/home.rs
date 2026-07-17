@@ -1,4 +1,5 @@
-//! Home-layer handlers: quit, and the transitions into the other layers.
+//! Home-layer handlers: the transitions into the other layers. (`q`'s quit is shared with the
+//! menu bar; see [`super::quit`].)
 //!
 //! Every transition sets the layer through `set_layer` and returns its flush. Most are between
 //! command layers, so the flush is empty; entering typing (open) and leaving it (close) are the
@@ -11,14 +12,6 @@ use laserbeam::Ascend;
 use super::go_home;
 use crate::MercuryEffect;
 use crate::state::{AppLayer, HomeLayerPath, MercuryPath, NavLayer, ResizeLayer, TypingLayer};
-
-/// `q` in home: quit. Emit the held modifiers' downs first (see [`super::kill`]) so the app is
-/// left knowing what is physically held once the grab is released.
-pub(crate) fn quit(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
-    let mut effects = node.parent.ascend_to::<MercuryPath>().held.open();
-    effects.push(MercuryEffect::Kill);
-    effects
-}
 
 /// `escape` anywhere: go back to the home layer.
 ///
