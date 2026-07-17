@@ -8,16 +8,16 @@ The extension pushes; it never answers a timer. There is no keepalive and no pol
 
 ## The wire contract
 
-One tagged JSON envelope, chosen up front so v0 and the command bus share it and shipping the bus does not rev the v0 message format. `type` discriminates; presence-based routing is not used.
+One tagged JSON envelope, chosen up front so v0 and the command bus share it and shipping the bus does not rev the v0 message format. `kind` discriminates, with UpperCamelCase values; presence-based routing is not used.
 
 ```jsonc
 // extension -> mercury
-{ "type": "tab", "url": "https://claude.ai/new" }              // v0: the active tab changed
-{ "type": "reply", "id": 42, "result": { "ok": { "value": "…" } } }   // bus: a command's result
-{ "type": "reply", "id": 42, "result": { "err": { "message": "no active tab" } } }
+{ "kind": "Tab", "url": "https://claude.ai/new" }              // v0: the active tab changed
+{ "kind": "Reply", "id": 42, "result": { "Ok": { "value": "…" } } }   // bus: a command's result
+{ "kind": "Reply", "id": 42, "result": { "Err": { "message": "no active tab" } } }
 
 // mercury -> extension
-{ "type": "command", "id": 42, "command": { "run_js": { "code": "document.title" } } }
+{ "kind": "Command", "id": 42, "command": { "RunJs": { "code": "document.title" } } }
 ```
 
 The Rust side of the contract, in the WebSocket source (`external-events.md` wires these into the event loop; they are written here because they are the shared contract):
@@ -25,7 +25,7 @@ The Rust side of the contract, in the WebSocket source (`external-events.md` wir
 ```rust
 /// A message the extension sends up to mercury.
 #[derive(serde::Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "kind")]
 pub enum Upstream {
     /// The active tab changed URL. The v0 stream; benign, needs no token.
     Tab { url: String },
@@ -35,13 +35,12 @@ pub enum Upstream {
 
 /// A message mercury sends down to the extension. Only the command bus uses it.
 #[derive(serde::Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "kind")]
 pub enum Downstream {
     Command { id: u64, command: Command },
 }
 
 #[derive(serde::Serialize)]
-#[serde(rename_all = "snake_case")]
 pub enum Command {
     RunJs { code: String },
     OpenTab { url: String },
@@ -50,7 +49,6 @@ pub enum Command {
 }
 
 #[derive(serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum CommandResult {
     Ok { value: serde_json::Value },
     Err { message: String },
@@ -113,7 +111,7 @@ function connect() {
 function pushUrl(url) {
   if (!url) return;
   connect();
-  const payload = JSON.stringify({ type: "tab", url });
+  const payload = JSON.stringify({ kind: "Tab", url });
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(payload);
   } else {
@@ -160,7 +158,7 @@ async function activeTab() {
 }
 
 const HANDLERS = {
-  run_js: async ({ code }) => {
+  RunJs: async ({ code }) => {
     const tab = await activeTab();
     const [r] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
@@ -170,16 +168,16 @@ const HANDLERS = {
     });
     return r.result;
   },
-  open_tab: async ({ url }) => {
+  OpenTab: async ({ url }) => {
     await chrome.tabs.create({ url });
     return null;
   },
-  close_tabs: async ({ url_glob }) => {
+  CloseTabs: async ({ url_glob }) => {
     const tabs = await chrome.tabs.query({ url: url_glob });
     await chrome.tabs.remove(tabs.map((t) => t.id));
     return null;
   },
-  read_selection: async () => {
+  ReadSelection: async () => {
     const tab = await activeTab();
     const [r] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
@@ -192,20 +190,20 @@ const HANDLERS = {
 
 socket.addEventListener("message", async (ev) => {
   const msg = JSON.parse(ev.data);
-  if (msg.type !== "command") return;
+  if (msg.kind !== "Command") return;
   const [name, args] = Object.entries(msg.command)[0];
   let result;
   try {
     const value = await HANDLERS[name](args ?? {});
-    result = { ok: { value } };
+    result = { Ok: { value } };
   } catch (e) {
-    result = { err: { message: String(e) } };
+    result = { Err: { message: String(e) } };
   }
-  socket.send(JSON.stringify({ type: "reply", id: msg.id, result }));
+  socket.send(JSON.stringify({ kind: "Reply", id: msg.id, result }));
 });
 ```
 
-`run_js` and `read_selection` run in `world: "MAIN"` so page globals (`getSelection`, page functions) are in scope; `close_tabs` takes a Chrome URL match pattern in `url_glob`.
+`RunJs` and `ReadSelection` run in `world: "MAIN"` so page globals (`getSelection`, page functions) are in scope; `CloseTabs` takes a Chrome URL match pattern in `url_glob`.
 
 ### Auth
 
