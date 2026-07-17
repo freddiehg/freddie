@@ -11,7 +11,7 @@ use crate::state::Mercury;
 /// Any modifier key. Record it in `held` (which feeds the open/close sync sweeps), then pass it
 /// through while a passthrough layer is active, carrying exactly the flags it arrived with. Its
 /// flags are authoritative; `held` is for the sweeps, not for stamping this.
-pub(crate) fn on_modifier(ev: &KeyEvent, node: Node<&mut Mercury, ()>) -> Vec<MercuryEffect> {
+pub(crate) fn track_modifier(ev: &KeyEvent, node: Node<&mut Mercury, ()>) -> Vec<MercuryEffect> {
     let root = node.parent;
     root.held.apply(ev);
     if root.layer().is_passthrough() {

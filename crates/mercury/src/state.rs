@@ -23,15 +23,15 @@ use crate::{
 #[node(root)]
 #[binds(MercuryStruct)]
 #[bind(
-    Foregrounded => on_foregrounded,
-    Quit => on_quit,
-    AnyModifierKey => on_modifier,
+    Foregrounded => record_front_app,
+    Quit => kill,
+    AnyModifierKey => track_modifier,
     AnyNonModifierKey => maybe_pass_through,
 )]
 pub struct Mercury {
     /// The frontmost app and whether a nav is in flight. See [`Foreground`].
     pub foreground: Foreground,
-    /// The physical truth about which modifier keys are down, updated by [`on_modifier`] on every
+    /// The physical truth about which modifier keys are down, updated by [`track_modifier`] on every
     /// modifier event in every layer. It has to outlive the layer, because entering and leaving a
     /// passthrough layer reads it to synchronize the app's modifier view. See [`HeldModifiers`].
     pub held: HeldModifiers,
@@ -54,14 +54,14 @@ pub struct Foreground {
 
 impl Foreground {
     /// A nav choice foregrounded an app; the watcher has not confirmed it, so `app` stays stale
-    /// until it does. From [`on_navigate`](crate::handlers).
-    pub const fn on_navigation(&mut self) {
+    /// until it does. From the nav handlers, and undone by [`set_front_app`](Self::set_front_app).
+    pub const fn start_navigating(&mut self) {
         self.navigating = true;
     }
 
     /// The watcher reported the front app: record it and end any pending navigation. From
-    /// [`on_foregrounded`](crate::handlers).
-    pub const fn on_foregrounded_app_event(&mut self, app: App) {
+    /// [`record_front_app`](crate::handlers).
+    pub const fn set_front_app(&mut self, app: App) {
         self.app = app;
         self.navigating = false;
     }

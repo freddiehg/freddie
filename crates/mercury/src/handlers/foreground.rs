@@ -11,11 +11,11 @@ use crate::{ForegroundEvent, MercuryEffect};
 /// `app_data` rebuilds the app's level from `root.foreground` on every dispatch. Layers other
 /// than in-app are unaffected; foregrounding does not move you between them. This is the watcher
 /// confirming the new front app, so it also ends a pending nav and the app's level resolves again.
-pub(crate) const fn on_foregrounded(
+pub(crate) const fn record_front_app(
     ev: &ForegroundEvent,
     node: Node<&mut Mercury, ()>,
 ) -> Vec<MercuryEffect> {
     let root = node.parent;
-    root.foreground.on_foregrounded_app_event(ev.app);
+    root.foreground.set_front_app(ev.app);
     Vec::new()
 }

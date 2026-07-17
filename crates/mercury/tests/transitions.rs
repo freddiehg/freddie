@@ -674,19 +674,19 @@ fn reported_bundle_ids_map() {
 #[test]
 fn the_inapp_layers_bindings_follow_the_root_with_no_resync() {
     let mut m = Mercury::with_layer(Layer::InApp(AppLayer::default()));
-    m.foreground.on_foregrounded_app_event(App::Chrome);
+    m.foreground.set_front_app(App::Chrome);
     // Chrome binds `r`.
     assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
 
     // Write the ROOT directly. Nothing touches the layer.
-    m.foreground.on_foregrounded_app_event(App::Ghostty);
+    m.foreground.set_front_app(App::Ghostty);
 
     // Chrome's `r` is gone and Ghostty's `j` is live, with no re-entry and no resync.
     assert_eq!(m.handle(&key(Key::KeyR)), Some(vec![]));
     assert!(m.handle(&key(Key::KeyJ)).is_some());
 
     // An app with no bindings has no level at all.
-    m.foreground.on_foregrounded_app_event(App::Zed);
+    m.foreground.set_front_app(App::Zed);
     assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
 }
 

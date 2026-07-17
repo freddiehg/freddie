@@ -170,7 +170,7 @@ async fn run(event_tx: UnboundedSender<MercuryEvent>, event_rx: UnboundedReceive
     // Seed the model with the app that is actually frontmost, rather than defaulting to
     // `Other`, so the in-app layer resolves correctly before the first foreground event.
     let mut mercury = Mercury::default();
-    mercury.foreground.on_foregrounded_app_event(
+    mercury.foreground.set_front_app(
         freddie_app_nav::frontmost()
             .map_or(App::Other, |bundle_id| App::from_bundle_id(&bundle_id)),
     );

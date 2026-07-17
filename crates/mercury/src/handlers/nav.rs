@@ -2,7 +2,7 @@
 //!
 //! Picking an app emits the foreground effect and switches straight to the in-app
 //! layer, marking a navigation in flight. The app is not recorded here; the watcher
-//! reports the app that actually comes up, and [`on_foregrounded`](super::on_foregrounded)
+//! reports the app that actually comes up, and [`record_front_app`](super::record_front_app)
 //! records it and clears the flag. Until then the in-app level is empty (see
 //! [`app_data`](crate::state)), so the old app's bindings do not apply in the gap.
 
@@ -17,7 +17,7 @@ fn navigate(path: NavLayerPath<'_>, app: App) -> Vec<MercuryEffect> {
     // Ascend to the root regardless of the levels between: `foreground` and the layer both live
     // on it.
     let root = path.ascend_to::<MercuryPath>();
-    root.foreground.on_navigation();
+    root.foreground.start_navigating();
     let mut effects = root.set_layer(AppLayer {});
     effects.push(MercuryEffect::Foreground(app));
     effects
