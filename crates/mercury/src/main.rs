@@ -37,9 +37,11 @@
 
 use std::ops::ControlFlow;
 
+use freddie::{AlwaysEqual, TimerEffect};
 use freddie_keyboard::Emitter;
 use mercury::{App, Mercury, MercuryEffect, MercuryEvent, Placement, foreground, quit_event};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::oneshot::error::TryRecvError;
 use tracing::{debug, error, info, warn};
 
 mod logging;
@@ -177,7 +179,7 @@ async fn run(event_tx: UnboundedSender<MercuryEvent>, event_rx: UnboundedReceive
 
     tokio::select! {
         () = run_event_loop(mercury, event_rx, effect_tx) => {}
-        () = run_effect_loop(effect_rx, emitter) => {}
+        () = run_effect_loop(effect_rx, emitter, event_tx) => {}
     }
     drop(interceptor); // hold the grab until here
 }
@@ -216,9 +218,13 @@ fn dispatch_event(
 /// The `Emitter` is `!Send` by design, so this future is `!Send`; it runs on the
 /// worker thread that created the `Emitter` and never crosses a thread.
 #[allow(clippy::future_not_send)]
-async fn run_effect_loop(mut effect_rx: UnboundedReceiver<MercuryEffect>, emitter: Emitter) {
+async fn run_effect_loop(
+    mut effect_rx: UnboundedReceiver<MercuryEffect>,
+    emitter: Emitter,
+    event_tx: UnboundedSender<MercuryEvent>,
+) {
     while let Some(effect) = effect_rx.recv().await {
-        if perform_effect(&effect, &emitter).is_break() {
+        if perform_effect(effect, &emitter, &event_tx).is_break() {
             break;
         }
     }
@@ -230,10 +236,14 @@ async fn run_effect_loop(mut effect_rx: UnboundedReceiver<MercuryEffect>, emitte
 /// `Kill` breaks rather than exiting the process, so the way out runs destructors:
 /// the `Interceptor` releases the keyboard, the `Stopper` stops main's run loop,
 /// and anything registered with the OS gets to deregister.
-fn perform_effect(effect: &MercuryEffect, emitter: &Emitter) -> ControlFlow<()> {
+fn perform_effect(
+    effect: MercuryEffect,
+    emitter: &Emitter,
+    event_tx: &UnboundedSender<MercuryEvent>,
+) -> ControlFlow<()> {
     match effect {
-        MercuryEffect::Foreground(app) => foreground_app(*app),
-        MercuryEffect::Tap { key, flags } => match emitter.tap(*key, *flags) {
+        MercuryEffect::Foreground(app) => foreground_app(app),
+        MercuryEffect::Tap { key, flags } => match emitter.tap(key, flags) {
             Ok(()) => debug!(?key, ?flags, "tapped"),
             Err(e) => warn!(?key, ?flags, error = %e, "tap failed"),
         },
@@ -241,13 +251,38 @@ fn perform_effect(effect: &MercuryEffect, emitter: &Emitter) -> ControlFlow<()> 
             Ok(()) => debug!(key = ?ke.key, press = ?ke.press, "emitted"),
             Err(e) => warn!(key = ?ke.key, press = ?ke.press, error = %e, "emit failed"),
         },
-        MercuryEffect::Place(placement) => place_window(*placement),
+        MercuryEffect::Place(placement) => place_window(placement),
         MercuryEffect::Kill => {
             info!("kill: exiting");
             return ControlFlow::Break(());
         }
+        MercuryEffect::Timer(timer) => schedule_timer(timer, event_tx),
     }
     ControlFlow::Continue(())
+}
+
+/// Schedule `timer`: fire its event after its delay, unless the guard the model kept drops first.
+///
+/// Fire-and-forget on the runtime, like `foreground_app` and `place_window`, so a pending sleep
+/// runs off the effect loop.
+fn schedule_timer(timer: TimerEffect<MercuryEvent>, event_tx: &UnboundedSender<MercuryEvent>) {
+    let TimerEffect {
+        delay,
+        event,
+        cancel: AlwaysEqual(mut cancel),
+    } = timer;
+    // If the guard dropped before the loop reached this, the receiver is closed and the timer is
+    // already cancelled, so there is nothing to spawn.
+    if matches!(cancel.try_recv(), Err(TryRecvError::Closed)) {
+        return;
+    }
+    let event_tx = event_tx.clone();
+    tokio::spawn(async move {
+        tokio::select! {
+            () = tokio::time::sleep(delay) => { let _ = event_tx.send(event); }
+            _ = cancel => {}
+        }
+    });
 }
 
 /// Place the focused window, fire-and-forget on its own thread. It takes tens of

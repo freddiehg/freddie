@@ -863,6 +863,7 @@ version = "0.0.1"
 dependencies = [
  "bind",
  "derive_more",
+ "freddie",
  "freddie_app_nav",
  "freddie_keyboard",
  "freddie_keys",

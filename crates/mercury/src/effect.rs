@@ -1,6 +1,9 @@
 //! What a handler asks the consumer to do, and the window placement it can request.
 
+use freddie::TimerEffect;
 use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
+
+use crate::MercuryEvent;
 
 /// Where a window should go. Mercury's own, mirroring `freddie_windows::Placement` so the
 /// model stays free of the OS crates, the way `App` is free of bundle ids.
@@ -38,6 +41,9 @@ pub enum MercuryEffect {
     Place(Placement),
     /// Quit the program. The effect handler performs this by exiting.
     Kill,
+    /// Arm a timer. The effect loop schedules it; it fires its event after the delay unless the
+    /// guard held by the state that asked for it drops first.
+    Timer(TimerEffect<MercuryEvent>),
 }
 
 pub(crate) const fn tap(key: Key, flags: ModifierFlags) -> MercuryEffect {
