@@ -6,6 +6,8 @@ Commit after every change, small and atomically, without being asked. Each logic
 
 ## Refactor docs
 
+This section is extremely important. A frequent source of frustration is deviations from this protocol. Take it very seriously and frequently refresh your memory on how to write planning documents. 99% of our time is spent iterating on planning documents, so it is extremely important that you do this correctly.
+
 - The primary way we plan things is through documents in the `refactor/` folder.
 - Move a `refactors/pending` doc to `refactors/past` once its work is implemented and tested, or we have decided that the work is not worth doing.
 - Each doc must, at all times that we are actively working on it, conform to several standards:
