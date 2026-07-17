@@ -40,9 +40,7 @@ use objc2_foundation::{MainThreadMarker, NSNotification, NSNotificationCenter};
 pub enum Placement {
     /// The whole visible frame.
     Maximize,
-    /// The left half.
     LeftHalf,
-    /// The right half.
     RightHalf,
 }
 

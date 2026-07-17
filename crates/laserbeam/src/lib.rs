@@ -190,7 +190,6 @@ mod tests {
 /// its parent as a route enum rather than a `PathMut`, so the shapes stop matching,
 /// and the ascent would not be unique anyway.
 pub trait Ascend<Target> {
-    /// Walk up to the target.
     fn ascend(self) -> Target;
 }
 

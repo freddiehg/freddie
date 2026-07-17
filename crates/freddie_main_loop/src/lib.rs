@@ -132,7 +132,6 @@ impl MainLoop {
                     )
                 };
                 if let Some(event) = event {
-                    // dispatching the event we just dequeued, on the main thread.
                     app.sendEvent(&event);
                 }
             });

@@ -186,7 +186,6 @@ impl<N, P> HasParent for ::laserbeam::PathMut<N, P> {
 pub trait EventTrigger {
     /// The source event this trigger matches against.
     type Event;
-    /// Whether the trigger matches `event`.
     #[must_use]
     fn is_matching(&self, event: &Self::Event) -> bool;
 }
@@ -328,7 +327,6 @@ impl<M: Bindings, N> SimpleRunner<'_, M, N> {
         self.queue.len()
     }
 
-    /// Whether the queue is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()

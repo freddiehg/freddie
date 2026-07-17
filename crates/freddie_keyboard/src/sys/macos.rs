@@ -241,7 +241,7 @@ pub fn intercept(
                     flags: from_cg(event.get_flags()),
                 };
                 // Physical HID input is PID 0; a userspace `CGEventPost` (another app) is nonzero.
-                // Logged only, for now. (Our own emits are tagged and returned above.)
+                // Logged only. (Our own emits are tagged and returned above.)
                 let source_pid =
                     event.get_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID);
                 tracing::trace!(?input, source_pid, "tap");

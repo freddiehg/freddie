@@ -18,14 +18,16 @@ pub enum Placement {
 #[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
 #[derive(Debug)]
 pub enum MercuryEffect {
-    /// Bring an app to the foreground.
     Foreground(super::App),
     /// Tap `key` with `flags` baked into both halves. The chord.
     ///
     /// `cmd`-`r` is `Tap { key: KeyR, flags: COMMAND }`: one key carrying the modifier as a flag,
     /// not a synthetic `cmd` down and up around it. A synthetic modifier event would strand the
     /// modifier the user is really holding (the app counts the extra up and thinks it released).
-    Tap { key: Key, flags: ModifierFlags },
+    Tap {
+        key: Key,
+        flags: ModifierFlags,
+    },
     /// Emit one raw key event, a press or a release on its own.
     ///
     /// The escape hatch, for the one case that is genuinely a lone half of a keypress: passing
@@ -38,7 +40,6 @@ pub enum MercuryEffect {
     Kill,
 }
 
-/// Tap `key` with `flags` baked in.
 pub(crate) const fn tap(key: Key, flags: ModifierFlags) -> MercuryEffect {
     MercuryEffect::Tap { key, flags }
 }

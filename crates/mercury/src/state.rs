@@ -262,7 +262,6 @@ impl Mercury {
         bind::dispatch::<MercuryStruct, Self>(self, event)
     }
 
-    /// The active layer.
     #[must_use]
     pub const fn layer(&self) -> &Layer {
         &self.layer
@@ -426,7 +425,6 @@ impl HeldModifiers {
     }
 }
 
-/// A keyboard event for `key`.
 #[must_use]
 pub const fn key(key: Key) -> MercuryEvent {
     MercuryEvent::Key(KeyEvent {
@@ -436,7 +434,6 @@ pub const fn key(key: Key) -> MercuryEvent {
     })
 }
 
-/// An app-foregrounded event for `app`.
 #[must_use]
 pub const fn foreground(app: App) -> MercuryEvent {
     MercuryEvent::Foreground(ForegroundEvent { app })
