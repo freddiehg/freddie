@@ -41,3 +41,4 @@ The file always records down to `debug`, whatever the terminal is set to, so a r
 - If we have to do extra refactoring work to maintain the above, we should do the extra work. If we need to refactor large parts of freddie in order to have the right building blocks, then we will do that.
 - If we need a more performant, but less idiomatic impl, then create a newtype/struct/enum that encapsulates the ugly complexity but exposes an idiomatic API.
 - If a comment provides no more information than one would get by reading the code, do not include the comment.
+- A comment should not describe what wasn't done, ESPECIALLY if "we didn't do x" is more indicative of the fact that we either previously discussed doing X or in a previous iteration of a planning doc, you suggested doing X.
