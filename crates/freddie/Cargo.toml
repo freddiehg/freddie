@@ -6,6 +6,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[dependencies]
+tokio = { version = "1", features = ["sync"] }
+
 [features]
 # Test-only equality: `AlwaysEqual` compares equal only under this, so it stays out of the
 # normal build.
