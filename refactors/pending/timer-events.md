@@ -2,7 +2,7 @@
 
 A timer is a source: it fires an event, that event dispatches like a keypress, and a handler runs. It comes as two linked halves. `timer_effect_and_guard::<E>(delay, event)` returns `(TimerGuard, TimerEffect<E>)`: the owning node holds the guard, the handler returns the event as an effect, the effect loop schedules it, and dropping the guard cancels the timer. Clobbering a timer is dropping the guard and building a new pair; leaving a state drops the node and its guard.
 
-This doc is the timer primitive and the effect that carries it. The consumers are `refactors/pending/nav-timeout.md` and `refactors/pending/overlay.md`.
+This doc is the timer primitive and the effect that carries it. The consumers are `refactors/pending/layer-timeout.md` and `refactors/pending/overlay.md`.
 
 ## change 1: the freddie timer primitive
 

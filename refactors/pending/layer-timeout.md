@@ -2,28 +2,19 @@
 
 A layer can time out: after a dwell with no input, it returns home. The `Layer` node binds `LayerTimeout` to a handler that goes home, so any layer inherits the behavior; a layer that wants a timeout holds a `TimerGuard` and arms one on entry. Leaving the layer drops its node and the guard, cancelling the timer. Nav is the first layer to use it, with a ten-second dwell.
 
-This builds on `refactors/pending/timer-events.md` (the `freddie` timer primitive and the `MercuryEffect::Timer` effect). It adds the timeout event, the `Layer` binding, the guard field on `NavLayer`, and the entry that arms it.
+This builds on `refactors/pending/timer-events.md` (the timer primitive and the `Timer` effect), `refactors/pending/layer-modules.md` (each layer built through `new`), and `refactors/pending/self-trigger.md` (the `self_trigger!` macro). It adds the timeout event, the `Layer` binding, and the guard on `NavLayer`.
 
-## change 1: the layer timeout event and trigger
+## change 1: the layer timeout trigger
 
 `crates/mercury/src/sources.rs`, appended:
 
 ```rust
-/// A trigger matching a layer's idle-timeout firing.
+/// A layer's idle-timeout. It carries nothing, so one type is both the trigger and the event it
+/// fires.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct LayerTimeout;
 
-/// A layer's idle-timeout fired.
-#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
-#[derive(Debug)]
-pub struct LayerTimeoutEvent;
-
-impl EventTrigger for LayerTimeout {
-    type Event = LayerTimeoutEvent;
-    fn is_matching(&self, _ev: &LayerTimeoutEvent) -> bool {
-        true
-    }
-}
+bind::self_trigger!(LayerTimeout);
 ```
 
 `crates/mercury/src/model.rs`, `MercuryTrigger`, before:
@@ -76,15 +67,56 @@ pub enum MercuryEvent {
     Key(KeyEvent),
     Foreground(ForegroundEvent),
     Quit(QuitEvent),
-    LayerTimeout(LayerTimeoutEvent),
+    LayerTimeout(LayerTimeout),
 }
 ```
 
-The `use crate::{..}` in `model.rs` picks up `LayerTimeout` and `LayerTimeoutEvent`.
+`crates/mercury/src/lib.rs`, the `sources` re-export, before:
+
+```rust
+pub use sources::{
+    AnyModifierKey, AnyNonModifierKey, App, ForegroundEvent, Foregrounded, Quit, QuitEvent,
+};
+```
+
+after:
+
+```rust
+pub use sources::{
+    AnyModifierKey, AnyNonModifierKey, App, ForegroundEvent, Foregrounded, LayerTimeout, Quit,
+    QuitEvent,
+};
+```
+
+`model.rs`'s `use crate::{..}` then picks up `LayerTimeout`.
 
 ## change 2: the Layer node returns home on timeout
 
-`crates/mercury/src/state.rs`, `Layer`, before:
+`to_home` already goes home and ignores its event, so generalize it over the event type and bind `LayerTimeout` to it alongside `escape`.
+
+`crates/mercury/src/handlers/home.rs`, `to_home`, before:
+
+```rust
+pub(crate) fn to_home<'a, P: Ascend<MercuryPath<'a>>>(
+    _ev: &KeyEvent,
+    node: Node<P, ()>,
+) -> Vec<MercuryEffect> {
+    go_home(node.parent.ascend())
+}
+```
+
+after (generic over the fired event, so any trigger can bind it):
+
+```rust
+pub(crate) fn to_home<'a, E, P: Ascend<MercuryPath<'a>>>(
+    _ev: &E,
+    node: Node<P, ()>,
+) -> Vec<MercuryEffect> {
+    go_home(node.parent.ascend())
+}
+```
+
+`crates/mercury/src/state/mod.rs`, `Layer`, before:
 
 ```rust
 #[derive(Bind, Debug, derive_more::From)]
@@ -102,32 +134,26 @@ after:
 #[binds(MercuryStruct)]
 #[bind(
     Key::Escape.down() => to_home,
-    LayerTimeout => on_layer_timeout,
+    LayerTimeout => to_home,
 )]
 pub enum Layer {
 ```
 
-`crates/mercury/src/handlers/home.rs`, appended (beside `to_home`, which the `Layer` node also binds):
-
-```rust
-use crate::LayerTimeoutEvent;
-use crate::state::LayerPath;
-
-/// A layer idled out: go home. Bound on the `Layer` node, so a fired timeout returns home from
-/// whichever layer is active.
-pub(crate) fn on_layer_timeout(
-    _ev: &LayerTimeoutEvent,
-    node: Node<LayerPath, ()>,
-) -> Vec<MercuryEffect> {
-    go_home(node.parent.ascend_to::<MercuryPath>())
-}
-```
-
 ## change 3: nav holds the guard and arms the timeout
 
-`crates/mercury/src/state.rs`, `NavLayer`, before:
+`NavLayer::new` (from `layer-modules.md`) gains the timeout: it arms the timer, keeps the guard, and returns the effect that schedules it.
+
+`crates/mercury/src/state/nav.rs`, before:
 
 ```rust
+use bind::Bind;
+use freddie_keys::Key;
+
+#[allow(clippy::wildcard_imports)]
+use crate::handlers::*;
+use crate::MercuryStruct;
+use super::LayerPath;
+
 #[derive(Bind, Debug)]
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
@@ -138,11 +164,32 @@ pub(crate) fn on_layer_timeout(
     Key::KeyZ.down() => open_zed,
 )]
 pub struct NavLayer {}
+
+impl NavLayer {
+    #[must_use]
+    pub(crate) fn new() -> Self {
+        Self {}
+    }
+}
 ```
 
 after:
 
 ```rust
+use std::time::Duration;
+
+use bind::Bind;
+use freddie::{timer_effect_and_guard, TimerGuard};
+use freddie_keys::Key;
+
+#[allow(clippy::wildcard_imports)]
+use crate::handlers::*;
+use crate::{LayerTimeout, MercuryEffect, MercuryEvent, MercuryStruct};
+use super::LayerPath;
+
+/// How long nav sits idle before returning home.
+pub const RETURN_TO_HOME_TIMEOUT: Duration = Duration::from_secs(10);
+
 #[derive(Bind, Debug)]
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
@@ -155,38 +202,31 @@ after:
 pub struct NavLayer {
     timeout: TimerGuard,
 }
-```
 
-The `timeout` field is plain data, so the derive still treats `NavLayer` as a leaf.
-
-`crates/mercury/src/state.rs` gains `use freddie::{timer_effect_and_guard, TimerGuard};` and `use std::time::Duration;`, the dwell constant, and the entry method that builds the pair where `NavLayer`'s private field is reachable, holds the guard, and returns the effect:
-
-```rust
-/// How long a layer sits idle before returning home.
-const LAYER_TIMEOUT: Duration = Duration::from_secs(10);
-
-impl Mercury {
-    /// Enter the nav layer, arming its idle-timeout. Sitting in nav for `LAYER_TIMEOUT` fires
-    /// `LayerTimeout`, which returns home; picking an app or leaving first drops the layer, and
-    /// the guard with it, cancelling the timer.
-    pub fn enter_nav(&mut self) -> Vec<MercuryEffect> {
+impl NavLayer {
+    /// Build the nav layer with its idle-timeout armed, returning the layer and the effect that
+    /// schedules the timeout.
+    #[must_use]
+    pub(crate) fn new() -> (Self, MercuryEffect) {
         let (timeout, effect) =
-            timer_effect_and_guard(LAYER_TIMEOUT, MercuryEvent::LayerTimeout(LayerTimeoutEvent));
-        let mut effects = self.set_layer(NavLayer { timeout });
-        effects.push(MercuryEffect::Timer(effect));
-        effects
+            timer_effect_and_guard(RETURN_TO_HOME_TIMEOUT, MercuryEvent::LayerTimeout(LayerTimeout));
+        (Self { timeout }, MercuryEffect::Timer(effect))
     }
 }
 ```
 
-`crates/mercury/src/handlers/home.rs`, `to_nav`, before:
+The `timeout` field is plain data, so the derive still treats `NavLayer` as a leaf.
+
+`state/mod.rs` re-exports the constant with the layer (`pub use nav::{NavLayer, RETURN_TO_HOME_TIMEOUT};`), and `lib.rs` adds `RETURN_TO_HOME_TIMEOUT` to its `pub use state::{..}`, so the test can name `RETURN_TO_HOME_TIMEOUT`.
+
+`crates/mercury/src/handlers/home.rs`, `to_nav` (which `layer-modules.md` left calling `NavLayer::new`), unpacks the pair: `set_layer(nav)`, then folds the timer effect into the result. Before:
 
 ```rust
 pub(crate) fn to_nav<'a, P: Ascend<MercuryPath<'a>>>(
     _ev: &KeyEvent,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
-    node.parent.ascend().set_layer(NavLayer {})
+    node.parent.ascend().set_layer(NavLayer::new())
 }
 ```
 
@@ -197,11 +237,12 @@ pub(crate) fn to_nav<'a, P: Ascend<MercuryPath<'a>>>(
     _ev: &KeyEvent,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
-    node.parent.ascend().enter_nav()
+    let (nav, timer) = NavLayer::new();
+    let mut effects = node.parent.ascend().set_layer(nav);
+    effects.push(timer);
+    effects
 }
 ```
-
-`home.rs`'s `use crate::state::{..}` drops `NavLayer` (now unused there).
 
 ## change 4: tests
 
@@ -209,7 +250,7 @@ pub(crate) fn to_nav<'a, P: Ascend<MercuryPath<'a>>>(
 
 ```rust
 let (_guard, effect) =
-    freddie::timer_effect_and_guard(LAYER_TIMEOUT, MercuryEvent::LayerTimeout(LayerTimeoutEvent));
+    freddie::timer_effect_and_guard(RETURN_TO_HOME_TIMEOUT, MercuryEvent::LayerTimeout(LayerTimeout));
 assert_eq!(m.handle(&key(Key::KeyN)), Some(vec![MercuryEffect::Timer(effect)]));
 ```
 
@@ -217,4 +258,4 @@ assert_eq!(m.handle(&key(Key::KeyN)), Some(vec![MercuryEffect::Timer(effect)]));
 - `n` then `c` foregrounds Chrome and enters the in-app layer; a `LayerTimeout` queued afterward returns to home from the in-app layer (the `Layer` node binds it whichever layer is active).
 - `LayerTimeout` in home re-enters home.
 
-Existing tests enter nav by dispatching `n` and match `Layer::Nav(_)` ignoring fields, so they still pass unchanged. `LAYER_TIMEOUT` is `pub(crate)` so the test can name it.
+Existing tests enter nav by dispatching `n` and match `Layer::Nav(_)` ignoring fields, so they still pass unchanged.
