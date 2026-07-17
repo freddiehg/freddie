@@ -1,40 +1,227 @@
 # a Chrome extension bridge for mercury
 
-Not built. mercury needs to know Chrome's active-tab URL, for per-site key remaps (see `chrome-tab-url.md`), and eventually to drive Chrome directly (run page JavaScript, open and close tabs, read a selection). A Chrome extension is the bridge for both. It has a small v0 and a much larger eventual form, and they are worth separating: v0 is a few dozen lines, and the full thing is a real undertaking.
+Not built. mercury needs Chrome's active-tab URL for per-site key remaps (`chrome-tab-url.md`), and later a channel to drive Chrome directly (run page JavaScript, open and close tabs, read the selection). A Chrome extension is the bridge for both, over the localhost WebSocket that `external-events.md` defines. Two phases share one connection: v0 streams the URL up; the command bus adds commands down and results up.
 
-No polling, anywhere. The extension pushes; mercury never asks on a timer.
+This doc owns the browser side (the extension) and the wire contract both sides speak. The mercury side is split off: `external-events.md` owns the WebSocket source that terminates the connection and maps each message to a `MercuryEvent`, and `chrome-tab-url.md` owns the `TabEvent { url }` and the model that remaps keys from it.
 
-## v0: stream the active tab's URL
+The extension pushes; it never answers a timer. There is no keepalive and no poll loop. When there is nothing to report the connection may lapse, and the next tab event reopens it (see "The service-worker lifetime" below).
 
-One direction, one message. A background service worker subscribes to `chrome.tabs.onActivated` (tab switch) and `chrome.tabs.onUpdated` (navigation within a tab), reads the active tab's URL, and sends it to mercury whenever it changes. That is the entire extension: two event listeners and one outbound `{ url }` message. It is event-driven, so mercury learns of a change the instant it happens.
+## The wire contract
 
-mercury turns each message into a `TabEvent { url }`, and the model does the rest (`chrome-tab-url.md`). This is all v0 needs, because mercury's v0 only remaps keys, and a keystroke it emits itself.
+One tagged JSON envelope, chosen up front so v0 and the command bus share it and shipping the bus does not rev the v0 message format. `type` discriminates; presence-based routing is not used.
 
-### Transport
+```jsonc
+// extension -> mercury
+{ "type": "tab", "url": "https://claude.ai/new" }              // v0: the active tab changed
+{ "type": "reply", "id": 42, "result": { "ok": { "value": "…" } } }   // bus: a command's result
+{ "type": "reply", "id": 42, "result": { "err": { "message": "no active tab" } } }
 
-Two ways to carry the messages, and the choice matters because the eventual command bus rides the same channel.
+// mercury -> extension
+{ "type": "command", "id": 42, "command": { "run_js": { "code": "document.title" } } }
+```
 
-- A local WebSocket: mercury runs a tiny loopback server, the extension's service worker connects to it and streams. It needs a host permission for the loopback origin and a way for both sides to agree on the port, but it is bidirectional from day one, so the command bus later adds message types rather than a new transport.
-- Chrome native messaging: Chrome launches a native host binary from a manifest and pipes it stdin/stdout. It is awkward here because mercury is already running, so the native host would only be a relay from Chrome's short-lived host process into the running mercury.
+The Rust side of the contract, in the WebSocket source (`external-events.md` wires these into the event loop; they are written here because they are the shared contract):
 
-For the one-way v0 stream either works; the WebSocket is the one that extends without rework.
+```rust
+/// A message the extension sends up to mercury.
+#[derive(serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Upstream {
+    /// The active tab changed URL. The v0 stream; benign, needs no token.
+    Tab { url: String },
+    /// A reply to a command mercury sent down. Only after the command bus ships.
+    Reply { id: u64, result: CommandResult },
+}
 
-## The complicated version: a command bus
+/// A message mercury sends down to the extension. Only the command bus uses it.
+#[derive(serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Downstream {
+    Command { id: u64, command: Command },
+}
 
-The eventual form is bidirectional. mercury sends commands down (run this JavaScript in the tab, open a tab, close every tab matching a pattern, read the current selection); the extension runs them with the real extension APIs (`chrome.scripting.executeScript`, `chrome.tabs.query`, `chrome.tabs.create`) and sends results back up. This is where essentially all the complexity lives, and none of it is in the URL stream:
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Command {
+    RunJs { code: String },
+    OpenTab { url: String },
+    CloseTabs { url_glob: String },
+    ReadSelection,
+}
 
-- Command registration and dispatch: a table of the command types the extension understands, each mapped to a handler. Adding an action means registering it on both sides and keeping them in step.
-- Request/response correlation: commands that return a value need ids so a reply can be matched to its request, plus timeouts for commands that never answer.
-- Errors and versioning: an action can fail in the page (a missing permission, a navigation mid-command), so the protocol needs an error shape, and a version so mercury and the extension degrade gracefully when one updates ahead of the other.
-- Security: the loopback socket is reachable by any local process, and this channel can run arbitrary JavaScript in your tabs, so it needs at least a shared token, probably more.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandResult {
+    Ok { value: serde_json::Value },
+    Err { message: String },
+}
+```
 
-Build the command bus only when a concrete action appears that no keystroke expresses, and keep the URL stream working without it until then.
+`Upstream::Tab` maps to `TabEvent { url }` (`chrome-tab-url.md`); the source drops any other upstream variant until the bus exists.
 
-The escape hatch before the bus exists is osascript, for a single scripted action fired from a bind: an on-keypress effect spawns `osascript` to run one AppleScript, including page JavaScript behind Chrome's "Allow JavaScript from Apple Events" toggle. That is event-driven (it runs on a keybind, not a timer), so it is not polling; it is just a slower, clumsier one-off than the bus, and it never touches the URL stream.
+### The endpoint
 
-## Open questions
+mercury listens on `127.0.0.1:48291`. The port is the shared constant; `external-events.md`'s source binds it and the extension connects to it. Loopback-only is the security floor for v0 (see "Auth").
 
-- Transport: WebSocket versus native messaging, and for the WebSocket the port and any handshake beyond being loopback-only.
-- Install story: an unpacked dev load to start, a packed or store extension later.
-- Whether one extension serves other Chromium browsers (Arc, Brave), and how Safari (no equivalent) is handled if at all.
-- The command-bus protocol, when it is built: message framing, request ids, error shape, version, and auth token.
+## The service-worker lifetime
+
+An MV3 background service worker is killed after roughly 30s idle, which closes the WebSocket. This is why there is no persistent connection to hold and no timer to keep it warm: the worker's registered `chrome.tabs` listeners revive it when a tab event fires, and the handler reopens the socket if it is closed before sending. So a dead socket during idle is correct, not a bug, and it costs one reconnect on the next real event. No keepalive ping, which would be both a timer and pointless traffic.
+
+## Change 1: v0, stream the active tab's URL
+
+The whole v0 extension is two files under `chrome-extension/`. It depends on `external-events.md`'s WebSocket source being live on `127.0.0.1:48291` and on `chrome-tab-url.md`'s `TabEvent`; with both, this ships the URL stream end to end.
+
+`chrome-extension/manifest.json`:
+
+```json
+{
+  "manifest_version": 3,
+  "name": "mercury bridge",
+  "version": "0.0.1",
+  "background": { "service_worker": "background.js" },
+  "permissions": ["tabs"],
+  "host_permissions": ["http://127.0.0.1/*"]
+}
+```
+
+`tabs` grants the `url` field on a `Tab`. `host_permissions` for the loopback lets the worker open the WebSocket; Chrome checks a `ws://` connection against the matching `http://` host permission, and match patterns ignore the port, so `http://127.0.0.1/*` covers `:48291`.
+
+`chrome-extension/background.js`:
+
+```js
+// The mercury bridge service worker. Opens a loopback WebSocket to mercury and
+// pushes the active tab's URL on every tab switch and in-tab navigation.
+// Event-driven: reconnect on the next event, no keepalive timer, no poll.
+
+const MERCURY_URL = "ws://127.0.0.1:48291";
+
+let socket = null;
+
+function connect() {
+  if (
+    socket &&
+    (socket.readyState === WebSocket.OPEN ||
+      socket.readyState === WebSocket.CONNECTING)
+  ) {
+    return;
+  }
+  socket = new WebSocket(MERCURY_URL);
+  socket.addEventListener("close", () => (socket = null));
+  socket.addEventListener("error", () => (socket = null));
+}
+
+function pushUrl(url) {
+  if (!url) return;
+  connect();
+  const payload = JSON.stringify({ type: "tab", url });
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.send(payload);
+  } else {
+    socket.addEventListener("open", () => socket.send(payload), { once: true });
+  }
+}
+
+connect();
+
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  chrome.tabs.get(tabId, (tab) => pushUrl(tab.url));
+});
+
+chrome.tabs.onUpdated.addListener((_tabId, info, tab) => {
+  if (info.url && tab.active) pushUrl(tab.url);
+});
+```
+
+`onActivated` reads the tab that was just activated by id; `onUpdated` fires per changed tab, so it filters to `tab.active` and to updates that actually carried a new `url`. Re-sending an identical URL is harmless: `on_tab` fills the same value and dispatch produces no change (`chrome-tab-url.md`).
+
+Install for development by loading `chrome-extension/` unpacked at `chrome://extensions`. A packed or store build is deferred; nothing in the code depends on which.
+
+## Change 2: the command bus
+
+The bidirectional phase. mercury sends `Downstream::Command` down; the extension runs each with the real extension APIs and sends `Upstream::Reply` back up. It depends on `external-events.md`'s source going bidirectional: assigning a monotonic `id` per command, holding an `id -> oneshot::Sender<CommandResult>` map with a per-command timeout, and enforcing the token gate below.
+
+### The extension's half
+
+The manifest gains `scripting` (to inject into pages) and host permissions for the sites it will script:
+
+```json
+{
+  "permissions": ["tabs", "scripting", "storage"],
+  "host_permissions": ["http://127.0.0.1/*", "<all_urls>"]
+}
+```
+
+A handler table maps each command variant to the API call that runs it, and a `message` listener dispatches by variant and replies with the result or the caught error:
+
+```js
+async function activeTab() {
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  return tab;
+}
+
+const HANDLERS = {
+  run_js: async ({ code }) => {
+    const tab = await activeTab();
+    const [r] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: "MAIN",
+      args: [code],
+      func: (src) => eval(src),
+    });
+    return r.result;
+  },
+  open_tab: async ({ url }) => {
+    await chrome.tabs.create({ url });
+    return null;
+  },
+  close_tabs: async ({ url_glob }) => {
+    const tabs = await chrome.tabs.query({ url: url_glob });
+    await chrome.tabs.remove(tabs.map((t) => t.id));
+    return null;
+  },
+  read_selection: async () => {
+    const tab = await activeTab();
+    const [r] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: "MAIN",
+      func: () => String(getSelection()),
+    });
+    return r.result;
+  },
+};
+
+socket.addEventListener("message", async (ev) => {
+  const msg = JSON.parse(ev.data);
+  if (msg.type !== "command") return;
+  const [name, args] = Object.entries(msg.command)[0];
+  let result;
+  try {
+    const value = await HANDLERS[name](args ?? {});
+    result = { ok: { value } };
+  } catch (e) {
+    result = { err: { message: String(e) } };
+  }
+  socket.send(JSON.stringify({ type: "reply", id: msg.id, result }));
+});
+```
+
+`run_js` and `read_selection` run in `world: "MAIN"` so page globals (`getSelection`, page functions) are in scope; `close_tabs` takes a Chrome URL match pattern in `url_glob`.
+
+### Auth
+
+v0 ships tokenless: loopback plus a vocabulary restricted to `Upstream::Tab` is the boundary, and a tab URL from a stray local process is benign. The bus can run arbitrary JavaScript in your tabs, so it gates on a shared token.
+
+mercury generates a token at startup and logs it. The user pastes it into the extension's options page, which stores it in `chrome.storage.local`; the extension appends it to the connect URL, `ws://127.0.0.1:48291/?token=…`, and mercury's source rejects the connection if it does not match. A query-param token is CSP-friendly from a service worker and needs no extra handshake message.
+
+`chrome-extension/options.html` and `chrome-extension/options.js` are a one-input page that reads and writes `chrome.storage.local.token`; the manifest adds `"options_page": "options.html"`. `background.js` reads the token before connecting:
+
+```js
+async function mercuryUrl() {
+  const { token } = await chrome.storage.local.get("token");
+  return token ? `${MERCURY_URL}/?token=${encodeURIComponent(token)}` : MERCURY_URL;
+}
+```
+
+## Other browsers
+
+One extension serves the Chromium browsers that support MV3 with the same `chrome.*` APIs (Chrome, Brave, Arc). They differ only in bundle id, which is mercury's concern through `App::from_bundle_id`, not the extension's. Safari has no equivalent loopback-WebSocket path and is out of scope.
