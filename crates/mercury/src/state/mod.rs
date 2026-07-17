@@ -19,6 +19,18 @@ use crate::{
     MercuryEvent, MercuryStruct, Quit,
 };
 
+mod app;
+mod home;
+mod nav;
+mod resize;
+mod typing;
+
+pub use app::{AppData, AppLayer, ChromeApp, GhosttyApp};
+pub use home::HomeLayer;
+pub use nav::NavLayer;
+pub use resize::ResizeLayer;
+pub use typing::TypingLayer;
+
 #[derive(Bind, Debug)]
 #[node(root)]
 #[binds(MercuryStruct)]
@@ -111,115 +123,6 @@ impl Layer {
     }
 }
 
-#[derive(Bind, Debug)]
-#[node(parent = LayerPath)]
-#[binds(MercuryStruct)]
-#[bind(
-    Key::KeyN.down() => to_nav,
-    Key::KeyR.down() => to_resize,
-    Key::KeyT.down() => to_typing,
-    Key::KeyI.down() => to_inapp,
-    Key::KeyQ.down() => quit,
-)]
-pub struct HomeLayer {}
-
-#[derive(Bind, Debug)]
-#[node(parent = LayerPath)]
-#[binds(MercuryStruct)]
-#[bind(
-    Key::KeyC.down() => open_chrome,
-    Key::KeyF.down() => open_finder,
-    Key::KeyG.down() => open_ghostty,
-    Key::KeyZ.down() => open_zed,
-)]
-pub struct NavLayer {}
-
-/// The resize layer: the arrows place the focused window and return home. Like nav, a one-shot
-/// chooser.
-#[derive(Bind, Debug)]
-#[node(parent = LayerPath)]
-#[binds(MercuryStruct)]
-#[bind(
-    Key::UpArrow.down() => maximize,
-    Key::LeftArrow.down() => left_half,
-    Key::RightArrow.down() => right_half,
-)]
-pub struct ResizeLayer {}
-
-/// The typing layer. It binds only `escape` (`cmd`-`escape` leaves to home); every other key
-/// falls to the root, which passes it through because typing is a passthrough layer.
-#[derive(Bind, Debug, Default)]
-#[node(parent = LayerPath)]
-#[binds(MercuryStruct)]
-#[bind(Key::Escape.down() => maybe_go_home)]
-pub struct TypingLayer {}
-
-/// The in-app layer. It stores NO app: `root.foregrounded` is the only copy, and [`app_data`]
-/// builds the app's level from it on every dispatch. There is nothing to keep in sync and
-/// nothing to go stale.
-#[derive(Bind, Debug, Default)]
-#[node(parent = LayerPath)]
-#[binds(MercuryStruct)]
-#[derived_child(app_data)]
-#[bind(
-    Key::KeyN.down() => to_nav,
-    Key::KeyT.down() => to_typing,
-)]
-pub struct AppLayer {}
-
-/// The app's level, which is not in the tree. Several possible levels, so the data is an enum;
-/// an app with no bindings is not a variant, and [`app_data`] returns `None` for it.
-#[derive(Bind, Debug)]
-#[derived_node(parent = AppLayerPath)]
-#[binds(MercuryStruct)]
-pub enum AppData {
-    Chrome(ChromeApp),
-    Ghostty(GhosttyApp),
-}
-
-/// Reads the confirmed front app, the only copy, and builds the level for it.
-///
-/// A shared reference, so it cannot mutate: it derives, it does not act. `None` while a nav is in
-/// flight (the old app must not bind in the gap), and `Zed`/`Other` bind nothing, so all three get
-/// no level and no struct.
-const fn app_data(path: &AppLayerPath) -> Option<AppData> {
-    // AppLayer -> Layer -> Mercury.
-    let root = path.parent().parent();
-    match root.foreground.confirmed() {
-        Some(App::Chrome) => Some(AppData::Chrome(ChromeApp {})),
-        Some(App::Ghostty) => Some(AppData::Ghostty(GhosttyApp {})),
-        _ => None,
-    }
-}
-
-/// Chrome's level. A unit for now: mercury tracks nothing per app. It stops being one when it
-/// carries something (a tab name).
-#[derive(Bind, Debug)]
-#[derived_node(parent = AppLayerPath)]
-#[binds(MercuryStruct)]
-#[bind(Key::KeyR.down() => refresh)]
-pub struct ChromeApp {}
-
-/// Ghostty's level, where `j` and `k` walk tmux's panes.
-#[derive(Bind, Debug)]
-#[derived_node(parent = AppLayerPath)]
-#[binds(MercuryStruct)]
-#[bind(
-    Key::KeyJ.down() => previous_window,
-    Key::KeyK.down() => next_window,
-    Key::Num1.down() => window_1,
-    Key::Num2.down() => window_2,
-    Key::Num3.down() => window_3,
-    Key::Num4.down() => window_4,
-    Key::Num5.down() => window_5,
-    Key::Num6.down() => window_6,
-    Key::Num7.down() => window_7,
-    Key::Num8.down() => window_8,
-    Key::Num9.down() => window_9,
-    Key::Num0.down() => window_0,
-)]
-pub struct GhosttyApp {}
-
 /// The root's path is `&mut Self`; naming it lets the root's children say `parent = MercuryPath`.
 pub type MercuryPath<'a> = &'a mut Mercury;
 pub type LayerPath<'a> = PathMut<Layer, MercuryPath<'a>>;
@@ -239,7 +142,7 @@ impl Default for Mercury {
             held: HeldModifiers::default(),
             // Typing, the passthrough layer, so a fresh mercury (and one launched at login) leaves
             // the keyboard working rather than swallowing everything in Home. See launch-at-login.
-            layer: Layer::Typing(TypingLayer {}),
+            layer: Layer::Typing(TypingLayer::new()),
         }
     }
 }

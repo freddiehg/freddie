@@ -18,7 +18,7 @@ fn navigate(path: NavLayerPath<'_>, app: App) -> Vec<MercuryEffect> {
     // on it.
     let root = path.ascend_to::<MercuryPath>();
     root.foreground.start_navigating();
-    let mut effects = root.set_layer(AppLayer {});
+    let mut effects = root.set_layer(AppLayer::new());
     effects.push(MercuryEffect::Foreground(app));
     effects
 }

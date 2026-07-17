@@ -30,7 +30,7 @@ pub(crate) fn to_nav<'a, P: Ascend<MercuryPath<'a>>>(
     _ev: &KeyEvent,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
-    node.parent.ascend().set_layer(NavLayer {})
+    node.parent.ascend().set_layer(NavLayer::new())
 }
 
 /// `t`: enter the typing layer. Generic over the path, so home and the in-app layer
@@ -39,19 +39,19 @@ pub(crate) fn to_typing<'a, P: Ascend<MercuryPath<'a>>>(
     _ev: &KeyEvent,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
-    node.parent.ascend().set_layer(TypingLayer {})
+    node.parent.ascend().set_layer(TypingLayer::new())
 }
 
 /// `i` in home: enter the in-app layer for whatever app is foregrounded.
 pub(crate) fn to_inapp(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
     node.parent
         .ascend_to::<MercuryPath>()
-        .set_layer(AppLayer {})
+        .set_layer(AppLayer::new())
 }
 
 /// `r` in home: enter the resize layer.
 pub(crate) fn to_resize(_ev: &KeyEvent, node: Node<HomeLayerPath, ()>) -> Vec<MercuryEffect> {
     node.parent
         .ascend_to::<MercuryPath>()
-        .set_layer(ResizeLayer {})
+        .set_layer(ResizeLayer::new())
 }

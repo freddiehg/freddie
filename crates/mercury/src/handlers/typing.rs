@@ -13,7 +13,7 @@ use crate::state::{HomeLayer, MercuryPath, TypingLayerPath};
 pub(crate) fn maybe_go_home(ev: &KeyEvent, node: Node<TypingLayerPath, ()>) -> Vec<MercuryEffect> {
     let root = node.parent.ascend_to::<MercuryPath>();
     if root.held.meta.any_held() {
-        root.set_layer(HomeLayer {})
+        root.set_layer(HomeLayer::new())
     } else {
         vec![emit(ev.key, ev.press, root.held.flags())]
     }

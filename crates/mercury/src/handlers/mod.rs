@@ -30,7 +30,7 @@ use crate::state::{HomeLayer, Mercury, MercuryPath};
 /// Go to the home layer, returning the modifier flush (empty unless leaving a passthrough layer).
 /// The one place the home layer is entered.
 pub(crate) fn go_home(root: &mut Mercury) -> Vec<MercuryEffect> {
-    root.set_layer(HomeLayer {})
+    root.set_layer(HomeLayer::new())
 }
 
 /// Ask for `effects`, then return home.

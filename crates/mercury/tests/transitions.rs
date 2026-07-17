@@ -673,7 +673,7 @@ fn reported_bundle_ids_map() {
 // and without any resync. There is no copy to go stale.
 #[test]
 fn the_inapp_layers_bindings_follow_the_root_with_no_resync() {
-    let mut m = Mercury::with_layer(Layer::InApp(AppLayer::default()));
+    let mut m = Mercury::with_layer(Layer::InApp(AppLayer {}));
     m.foreground.set_front_app(App::Chrome);
     // Chrome binds `r`.
     assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));
