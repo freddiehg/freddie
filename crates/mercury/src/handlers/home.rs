@@ -51,7 +51,10 @@ pub(crate) fn to_inapp<'a, E, P: Ascend<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
-    node.parent.ascend().set_layer(AppLayer::new())
+    let (inapp, timer) = AppLayer::new();
+    let mut effects = node.parent.ascend().set_layer(inapp);
+    effects.push(timer);
+    effects
 }
 
 /// `r` in home: enter the resize layer.
@@ -59,5 +62,8 @@ pub(crate) fn to_resize<'a, E, P: Ascend<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
-    node.parent.ascend().set_layer(ResizeLayer::new())
+    let (resize, timer) = ResizeLayer::new();
+    let mut effects = node.parent.ascend().set_layer(resize);
+    effects.push(timer);
+    effects
 }

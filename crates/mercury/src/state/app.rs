@@ -1,11 +1,12 @@
 use bind::Bind;
+use freddie::TimerGuard;
 use freddie_keys::Key;
 
 #[allow(clippy::wildcard_imports)]
 use crate::handlers::*;
-use crate::{App, MercuryStruct};
+use crate::{App, MercuryEffect, MercuryStruct};
 
-use super::{AppLayerPath, LayerPath};
+use super::{AppLayerPath, LayerPath, arm_return_home};
 
 /// The in-app layer. It stores NO app: `root.foreground` is the only copy, and [`app_data`]
 /// builds the app's level from it on every dispatch. There is nothing to keep in sync and
@@ -18,12 +19,19 @@ use super::{AppLayerPath, LayerPath};
     Key::KeyN.down() => to_nav,
     Key::KeyT.down() => to_typing,
 )]
-pub struct AppLayer {}
+pub struct AppLayer {
+    // Held for its `Drop`: dropping the guard cancels the in-app layer's return-home timer.
+    #[allow(dead_code)]
+    timeout: TimerGuard,
+}
 
 impl AppLayer {
+    /// Build the in-app layer with its return-home timer armed, returning the layer and the effect
+    /// that schedules it.
     #[must_use]
-    pub(crate) const fn new() -> Self {
-        Self {}
+    pub(crate) fn new() -> (Self, MercuryEffect) {
+        let (timeout, timer) = arm_return_home();
+        (Self { timeout }, timer)
     }
 }
 

@@ -18,7 +18,9 @@ use crate::{App, MercuryEffect};
 fn navigate<'a, P: Ascend<MercuryPath<'a>>>(path: P, app: App) -> Vec<MercuryEffect> {
     let root: MercuryPath<'_> = path.ascend();
     root.foreground.start_navigating();
-    let mut effects = root.set_layer(AppLayer::new());
+    let (inapp, timer) = AppLayer::new();
+    let mut effects = root.set_layer(inapp);
+    effects.push(timer);
     effects.push(MercuryEffect::Foreground(app));
     effects
 }

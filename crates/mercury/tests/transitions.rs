@@ -5,13 +5,14 @@
 
 use bind::SimpleRunner;
 use mercury::{
-    App, AppLayer, HomeLayer, Key, KeyEvent, Layer, LayerTimeout, Mercury, MercuryEffect,
-    MercuryEvent, MercuryStruct, ModifierFlags, Placement, PressType, RETURN_TO_HOME_TIMEOUT,
-    foreground, key, quit_event,
+    App, HomeLayer, Key, KeyEvent, Layer, LayerTimeout, Mercury, MercuryEffect, MercuryEvent,
+    MercuryStruct, ModifierFlags, Placement, PressType, RETURN_TO_HOME_TIMEOUT, foreground, key,
+    quit_event,
 };
 
-// Entering nav arms the return-to-home timer; this is the effect that schedules it. Equality
-// under `testing` compares the delay and fire event, so a rebuilt one matches what nav produced.
+// Entering nav, resize, or the in-app layer arms the return-to-home timer; this is the effect
+// that schedules it. Equality under `testing` compares the delay and fire event, so a rebuilt one
+// matches what a layer produced.
 fn return_home_timer() -> MercuryEffect {
     let (_guard, effect) = freddie::timer_effect_and_guard(
         RETURN_TO_HOME_TIMEOUT,
@@ -239,7 +240,10 @@ fn nav_c_foregrounds_chrome_and_enters_inapp() {
     let _ = m.handle(&key(Key::KeyN));
     assert_eq!(
         m.handle(&key(Key::KeyC)),
-        Some(vec![MercuryEffect::Foreground(App::Chrome)])
+        Some(vec![
+            return_home_timer(),
+            MercuryEffect::Foreground(App::Chrome)
+        ])
     );
     assert!(matches!(m.layer(), Layer::InApp(_)));
     // The effect is inert: nothing is foregrounded until the watcher reports it, and
@@ -261,7 +265,7 @@ fn every_nav_choice_enters_inapp() {
         assert!(matches!(m.layer(), Layer::Nav(_)));
         assert_eq!(
             m.handle(&key(k)),
-            Some(vec![MercuryEffect::Foreground(app)])
+            Some(vec![return_home_timer(), MercuryEffect::Foreground(app)])
         );
         assert!(matches!(m.layer(), Layer::InApp(_)), "{app:?} left nav");
         assert!(
@@ -279,7 +283,10 @@ fn n_c_then_foreground_then_r_refreshes_chrome() {
     let _ = m.handle(&key(Key::KeyN));
     assert_eq!(
         m.handle(&key(Key::KeyC)),
-        Some(vec![MercuryEffect::Foreground(App::Chrome)])
+        Some(vec![
+            return_home_timer(),
+            MercuryEffect::Foreground(App::Chrome)
+        ])
     );
     assert!(matches!(m.layer(), Layer::InApp(_)));
 
@@ -326,7 +333,7 @@ fn foreground_records_the_app_without_changing_layer() {
 fn i_enters_inapp_for_the_foregrounded_app() {
     let mut m = home();
     let _ = m.handle(&foreground(App::Chrome));
-    assert_eq!(m.handle(&key(Key::KeyI)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyI)), Some(vec![return_home_timer()]));
     assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foreground.app(), App::Chrome);
 }
@@ -558,7 +565,7 @@ fn the_digits_are_unbound_outside_ghostty() {
 #[test]
 fn home_r_enters_resize() {
     let mut m = home();
-    assert_eq!(m.handle(&key(Key::KeyR)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyR)), Some(vec![return_home_timer()]));
     assert!(matches!(m.layer(), Layer::Resize(_)));
 }
 
@@ -673,7 +680,11 @@ fn foregrounding_chrome_is_reported_back() {
     }
     assert_eq!(
         performed,
-        vec![return_home_timer(), MercuryEffect::Foreground(App::Chrome)]
+        vec![
+            return_home_timer(),
+            return_home_timer(),
+            MercuryEffect::Foreground(App::Chrome)
+        ]
     );
     assert_eq!(m.foreground.app(), App::Chrome);
     // Nav landed in Chrome's in-app layer, and the reported-back event cleared the
@@ -712,7 +723,8 @@ fn reported_bundle_ids_map() {
 // and without any resync. There is no copy to go stale.
 #[test]
 fn the_inapp_layers_bindings_follow_the_root_with_no_resync() {
-    let mut m = Mercury::with_layer(Layer::InApp(AppLayer {}));
+    let mut m = home();
+    let _ = m.handle(&key(Key::KeyI)); // enter the in-app layer
     m.foreground.set_front_app(App::Chrome);
     // Chrome binds `r`.
     assert_eq!(m.handle(&key(Key::KeyR)), Some(cmd_r()));

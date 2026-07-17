@@ -4,7 +4,10 @@
 //! this module glob-imports them: the derive generates a call to each named handler here, at
 //! the node's definition site.
 
+use std::time::Duration;
+
 use bind::Bind;
+use freddie::{TimerGuard, timer_effect_and_guard};
 use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 use laserbeam::PathMut;
 
@@ -27,9 +30,23 @@ mod typing;
 
 pub use app::{AppData, AppLayer, ChromeApp, GhosttyApp};
 pub use home::HomeLayer;
-pub use nav::{NavLayer, RETURN_TO_HOME_TIMEOUT};
+pub use nav::NavLayer;
 pub use resize::ResizeLayer;
 pub use typing::TypingLayer;
+
+/// How long a chooser layer sits idle before returning home.
+pub const RETURN_TO_HOME_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Arm the return-to-home timer a layer holds: the guard cancels it on drop, and the effect
+/// schedules it. It fires [`LayerTimeout`] after [`RETURN_TO_HOME_TIMEOUT`], which the `Layer`
+/// node binds home.
+fn arm_return_home() -> (TimerGuard, MercuryEffect) {
+    let (guard, effect) = timer_effect_and_guard(
+        RETURN_TO_HOME_TIMEOUT,
+        MercuryEvent::LayerTimeout(LayerTimeout),
+    );
+    (guard, MercuryEffect::Timer(effect))
+}
 
 #[derive(Bind, Debug)]
 #[node(root)]

@@ -1,17 +1,12 @@
-use std::time::Duration;
-
 use bind::Bind;
-use freddie::{TimerGuard, timer_effect_and_guard};
+use freddie::TimerGuard;
 use freddie_keys::Key;
 
 #[allow(clippy::wildcard_imports)]
 use crate::handlers::*;
-use crate::{LayerTimeout, MercuryEffect, MercuryEvent, MercuryStruct};
+use crate::{MercuryEffect, MercuryStruct};
 
-use super::LayerPath;
-
-/// How long nav sits idle before returning home.
-pub const RETURN_TO_HOME_TIMEOUT: Duration = Duration::from_secs(10);
+use super::{LayerPath, arm_return_home};
 
 #[derive(Bind, Debug)]
 #[node(parent = LayerPath)]
@@ -29,14 +24,11 @@ pub struct NavLayer {
 }
 
 impl NavLayer {
-    /// Build the nav layer with its idle-timeout armed, returning the layer and the effect that
-    /// schedules the timeout.
+    /// Build the nav layer with its return-home timer armed, returning the layer and the effect
+    /// that schedules it.
     #[must_use]
     pub(crate) fn new() -> (Self, MercuryEffect) {
-        let (timeout, effect) = timer_effect_and_guard(
-            RETURN_TO_HOME_TIMEOUT,
-            MercuryEvent::LayerTimeout(LayerTimeout),
-        );
-        (Self { timeout }, MercuryEffect::Timer(effect))
+        let (timeout, timer) = arm_return_home();
+        (Self { timeout }, timer)
     }
 }
