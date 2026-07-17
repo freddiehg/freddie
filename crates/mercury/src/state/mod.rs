@@ -4,7 +4,7 @@
 //! this module glob-imports them: the derive generates a call to each named handler here, at
 //! the node's definition site.
 
-use bind::{Bind, Node};
+use bind::Bind;
 use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 use laserbeam::PathMut;
 
@@ -129,14 +129,7 @@ impl Layer {
 /// The root's path is `&mut Self`; naming it lets the root's children say `parent = MercuryPath`.
 pub type MercuryPath<'a> = &'a mut Mercury;
 pub type LayerPath<'a> = PathMut<Layer, MercuryPath<'a>>;
-pub type HomeLayerPath<'a> = PathMut<HomeLayer, LayerPath<'a>>;
-pub type NavLayerPath<'a> = PathMut<NavLayer, LayerPath<'a>>;
-pub type ResizeLayerPath<'a> = PathMut<ResizeLayer, LayerPath<'a>>;
-pub type TypingLayerPath<'a> = PathMut<TypingLayer, LayerPath<'a>>;
 pub type AppLayerPath<'a> = PathMut<AppLayer, LayerPath<'a>>;
-/// An app's level is not in the tree, so it is a `Node`, not a `PathMut`.
-pub type ChromeAppNode<'a> = Node<AppLayerPath<'a>, ChromeApp>;
-pub type GhosttyAppNode<'a> = Node<AppLayerPath<'a>, GhosttyApp>;
 
 impl Default for Mercury {
     fn default() -> Self {

@@ -1,14 +1,16 @@
 //! In-app handlers: Chrome's refresh, and Ghostty's tmux window navigation.
 
-use freddie_keys::{Key, KeyEvent, ModifierFlags};
+use bind::Node;
+use freddie_keys::{Key, ModifierFlags};
+use laserbeam::Ascend;
 
 use super::and_go_home;
 use crate::MercuryEffect;
 use crate::effect::tap;
-use crate::state::{ChromeAppNode, GhosttyAppNode};
+use crate::state::MercuryPath;
 
-/// `r` in Chrome: cmd-r, a refresh.
-pub(crate) fn refresh(_ev: &KeyEvent, _node: ChromeAppNode) -> Vec<MercuryEffect> {
+/// `r` in Chrome: cmd-r, a refresh. Touches neither event nor node, so both are generic.
+pub(crate) fn refresh<E, N>(_ev: &E, _node: N) -> Vec<MercuryEffect> {
     vec![tap(Key::KeyR, ModifierFlags::COMMAND)]
 }
 
@@ -22,12 +24,12 @@ fn tmux(flags: ModifierFlags, command: Key) -> Vec<MercuryEffect> {
 }
 
 /// `j` in Ghostty: tmux's previous window. Stays, because walking windows repeats.
-pub(crate) fn previous_window(_ev: &KeyEvent, _node: GhosttyAppNode) -> Vec<MercuryEffect> {
+pub(crate) fn previous_window<E, N>(_ev: &E, _node: N) -> Vec<MercuryEffect> {
     tmux(ModifierFlags::empty(), Key::KeyP)
 }
 
 /// `k` in Ghostty: tmux's next window.
-pub(crate) fn next_window(_ev: &KeyEvent, _node: GhosttyAppNode) -> Vec<MercuryEffect> {
+pub(crate) fn next_window<E, N>(_ev: &E, _node: N) -> Vec<MercuryEffect> {
     tmux(ModifierFlags::empty(), Key::KeyN)
 }
 
@@ -38,10 +40,14 @@ pub(crate) fn next_window(_ev: &KeyEvent, _node: GhosttyAppNode) -> Vec<MercuryE
 /// *indices* and so cannot reach the tenth. `1` sends `ctrl-a !` and `0` sends `ctrl-a )`.
 ///
 /// Jumping to a window is a choice rather than something you repeat, so it leaves the layer.
+/// Generic over the event, the path, and the node's data, since it only reaches `node.parent`.
 /// See [`and_go_home`].
 macro_rules! select_window {
     ($($handler:ident => $digit:ident),* $(,)?) => {$(
-        pub(crate) fn $handler(_ev: &KeyEvent, node: GhosttyAppNode) -> Vec<MercuryEffect> {
+        pub(crate) fn $handler<'a, E, P: Ascend<MercuryPath<'a>>, D>(
+            _ev: &E,
+            node: Node<P, D>,
+        ) -> Vec<MercuryEffect> {
             and_go_home(node.parent, tmux(ModifierFlags::SHIFT, Key::$digit))
         }
     )*};
