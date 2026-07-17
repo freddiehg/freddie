@@ -13,8 +13,8 @@ One tagged JSON envelope, chosen up front so v0 and the command bus share it and
 ```jsonc
 // extension -> mercury
 { "kind": "Upstream.Tab", "value": { "url": "https://claude.ai/new" } }
-{ "kind": "Upstream.Reply", "value": { "id": 42, "result": { "kind": "CommandResult.Ok", "value": "…" } } }
-{ "kind": "Upstream.Reply", "value": { "id": 42, "result": { "kind": "CommandResult.Err", "value": "no active tab" } } }
+{ "kind": "Upstream.Reply", "value": { "id": 42, "result": { "kind": "Result.Ok", "value": "…" } } }
+{ "kind": "Upstream.Reply", "value": { "id": 42, "result": { "kind": "Result.Err", "value": "no active tab" } } }
 
 // mercury -> extension
 { "kind": "Downstream.Command", "value": { "id": 42, "command": { "kind": "Command.RunJs", "value": { "code": "document.title" } } } }
@@ -32,7 +32,7 @@ pub enum Upstream {
     Tab { url: String },
     /// A reply to a command mercury sent down. Only after the command bus ships.
     #[serde(rename = "Upstream.Reply")]
-    Reply { id: u64, result: CommandResult },
+    Reply { id: u64, result: Result },
 }
 
 /// A message mercury sends down to the extension. Only the command bus uses it.
@@ -56,14 +56,17 @@ pub enum Command {
     ReadSelection,
 }
 
+/// Named `Result` (shadowing the prelude in this module) so its wire tag is
+/// `Result.Ok`/`Result.Err` and its `Type` prefix matches the type, per the union
+/// convention. Refer to the prelude's as `std::result::Result` here.
 #[derive(serde::Deserialize)]
 #[serde(tag = "kind", content = "value")]
-pub enum CommandResult {
+pub enum Result {
     /// The command's return value, whatever JSON the handler produced.
-    #[serde(rename = "CommandResult.Ok")]
+    #[serde(rename = "Result.Ok")]
     Ok(serde_json::Value),
     /// The error message from a command that threw.
-    #[serde(rename = "CommandResult.Err")]
+    #[serde(rename = "Result.Err")]
     Err(String),
 }
 ```
@@ -149,7 +152,7 @@ Install for development by loading `chrome-extension/` unpacked at `chrome://ext
 
 ## Change 2: the command bus
 
-The bidirectional phase. mercury sends `Downstream::Command` down; the extension runs each with the real extension APIs and sends `Upstream::Reply` back up. It depends on `external-events.md`'s source going bidirectional: assigning a monotonic `id` per command, holding an `id -> oneshot::Sender<CommandResult>` map with a per-command timeout, and enforcing the token gate below.
+The bidirectional phase. mercury sends `Downstream::Command` down; the extension runs each with the real extension APIs and sends `Upstream::Reply` back up. It depends on `external-events.md`'s source going bidirectional: assigning a monotonic `id` per command, holding an `id -> oneshot::Sender<Result>` map with a per-command timeout, and enforcing the token gate below.
 
 ### The extension's half
 
@@ -208,9 +211,9 @@ socket.addEventListener("message", async (ev) => {
   let result;
   try {
     const value = await HANDLERS[command.kind](command.value ?? {});
-    result = { kind: "CommandResult.Ok", value };
+    result = { kind: "Result.Ok", value };
   } catch (e) {
-    result = { kind: "CommandResult.Err", value: String(e) };
+    result = { kind: "Result.Err", value: String(e) };
   }
   socket.send(JSON.stringify({ kind: "Upstream.Reply", value: { id, result } }));
 });
