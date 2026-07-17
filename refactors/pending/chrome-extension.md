@@ -8,16 +8,16 @@ The extension pushes; it never answers a timer. There is no keepalive and no pol
 
 ## The wire contract
 
-One tagged JSON envelope, chosen up front so v0 and the command bus share it and shipping the bus does not rev the v0 message format. `kind` discriminates, with UpperCamelCase values; presence-based routing is not used.
+One tagged JSON envelope, chosen up front so v0 and the command bus share it and shipping the bus does not rev the v0 message format. Every message is a JS discriminated union in the project's one form, `{ kind: "Type.Variant", value: T }`: `kind` is the dotted union-and-variant name and `value` is the whole payload.
 
 ```jsonc
 // extension -> mercury
-{ "kind": "Tab", "url": "https://claude.ai/new" }              // v0: the active tab changed
-{ "kind": "Reply", "id": 42, "result": { "kind": "Ok", "value": "…" } }   // bus: a command's result
-{ "kind": "Reply", "id": 42, "result": { "kind": "Err", "message": "no active tab" } }
+{ "kind": "Upstream.Tab", "value": { "url": "https://claude.ai/new" } }
+{ "kind": "Upstream.Reply", "value": { "id": 42, "result": { "kind": "CommandResult.Ok", "value": "…" } } }
+{ "kind": "Upstream.Reply", "value": { "id": 42, "result": { "kind": "CommandResult.Err", "value": "no active tab" } } }
 
 // mercury -> extension
-{ "kind": "Command", "id": 42, "command": { "kind": "RunJs", "code": "document.title" } }
+{ "kind": "Downstream.Command", "value": { "id": 42, "command": { "kind": "Command.RunJs", "value": { "code": "document.title" } } } }
 ```
 
 The Rust side of the contract, in the WebSocket source (`external-events.md` wires these into the event loop; they are written here because they are the shared contract):
@@ -25,35 +25,46 @@ The Rust side of the contract, in the WebSocket source (`external-events.md` wir
 ```rust
 /// A message the extension sends up to mercury.
 #[derive(serde::Deserialize)]
-#[serde(tag = "kind")]
+#[serde(tag = "kind", content = "value")]
 pub enum Upstream {
     /// The active tab changed URL. The v0 stream; benign, needs no token.
+    #[serde(rename = "Upstream.Tab")]
     Tab { url: String },
     /// A reply to a command mercury sent down. Only after the command bus ships.
+    #[serde(rename = "Upstream.Reply")]
     Reply { id: u64, result: CommandResult },
 }
 
 /// A message mercury sends down to the extension. Only the command bus uses it.
 #[derive(serde::Serialize)]
-#[serde(tag = "kind")]
+#[serde(tag = "kind", content = "value")]
 pub enum Downstream {
+    #[serde(rename = "Downstream.Command")]
     Command { id: u64, command: Command },
 }
 
 #[derive(serde::Serialize)]
-#[serde(tag = "kind")]
+#[serde(tag = "kind", content = "value")]
 pub enum Command {
+    #[serde(rename = "Command.RunJs")]
     RunJs { code: String },
+    #[serde(rename = "Command.OpenTab")]
     OpenTab { url: String },
+    #[serde(rename = "Command.CloseTabs")]
     CloseTabs { url_glob: String },
+    #[serde(rename = "Command.ReadSelection")]
     ReadSelection,
 }
 
 #[derive(serde::Deserialize)]
-#[serde(tag = "kind")]
+#[serde(tag = "kind", content = "value")]
 pub enum CommandResult {
-    Ok { value: serde_json::Value },
-    Err { message: String },
+    /// The command's return value, whatever JSON the handler produced.
+    #[serde(rename = "CommandResult.Ok")]
+    Ok(serde_json::Value),
+    /// The error message from a command that threw.
+    #[serde(rename = "CommandResult.Err")]
+    Err(String),
 }
 ```
 
@@ -113,7 +124,7 @@ function connect() {
 function pushUrl(url) {
   if (!url) return;
   connect();
-  const payload = JSON.stringify({ kind: "Tab", url });
+  const payload = JSON.stringify({ kind: "Upstream.Tab", value: { url } });
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(payload);
   } else {
@@ -160,7 +171,7 @@ async function activeTab() {
 }
 
 const HANDLERS = {
-  RunJs: async ({ code }) => {
+  "Command.RunJs": async ({ code }) => {
     const tab = await activeTab();
     const [r] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
@@ -170,16 +181,16 @@ const HANDLERS = {
     });
     return r.result;
   },
-  OpenTab: async ({ url }) => {
+  "Command.OpenTab": async ({ url }) => {
     await chrome.tabs.create({ url });
     return null;
   },
-  CloseTabs: async ({ url_glob }) => {
+  "Command.CloseTabs": async ({ url_glob }) => {
     const tabs = await chrome.tabs.query({ url: url_glob });
     await chrome.tabs.remove(tabs.map((t) => t.id));
     return null;
   },
-  ReadSelection: async () => {
+  "Command.ReadSelection": async () => {
     const tab = await activeTab();
     const [r] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
@@ -192,20 +203,20 @@ const HANDLERS = {
 
 socket.addEventListener("message", async (ev) => {
   const msg = JSON.parse(ev.data);
-  if (msg.kind !== "Command") return;
-  const { kind, ...args } = msg.command;
+  if (msg.kind !== "Downstream.Command") return;
+  const { id, command } = msg.value;
   let result;
   try {
-    const value = await HANDLERS[kind](args);
-    result = { kind: "Ok", value };
+    const value = await HANDLERS[command.kind](command.value ?? {});
+    result = { kind: "CommandResult.Ok", value };
   } catch (e) {
-    result = { kind: "Err", message: String(e) };
+    result = { kind: "CommandResult.Err", value: String(e) };
   }
-  socket.send(JSON.stringify({ kind: "Reply", id: msg.id, result }));
+  socket.send(JSON.stringify({ kind: "Upstream.Reply", value: { id, result } }));
 });
 ```
 
-`RunJs` and `ReadSelection` run in `world: "MAIN"` so page globals (`getSelection`, page functions) are in scope; `CloseTabs` takes a Chrome URL match pattern in `url_glob`.
+`Command.RunJs` and `Command.ReadSelection` run in `world: "MAIN"` so page globals (`getSelection`, page functions) are in scope; `Command.CloseTabs` takes a Chrome URL match pattern in `url_glob`.
 
 ### Auth
 
