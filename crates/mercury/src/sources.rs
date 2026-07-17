@@ -50,21 +50,12 @@ impl EventTrigger for Foregrounded {
     }
 }
 
-/// A trigger that matches a quit request, wherever it came from (the menu bar for
-/// now). It carries no key: it is a single, layer-independent "quit now".
+/// A quit request, wherever it came from (the menu bar for now). It carries no key: it is a
+/// single, layer-independent "quit now", so one type is both the trigger and the event.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Quit;
 
-#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
-#[derive(Debug)]
-pub struct QuitEvent;
-
-impl EventTrigger for Quit {
-    type Event = QuitEvent;
-    fn is_matching(&self, _ev: &QuitEvent) -> bool {
-        true
-    }
-}
+bind::self_trigger!(Quit);
 
 /// The apps Mercury knows about. `Other` is anything it has no bindings for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]

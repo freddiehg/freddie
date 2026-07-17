@@ -190,6 +190,20 @@ pub trait EventTrigger {
     fn is_matching(&self, event: &Self::Event) -> bool;
 }
 
+/// Implements [`EventTrigger`] for a payload-less trigger that is its own event and always
+/// matches, for a bare signal that carries nothing and has nothing to discriminate.
+#[macro_export]
+macro_rules! self_trigger {
+    ($t:ty) => {
+        impl $crate::EventTrigger for $t {
+            type Event = Self;
+            fn is_matching(&self, _event: &Self) -> bool {
+                true
+            }
+        }
+    };
+}
+
 /// ONE descent, whatever the child is.
 ///
 /// A PLACE implements it by delegating to its own [`Dispatch`] and then handing the parent

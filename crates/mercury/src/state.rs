@@ -16,7 +16,7 @@ use crate::effect::emit;
 use crate::handlers::*;
 use crate::{
     AnyModifierKey, AnyNonModifierKey, App, ForegroundEvent, Foregrounded, MercuryEffect,
-    MercuryEvent, MercuryStruct, Quit, QuitEvent,
+    MercuryEvent, MercuryStruct, Quit,
 };
 
 #[derive(Bind, Debug)]
@@ -442,5 +442,5 @@ pub const fn foreground(app: App) -> MercuryEvent {
 /// A quit-request event (the menu bar's Quit).
 #[must_use]
 pub const fn quit_event() -> MercuryEvent {
-    MercuryEvent::Quit(QuitEvent)
+    MercuryEvent::Quit(Quit)
 }

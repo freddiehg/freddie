@@ -5,7 +5,6 @@ use freddie_keys::{Key, KeyEvent, KeyPress};
 
 use crate::{
     AnyModifierKey, AnyNonModifierKey, ForegroundEvent, Foregrounded, MercuryEffect, Quit,
-    QuitEvent,
 };
 
 /// Every trigger Mercury can register, one variant per source.
@@ -29,7 +28,7 @@ pub enum MercuryTrigger {
 pub enum MercuryEvent {
     Key(KeyEvent),
     Foreground(ForegroundEvent),
-    Quit(QuitEvent),
+    Quit(Quit),
 }
 
 /// The marker tying the trigger, event, and output types together.

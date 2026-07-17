@@ -51,9 +51,7 @@ mod state;
 
 pub use effect::{MercuryEffect, Placement};
 pub use model::{MercuryEvent, MercuryStruct, MercuryTrigger};
-pub use sources::{
-    AnyModifierKey, AnyNonModifierKey, App, ForegroundEvent, Foregrounded, Quit, QuitEvent,
-};
+pub use sources::{AnyModifierKey, AnyNonModifierKey, App, ForegroundEvent, Foregrounded, Quit};
 pub use state::{
     AppData, AppLayer, ChromeApp, Foreground, GhosttyApp, HomeLayer, Layer, Mercury, NavLayer,
     ResizeLayer, TypingLayer, foreground, key, quit_event,

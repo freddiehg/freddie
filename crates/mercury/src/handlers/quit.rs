@@ -9,7 +9,7 @@ use crate::state::MercuryPath;
 /// Quit the program, whatever asked for it.
 ///
 /// Generic over the event and the path, so home binds it to `q`'s `KeyEvent` from its own node and
-/// the root binds it to the menu bar's `QuitEvent`. The root binding is what makes the menu-bar
+/// the root binds it to the menu bar's `Quit`. The root binding is what makes the menu-bar
 /// Quit a recovery path: it fires from any layer, unlike `q`, which quits only from home.
 ///
 /// Emit the held modifiers' downs first. In a command layer their real downs were swallowed, so
