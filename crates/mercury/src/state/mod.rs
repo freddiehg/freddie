@@ -141,6 +141,17 @@ impl Layer {
     pub const fn is_passthrough(&self) -> bool {
         matches!(self, Self::Typing(_))
     }
+
+    /// Reset the return-home timer of a layer whose own keys keep you in it, returning the effect
+    /// that re-schedules it, or `None` for a layer that has none. Only the in-app layer qualifies:
+    /// nav's and resize's keys all leave, so they keep the timer they entered with.
+    #[must_use]
+    fn rearm_timeout(&mut self) -> Option<MercuryEffect> {
+        match self {
+            Self::InApp(inapp) => Some(inapp.rearm()),
+            _ => None,
+        }
+    }
 }
 
 /// The root's path is `&mut Self`; naming it lets the root's children say `parent = MercuryPath`.
@@ -175,7 +186,17 @@ impl Mercury {
     /// binds nothing for it.
     #[must_use]
     pub fn handle(&mut self, event: &MercuryEvent) -> Option<Vec<MercuryEffect>> {
-        bind::dispatch::<MercuryStruct, Self>(self, event)
+        let before = std::mem::discriminant(&self.layer);
+        let mut effects = bind::dispatch::<MercuryStruct, Self>(self, event)?;
+        // A keypress that stays in the in-app layer is activity: reset its return-home timer, so it
+        // fires only after you go idle, not a fixed span after you entered.
+        if matches!(event, MercuryEvent::Key(_))
+            && std::mem::discriminant(&self.layer) == before
+            && let Some(reset) = self.layer.rearm_timeout()
+        {
+            effects.push(reset);
+        }
+        Some(effects)
     }
 
     #[must_use]
