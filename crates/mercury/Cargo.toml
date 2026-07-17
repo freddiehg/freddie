@@ -35,6 +35,8 @@ bind = { path = "../bind", version = "0.0.1", features = ["check"] }
 # Turns `testing` on for this crate's own tests, the same way: dev-only, so the derives it
 # gates never reach the normal build.
 mercury = { path = ".", features = ["testing"] }
+# The transitions tests rebuild a timer effect to assert what entering nav produced.
+freddie = { path = "../freddie", version = "0.0.1" }
 
 [lints]
 workspace = true

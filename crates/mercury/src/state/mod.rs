@@ -15,8 +15,8 @@ use crate::effect::emit;
 #[allow(clippy::wildcard_imports)]
 use crate::handlers::*;
 use crate::{
-    AnyModifierKey, AnyNonModifierKey, App, ForegroundEvent, Foregrounded, MercuryEffect,
-    MercuryEvent, MercuryStruct, Quit,
+    AnyModifierKey, AnyNonModifierKey, App, ForegroundEvent, Foregrounded, LayerTimeout,
+    MercuryEffect, MercuryEvent, MercuryStruct, Quit,
 };
 
 mod app;
@@ -27,7 +27,7 @@ mod typing;
 
 pub use app::{AppData, AppLayer, ChromeApp, GhosttyApp};
 pub use home::HomeLayer;
-pub use nav::NavLayer;
+pub use nav::{NavLayer, RETURN_TO_HOME_TIMEOUT};
 pub use resize::ResizeLayer;
 pub use typing::TypingLayer;
 
@@ -105,7 +105,10 @@ impl Foreground {
 #[derive(Bind, Debug, derive_more::From)]
 #[node(parent = MercuryPath)]
 #[binds(MercuryStruct)]
-#[bind(Key::Escape.down() => to_home)]
+#[bind(
+    Key::Escape.down() => to_home,
+    LayerTimeout => to_home,
+)]
 pub enum Layer {
     Home(HomeLayer),
     Nav(NavLayer),

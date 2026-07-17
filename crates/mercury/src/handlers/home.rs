@@ -13,12 +13,12 @@ use super::go_home;
 use crate::MercuryEffect;
 use crate::state::{AppLayer, HomeLayerPath, MercuryPath, NavLayer, ResizeLayer, TypingLayer};
 
-/// `escape` anywhere: go back to the home layer.
+/// `escape` anywhere, and a layer's idle-timeout: go back to the home layer.
 ///
-/// Generic over the path, so the layer enum and every node under it can bind it directly.
-/// Typing has to bind it explicitly, because a plain escape passes through there.
-pub(crate) fn to_home<'a, P: Ascend<MercuryPath<'a>>>(
-    _ev: &KeyEvent,
+/// Generic over the event and the path, so any trigger and node can bind it. Typing has to bind
+/// `escape` explicitly, because a plain escape passes through there.
+pub(crate) fn to_home<'a, E, P: Ascend<MercuryPath<'a>>>(
+    _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
     go_home(node.parent.ascend())
@@ -30,7 +30,10 @@ pub(crate) fn to_nav<'a, P: Ascend<MercuryPath<'a>>>(
     _ev: &KeyEvent,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
-    node.parent.ascend().set_layer(NavLayer::new())
+    let (nav, timer) = NavLayer::new();
+    let mut effects = node.parent.ascend().set_layer(nav);
+    effects.push(timer);
+    effects
 }
 
 /// `t`: enter the typing layer. Generic over the path, so home and the in-app layer

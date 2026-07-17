@@ -5,9 +5,20 @@
 
 use bind::SimpleRunner;
 use mercury::{
-    App, AppLayer, HomeLayer, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryEvent,
-    MercuryStruct, ModifierFlags, Placement, PressType, foreground, key, quit_event,
+    App, AppLayer, HomeLayer, Key, KeyEvent, Layer, LayerTimeout, Mercury, MercuryEffect,
+    MercuryEvent, MercuryStruct, ModifierFlags, Placement, PressType, RETURN_TO_HOME_TIMEOUT,
+    foreground, key, quit_event,
 };
+
+// Entering nav arms the return-to-home timer; this is the effect that schedules it. Equality
+// under `testing` compares the delay and fire event, so a rebuilt one matches what nav produced.
+fn return_home_timer() -> MercuryEffect {
+    let (_guard, effect) = freddie::timer_effect_and_guard(
+        RETURN_TO_HOME_TIMEOUT,
+        MercuryEvent::LayerTimeout(LayerTimeout),
+    );
+    MercuryEffect::Timer(effect)
+}
 
 // A mercury in Home, the command layer. The default is Typing (passthrough), but most per-event
 // tests exercise Home's command bindings, so they start here.
@@ -48,7 +59,7 @@ fn default_boots_into_typing() {
 #[test]
 fn home_n_enters_nav() {
     let mut m = home();
-    assert_eq!(m.handle(&key(Key::KeyN)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyN)), Some(vec![return_home_timer()]));
     assert!(matches!(m.layer(), Layer::Nav(_)));
 }
 
@@ -120,6 +131,31 @@ fn escape_goes_home_from_a_sublayer() {
     let _ = m.handle(&key(Key::KeyN));
     assert!(matches!(m.layer(), Layer::Nav(_)));
     assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
+    assert!(matches!(m.layer(), Layer::Home(_)));
+}
+
+#[test]
+fn nav_times_out_home() {
+    let mut m = home();
+    let _ = m.handle(&key(Key::KeyN));
+    assert!(matches!(m.layer(), Layer::Nav(_)));
+    // The armed timer fires: drive the LayerTimeout event it would send back.
+    assert_eq!(
+        m.handle(&MercuryEvent::LayerTimeout(LayerTimeout)),
+        Some(vec![])
+    );
+    assert!(matches!(m.layer(), Layer::Home(_)));
+}
+
+#[test]
+fn layer_timeout_returns_home_from_any_layer() {
+    // The Layer node binds it, so a timeout returns home whichever layer is active; in home it
+    // re-enters home, which is why a stale timeout (from a nav already left) is harmless.
+    let mut m = home();
+    assert_eq!(
+        m.handle(&MercuryEvent::LayerTimeout(LayerTimeout)),
+        Some(vec![])
+    );
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
@@ -303,7 +339,7 @@ fn inapp_n_enters_nav() {
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(m.layer(), Layer::InApp(_)));
-    assert_eq!(m.handle(&key(Key::KeyN)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyN)), Some(vec![return_home_timer()]));
     assert!(matches!(m.layer(), Layer::Nav(_)));
 }
 
@@ -635,7 +671,10 @@ fn foregrounding_chrome_is_reported_back() {
             settle(&mut runner, &mut performed);
         }
     }
-    assert_eq!(performed, vec![MercuryEffect::Foreground(App::Chrome)]);
+    assert_eq!(
+        performed,
+        vec![return_home_timer(), MercuryEffect::Foreground(App::Chrome)]
+    );
     assert_eq!(m.foreground.app(), App::Chrome);
     // Nav landed in Chrome's in-app layer, and the reported-back event cleared the
     // pending flag so Chrome's bindings are live.
