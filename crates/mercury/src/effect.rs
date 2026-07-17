@@ -13,7 +13,10 @@ pub enum Placement {
 
 /// What a handler asks the consumer to do. Inert data; performing it is the consumer's job,
 /// and it never mutates Mercury's state directly.
-#[derive(PartialEq, Eq, Debug)]
+// Effect equality is only ever asked for by the tests (dispatch never compares effects), so the
+// derive is gated behind `testing` and kept out of the normal build.
+#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
+#[derive(Debug)]
 pub enum MercuryEffect {
     /// Bring an app to the foreground.
     Foreground(super::App),

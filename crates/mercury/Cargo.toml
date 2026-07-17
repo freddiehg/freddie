@@ -21,10 +21,19 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 
+[features]
+# Derives the tests need and the normal build does not: effect equality, for asserting what a
+# dispatch produced. Turned on for this crate's own tests through the self dev-dependency below,
+# and, like `bind`'s `check`, kept out of `cargo build -p mercury` by resolver 3.
+testing = []
+
 [dev-dependencies]
 # Turns the check on for TESTS only. With resolver 3 a dev-dependency's features do not leak
 # into the normal build, so `cargo build -p mercury` has no `accumulate`.
 bind = { path = "../bind", version = "0.0.1", features = ["check"] }
+# Turns `testing` on for this crate's own tests, the same way: dev-only, so the derives it
+# gates never reach the normal build.
+mercury = { path = ".", features = ["testing"] }
 
 [lints]
 workspace = true

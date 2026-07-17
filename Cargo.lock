@@ -867,6 +867,7 @@ dependencies = [
  "freddie_menu_bar",
  "freddie_windows",
  "laserbeam",
+ "mercury",
  "tokio",
  "tracing",
  "tracing-appender",
