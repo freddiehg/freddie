@@ -23,6 +23,7 @@ pub enum MercuryTrigger {
 ///
 /// `TryInto` gives the `TryFrom<&MercuryEvent> for &SourceEvent` that dispatch uses to narrow
 /// the unified event to the one a trigger cares about.
+#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
 #[derive(Debug, derive_more::TryInto)]
 #[try_into(ref)]
 pub enum MercuryEvent {

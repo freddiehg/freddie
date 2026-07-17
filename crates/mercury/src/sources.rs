@@ -38,7 +38,7 @@ impl EventTrigger for AnyNonModifierKey {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Foregrounded;
 
-/// A fired app-foregrounded event.
+#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
 #[derive(Debug)]
 pub struct ForegroundEvent {
     pub app: App,
@@ -55,7 +55,7 @@ impl EventTrigger for Foregrounded {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Quit;
 
-/// A fired quit request.
+#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
 #[derive(Debug)]
 pub struct QuitEvent;
 
