@@ -13,11 +13,11 @@ One tagged JSON envelope, chosen up front so v0 and the command bus share it and
 ```jsonc
 // extension -> mercury
 { "kind": "Tab", "url": "https://claude.ai/new" }              // v0: the active tab changed
-{ "kind": "Reply", "id": 42, "result": { "Ok": { "value": "…" } } }   // bus: a command's result
-{ "kind": "Reply", "id": 42, "result": { "Err": { "message": "no active tab" } } }
+{ "kind": "Reply", "id": 42, "result": { "kind": "Ok", "value": "…" } }   // bus: a command's result
+{ "kind": "Reply", "id": 42, "result": { "kind": "Err", "message": "no active tab" } }
 
 // mercury -> extension
-{ "kind": "Command", "id": 42, "command": { "RunJs": { "code": "document.title" } } }
+{ "kind": "Command", "id": 42, "command": { "kind": "RunJs", "code": "document.title" } }
 ```
 
 The Rust side of the contract, in the WebSocket source (`external-events.md` wires these into the event loop; they are written here because they are the shared contract):
@@ -41,6 +41,7 @@ pub enum Downstream {
 }
 
 #[derive(serde::Serialize)]
+#[serde(tag = "kind")]
 pub enum Command {
     RunJs { code: String },
     OpenTab { url: String },
@@ -49,6 +50,7 @@ pub enum Command {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(tag = "kind")]
 pub enum CommandResult {
     Ok { value: serde_json::Value },
     Err { message: String },
@@ -191,13 +193,13 @@ const HANDLERS = {
 socket.addEventListener("message", async (ev) => {
   const msg = JSON.parse(ev.data);
   if (msg.kind !== "Command") return;
-  const [name, args] = Object.entries(msg.command)[0];
+  const { kind, ...args } = msg.command;
   let result;
   try {
-    const value = await HANDLERS[name](args ?? {});
-    result = { Ok: { value } };
+    const value = await HANDLERS[kind](args);
+    result = { kind: "Ok", value };
   } catch (e) {
-    result = { Err: { message: String(e) } };
+    result = { kind: "Err", message: String(e) };
   }
   socket.send(JSON.stringify({ kind: "Reply", id: msg.id, result }));
 });
