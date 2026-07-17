@@ -6,7 +6,7 @@
 mod common;
 
 use common::{
-    Album, App, Deep, Layer, Media, MercuryStruct, Nav, Song, Title, Typing, foreground, key,
+    Album, App, Deep, Layer, Media, Nav, Song, TestBindings, Title, Typing, foreground, key,
 };
 
 const fn nav_app() -> App {
@@ -30,7 +30,7 @@ fn typing_app() -> App {
 #[test]
 fn leaf_binding_fires() {
     let mut app = nav_app();
-    let out = bind::dispatch::<MercuryStruct, App>(&mut app, &key("g"));
+    let out = bind::dispatch::<TestBindings, App>(&mut app, &key("g"));
     assert_eq!(out, Some(1)); // "g"
     let Layer::Nav(nav) = &app.layer else {
         unreachable!()
@@ -44,7 +44,7 @@ fn leaf_binding_fires() {
 #[test]
 fn ancestor_binding_fires_after_subtree_misses() {
     let mut app = nav_app();
-    let out = bind::dispatch::<MercuryStruct, App>(&mut app, &key("esc"));
+    let out = bind::dispatch::<TestBindings, App>(&mut app, &key("esc"));
     assert_eq!(out, Some(3)); // "esc"
     assert_eq!(app.hits, 1);
     let Layer::Nav(nav) = &app.layer else {
@@ -57,7 +57,7 @@ fn ancestor_binding_fires_after_subtree_misses() {
 #[test]
 fn enum_binding_fires() {
     let mut app = nav_app();
-    let out = bind::dispatch::<MercuryStruct, App>(&mut app, &key("f1"));
+    let out = bind::dispatch::<TestBindings, App>(&mut app, &key("f1"));
     assert_eq!(out, Some(2)); // "f1"
 }
 
@@ -65,7 +65,7 @@ fn enum_binding_fires() {
 #[test]
 fn through_typing_variant() {
     let mut app = typing_app();
-    let out = bind::dispatch::<MercuryStruct, App>(&mut app, &key("bksp"));
+    let out = bind::dispatch::<TestBindings, App>(&mut app, &key("bksp"));
     assert_eq!(out, Some(4)); // "bksp"
     let Layer::Typing(t) = &app.layer else {
         unreachable!()
@@ -76,7 +76,7 @@ fn through_typing_variant() {
 #[test]
 fn through_box_to_deep() {
     let mut app = typing_app();
-    let out = bind::dispatch::<MercuryStruct, App>(&mut app, &key("d"));
+    let out = bind::dispatch::<TestBindings, App>(&mut app, &key("d"));
     assert_eq!(out, Some(1)); // "d"
     let Layer::Typing(t) = &app.layer else {
         unreachable!()
@@ -88,7 +88,7 @@ fn through_box_to_deep() {
 #[test]
 fn foreground_binding_fires() {
     let mut app = nav_app();
-    let out = bind::dispatch::<MercuryStruct, App>(&mut app, &foreground("Slack"));
+    let out = bind::dispatch::<TestBindings, App>(&mut app, &foreground("Slack"));
     assert_eq!(out, Some(5)); // "Slack"
 }
 
@@ -96,7 +96,7 @@ fn foreground_binding_fires() {
 #[test]
 fn unbound_event_is_none() {
     let mut app = nav_app();
-    let out = bind::dispatch::<MercuryStruct, App>(&mut app, &key("x"));
+    let out = bind::dispatch::<TestBindings, App>(&mut app, &key("x"));
     assert_eq!(out, None);
     assert_eq!(app.hits, 0);
     let Layer::Nav(nav) = &app.layer else {
@@ -109,7 +109,7 @@ fn unbound_event_is_none() {
 #[test]
 fn binding_on_inactive_variant_is_none() {
     let mut app = typing_app();
-    let out = bind::dispatch::<MercuryStruct, App>(&mut app, &key("g"));
+    let out = bind::dispatch::<TestBindings, App>(&mut app, &key("g"));
     assert_eq!(out, None);
 }
 
@@ -118,7 +118,7 @@ fn binding_on_inactive_variant_is_none() {
 #[test]
 fn unmatched_foreground_is_none() {
     let mut app = nav_app();
-    let out = bind::dispatch::<MercuryStruct, App>(&mut app, &foreground("Other"));
+    let out = bind::dispatch::<TestBindings, App>(&mut app, &foreground("Other"));
     assert_eq!(out, None);
 }
 
@@ -128,7 +128,7 @@ fn multi_parent_leaf_via_album() {
     let mut media = Media::Album(Album {
         title: Title { hits: 0 },
     });
-    let out = bind::dispatch::<MercuryStruct, Media>(&mut media, &key("t"));
+    let out = bind::dispatch::<TestBindings, Media>(&mut media, &key("t"));
     assert_eq!(out, Some(1)); // "t"
     let Media::Album(a) = &media else {
         unreachable!()
@@ -141,7 +141,7 @@ fn multi_parent_leaf_via_song() {
     let mut media = Media::Song(Song {
         title: Title { hits: 0 },
     });
-    let out = bind::dispatch::<MercuryStruct, Media>(&mut media, &key("t"));
+    let out = bind::dispatch::<TestBindings, Media>(&mut media, &key("t"));
     assert_eq!(out, Some(1)); // "t"
     let Media::Song(s) = &media else {
         unreachable!()
@@ -156,7 +156,7 @@ fn multi_parent_ancestor_recover() {
     let mut media = Media::Album(Album {
         title: Title { hits: 0 },
     });
-    let out = bind::dispatch::<MercuryStruct, Media>(&mut media, &key("a"));
+    let out = bind::dispatch::<TestBindings, Media>(&mut media, &key("a"));
     assert_eq!(out, Some(1)); // "a"
     let Media::Album(a) = &media else {
         unreachable!()

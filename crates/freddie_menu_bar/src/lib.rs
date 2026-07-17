@@ -20,13 +20,18 @@ pub struct MenuBar {
     _tray: TrayIcon,
 }
 
-/// Shows the menu-bar status item with a single Quit entry. `on_quit` runs, on the
-/// main thread, when the user chooses it.
+/// Shows the menu-bar status item with a single Quit entry.
+///
+/// `on_quit` runs, on the main thread, when the user chooses Quit. The caller supplies
+/// its own branding: `tooltip` is the hover text, and `icon_png` is the raw PNG bytes of
+/// a black glyph on a transparent background, rendered as a template (see [`template_icon`]).
 ///
 /// # Errors
 ///
-/// Returns the underlying error if the menu or the status item cannot be created.
+/// Returns the underlying error if the icon, the menu, or the status item cannot be created.
 pub fn show(
+    tooltip: &str,
+    icon_png: &[u8],
     on_quit: impl Fn() + Send + Sync + 'static,
 ) -> Result<MenuBar, Box<dyn std::error::Error + Send + Sync>> {
     // The item and its id, so the handler can recognize it. `None` is the keyboard
@@ -39,12 +44,12 @@ pub fn show(
 
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_icon(mercury_icon()?)
+        .with_icon(template_icon(icon_png)?)
         // A template image: macOS ignores the RGB and renders the alpha mask in the
         // menu bar's own color (white on a dark bar, black on a light one), so the
         // black glyph shows correctly on either without inverting it.
         .with_icon_as_template(true)
-        .with_tooltip("Mercury")
+        .with_tooltip(tooltip)
         .build()?;
 
     // muda delivers menu events through one global handler. It fires on the main
@@ -58,15 +63,15 @@ pub fn show(
     Ok(MenuBar { _tray: tray })
 }
 
-/// The ☿ status-item icon: the bundled glyph, trimmed to its shape and sized for the
+/// A status-item icon from `png`: the glyph, trimmed to its shape and sized for the
 /// menu bar, as a template (alpha mask, recolored by macOS).
 ///
-/// The source PNG is a black glyph on a transparent background at 800x800 with wide
-/// margins. Trimming to the glyph's bounds and then scaling makes the glyph fill the
-/// bar rather than sit tiny inside the margins; a few pixels of padding keep it off
-/// the bar's top and bottom.
-fn mercury_icon() -> Result<Icon, Box<dyn std::error::Error + Send + Sync>> {
-    let img = image::load_from_memory(include_bytes!("../assets/mercury.png"))?.into_rgba8();
+/// `png` is expected to be a black glyph on a transparent background with wide margins.
+/// Trimming to the glyph's bounds and then scaling makes the glyph fill the bar rather
+/// than sit tiny inside the margins; a few pixels of padding keep it off the bar's top
+/// and bottom.
+fn template_icon(png: &[u8]) -> Result<Icon, Box<dyn std::error::Error + Send + Sync>> {
+    let img = image::load_from_memory(png)?.into_rgba8();
     let glyph = crop_to_alpha(&img);
 
     // tray-icon renders the icon at 18pt tall; a ~2x pixel height keeps it crisp on a

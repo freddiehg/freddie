@@ -155,7 +155,7 @@ impl ModifierFlags {
     pub const COMMAND: Self = Self(1 << 1);
     pub const ALT: Self = Self(1 << 2);
     pub const SHIFT: Self = Self(1 << 3);
-    /// The `fn` (Globe) modifier. Not a key mercury tracks (it arrives only as a flag on other
+    /// The `fn` (Globe) modifier. Not a key tracked as held (it arrives only as a flag on other
     /// events), so it rides through solely on this bit.
     pub const FN: Self = Self(1 << 4);
 
@@ -214,7 +214,7 @@ impl Key {
         }
     }
 
-    /// Whether this is a modifier key mercury tracks: control, command, alt, or shift, left or
+    /// Whether this is a modifier key tracked as held: control, command, alt, or shift, left or
     /// right. Caps lock (a lock) and fn (no variant) are not modifiers here.
     #[must_use]
     pub const fn is_modifier(self) -> bool {

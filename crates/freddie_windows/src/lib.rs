@@ -12,7 +12,7 @@
 //! off the main thread against that cache: it finds the monitor the focused window
 //! is on and places the window within that monitor's visible frame. So a window on a
 //! second display, or on a display connected after launch, still fills its own
-//! screen rather than the one mercury started on.
+//! screen rather than the one the app started on.
 //!
 //! Requires the Accessibility permission, the same one the keyboard tap needs.
 //!

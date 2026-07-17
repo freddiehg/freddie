@@ -14,7 +14,7 @@
 //! The two are decoupled on purpose (see `refactors/pending/event-loop.md`):
 //! [`foreground`] asks for a change, [`watch`] reports the change that actually
 //! happened, and nothing ties one call to the other. The bundle-id-to-app mapping
-//! belongs to the consumer (mercury owns its `App` enum), so this crate only ever
+//! belongs to the consumer (which owns its `App` enum), so this crate only ever
 //! hands up a string.
 //!
 //! # The main thread

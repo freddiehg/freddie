@@ -301,7 +301,7 @@ const MODIFIERS: CGEventFlags = CGEventFlags::from_bits_truncate(
         | CGEventFlags::CGEventFlagSecondaryFn.bits(),
 );
 
-/// The portable/native flag pairs mercury maps between, both ways.
+/// The portable/native flag pairs this backend maps between, both ways.
 const FLAG_PAIRS: [(ModifierFlags, CGEventFlags); 5] = [
     (ModifierFlags::CONTROL, CGEventFlags::CGEventFlagControl),
     (ModifierFlags::COMMAND, CGEventFlags::CGEventFlagCommand),

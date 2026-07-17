@@ -5,7 +5,7 @@ mod common;
 
 use std::collections::HashSet;
 
-use common::{App, Clash, ClashChild, Deep, Empty, Layer, MercuryStruct, Nav, Typing, fg, kb};
+use common::{App, Clash, ClashChild, Deep, Empty, Layer, Nav, TestBindings, Typing, fg, kb};
 
 // Through the Layer enum and the non-boxed `#[resolve_into]` App -> Layer.
 #[test]
@@ -14,7 +14,7 @@ fn through_enum_and_resolve_into() {
         hits: 0,
         layer: Layer::Nav(Nav { hits: 0 }),
     };
-    let set = bind::accumulate::<MercuryStruct, App>(&mut app).unwrap();
+    let set = bind::accumulate::<TestBindings, App>(&mut app).unwrap();
     assert_eq!(
         set,
         HashSet::from([kb("esc"), kb("f1"), kb("g"), fg("Slack")])
@@ -31,7 +31,7 @@ fn through_boxed_resolve_into() {
             deep: Box::new(Deep { hits: 0 }),
         }),
     };
-    let set = bind::accumulate::<MercuryStruct, App>(&mut app).unwrap();
+    let set = bind::accumulate::<TestBindings, App>(&mut app).unwrap();
     assert_eq!(
         set,
         HashSet::from([kb("esc"), kb("f1"), kb("bksp"), kb("d")])
@@ -45,7 +45,7 @@ fn duplicate_trigger_is_error() {
         child: ClashChild {},
     };
     assert_eq!(
-        bind::accumulate::<MercuryStruct, Clash>(&mut clash),
+        bind::accumulate::<TestBindings, Clash>(&mut clash),
         Err(bind::BindError::DuplicateTrigger)
     );
 }
@@ -53,6 +53,6 @@ fn duplicate_trigger_is_error() {
 // A node with no `#[bind]` is fine; it accumulates nothing.
 #[test]
 fn no_binds_is_empty() {
-    let set = bind::accumulate::<MercuryStruct, Empty>(&mut Empty {}).unwrap();
+    let set = bind::accumulate::<TestBindings, Empty>(&mut Empty {}).unwrap();
     assert!(set.is_empty());
 }

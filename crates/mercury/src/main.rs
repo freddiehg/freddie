@@ -82,7 +82,7 @@ fn main() {
     // `Kill`, which ends the effect loop, releases the keyboard, and drops the
     // stopper. So Quit is the mouse-reachable way out even if the grabbed keyboard
     // is wedged.
-    let menu_bar = freddie_menu_bar::show({
+    let menu_bar = freddie_menu_bar::show("Mercury", include_bytes!("../assets/mercury.png"), {
         let event_tx = event_tx.clone();
         move || {
             let _ = event_tx.send(quit_event());

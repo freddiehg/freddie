@@ -35,48 +35,48 @@ impl EventTrigger for Foreground {
 
 // The unified trigger (accumulate) and event (dispatch).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub enum MercuryTrigger {
+pub enum TestTrigger {
     Keyboard(Keyboard),
     Foreground(Foreground),
 }
-impl From<Keyboard> for MercuryTrigger {
+impl From<Keyboard> for TestTrigger {
     fn from(k: Keyboard) -> Self {
         Self::Keyboard(k)
     }
 }
-impl From<Foreground> for MercuryTrigger {
+impl From<Foreground> for TestTrigger {
     fn from(f: Foreground) -> Self {
         Self::Foreground(f)
     }
 }
 
-pub enum MercuryEvent {
+pub enum TestEvent {
     Keyboard(KeyEvent),
     Foreground(FgEvent),
 }
-impl<'a> TryFrom<&'a MercuryEvent> for &'a KeyEvent {
+impl<'a> TryFrom<&'a TestEvent> for &'a KeyEvent {
     type Error = ();
-    fn try_from(e: &'a MercuryEvent) -> Result<Self, ()> {
+    fn try_from(e: &'a TestEvent) -> Result<Self, ()> {
         match e {
-            MercuryEvent::Keyboard(k) => Ok(k),
-            MercuryEvent::Foreground(_) => Err(()),
+            TestEvent::Keyboard(k) => Ok(k),
+            TestEvent::Foreground(_) => Err(()),
         }
     }
 }
-impl<'a> TryFrom<&'a MercuryEvent> for &'a FgEvent {
+impl<'a> TryFrom<&'a TestEvent> for &'a FgEvent {
     type Error = ();
-    fn try_from(e: &'a MercuryEvent) -> Result<Self, ()> {
+    fn try_from(e: &'a TestEvent) -> Result<Self, ()> {
         match e {
-            MercuryEvent::Foreground(f) => Ok(f),
-            MercuryEvent::Keyboard(_) => Err(()),
+            TestEvent::Foreground(f) => Ok(f),
+            TestEvent::Keyboard(_) => Err(()),
         }
     }
 }
 
-pub struct MercuryStruct;
-impl Bindings for MercuryStruct {
-    type Trigger = MercuryTrigger;
-    type Event = MercuryEvent;
+pub struct TestBindings;
+impl Bindings for TestBindings {
+    type Trigger = TestTrigger;
+    type Event = TestEvent;
     type Output = usize;
 }
 
@@ -112,7 +112,7 @@ pub fn ignore<P>(ev: &KeyEvent, _node: Node<P, ()>) -> usize {
 // App -> Layer (enum) -> { Nav (leaf), Typing -> Box<Deep> (leaf) }.
 #[derive(Bind)]
 #[node(root)]
-#[binds(MercuryStruct)]
+#[binds(TestBindings)]
 #[bind(Keyboard("esc") => on_esc)]
 pub struct App {
     pub hits: u32,
@@ -122,7 +122,7 @@ pub struct App {
 
 #[derive(Bind)]
 #[node(parent = AppPath)]
-#[binds(MercuryStruct)]
+#[binds(TestBindings)]
 #[bind(Keyboard("f1") => on_f1)]
 pub enum Layer {
     Nav(Nav),
@@ -131,7 +131,7 @@ pub enum Layer {
 
 #[derive(Bind)]
 #[node(parent = LayerPath)]
-#[binds(MercuryStruct)]
+#[binds(TestBindings)]
 #[bind(Keyboard("g") => on_g, Foreground("Slack") => on_slack)]
 pub struct Nav {
     pub hits: u32,
@@ -139,7 +139,7 @@ pub struct Nav {
 
 #[derive(Bind)]
 #[node(parent = LayerPath)]
-#[binds(MercuryStruct)]
+#[binds(TestBindings)]
 #[bind(Keyboard("bksp") => on_bksp)]
 pub struct Typing {
     pub hits: u32,
@@ -149,7 +149,7 @@ pub struct Typing {
 
 #[derive(Bind)]
 #[node(parent = TypingPath)]
-#[binds(MercuryStruct)]
+#[binds(TestBindings)]
 #[bind(Keyboard("d") => on_d)]
 pub struct Deep {
     pub hits: u32,
@@ -165,7 +165,7 @@ pub type DeepPath<'a> = PathMut<Deep, TypingPath<'a>>;
 // `dup`.
 #[derive(Bind)]
 #[node(root)]
-#[binds(MercuryStruct)]
+#[binds(TestBindings)]
 #[bind(Keyboard("dup") => ignore)]
 pub struct Clash {
     #[resolve_into]
@@ -174,7 +174,7 @@ pub struct Clash {
 
 #[derive(Bind)]
 #[node(parent = ClashPath)]
-#[binds(MercuryStruct)]
+#[binds(TestBindings)]
 #[bind(Keyboard("dup") => ignore)]
 pub struct ClashChild {}
 
@@ -183,14 +183,14 @@ pub type ClashChildPath<'a> = PathMut<ClashChild, ClashPath<'a>>;
 // A no-binds leaf root.
 #[derive(Bind)]
 #[node(root)]
-#[binds(MercuryStruct)]
+#[binds(TestBindings)]
 pub struct Empty {}
 
 // A multi-parent tree: `Title` is reached from both `Album` and `Song` through
 // the `TitleParent` route enum.
 #[derive(Bind)]
 #[node(root)]
-#[binds(MercuryStruct)]
+#[binds(TestBindings)]
 pub enum Media {
     Album(Album),
     Song(Song),
@@ -198,7 +198,7 @@ pub enum Media {
 
 #[derive(Bind)]
 #[node(parent = MediaPath)]
-#[binds(MercuryStruct)]
+#[binds(TestBindings)]
 #[bind(Keyboard("a") => ignore)]
 pub struct Album {
     #[resolve_into(parent = TitleParent)]
@@ -207,7 +207,7 @@ pub struct Album {
 
 #[derive(Bind)]
 #[node(parent = MediaPath)]
-#[binds(MercuryStruct)]
+#[binds(TestBindings)]
 #[bind(Keyboard("s") => ignore)]
 pub struct Song {
     #[resolve_into(parent = TitleParent)]
@@ -216,7 +216,7 @@ pub struct Song {
 
 #[derive(Bind)]
 #[node(parent = TitleParent)]
-#[binds(MercuryStruct)]
+#[binds(TestBindings)]
 #[bind(Keyboard("t") => on_title)]
 pub struct Title {
     pub hits: u32,
@@ -236,18 +236,18 @@ pub fn on_title(ev: &KeyEvent, mut node: Node<TitlePath, ()>) -> usize {
 }
 
 /// A keyboard trigger, for accumulate assertions.
-pub const fn kb(s: &'static str) -> MercuryTrigger {
-    MercuryTrigger::Keyboard(Keyboard(s))
+pub const fn kb(s: &'static str) -> TestTrigger {
+    TestTrigger::Keyboard(Keyboard(s))
 }
 /// A foreground trigger, for accumulate assertions.
-pub const fn fg(s: &'static str) -> MercuryTrigger {
-    MercuryTrigger::Foreground(Foreground(s))
+pub const fn fg(s: &'static str) -> TestTrigger {
+    TestTrigger::Foreground(Foreground(s))
 }
 /// A fired keyboard event, for dispatch.
-pub const fn key(s: &'static str) -> MercuryEvent {
-    MercuryEvent::Keyboard(KeyEvent { key: s })
+pub const fn key(s: &'static str) -> TestEvent {
+    TestEvent::Keyboard(KeyEvent { key: s })
 }
 /// A fired foreground event, for dispatch.
-pub const fn foreground(s: &'static str) -> MercuryEvent {
-    MercuryEvent::Foreground(FgEvent { app: s })
+pub const fn foreground(s: &'static str) -> TestEvent {
+    TestEvent::Foreground(FgEvent { app: s })
 }

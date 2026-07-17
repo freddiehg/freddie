@@ -12,13 +12,13 @@ mod common;
 use std::fmt::Write as _;
 
 use bind::{Bind, Node, accumulate, dispatch};
-use common::{KeyEvent, Keyboard, MercuryEvent, MercuryStruct, kb};
+use common::{KeyEvent, Keyboard, TestBindings, TestEvent, kb};
 use laserbeam::PathMut;
 use std::collections::HashSet;
 
 #[derive(Bind)]
 #[node(root)]
-#[binds(MercuryStruct)]
+#[binds(TestBindings)]
 pub struct Root {
     /// The only copy. The layer stores no app.
     pub app: Option<Chrome>,
@@ -32,7 +32,7 @@ pub struct Chrome {
 
 #[derive(Bind)]
 #[node(parent = RootPath)]
-#[binds(MercuryStruct)]
+#[binds(TestBindings)]
 #[derived_child(app_data)]
 #[bind(Keyboard("esc") => on_esc)]
 pub struct Shell {
@@ -42,7 +42,7 @@ pub struct Shell {
 /// A derived level. Not in the tree; `app_data` builds it.
 #[derive(Bind)]
 #[derived_node(parent = ShellPath)]
-#[binds(MercuryStruct)]
+#[binds(TestBindings)]
 #[derived_child(tab_data)]
 #[bind(Keyboard("r") => on_r)]
 pub struct AppData {
@@ -52,7 +52,7 @@ pub struct AppData {
 /// A derived level UNDER a derived level. Its parent is a `Node`, not a `PathMut`.
 #[derive(Bind)]
 #[derived_node(parent = AppNode)]
-#[binds(MercuryStruct)]
+#[binds(TestBindings)]
 #[bind(Keyboard("g") => on_g)]
 pub struct TabData {
     pub thread: u32,
@@ -100,8 +100,8 @@ fn on_esc(ev: &KeyEvent, mut node: Node<ShellPath, ()>) -> usize {
     ev.key.len()
 }
 
-const fn key(k: &'static str) -> MercuryEvent {
-    MercuryEvent::Keyboard(KeyEvent { key: k })
+const fn key(k: &'static str) -> TestEvent {
+    TestEvent::Keyboard(KeyEvent { key: k })
 }
 
 fn root(tab: Option<&str>) -> Root {
@@ -114,7 +114,7 @@ fn root(tab: Option<&str>) -> Root {
 #[test]
 fn a_derived_level_binds_its_own_keys_and_reaches_the_tree_through_parent() {
     let mut r = root(Some("inbox"));
-    assert_eq!(dispatch::<MercuryStruct, Root>(&mut r, &key("r")), Some(1));
+    assert_eq!(dispatch::<TestBindings, Root>(&mut r, &key("r")), Some(1));
     assert_eq!(r.layer.log, "inbox"); // the LAYER's real state, written from the derived level
     assert_eq!(r.app.as_ref().unwrap().tab, "inbox"); // the tree is untouched by `data`
 }
@@ -122,7 +122,7 @@ fn a_derived_level_binds_its_own_keys_and_reaches_the_tree_through_parent() {
 #[test]
 fn a_derived_level_can_have_a_derived_child() {
     let mut r = root(Some("gmail"));
-    assert_eq!(dispatch::<MercuryStruct, Root>(&mut r, &key("g")), Some(1));
+    assert_eq!(dispatch::<TestBindings, Root>(&mut r, &key("g")), Some(1));
     assert_eq!(r.layer.log, "gmail7"); // own data, the parent level's data, and the layer
 }
 
@@ -130,26 +130,20 @@ fn a_derived_level_can_have_a_derived_child() {
 fn a_miss_hands_the_parent_back_at_every_level() {
     // The tab level misses `r`, so the app level's bind runs with its data intact.
     let mut r = root(Some("gmail"));
-    assert_eq!(dispatch::<MercuryStruct, Root>(&mut r, &key("r")), Some(1));
+    assert_eq!(dispatch::<TestBindings, Root>(&mut r, &key("r")), Some(1));
     assert_eq!(r.layer.log, "gmail");
 
     // Both derived levels miss `esc`, so the LAYER's bind runs with its path intact.
     let mut r = root(Some("gmail"));
-    assert_eq!(
-        dispatch::<MercuryStruct, Root>(&mut r, &key("esc")),
-        Some(3)
-    );
+    assert_eq!(dispatch::<TestBindings, Root>(&mut r, &key("esc")), Some(3));
     assert_eq!(r.layer.log, "e");
 }
 
 #[test]
 fn with_no_app_there_is_no_level_and_the_layer_still_works() {
     let mut r = root(None);
-    assert_eq!(dispatch::<MercuryStruct, Root>(&mut r, &key("r")), None);
-    assert_eq!(
-        dispatch::<MercuryStruct, Root>(&mut r, &key("esc")),
-        Some(3)
-    );
+    assert_eq!(dispatch::<TestBindings, Root>(&mut r, &key("r")), None);
+    assert_eq!(dispatch::<TestBindings, Root>(&mut r, &key("esc")), Some(3));
     assert_eq!(r.layer.log, "e");
 }
 
@@ -158,16 +152,16 @@ fn the_check_sees_a_derived_levels_binds() {
     // Why accumulate had to take a path: with &self it cannot call a derived child fn, so
     // these triggers would be invisible to the trigger set.
     let mut r = root(Some("gmail"));
-    let set: HashSet<_> = accumulate::<MercuryStruct, Root>(&mut r).unwrap();
+    let set: HashSet<_> = accumulate::<TestBindings, Root>(&mut r).unwrap();
     assert_eq!(set, HashSet::from([kb("esc"), kb("r"), kb("g")]));
 
     // The tab level only exists on gmail, so its trigger is not claimed elsewhere.
     let mut r = root(Some("inbox"));
-    let set: HashSet<_> = accumulate::<MercuryStruct, Root>(&mut r).unwrap();
+    let set: HashSet<_> = accumulate::<TestBindings, Root>(&mut r).unwrap();
     assert_eq!(set, HashSet::from([kb("esc"), kb("r")]));
 
     // And with no app at all, only the layer's.
     let mut r = root(None);
-    let set: HashSet<_> = accumulate::<MercuryStruct, Root>(&mut r).unwrap();
+    let set: HashSet<_> = accumulate::<TestBindings, Root>(&mut r).unwrap();
     assert_eq!(set, HashSet::from([kb("esc")]));
 }
