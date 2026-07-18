@@ -22,7 +22,7 @@ pub struct TimerFired(pub TimerId);
 
 The identity does the work the per-timer types were doing, so the types go. The match does the work a stale-check in each handler would have done, so a stale firing matches no binding at all: dispatch returns `None`, the handler never runs, and no handler contains an `if` about it.
 
-Depends on `refactors/pending/trigger-closures.md`, which is what lets a binding read the node it is bound on. Written against the accidental form (`ArmedTimer(path.overlay_id())`) this would work today and break the moment anyone renamed a parameter inside `bind_macro`.
+Built on `refactors/past/trigger-closures.md`, which landed: a binding may be written as a closure and the derive calls it with the node's path, so `|root| ArmedTimer(root.overlay_id())` is a supported form rather than a capture of a name the macro happens to use.
 
 ## why the ids are affordable
 

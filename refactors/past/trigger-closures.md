@@ -47,24 +47,54 @@ Syntactic is unambiguous where it counts, because a closure can never be a valid
 
 Miss the accumulate pair and the `check` feature stops compiling the moment anyone writes a closure, because a closure has no `Into<Trigger>`.
 
-One helper, used by all four:
+A closure cannot simply be called at the emit site. A closure parameter takes its type from an EXPECTED type, not from the call it appears in, so `(|root| root.waiting_for)(state)` fails with `E0282: type annotations needed` even where the argument's type is fully known. Annotating the argument does not help either; the expected type has to reach the closure itself.
+
+So the call goes through a function in `bind` whose signature supplies one. `crates/bind/src/lib.rs`:
+
+```rust
+/// Calls a closure trigger with the state its binding is bound on.
+///
+/// The macro emits this rather than `(#closure)(state)`, because a closure parameter is not
+/// inferred from an immediate call: it takes its type from an EXPECTED type, which this function's
+/// signature supplies. Without it every state-reading binding would have to annotate its own
+/// parameter with a path type it should not have to name.
+pub fn call_with<S, T>(state: &mut S, f: impl FnOnce(&mut S) -> T) -> T {
+    f(state)
+}
+```
+
+and one helper in the macro, used by all four sites:
 
 ```rust
 /// The expression that produces a binding's trigger, given what dispatch is holding for this node.
 ///
-/// A closure is CALLED with it, so a trigger can depend on the state it is bound on; anything else
-/// is evaluated as the value it is. The distinction is syntactic because a trait cannot make it:
-/// blanket impls for values and for closures overlap.
+/// A closure goes through [`bind::call_with`](::bind::call_with) rather than being called here: a
+/// closure parameter takes its type from an expected type, not from an immediate call, and that
+/// function's signature is what supplies one.
 fn trigger_expr(trigger: &Expr, state: &TokenStream2) -> TokenStream2 {
     if matches!(trigger, Expr::Closure(_)) {
-        quote!((#trigger)(#state))
+        quote!(::bind::call_with(&mut #state, #trigger))
     } else {
         quote!(#trigger)
     }
 }
 ```
 
-`Expr` is already imported by `bind_macro`.
+`Expr` is already imported by `bind_macro`, but `syn` is not built with the feature that can parse a closure. `crates/bind_macro/Cargo.toml`, before:
+
+```toml
+syn = "2"
+```
+
+after:
+
+```toml
+# "full" is what lets a trigger be written as a closure: `Expr::Closure` is a full-syntax
+# expression, and without it syn cannot parse one.
+syn = { version = "2", features = ["full"] }
+```
+
+Without it every closure trigger fails at parse time with `unsupported expression; enable syn's features=["full"]`.
 
 `dispatch_impl`'s check, before:
 
@@ -83,7 +113,7 @@ after:
 
 ```rust
     let checks = binds.iter().map(|b| {
-        let trigger = trigger_expr(&b.trigger, &quote!(&mut path));
+        let trigger = trigger_expr(&b.trigger, &quote!(path));
         let handler = &b.handler;
         quote! {
             if let ::core::option::Option::Some(ev) =
@@ -92,7 +122,7 @@ after:
                 let trigger = #trigger;
 ```
 
-`derived_node_impl`'s check is the same edit with `&quote!(&mut node)`.
+`derived_node_impl`'s check is the same edit with `&quote!(node)`.
 
 The two accumulate sites take the trigger through the same helper. `accumulate_impl`, before:
 
@@ -105,10 +135,10 @@ after:
 ```rust
     let triggers = binds
         .iter()
-        .map(|b| trigger_expr(&b.trigger, &quote!(&mut path)));
+        .map(|b| trigger_expr(&b.trigger, &quote!(path)));
 ```
 
-and `derived_node_impl`'s with `&quote!(&mut node)`.
+and `derived_node_impl`'s with `&quote!(node)`.
 
 ## change 2: a closure trigger forces `mut`
 
