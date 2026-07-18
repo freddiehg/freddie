@@ -11,6 +11,7 @@ use super::LayerPath;
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
+    Key::Escape.down() => to_home,
     Key::KeyN.down() => to_nav,
     Key::KeyR.down() => to_resize,
     Key::KeyT.down() => to_typing,

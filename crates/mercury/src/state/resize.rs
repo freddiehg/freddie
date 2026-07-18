@@ -14,6 +14,7 @@ use super::{LayerPath, arm_return_home};
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
+    Key::Escape.down() => to_home,
     Key::UpArrow.down() => maximize,
     Key::LeftArrow.down() => left_half,
     Key::RightArrow.down() => right_half,

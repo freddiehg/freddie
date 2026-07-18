@@ -12,6 +12,7 @@ use super::{LayerPath, arm_return_home};
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
+    Key::Escape.down() => to_home,
     Key::KeyC.down() => open_chrome,
     Key::KeyF.down() => open_finder,
     Key::KeyG.down() => open_ghostty,

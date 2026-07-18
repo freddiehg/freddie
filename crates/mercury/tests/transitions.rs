@@ -208,9 +208,9 @@ fn typing_plain_escape_passes_through() {
 }
 
 #[test]
-fn typing_cmd_escape_exits_to_home() {
-    // cmd is held (tracked by the catch-all, which also emits it), then escape exits to home
-    // and is swallowed. The plain escape above still passes through.
+fn typing_cmd_escape_types_the_escape() {
+    // Typing binds nothing, so cmd-escape no longer leaves: both keys reach the app, and jk is the
+    // only way out.
     let mut m = home();
     let _ = m.handle(&key(Key::KeyT));
 
@@ -229,15 +229,21 @@ fn typing_cmd_escape_exits_to_home() {
             ModifierFlags::COMMAND
         )])
     );
-    assert!(matches!(m.layer(), Layer::Typing(_)));
 
-    // escape while cmd held: go home, swallow the escape, and release the cmd that
-    // was passed through, so it is not left stuck down in the emitted stream.
+    let cmd_escape = MercuryEvent::Key(KeyEvent {
+        key: Key::Escape,
+        press: PressType::Down,
+        flags: ModifierFlags::COMMAND,
+    });
     assert_eq!(
-        m.handle(&key(Key::Escape)),
-        Some(vec![emit(Key::MetaLeft, PressType::Up)])
+        m.handle(&cmd_escape),
+        Some(vec![emit_with(
+            Key::Escape,
+            PressType::Down,
+            ModifierFlags::COMMAND
+        )])
     );
-    assert!(matches!(m.layer(), Layer::Home(_)));
+    assert!(matches!(m.layer(), Layer::Typing(_)));
 }
 
 // Nav is a one-shot chooser: picking an app emits the effect and lands in the in-app

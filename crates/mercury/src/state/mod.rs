@@ -119,10 +119,10 @@ impl Foreground {
 #[derive(Bind, Debug, derive_more::From)]
 #[node(parent = MercuryPath)]
 #[binds(MercuryStruct)]
-#[bind(
-    Key::Escape.down() => to_home,
-    LayerTimeout => to_home,
-)]
+// `escape` leaves for home from every layer that binds keys as commands, but NOT from typing,
+// where it is a key the app is waiting for. It is bound per layer rather than here so that typing
+// can simply not have it. `LayerTimeout` stays: typing arms no timer, so it never fires there.
+#[bind(LayerTimeout => to_home)]
 pub enum Layer {
     Home(HomeLayer),
     Nav(NavLayer),

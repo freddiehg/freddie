@@ -16,6 +16,7 @@ use super::{AppLayerPath, LayerPath, arm_return_home};
 #[binds(MercuryStruct)]
 #[derived_child(app_data)]
 #[bind(
+    Key::Escape.down() => to_home,
     Key::KeyN.down() => to_nav,
     Key::KeyT.down() => to_typing,
 )]
