@@ -62,11 +62,63 @@ Not a `NULL` source, which the C API allows and is 132ns. `NULL` means the share
 
 The long-lived source is mercury's choice, not something `CoreGraphics` asks for: `CGEventCreateKeyboardEvent` takes a source per call. That a source accumulates state, and that posting updates it, is `CoreGraphics`.
 
-## Change 1: build each emitted event from its own source
+## Change 1: one constructor owns the source
+
+`CGEventSource` appears exactly once in the file, inside the constructor below, and is never held in a field. A source that outlives one event is then not something to remember to avoid; there is nowhere to put one.
 
 `MODIFIERS` is unchanged and still correct: it clears the modifier bits so the caller's `ModifierFlags` state them outright. What changes is that `untouched` now holds only the bits the key itself carries, because there is no accumulated state left to inherit.
 
+The constructor also fixes a dormant bug in `encode`, which ignores the flags it is handed, so a remapped key carries whatever the source baked in. It never fires today because mercury's callback always returns `None`, but both paths go through one place now, and that place applies the flags.
+
 ### `crates/freddie_keyboard/src/sys/macos.rs`
+
+Before:
+
+```rust
+fn encode(source: Option<&CGEventSource>, out: &KeyEvent) -> Option<CGEvent> {
+    let code = to_code(out.key)?;
+    let down = out.press == PressType::Down;
+    CGEvent::new_keyboard_event(source?.clone(), code, down).ok()
+}
+```
+
+After:
+
+```rust
+/// A keyboard event for `key`, carrying exactly `flags`, built from a source of its own.
+///
+/// The source is created here and dropped with the event, and is deliberately not stored
+/// anywhere. Posting through a source mutates it: an arrow key leaves `NumericPad` in its
+/// state, every event built from it afterwards is born carrying that bit, and `post` writes
+/// the bit back out, which reaffirms it. One arrow key would otherwise stop `cmd`-`space`
+/// from being the Spotlight hotkey for the rest of the run. A source with no history has
+/// nothing to leak, so the event is born with exactly the flags its own key carries and
+/// `untouched` keeps only those.
+///
+/// Not a `NULL` source, which means the shared session state rather than no state, and so
+/// inherits bits other processes have left there.
+fn keyboard_event(key: Key, down: bool, flags: ModifierFlags) -> Option<CGEvent> {
+    let code = to_code(key)?;
+    let source = CGEventSource::new(CGEventSourceStateID::Private).ok()?;
+    let event = CGEvent::new_keyboard_event(source, code, down).ok()?;
+    let untouched = event.get_flags() & !MODIFIERS;
+    event.set_flags(untouched | to_cg(flags));
+    Some(event)
+}
+```
+
+Its caller in the tap callback loses the source argument:
+
+```rust
+                    Decision::Remap(out) => keyboard_event(out.key, out.press == PressType::Down, out.flags)
+                        .map_or(CallbackResult::Drop, CallbackResult::Replace),
+```
+
+And `intercept` no longer builds one for the tap thread:
+
+```rust
+    let thread = std::thread::spawn(move || {
+```
 
 Before:
 
@@ -105,21 +157,13 @@ struct EmitterState {
 impl EmitterState {
     /// Post `key` going down or coming up, carrying exactly `flags`.
     ///
-    /// A `CGEvent`'s own flags are baked in from the source's state when it is created, which
-    /// lags a modifier posted microseconds earlier. So the event states its own modifiers rather
-    /// than trusting the source: whoever built it said what it carries, and we apply exactly that.
-    ///
-    /// The source is built here, for this one event, and dropped with it. Posting through a source
-    /// mutates it: an arrow key leaves `NumericPad` set, and every event built from that source
-    /// afterwards is born carrying it, which stops `cmd`-`space` from being the Spotlight hotkey.
-    /// A source with no history has nothing to leak, so the event is born with exactly the flags
-    /// its own key carries and `untouched` keeps only those.
+    /// The event states its own modifiers rather than trusting a source: whoever built it said
+    /// what it carries, and we apply exactly that. See [`keyboard_event`].
     fn post(&self, key: Key, down: bool, flags: ModifierFlags) -> Result<(), EmitError> {
-        let code = to_code(key).ok_or(EmitError::Unmappable(key))?;
-        let source = CGEventSource::new(CGEventSourceStateID::Private).map_err(|_| EmitError::Post)?;
-        let event = CGEvent::new_keyboard_event(source, code, down).map_err(|_| EmitError::Post)?;
-        let untouched = event.get_flags() & !MODIFIERS;
-        event.set_flags(untouched | to_cg(flags));
+        if to_code(key).is_none() {
+            return Err(EmitError::Unmappable(key));
+        }
+        let event = keyboard_event(key, down, flags).ok_or(EmitError::Post)?;
         event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, self.tag);
         event.post(CGEventTapLocation::Session);
         Ok(())
@@ -127,79 +171,48 @@ impl EmitterState {
 }
 ```
 
-`Emitter` keeps its `Rc<EmitterState>`, which is what makes it `!Send`; mercury relies on that to keep the emitter on the worker thread that owns it.
-
-`intercept` no longer needs its own source, and `encode` builds one per call for the same reason:
-
-Before:
-
-```rust
-    let thread = std::thread::spawn(move || {
-        let source = CGEventSource::new(CGEventSourceStateID::Private).ok();
-```
-
-```rust
-fn encode(source: Option<&CGEventSource>, out: &KeyEvent) -> Option<CGEvent> {
-    let code = to_code(out.key)?;
-    let down = out.press == PressType::Down;
-    CGEvent::new_keyboard_event(source?.clone(), code, down).ok()
-}
-```
-
-After:
-
-```rust
-    let thread = std::thread::spawn(move || {
-```
-
-```rust
-/// A remapped event, built from a source of its own so it carries only the flags its key
-/// carries. See [`EmitterState::post`].
-fn encode(out: &KeyEvent) -> Option<CGEvent> {
-    let code = to_code(out.key)?;
-    let down = out.press == PressType::Down;
-    let source = CGEventSource::new(CGEventSourceStateID::Private).ok()?;
-    CGEvent::new_keyboard_event(source, code, down).ok()
-}
-```
-
-Its call site in the tap callback loses the argument:
-
-```rust
-                    Decision::Remap(out) => encode(&out)
-                        .map_or(CallbackResult::Drop, CallbackResult::Replace),
-```
-
-And the emitter is constructed without one:
+The emitter is constructed without a source:
 
 ```rust
     let emitter = Emitter(Rc::new(EmitterState { tag }));
 ```
 
+`Emitter` keeps its `Rc<EmitterState>`, which is what makes it `!Send`; mercury relies on that to keep the emitter on the worker thread that owns it.
+
 ### Tests, in the existing `mod tests` in `macos.rs`
 
-The contamination is only observable after a real post, so the unit tests cover the part that is pure, and the hand check below covers the rest.
+The contamination is only observable after a real post, so the unit tests cover what is pure and the hand check below covers the rest.
 
 ```rust
-// The keys that carry NumericPad are born with it; the emitter must neither add it to
-// other keys nor strip it from these. `MODIFIERS` deliberately does not name it, so
-// `untouched` carries it, which is correct only when the source has no history.
+// The keys that carry NumericPad are born with it, and `MODIFIERS` deliberately does not
+// name it, so `untouched` carries it through. That is correct only for a source with no
+// history, which is what `keyboard_event` guarantees.
 #[test]
-fn a_fresh_source_gives_each_key_its_own_flags() {
-    let source = CGEventSource::new(CGEventSourceStateID::Private).expect("a private source");
-    let arrow = CGEvent::new_keyboard_event(source.clone(), KeyCode::UP_ARROW, true)
-        .expect("an arrow event");
-    let space =
-        CGEvent::new_keyboard_event(source, KeyCode::SPACE, true).expect("a space event");
+fn a_keys_own_flags_survive_and_others_do_not_appear() {
+    let arrow = keyboard_event(Key::UpArrow, true, ModifierFlags::empty()).expect("an arrow");
+    let space = keyboard_event(Key::Space, true, ModifierFlags::empty()).expect("a space");
     assert!(arrow.get_flags().contains(CGEventFlags::CGEventFlagNumericPad));
     assert!(!space.get_flags().contains(CGEventFlags::CGEventFlagNumericPad));
 }
 
-// What the bug produced: a space born with NumericPad from a contaminated source. The mask
-// must not be what saves us here, because it does not name that bit; the fresh source is.
+// What the bug produced: cmd-space posting as 0x00300000 rather than 0x00100000.
 #[test]
-fn the_mask_does_not_clear_the_keypad_bit() {
-    assert!(!MODIFIERS.contains(CGEventFlags::CGEventFlagNumericPad));
+fn a_chord_carries_its_modifier_and_nothing_else() {
+    let space = keyboard_event(Key::Space, true, ModifierFlags::COMMAND).expect("a space");
+    assert_eq!(space.get_flags() & MODIFIERS, CGEventFlags::CGEventFlagCommand);
+    assert!(!space.get_flags().contains(CGEventFlags::CGEventFlagNumericPad));
+}
+
+// `encode` used to drop the flags it was handed; the remap path shares the constructor now.
+#[test]
+fn a_remapped_key_carries_the_flags_it_was_given() {
+    let event = keyboard_event(Key::KeyR, true, ModifierFlags::COMMAND).expect("a key");
+    assert!(event.get_flags().contains(CGEventFlags::CGEventFlagCommand));
+}
+
+#[test]
+fn a_key_with_no_code_has_no_event() {
+    assert!(keyboard_event(Key::F24, true, ModifierFlags::empty()).is_none());
 }
 ```
 
