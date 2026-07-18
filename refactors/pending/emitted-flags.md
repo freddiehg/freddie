@@ -1,6 +1,6 @@
-# an emitted event states its own flags
+# an emitted event is built from a fresh source
 
-`EmitterState::post` inherits flag bits from the event source instead of stating them. One arrow key contaminates the source for the rest of the run, so every key mercury emits afterwards carries `kCGEventFlagMaskNumericPad`, and `cmd`-`space` stops opening Spotlight until mercury is restarted.
+`EmitterState` holds one `CGEventSource` for the life of the run, and posting through a source mutates its state. One arrow key leaves `kCGEventFlagMaskNumericPad` set in it, every event built afterwards is born carrying that bit, and `cmd`-`space` stops opening Spotlight until mercury restarts. Building each event from its own source removes the accumulated state, and with it the whole class of bug.
 
 ## The failure
 
@@ -11,166 +11,178 @@ let untouched = event.get_flags() & !MODIFIERS;
 event.set_flags(untouched | to_cg(flags));
 ```
 
-`MODIFIERS` names six bits: `AlphaShift`, `Shift`, `Control`, `Alternate`, `Command`, `SecondaryFn`. It does not name `NumericPad` (`0x0020_0000`). Posting an arrow key through the source puts that bit into the source's state, and every event built from it afterwards is born with it, so `untouched` carries it onto every emitted key for the life of the run.
+`MODIFIERS` names six bits: `AlphaShift`, `Shift`, `Control`, `Alternate`, `Command`, `SecondaryFn`. It does not name `NumericPad` (`0x0020_0000`), which the arrows and the keypad carry.
 
-Measured, from one run in `~/Library/Logs/mercury/mercury.log`, over 9,965 emitted events:
-
-```
-19:15:49.269  post key=KeyT    down=false raw_flags=0x00000000 kept_from_source=0x00000000 kind=KeyUp
-19:16:00.454  post key=Backspace down=true raw_flags=0x00000000 kept_from_source=0x00000000 kind=KeyDown
-19:16:00.774  post key=UpArrow down=true  raw_flags=0x00a00000 kept_from_source=0x00200000 kind=KeyDown
-                                                               ^ set here, and on every post after
-```
-
-Before the first arrow, `cmd`-`space` posts as the Spotlight hotkey and Spotlight opens:
+Posting is what contaminates. Creating events without posting them leaves the source clean, which is why this hides from any test that does not post:
 
 ```
-post key=MetaLeft down=true  raw_flags=0x00100000 kept_from_source=0x00000000 kind=FlagsChanged
-post key=Space    down=true  raw_flags=0x00100000 kept_from_source=0x00000000 kind=KeyDown
+before posting anything:
+  space from long-lived source           0x20000000
+
+after posting an arrow through it:
+  space from the SAME source             0x20a00000
+  space from a FRESH source              0x20000000
+  up arrow from a FRESH source           0x20a00000
 ```
 
-After it, the same keypress posts a bit that the `WindowServer` compares against, because `NumericPad` falls inside `NSEventModifierFlagDeviceIndependentFlagsMask` (`0xFFFF_0000`):
+Measured in `~/Library/Logs/mercury/mercury.log` over one run of 9,965 emitted events, the bit appears on the first arrow key and never clears:
 
 ```
-post key=MetaLeft down=true  raw_flags=0x00300000 kept_from_source=0x00200000 kind=FlagsChanged
-post key=Space    down=true  raw_flags=0x00300000 kept_from_source=0x00200000 kind=KeyDown
+19:16:00.454  post key=Backspace down=true  raw_flags=0x00000000 kept_from_source=0x00000000
+19:16:00.774  post key=UpArrow   down=true  raw_flags=0x00a00000 kept_from_source=0x00200000
+                                                                 ^ set here, and on every post after
 ```
 
-`0x0030_0000` is not `cmd`-`space`, so no symbolic hotkey matches. Typing is unaffected because apps read the character rather than the exact flag set, which is why this reads as "hotkeys randomly stop working" rather than as a broken keyboard.
+Before that arrow, `cmd`-`space` posts `0x00100000` and Spotlight opens. After it, the same keypress posts `0x00300000`. `NumericPad` falls inside `NSEventModifierFlagDeviceIndependentFlagsMask` (`0xFFFF_0000`), which is what the `WindowServer` compares a symbolic hotkey against, so nothing matches. Typing is unaffected because apps read the character rather than the exact flag set, which is why this reads as "hotkeys randomly stop working" rather than as a broken keyboard.
 
 Repro: start mercury, `cmd`-`space` opens Spotlight, press any arrow key, `cmd`-`space` never opens Spotlight again until restart.
 
-## What carries `NumericPad`
+## Why a fresh source rather than a wider mask
 
-Every keycode that is born with the bit, enumerated over 0-127 against a fresh source:
+Naming `NumericPad` in `MODIFIERS` and deriving it from a table of keypad keycodes fixes this bit and only this bit. The source accumulates state as a matter of design, so the next bit it latches is the same bug again, and a hardcoded keycode table duplicates knowledge the OS already has.
 
-```
-65, 67, 69, 75, 76, 78, 81, 82, 83, 84, 85, 86, 87, 88, 89, 91, 92   the keypad
-123, 124, 125, 126                                                   left, right, down, up arrows
-```
+A source built for one event has nothing to accumulate. The event is then born with exactly the flags that key carries, so an arrow keeps `NumericPad` and a space never gains one, with no table to maintain.
 
-The arrows also carry `SecondaryFn` (`0x0080_0000`), which is already correct: `MODIFIERS` names it, so it is stripped and re-derived through `ModifierFlags::FN`. `NumericPad` is the only omission.
+Cost, measured over 10,000 iterations each: an event from a shared source takes 6.6µs, from a fresh source 20.2µs, so 13.6µs more per emitted key. At 100 keys a second, which is faster than autorepeat, that is 0.14% of one core, on the effect loop rather than inside the tap callback.
 
-`Home`, `End`, `PageUp`, `PageDown`, `ForwardDelete` and the function keys carry `SecondaryFn` and not `NumericPad`, so they need nothing here.
+## Change 1: build each emitted event from its own source
 
-## Change 1: derive the keypad bit from the key
-
-`NumericPad` is a property of which key it is, not of anything the source accumulated, so it is computed from the keycode and never inherited. It stays out of the portable `ModifierFlags`, which describes modifiers the user holds; the keypad bit is neither held nor a modifier.
+`MODIFIERS` is unchanged and still correct: it clears the modifier bits so the caller's `ModifierFlags` state them outright. What changes is that `untouched` now holds only the bits the key itself carries, because there is no accumulated state left to inherit.
 
 ### `crates/freddie_keyboard/src/sys/macos.rs`
 
 Before:
 
 ```rust
-/// The device-independent modifier bits. Everything else the OS puts in an event's
-/// flags is left as it found it.
-const MODIFIERS: CGEventFlags = CGEventFlags::from_bits_truncate(
-    CGEventFlags::CGEventFlagAlphaShift.bits()
-        | CGEventFlags::CGEventFlagShift.bits()
-        | CGEventFlags::CGEventFlagControl.bits()
-        | CGEventFlags::CGEventFlagAlternate.bits()
-        | CGEventFlags::CGEventFlagCommand.bits()
-        | CGEventFlags::CGEventFlagSecondaryFn.bits(),
-);
-```
-
-After:
-
-```rust
-/// The bits an emitted event states for itself, cleared from whatever the source
-/// supplied before the event's own are applied.
-///
-/// `NumericPad` is in here for the same reason the modifiers are: posting an arrow key
-/// leaves it set in the source's state, so an event built later is born with it, and a
-/// `cmd`-`space` carrying it is not the Spotlight hotkey. It is not a modifier the user
-/// holds, so it is derived from the keycode by [`keypad_flag`] rather than from
-/// [`ModifierFlags`].
-const STATED: CGEventFlags = CGEventFlags::from_bits_truncate(
-    CGEventFlags::CGEventFlagAlphaShift.bits()
-        | CGEventFlags::CGEventFlagShift.bits()
-        | CGEventFlags::CGEventFlagControl.bits()
-        | CGEventFlags::CGEventFlagAlternate.bits()
-        | CGEventFlags::CGEventFlagCommand.bits()
-        | CGEventFlags::CGEventFlagSecondaryFn.bits()
-        | CGEventFlags::CGEventFlagNumericPad.bits(),
-);
-
-/// The arrows and the keypad, the keycodes macOS marks as numeric-pad keys.
-///
-/// Enumerated against the OS over every keycode 0-127, rather than assumed: 65-92 are
-/// the keypad's digits and operators, 123-126 are the four arrows.
-const KEYPAD_CODES: &[CGKeyCode] = &[
-    65, 67, 69, 75, 76, 78, 81, 82, 83, 84, 85, 86, 87, 88, 89, 91, 92, 123, 124, 125, 126,
-];
-
-/// `NumericPad` for a key that is one, nothing for a key that is not.
-fn keypad_flag(code: CGKeyCode) -> CGEventFlags {
-    if KEYPAD_CODES.contains(&code) {
-        CGEventFlags::CGEventFlagNumericPad
-    } else {
-        CGEventFlags::empty()
-    }
+struct EmitterState {
+    source: CGEventSource,
+    tag: i64,
 }
-```
 
-The two remaining uses of `MODIFIERS` are the mask itself in `post`, replaced below, and nothing else; `from_cg` and `to_cg` go through `FLAG_PAIRS` and are unchanged.
-
-Before:
-
-```rust
+impl EmitterState {
+    /// Post `key` going down or coming up, carrying exactly `flags`.
+    ///
+    /// A `CGEvent`'s own flags are baked in from the source's state when it is created, which
+    /// lags a modifier posted microseconds earlier. So the event states its own modifiers rather
+    /// than trusting the source: whoever built it said what it carries, and we apply exactly that.
     fn post(&self, key: Key, down: bool, flags: ModifierFlags) -> Result<(), EmitError> {
         let code = to_code(key).ok_or(EmitError::Unmappable(key))?;
         let event = CGEvent::new_keyboard_event(self.source.clone(), code, down)
             .map_err(|_| EmitError::Post)?;
         let untouched = event.get_flags() & !MODIFIERS;
         event.set_flags(untouched | to_cg(flags));
+        event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, self.tag);
+        event.post(CGEventTapLocation::Session);
+        Ok(())
+    }
+}
 ```
 
 After:
 
 ```rust
+struct EmitterState {
+    tag: i64,
+}
+
+impl EmitterState {
+    /// Post `key` going down or coming up, carrying exactly `flags`.
+    ///
+    /// A `CGEvent`'s own flags are baked in from the source's state when it is created, which
+    /// lags a modifier posted microseconds earlier. So the event states its own modifiers rather
+    /// than trusting the source: whoever built it said what it carries, and we apply exactly that.
+    ///
+    /// The source is built here, for this one event, and dropped with it. Posting through a source
+    /// mutates it: an arrow key leaves `NumericPad` set, and every event built from that source
+    /// afterwards is born carrying it, which stops `cmd`-`space` from being the Spotlight hotkey.
+    /// A source with no history has nothing to leak, so the event is born with exactly the flags
+    /// its own key carries and `untouched` keeps only those.
     fn post(&self, key: Key, down: bool, flags: ModifierFlags) -> Result<(), EmitError> {
         let code = to_code(key).ok_or(EmitError::Unmappable(key))?;
-        let event = CGEvent::new_keyboard_event(self.source.clone(), code, down)
-            .map_err(|_| EmitError::Post)?;
-        let untouched = event.get_flags() & !STATED;
-        event.set_flags(untouched | to_cg(flags) | keypad_flag(code));
+        let source = CGEventSource::new(CGEventSourceStateID::Private).map_err(|_| EmitError::Post)?;
+        let event = CGEvent::new_keyboard_event(source, code, down).map_err(|_| EmitError::Post)?;
+        let untouched = event.get_flags() & !MODIFIERS;
+        event.set_flags(untouched | to_cg(flags));
+        event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, self.tag);
+        event.post(CGEventTapLocation::Session);
+        Ok(())
+    }
+}
 ```
 
-The doc comment above `post` already says the event "states its own modifiers rather than trusting the source". This is what makes that true.
+`Emitter` keeps its `Rc<EmitterState>`, which is what makes it `!Send`; mercury relies on that to keep the emitter on the worker thread that owns it.
+
+`intercept` no longer needs its own source, and `encode` builds one per call for the same reason:
+
+Before:
+
+```rust
+    let thread = std::thread::spawn(move || {
+        let source = CGEventSource::new(CGEventSourceStateID::Private).ok();
+```
+
+```rust
+fn encode(source: Option<&CGEventSource>, out: &KeyEvent) -> Option<CGEvent> {
+    let code = to_code(out.key)?;
+    let down = out.press == PressType::Down;
+    CGEvent::new_keyboard_event(source?.clone(), code, down).ok()
+}
+```
+
+After:
+
+```rust
+    let thread = std::thread::spawn(move || {
+```
+
+```rust
+/// A remapped event, built from a source of its own so it carries only the flags its key
+/// carries. See [`EmitterState::post`].
+fn encode(out: &KeyEvent) -> Option<CGEvent> {
+    let code = to_code(out.key)?;
+    let down = out.press == PressType::Down;
+    let source = CGEventSource::new(CGEventSourceStateID::Private).ok()?;
+    CGEvent::new_keyboard_event(source, code, down).ok()
+}
+```
+
+Its call site in the tap callback loses the argument:
+
+```rust
+                    Decision::Remap(out) => encode(&out)
+                        .map_or(CallbackResult::Drop, CallbackResult::Replace),
+```
+
+And the emitter is constructed without one:
+
+```rust
+    let emitter = Emitter(Rc::new(EmitterState { tag }));
+```
 
 ### Tests, in the existing `mod tests` in `macos.rs`
 
+The contamination is only observable after a real post, so the unit tests cover the part that is pure, and the hand check below covers the rest.
+
 ```rust
+// The keys that carry NumericPad are born with it; the emitter must neither add it to
+// other keys nor strip it from these. `MODIFIERS` deliberately does not name it, so
+// `untouched` carries it, which is correct only when the source has no history.
 #[test]
-fn the_arrows_and_the_keypad_are_numeric_pad_keys() {
-    for code in [KeyCode::UP_ARROW, KeyCode::DOWN_ARROW, KeyCode::LEFT_ARROW, KeyCode::RIGHT_ARROW] {
-        assert_eq!(keypad_flag(code), CGEventFlags::CGEventFlagNumericPad);
-    }
-    // 82 is keypad 0, 76 is keypad enter.
-    assert_eq!(keypad_flag(82), CGEventFlags::CGEventFlagNumericPad);
-    assert_eq!(keypad_flag(76), CGEventFlags::CGEventFlagNumericPad);
+fn a_fresh_source_gives_each_key_its_own_flags() {
+    let source = CGEventSource::new(CGEventSourceStateID::Private).expect("a private source");
+    let arrow = CGEvent::new_keyboard_event(source.clone(), KeyCode::UP_ARROW, true)
+        .expect("an arrow event");
+    let space =
+        CGEvent::new_keyboard_event(source, KeyCode::SPACE, true).expect("a space event");
+    assert!(arrow.get_flags().contains(CGEventFlags::CGEventFlagNumericPad));
+    assert!(!space.get_flags().contains(CGEventFlags::CGEventFlagNumericPad));
 }
 
+// What the bug produced: a space born with NumericPad from a contaminated source. The mask
+// must not be what saves us here, because it does not name that bit; the fresh source is.
 #[test]
-fn ordinary_keys_are_not() {
-    for code in [KeyCode::SPACE, KeyCode::RETURN, KeyCode::ANSI_A, KeyCode::ESCAPE, KeyCode::HOME] {
-        assert_eq!(keypad_flag(code), CGEventFlags::empty());
-    }
-}
-
-// The bug: an emitted `cmd`-`space` must carry Command and nothing else, whatever the
-// source has accumulated. `STATED` covering NumericPad is what guarantees it.
-#[test]
-fn stated_flags_cover_the_keypad_bit() {
-    assert!(STATED.contains(CGEventFlags::CGEventFlagNumericPad));
-    let contaminated = CGEventFlags::CGEventFlagNumericPad | CGEventFlags::CGEventFlagCommand;
-    let untouched = contaminated & !STATED;
-    assert_eq!(untouched, CGEventFlags::empty());
-    assert_eq!(
-        untouched | to_cg(ModifierFlags::COMMAND) | keypad_flag(KeyCode::SPACE),
-        CGEventFlags::CGEventFlagCommand
-    );
+fn the_mask_does_not_clear_the_keypad_bit() {
+    assert!(!MODIFIERS.contains(CGEventFlags::CGEventFlagNumericPad));
 }
 ```
 
@@ -206,8 +218,8 @@ cargo run -p mercury
 - `cmd`-`space` opens Spotlight.
 - Press an arrow key.
 - `cmd`-`space` opens Spotlight. Before this change it does not, until mercury is restarted.
-- Arrow keys still move the cursor, and the log shows `raw_flags=0x00a00000` for them: `NumericPad` and `SecondaryFn` both present, now derived rather than inherited.
-- `kept_from_source` stays `0x00000000` for the whole run.
+- Arrow keys still move the cursor, and the log shows `raw_flags=0x00a00000` for them, `NumericPad` and `SecondaryFn` both present.
+- `kept_from_source` is `0x00000000` for every key except the arrows and the keypad, for the whole run, however many arrows have been pressed.
 
 ## Not covered
 
