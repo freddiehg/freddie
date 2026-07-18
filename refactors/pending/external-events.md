@@ -335,7 +335,31 @@ The `lib.rs` above was compiled against `tokio-tungstenite` 0.24 and driven with
 
 ## Change 2: mercury listens
 
-Depends on `mercury-cli.md`'s Change 2, which is where `--port` and `Args.port` come from.
+Depends on `mercury-cli.md`, which puts clap in front of mercury. `Args` gains the port here, before:
+
+```rust
+pub struct Args {
+    /// What the terminal shows. The log file always records `debug`, whatever this says.
+    #[arg(long, env = "LOG_LEVEL", default_value = "info")]
+    pub log_level: String,
+}
+```
+
+after:
+
+```rust
+pub struct Args {
+    /// What the terminal shows. The log file always records `debug`, whatever this says.
+    #[arg(long, env = "LOG_LEVEL", default_value = "info")]
+    pub log_level: String,
+
+    /// The loopback port the event socket listens on.
+    #[arg(long, env = "MERCURY_PORT", default_value_t = mercury::DEFAULT_PORT)]
+    pub port: u16,
+}
+```
+
+`u16` is the whole of the validation, and clap does it: confirmed against clap 4, `--port abc` exits with `invalid value 'abc' for '--port <PORT>': invalid digit found in string` and `--port 99999` with `99999 is not in 0..=65535`. A bad `MERCURY_PORT` gets that same message, naming `--port` rather than the variable that carried the value; that is clap's wording, and it is what you will see when the typo is in a shell profile.
 
 `crates/mercury/Cargo.toml`, before:
 

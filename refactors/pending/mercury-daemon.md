@@ -18,7 +18,9 @@ mercury: a keyboard remapper
     mercury daemon    run the daemon in this terminal, in the foreground
 ```
 
-No flags and no values, on any verb. Exit codes: 0 for success, 1 when the operation failed, 2 for an unparseable command line. `mercury status` exits 1 when no daemon is running, so a script can test it. `mercury stop` exits 0 when no daemon is running, so calling it twice is not an error, and `mercury restart` starts one when none was running rather than refusing.
+No flags and no values, on any verb. clap owns the surface, so that listing is `mercury --help` rather than a string kept beside the parser, `-V` prints the version, and an unknown verb exits 2 with a suggestion. Verified against clap 4.6 on the pinned 1.96.0.
+
+Exit codes: 0 for success, 1 when the operation failed, 2 for an unparseable command line. `mercury status` exits 1 when no daemon is running, so a script can test it. `mercury stop` exits 0 when no daemon is running, so calling it twice is not an error, and `mercury restart` starts one when none was running rather than refusing.
 
 `restart` is the verb a rebuild wants: `cargo build -p mercury && ./target/debug/mercury restart` replaces a running daemon with the binary just built. It stops and starts rather than signalling the daemon to re-exec itself, because the running process is the old binary and nothing about it knows the new one exists.
 
@@ -326,71 +328,56 @@ Pure prefactor: `mercury` and `mercury daemon` both do exactly what `mercury` do
 
 `crates/mercury/src/main.rs` keeps `main`, the usage text, and the parser. Everything else in the file today (`run`, `run_event_loop`, `dispatch_event`, `run_effect_loop`, `perform_effect`, `schedule_timer`, `place_window`, `foreground_app`, and the module doc describing the threads) moves verbatim into a new `crates/mercury/src/daemon.rs`, with today's `fn main` body becoming `pub(crate) fn run()`. `mod logging;` stays in `main.rs`, and `daemon.rs` reaches it as `crate::logging`.
 
+`clap` with its `derive` feature is already a mercury dependency by the time this lands, so nothing here adds it.
+
 ```rust
 //! The mercury command line.
 //!
 //! One process runs the model and owns the keyboard (`mercury daemon`, in `daemon.rs`); every
 //! other verb is a client that finds it through its lock and reads the log it writes.
 
+use clap::{Parser, Subcommand};
+
 mod daemon;
 mod logging;
 
-/// What the command line asked for.
-enum Command {
-    /// Run the daemon in this process, in the foreground.
-    Daemon,
-    /// Print [`USAGE`].
-    Help,
+#[derive(Parser)]
+#[command(name = "mercury", version, about = "A keyboard remapper")]
+struct Cli {
+    #[command(subcommand)]
+    verb: Option<Verb>,
 }
 
-const USAGE: &str = "\
-mercury: a keyboard remapper
-
-    mercury daemon    run the daemon in this terminal, in the foreground
-";
-
-/// Read the verb, of which there is at most one.
+/// What the command line asked for, where `None` is the bare `mercury`.
 ///
-/// Hand-rolled rather than clap: the surface is a handful of verbs with no flags and no values, so
-/// the parser is this match, and the dependency would be larger than the thing it parses.
-fn parse(args: impl Iterator<Item = String>) -> Result<Command, String> {
-    let mut args = args.skip(1); // the program name
-    let Some(verb) = args.next() else {
-        return Ok(Command::Daemon);
-    };
-    if args.next().is_some() {
-        return Err(format!("{verb} takes no arguments"));
-    }
-    match verb.as_str() {
-        "daemon" => Ok(Command::Daemon),
-        "help" | "-h" | "--help" => Ok(Command::Help),
-        other => Err(format!("{other}: not a mercury command")),
-    }
+/// `Copy`, because it carries nothing: a fieldless enum passed by value trips
+/// `clippy::needless_pass_by_value` under the workspace's `pedantic`, and being `Copy` is both the
+/// right answer and the one that keeps `run` taking it by value.
+///
+/// Each variant's doc comment is its line in `mercury --help`, so the help text cannot drift from
+/// the verbs the way a hand-maintained usage string does.
+#[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+enum Verb {
+    /// Run the daemon in this terminal, in the foreground.
+    Daemon,
 }
 
 /// Do what was asked, and report the exit code for it.
-fn run(command: Command) -> i32 {
-    match command {
-        Command::Daemon => {
+fn run(verb: Option<Verb>) -> i32 {
+    match verb {
+        // The bare `mercury`. Change 7 makes this start the daemon and follow its log; until then
+        // it is what running mercury has always been.
+        None | Some(Verb::Daemon) => {
             daemon::run();
-            0
-        }
-        Command::Help => {
-            println!("{USAGE}");
             0
         }
     }
 }
 
 fn main() {
-    let code = match parse(std::env::args()) {
-        Ok(command) => run(command),
-        Err(message) => {
-            eprintln!("mercury: {message}");
-            eprint!("{USAGE}");
-            2
-        }
-    };
+    // `parse` exits 2 itself on a bad command line, after printing the usage, so there is no error
+    // arm here. Tests reach the parser through `try_parse_from`, which returns instead.
+    let code = run(Cli::parse().verb);
     // Every path above has returned, so the daemon's locals (the lock, the menu bar, the run loop
     // stopper) are already dropped by the time this skips the rest of the destructors.
     std::process::exit(code);
@@ -402,42 +389,38 @@ Tests, in `main.rs`:
 ```rust
 #[cfg(test)]
 mod tests {
-    use super::{Command, parse};
+    use super::{Cli, Verb};
+    use clap::Parser;
 
-    fn parse_args(args: &[&str]) -> Result<Command, String> {
-        parse(std::iter::once("mercury").chain(args.iter().copied()).map(str::to_owned))
+    fn verb_of(args: &[&str]) -> Option<Verb> {
+        Cli::try_parse_from(std::iter::once("mercury").chain(args.iter().copied()))
+            .expect("a valid command line")
+            .verb
     }
 
     #[test]
     fn no_verb_runs_the_daemon() {
-        assert!(matches!(parse_args(&[]), Ok(Command::Daemon)));
+        assert_eq!(verb_of(&[]), None);
     }
 
     #[test]
     fn the_daemon_verb_runs_the_daemon() {
-        assert!(matches!(parse_args(&["daemon"]), Ok(Command::Daemon)));
-    }
-
-    #[test]
-    fn every_spelling_of_help_is_help() {
-        for spelling in ["help", "-h", "--help"] {
-            assert!(matches!(parse_args(&[spelling]), Ok(Command::Help)));
-        }
+        assert_eq!(verb_of(&["daemon"]), Some(Verb::Daemon));
     }
 
     #[test]
     fn an_unknown_verb_is_refused() {
-        assert!(parse_args(&["frobnicate"]).is_err());
+        assert!(Cli::try_parse_from(["mercury", "frobnicate"]).is_err());
     }
 
     #[test]
     fn no_verb_takes_an_argument() {
-        assert!(parse_args(&["daemon", "--now"]).is_err());
+        assert!(Cli::try_parse_from(["mercury", "daemon", "--now"]).is_err());
     }
 }
 ```
 
-Each later change extends these: a verb's variant, its `parse` arm, its `run` arm, its `USAGE` line, and a parse test asserting it.
+Each later change extends these: a `Verb` variant carrying its help line, its `run` arm, and a test asserting it parses. Verified on the pinned 1.96.0 against clap 4.6: the derived code is clean under the workspace's `deny` on clippy `all`, `pedantic`, `nursery`, and `cargo`, given the `Copy` above.
 
 ## Change 5: `status` and `stop`
 

@@ -1,8 +1,8 @@
 # mercury takes arguments
 
-Not built. mercury parses no arguments today and reads `LOG_LEVEL` straight out of the environment inside `logging::init`. `external-events.md` wants a `--port`, and every configurable thing after it will want the same treatment, so the parser lands first, as a prefactor, with the one setting that already exists.
+Not built. mercury parses no arguments at all today, and reads its one setting, `LOG_LEVEL`, straight out of the environment inside `logging::init`. So there is no `--help`, no `--version`, and nothing that can be set on the command line for a single run without exporting a variable that outlives it.
 
-clap with the `derive` and `env` features. `env` is what makes this worth doing rather than reading `std::env::args` by hand: one `#[arg]` attribute declares the flag, the environment variable, and the default, and clap resolves them in that order. Precedence, `--help`, `--version`, a misspelled flag, and a value that does not parse are all handled by the same declaration.
+clap with the `derive` and `env` features. `env` is what earns it over reading `std::env::args` by hand: one `#[arg]` attribute declares the flag, the environment variable, and the default, and clap resolves them in that order. Precedence, `--help`, `--version`, a misspelled flag, and a value that does not parse all follow from the same declaration, and every later setting is one more field.
 
 ## The struct
 
@@ -15,7 +15,7 @@ use clap::Parser;
 ///
 /// Each field is a flag, an environment variable, and a default, in that order of precedence,
 /// which clap resolves. A flag it does not recognize, or a value that does not parse, exits with a
-/// message naming the offender.
+/// message naming the offender before `main` runs a line of its own.
 #[derive(Parser, Debug)]
 #[command(name = "mercury", version, about = "A layered keyboard remapper.")]
 pub struct Args {
@@ -27,7 +27,9 @@ pub struct Args {
 
 `log_level` stays a `String` because it is a `tracing_subscriber` `EnvFilter` directive, not a bare level: `info`, and also `mercury=debug,bind=warn`. Parsing it into a `LevelFilter` would refuse the second form, which is the form that is actually useful when chasing one crate's output.
 
-## Change 1: parse arguments, and hand the log level to logging
+Checked against clap 4 by building this struct and running it: a flag beats its environment variable, the variable beats the default, `--log-level 'mercury=debug,bind=warn'` arrives intact as one string, `--help` lists the variable and the default next to the flag, and an unknown flag exits with `unexpected argument '--log-lvl' found`.
+
+## The change: parse arguments, and hand the log level to logging
 
 `crates/mercury/Cargo.toml` gains:
 
@@ -135,30 +137,6 @@ Verify by hand:
 - `LOG_LEVEL=error cargo run -p mercury` does the same, and `--log-level error` beats `LOG_LEVEL=debug`.
 - `cargo run -p mercury -- --log-level 'mercury=debug,bind=warn'` filters per crate.
 - `cargo run -p mercury -- --log-level nonsense` warns and runs at `info`.
-- `cargo run -p mercury -- --prot 9000` exits with clap's unknown-argument message and no menu-bar icon appears.
+- `cargo run -p mercury -- --log-lvl error` exits with clap's `unexpected argument` message, and no menu-bar icon appears.
 
 `CLAUDE.md`'s logging section describes `LOG_LEVEL`; it gains `--log-level` alongside it.
-
-## Change 2: `--port`
-
-Ships with `external-events.md`, which is what gives mercury a port to configure. `Args` gains one field:
-
-```rust
- pub struct Args {
-     /// What the terminal shows. The log file always records `debug`, whatever this says.
-     #[arg(long, env = "LOG_LEVEL", default_value = "info")]
-     pub log_level: String,
-+
-+    /// The loopback port the event socket listens on.
-+    #[arg(long, env = "MERCURY_PORT", default_value_t = mercury::DEFAULT_PORT)]
-+    pub port: u16,
- }
-```
-
-`u16` is the whole of the validation. Confirmed against clap 4: `--port abc` exits with `invalid value 'abc' for '--port <PORT>': invalid digit found in string`, and `--port 99999` with `99999 is not in 0..=65535`, both before `main` runs a line of its own.
-
-A bad `MERCURY_PORT` produces that same message, naming `--port` rather than the variable that actually carried the value. It is clap's wording and not worth working around, but it is what you will see when the typo is in a shell profile.
-
-The precedence and the parsing were checked by building this `Args` and running it: flags beat environment variables, environment variables beat the defaults, `--log-level 'mercury=debug,bind=warn'` survives intact as a filter string, and `--help` lists both variables and both defaults.
-
-That field is the entire mercury-side story for the port. `external-events.md` keeps `DEFAULT_PORT` and the reasoning behind the number, and drops any parsing of its own.
