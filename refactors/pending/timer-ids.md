@@ -28,11 +28,11 @@ Built on two landed changes. `refactors/past/trigger-closures.md` lets a binding
 
 Ids are usually not worth it because of the bookkeeping: a counter on the state, a mint-and-bump at each arm site, an id field on each event, and the discipline to keep them in step.
 
-None of that is here. `timer_effect_and_guard` already builds the guard and the effect as a pair, so it mints the id and stamps both halves. A call site pays a closure:
+None of that is here. `timer_effect_and_arming` already builds the arming and the effect as a pair, so it mints the id and stamps both halves. A call site pays a closure:
 
 ```rust
-let (guard, effect) = timer_effect_and_guard(OVERLAY_DWELL, |id| MercuryEvent::Timer(TimerFired(id)));
-self.overlay = Some(guard);
+let (arming, effect) = timer_effect_and_arming(OVERLAY_DWELL, |id| MercuryEvent::Timer(TimerFired(id)));
+self.overlay = Some(arming);
 ```
 
 and a binding pays an expression naming its own guard. There is no counter to keep, and a guard that was replaced was dropped, so "is this event still mine" is answered by state that already exists.
@@ -43,18 +43,18 @@ A binding whose node holds no guard produces a trigger that matches no firing, a
 
 Timer clobbering is deliberate (arming again replaces the guard, cancelling what it replaced), no-clobber is not a property the tree has yet, and `refactors/pending/no-clobber.md` is where it is decided. Nothing calls `accumulate` in mercury today.
 
-## change 1: the id, minted with the pair
+## change 1: an arming, which is a guard plus its identity
 
-`crates/freddie/src/drop_guard.rs`:
+`DropGuard` is a general RAII primitive: dropping it wakes a paired receiver, and it knows nothing about timers. It stays that way. What a timer hands out is an ARMING, which is that guard plus the identity of this particular arming, and the timer-shaped methods live there.
+
+`crates/freddie/src/timer.rs`:
 
 ```rust
-use std::sync::atomic::{AtomicU64, Ordering};
-
 /// Identifies one arming of one timer.
 ///
-/// Minted by [`timer_effect_and_guard`](crate::timer_effect_and_guard) and stamped on both halves,
-/// so a fired event can be matched against the guard still held. Process-wide and monotonic: two
-/// armings never share one, whoever armed them.
+/// Minted by [`timer_effect_and_arming`] and stamped on both halves, so a fired event can be
+/// matched against the arming still held. Process-wide and monotonic: two armings never share one,
+/// whoever armed them.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct TimerId(u64);
 
@@ -68,46 +68,31 @@ impl TimerId {
         Self(NEXT.fetch_add(1, Ordering::Relaxed))
     }
 }
-```
 
-`DropGuard` before:
-
-```rust
-#[must_use = "dropping the guard cancels immediately"]
-pub struct DropGuard(
-    // Held only to be dropped: dropping the sender wakes the paired receiver. Never read.
-    #[expect(dead_code)] oneshot::Sender<()>,
-);
-```
-
-after:
-
-```rust
-#[must_use = "dropping the guard cancels immediately"]
-pub struct DropGuard {
+/// One arming of one timer: the guard that cancels it, and which arming it is.
+///
+/// Held by whatever the timer belongs to. Dropping it cancels the timer, because it drops the
+/// guard inside it; keeping it is what lets a binding match the firing this arming will produce
+/// and no other.
+#[must_use = "dropping the arming cancels the timer immediately"]
+#[derive(Debug)]
+pub struct Arming {
     id: TimerId,
-    // Held only to be dropped: dropping the sender wakes the paired receiver. Never read.
+    // Held only to be dropped: dropping it wakes the receiver the effect carries. Never read.
     #[expect(dead_code)]
-    cancel: oneshot::Sender<()>,
+    guard: DropGuard,
 }
 
-impl DropGuard {
-    /// The arming this guard is waiting on, for a binding that matches only its own firing.
+impl Arming {
+    /// The trigger matching this arming's own firing, and no other.
     #[must_use]
-    pub const fn id(&self) -> TimerId {
-        self.id
+    pub const fn firing(&self) -> ArmedTimer {
+        ArmedTimer(Some(self.id))
     }
 }
 ```
 
-```rust
-/// Build a linked guard/receiver pair, and the id identifying this arming.
-pub fn drop_guard() -> (DropGuard, oneshot::Receiver<()>, TimerId) {
-    let (cancel, receiver) = oneshot::channel();
-    let id = TimerId::mint();
-    (DropGuard { id, cancel }, receiver, id)
-}
-```
+`drop_guard.rs` is untouched: no id, no timer, nothing to say about firings.
 
 ## change 2: the timer stamps the event
 
@@ -130,17 +115,18 @@ pub fn timer_effect_and_guard<E>(delay: Duration, event: E) -> (DropGuard, Timer
 after:
 
 ```rust
-/// Build a linked guard/event pair that fires after `delay`. The guard cancels the timer on drop.
+/// Build a linked arming and event that fires after `delay`. Dropping the arming cancels it.
 ///
 /// `event` is handed the id identifying this arming, so the event it builds carries it and the
-/// binding that wants it can match on the guard still held.
-pub fn timer_effect_and_guard<E>(
+/// binding that wants it can match on the arming still held.
+pub fn timer_effect_and_arming<E>(
     delay: Duration,
     event: impl FnOnce(TimerId) -> E,
-) -> (DropGuard, TimerEffect<E>) {
-    let (guard, receiver, id) = drop_guard();
+) -> (Arming, TimerEffect<E>) {
+    let (guard, receiver) = drop_guard();
+    let id = TimerId::mint();
     (
-        guard,
+        Arming { id, guard },
         TimerEffect {
             delay,
             event: event(id),
@@ -150,13 +136,15 @@ pub fn timer_effect_and_guard<E>(
 }
 ```
 
-`crates/freddie/src/lib.rs` adds `TimerId` to the `drop_guard` re-export.
+The name changes with what it returns; every caller is renamed with it.
+
+`crates/freddie/src/lib.rs` re-exports `Arming`, `TimerId`, and `timer_effect_and_arming` in place of `timer_effect_and_guard`.
 
 ## change 3: one event and one trigger, replacing three types
 
 They live in `freddie`, beside the guard and the id they are about, the way `KeySequence` does and the way `freddie_keys` owns `Key` and `KeyEvent`. That is what lets a guard hand back its own trigger, so a binding never names a type at all. `freddie` takes a direct dependency on `bind` for `EventTrigger`; it already has one transitively through `freddie_keys`, and there is no cycle, since `bind` depends on `laserbeam` alone.
 
-`crates/freddie/Cargo.toml` gains `bind = { path = "../bind", default-features = false }`, and `crates/freddie/src/timer.rs`:
+`crates/freddie/Cargo.toml` gains `bind = { path = "../bind", default-features = false }`, and the pair joins `crates/freddie/src/timer.rs` beside `Arming`:
 
 ```rust
 /// A timer fired, carrying the arming it came from.
@@ -180,28 +168,17 @@ impl EventTrigger for ArmedTimer {
     }
 }
 
-/// A guard hands back the trigger matching its own firing, so a binding names the guard and
-/// nothing else. An inherent impl on the sibling module's type, kept here with the trigger it
-/// returns rather than with the guard, since it is the trigger vocabulary that needs explaining.
-impl DropGuard {
-    /// The trigger matching this guard's own firing, and no other.
-    #[must_use]
-    pub const fn firing(&self) -> ArmedTimer {
-        ArmedTimer(Some(self.id))
-    }
-}
-
 impl ArmedTimer {
-    /// The trigger matching the firing of the guard held here, or matching nothing when there is
-    /// no guard: a state that has armed nothing has nothing to wait for.
+    /// The trigger matching the firing of the arming held here, or matching nothing when there is
+    /// none: a state that has armed nothing has nothing to wait for.
     #[must_use]
-    pub fn firing_of(guard: Option<&DropGuard>) -> Self {
-        Self(guard.map(DropGuard::id))
+    pub fn firing_of(arming: Option<&Arming>) -> Self {
+        arming.map_or(Self(None), Arming::firing)
     }
 }
 ```
 
-`crates/freddie/src/lib.rs` re-exports the pair: `pub use timer::{ArmedTimer, TimerEffect, TimerFired, timer_effect_and_guard};`.
+`crates/freddie/src/lib.rs` re-exports the pair alongside the rest of the timer vocabulary.
 
 mercury wraps them: `model.rs`, `MercuryTrigger` before:
 
@@ -244,13 +221,13 @@ after:
 )]
 ```
 
-`resize.rs` and `app.rs` gain the same line, reading their own guard. The field becomes `pub(crate)` rather than growing an accessor: a binding needs to read it, and a `&DropGuard` reached through a shared path can do nothing but name its own firing.
+`resize.rs` and `app.rs` gain the same line, reading their own arming. The field becomes `pub(crate)` rather than growing an accessor: a binding needs to read it, and an `&Arming` reached through a shared path can do nothing but name its own firing.
 
 ```rust
 pub struct NavLayer {
     // Read for the trigger that matches its firing, and held for its `Drop`: dropping the guard
     // cancels nav's return-home timer.
-    pub(crate) home_timeout: DropGuard,
+    pub(crate) home_timeout: Arming,
 }
 ```
 
@@ -278,11 +255,11 @@ pub enum Layer {
 The sequence exposes the guard its live run holds, in `crates/freddie/src/sequence.rs`:
 
 ```rust
-    /// The guard for a live run's window, or `None` when no run is live or this sequence has no
+    /// The arming for a live run's window, or `None` when no run is live or this sequence has no
     /// window. What a binding matches against, so a firing from a run that has since ended matches
     /// nothing.
     #[must_use]
-    pub fn window_guard(&self) -> Option<&DropGuard> {
+    pub fn window_arming(&self) -> Option<&Arming> {
         self.window.as_ref()?.timer.as_ref()
     }
 ```
@@ -301,7 +278,7 @@ after:
     Quit => quit,
     // Only this run's window: a firing from a run that has since ended matches nothing, so the
     // handler never sees it.
-    |mercury_path| ArmedTimer::firing_of(mercury_path.typing_state.jk.window_guard()) => jk_timeout,
+    |mercury_path| ArmedTimer::firing_of(mercury_path.typing_state.jk.window_arming()) => jk_timeout,
     AnyKey => maybe_pass_through,
 ```
 
