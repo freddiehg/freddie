@@ -156,7 +156,7 @@ pub fn timer_effect_and_guard<E>(
 
 They live in `freddie`, beside the guard and the id they are about, the way `KeySequence` does and the way `freddie_keys` owns `Key` and `KeyEvent`. That is what lets a guard hand back its own trigger, so a binding never names a type at all. `freddie` takes a direct dependency on `bind` for `EventTrigger`; it already has one transitively through `freddie_keys`, and there is no cycle, since `bind` depends on `laserbeam` alone.
 
-`crates/freddie/src/timer.rs`:
+`crates/freddie/Cargo.toml` gains `bind = { path = "../bind", default-features = false }`, and `crates/freddie/src/timer.rs`:
 
 ```rust
 /// A timer fired, carrying the arming it came from.
@@ -181,7 +181,8 @@ impl EventTrigger for ArmedTimer {
 }
 
 /// A guard hands back the trigger matching its own firing, so a binding names the guard and
-/// nothing else.
+/// nothing else. An inherent impl on the sibling module's type, kept here with the trigger it
+/// returns rather than with the guard, since it is the trigger vocabulary that needs explaining.
 impl DropGuard {
     /// The trigger matching this guard's own firing, and no other.
     #[must_use]
@@ -199,6 +200,8 @@ impl ArmedTimer {
     }
 }
 ```
+
+`crates/freddie/src/lib.rs` re-exports the pair: `pub use timer::{ArmedTimer, TimerEffect, TimerFired, timer_effect_and_guard};`.
 
 mercury wraps them: `model.rs`, `MercuryTrigger` before:
 
@@ -311,7 +314,7 @@ The handlers lose their event types: `to_home` is already generic over the event
 
 26 assertions in `crates/mercury/tests/transitions.rs` rebuild a timer effect (`return_home_timer()`, `jk_timer()`) and compare it to what a transition produced. A minted id breaks every one, and rebuilding cannot fix it: the id is unpredictable by construction.
 
-So `TimerFired` compares equal to any other under `testing`, the way `AlwaysEqual` does:
+So `TimerFired` compares equal to any other under `testing`, the way `AlwaysEqual` does. In `crates/freddie/src/timer.rs`, beside the type:
 
 ```rust
 /// Two firings compare equal under `testing` whatever their ids.
