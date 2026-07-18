@@ -2,7 +2,7 @@
 
 Not built. mercury needs Chrome's active-tab URL for per-site key remaps (`chrome-tab-url.md`), and only the browser knows it. This extension is the bridge, over the loopback WebSocket mercury listens on.
 
-This doc owns the browser side of one direction: the extension pushing the frontmost tab's URL up. `external-events.md` owns mercury's side of it, and is where the port, `MERCURY_PORT`, the `freddie_event_socket` crate, and the `Upstream` vocabulary are defined; read it for the wire contract, because this doc only builds the JSON it defines.
+This doc owns the browser side of one direction: the extension pushing the frontmost tab's URL up. `external-events.md` owns mercury's side of it, and is where the port, `MERCURY_PORT`, the `freddie_event_socket` crate, and the `IncomingEvent` vocabulary are defined; read it for the wire contract, because this doc only builds the JSON it defines.
 
 Commands going the other way, the token they need, and the extension code that runs them are `external-effects.md`. They share this connection but nothing here anticipates them.
 
@@ -58,7 +58,7 @@ function connect() {
 function pushUrl(url) {
   if (!url) return;
   connect();
-  const payload = JSON.stringify({ kind: "Upstream.Tab", value: { url } });
+  const payload = JSON.stringify({ kind: "IncomingEvent.Tab", value: { url } });
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(payload);
   } else {

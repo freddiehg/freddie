@@ -12,9 +12,9 @@ The Chrome extension is the first client (`chrome-extension.md`), pushing the fr
 
 The transport crate stays dumb and mercury owns the vocabulary, the same split `freddie_app_nav` uses (it hands up a bundle-id string; `App::from_bundle_id` decides what that string means). `freddie_event_socket` hands up frames as `&str`; `crates/mercury/src/external.rs` maps each to an event.
 
-## `Upstream` is the whole vocabulary, and v0 ships it empty
+## `IncomingEvent` is the whole vocabulary, and v0 ships it empty
 
-`MercuryEvent` does not derive `Deserialize`, and it should not. Deriving it makes `MercuryEvent::Key` and `MercuryEvent::Quit` constructible from the wire, so "no remote keyboard, no remote kill" becomes a rule some match arm enforces rather than something the types say. `Upstream` names exactly what an outside sender may say, and there is no arm to forget.
+`MercuryEvent` does not derive `Deserialize`, and it should not. Deriving it makes `MercuryEvent::Key` and `MercuryEvent::Quit` constructible from the wire, so "no remote keyboard, no remote kill" becomes a rule some match arm enforces rather than something the types say. `IncomingEvent` names exactly what an outside sender may say, and there is no arm to forget.
 
 ```rust
 // crates/mercury/src/external.rs
@@ -22,12 +22,12 @@ The transport crate stays dumb and mercury owns the vocabulary, the same split `
 /// Everything an outside process may say to mercury. A sender cannot say anything else, so remote
 /// key injection and remote quit are unrepresentable rather than filtered.
 ///
-/// Empty, so every frame is refused: `unknown variant `Upstream.Tab`, there are no variants`. This
-/// doc ships the transport, and an empty vocabulary is the honest statement of what mercury can be
-/// told once it exists. Variants arrive with the features that need them.
+/// Empty, so every frame is refused with `unknown variant `IncomingEvent.Tab`, there are no
+/// variants`. This doc ships the transport, and an empty vocabulary is the honest statement of what
+/// mercury can be told once it exists. Variants arrive with the features that need them.
 #[derive(serde::Deserialize, Debug)]
 #[serde(tag = "kind", content = "value")]
-pub enum Upstream {}
+pub enum IncomingEvent {}
 ```
 
 Verified against the pinned toolchain: an adjacently tagged enum with no variants derives, compiles, and errors on every input.
@@ -35,9 +35,9 @@ Verified against the pinned toolchain: an adjacently tagged enum with no variant
 `chrome-tab-url.md`'s `TabEvent` adds the first variant:
 
 ```rust
- pub enum Upstream {
+ pub enum IncomingEvent {
 +    /// The frontmost browser tab's URL changed.
-+    #[serde(rename = "Upstream.Tab")]
++    #[serde(rename = "IncomingEvent.Tab")]
 +    Tab(TabMessage),
  }
 
@@ -51,7 +51,7 @@ Every message is the project's one discriminated-union form, `{ kind: "Type.Vari
 
 ```jsonc
 // client -> mercury
-{ "kind": "Upstream.Tab", "value": { "url": "https://claude.ai/new" } }
+{ "kind": "IncomingEvent.Tab", "value": { "url": "https://claude.ai/new" } }
 ```
 
 ## The endpoint
@@ -147,18 +147,18 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ```
 
-`crates/mercury/src/external.rs` is new and holds `Upstream`, `DEFAULT_PORT`, `port`, and:
+`crates/mercury/src/external.rs` is new and holds `IncomingEvent`, `DEFAULT_PORT`, `port`, and:
 
 ```rust
 /// Turn one frame into an event and send it. Runs on the socket's runtime, so it parses, sends,
 /// and returns.
 ///
-/// A frame that is not valid `Upstream` is logged and dropped: a client speaking nonsense is a
-/// client bug, not a reason to tear the connection down. With `Upstream` empty that is every frame,
+/// A frame that is not valid `IncomingEvent` is logged and dropped: a client speaking nonsense is a
+/// client bug, not a reason to tear the connection down. With `IncomingEvent` empty that is every frame,
 /// and connecting and being ignored is exactly what a client should see here.
 pub fn on_message(text: &str) {
-    match serde_json::from_str::<Upstream>(text) {
-        // `Upstream` has no variants, so this value cannot exist and the arm is empty. The first
+    match serde_json::from_str::<IncomingEvent>(text) {
+        // `IncomingEvent` has no variants, so this value cannot exist and the arm is empty. The first
         // variant to land breaks this line, which is how the compiler asks where the event goes; it
         // takes an `event_tx` from then on.
         Ok(never) => match never {},
@@ -182,4 +182,4 @@ pub fn on_message(text: &str) {
 
 `port` comes from `main`, which calls `mercury::port()` before the single-instance lock, so a bad `MERCURY_PORT` panics before the process has touched anything.
 
-Verify by hand with any WebSocket client: connect to `ws://127.0.0.1:8797`, send `{"kind":"Upstream.Tab","value":{"url":"https://claude.ai/new"}}`, and watch `~/Library/Logs/mercury/mercury.log` record the refusal naming the unknown variant. Once `chrome-tab-url.md` has added `Upstream::Tab`, the same frame produces a dispatch record instead.
+Verify by hand with any WebSocket client: connect to `ws://127.0.0.1:8797`, send `{"kind":"IncomingEvent.Tab","value":{"url":"https://claude.ai/new"}}`, and watch `~/Library/Logs/mercury/mercury.log` record the refusal naming the unknown variant. Once `chrome-tab-url.md` has added `IncomingEvent::Tab`, the same frame produces a dispatch record instead.

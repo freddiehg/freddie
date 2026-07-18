@@ -1,14 +1,14 @@
 # external effects: mercury driving the browser
 
-Not built, and downstream of `external-events.md`, which ships the socket and owns the direction where mercury is told things. This doc owns the other direction: mercury asks a connected client to do something and uses the answer.
+Not built. It builds on `external-events.md`, which ships the socket and owns the direction where mercury is told things. This doc owns the other direction: mercury asks a connected client to do something and uses the answer.
 
 "Run this JavaScript in the front tab" is an effect, the way `Foreground` and `Tap` are effects. The model returns it, the effect loop performs it by writing it to the socket, and what comes back up is a reply. Both halves are here: mercury's, and the extension's handler table (`chrome-extension.md` ships the extension that this extends).
 
 The motivating actions are the ones no keystroke expresses: open the front tab's URL in Zed, read the selection, close every tab matching a pattern, pull a value out of the page.
 
-## `Downstream` is serialize-only
+## `OutgoingEffect` is serialize-only
 
-Nothing in this direction has a `Deserialize` impl, so a command cannot arrive from outside even by accident. That is the same reasoning `external-events.md` applies to `Upstream`, pointed the other way.
+Nothing in this direction has a `Deserialize` impl, so a command cannot arrive from outside even by accident. That is the same reasoning `external-events.md` applies to `IncomingEvent`, pointed the other way.
 
 ```rust
 // crates/mercury/src/external.rs
@@ -16,8 +16,8 @@ Nothing in this direction has a `Deserialize` impl, so a command cannot arrive f
 /// A message mercury sends down to a connected client.
 #[derive(serde::Serialize, Debug)]
 #[serde(tag = "kind", content = "value")]
-pub enum Downstream {
-    #[serde(rename = "Downstream.Command")]
+pub enum OutgoingEffect {
+    #[serde(rename = "OutgoingEffect.Command")]
     Command(CommandMessage),
 }
 
@@ -62,15 +62,15 @@ pub struct CloseTabs {
 pub struct CommandId(u64);
 ```
 
-The reply is the one thing in this doc that comes up the socket, so it is a variant of `external-events.md`'s `Upstream`:
+The reply comes back up the socket, so it is a variant of `external-events.md`'s `IncomingEvent`. It belongs there for the same reason `ForegroundEvent` is an event: mercury asked for something, and the world is reporting what happened. The command bus is what consumes it, rather than `event_tx`, because the effect that sent the command is already waiting on it.
 
 ```rust
- pub enum Upstream {
-     #[serde(rename = "Upstream.Tab")]
+ pub enum IncomingEvent {
+     #[serde(rename = "IncomingEvent.Tab")]
      Tab(TabMessage),
-+    /// A reply to a command mercury sent down. The command bus consumes it; it is never dispatched
-+    /// as an event, because the effect that sent the command is what is waiting for it.
-+    #[serde(rename = "Upstream.Reply")]
++    /// What came of a command mercury sent. The command bus routes it to the waiting effect by
++    /// `id`, so it reaches the model as that effect's outcome rather than through `event_tx`.
++    #[serde(rename = "IncomingEvent.Reply")]
 +    Reply(ReplyMessage),
  }
 
@@ -80,7 +80,7 @@ The reply is the one thing in this doc that comes up the socket, so it is a vari
 +    pub result: Result,
 +}
 
-+/// What a command produced. Deserialize only: it arrives inside an `Upstream::Reply`.
++/// What a command produced. Deserialize only: it arrives inside an `IncomingEvent::Reply`.
 +///
 +/// It shadows the prelude's `Result` in this module, which is the point: it is a result, with the
 +/// same `Ok(value)` / `Err(message)` meaning, and the union convention makes the wire tag the type
@@ -100,12 +100,12 @@ The reply is the one thing in this doc that comes up the socket, so it is a vari
 
 ```jsonc
 // mercury -> client
-{ "kind": "Downstream.Command", "value": { "id": 42, "command": { "kind": "Command.RunJs", "value": { "code": "document.title" } } } }
-{ "kind": "Downstream.Command", "value": { "id": 43, "command": { "kind": "Command.ReadSelection" } } }
+{ "kind": "OutgoingEffect.Command", "value": { "id": 42, "command": { "kind": "Command.RunJs", "value": { "code": "document.title" } } } }
+{ "kind": "OutgoingEffect.Command", "value": { "id": 43, "command": { "kind": "Command.ReadSelection" } } }
 
 // client -> mercury
-{ "kind": "Upstream.Reply", "value": { "id": 42, "result": { "kind": "Result.Ok", "value": "hello" } } }
-{ "kind": "Upstream.Reply", "value": { "id": 43, "result": { "kind": "Result.Err", "value": "no active tab" } } }
+{ "kind": "IncomingEvent.Reply", "value": { "id": 42, "result": { "kind": "Result.Ok", "value": "hello" } } }
+{ "kind": "IncomingEvent.Reply", "value": { "id": 43, "result": { "kind": "Result.Err", "value": "no active tab" } } }
 ```
 
 A unit variant like `Command.ReadSelection` carries no `value` at all.
@@ -232,13 +232,13 @@ impl CommandBus {
 +    event_tx: &UnboundedSender<MercuryEvent>,
 +    bus: &CommandBus,
 +) {
-     match serde_json::from_str::<Upstream>(text) {
-         Ok(Upstream::Tab(TabMessage { url })) => {
+     match serde_json::from_str::<IncomingEvent>(text) {
+         Ok(IncomingEvent::Tab(TabMessage { url })) => {
              debug!(%url, "tab");
 +            bus.set_target(client);
              let _ = event_tx.send(tab(url));
          }
-+        Ok(Upstream::Reply(reply)) => bus.resolve(reply),
++        Ok(IncomingEvent::Reply(reply)) => bus.resolve(reply),
          Err(e) => warn!(error = %e, frame = text, "undeserializable frame"),
      }
  }
@@ -314,7 +314,7 @@ const HANDLERS = {
 
 socket.addEventListener("message", async (ev) => {
   const msg = JSON.parse(ev.data);
-  if (msg.kind !== "Downstream.Command") return;
+  if (msg.kind !== "OutgoingEffect.Command") return;
   const { id, command } = msg.value;
   let result;
   try {
@@ -323,7 +323,7 @@ socket.addEventListener("message", async (ev) => {
   } catch (e) {
     result = { kind: "Result.Err", value: String(e) };
   }
-  socket.send(JSON.stringify({ kind: "Upstream.Reply", value: { id, result } }));
+  socket.send(JSON.stringify({ kind: "IncomingEvent.Reply", value: { id, result } }));
 });
 ```
 
@@ -336,8 +336,8 @@ The listener is registered inside `connect`, on the socket it just created, so a
 ## Changes
 
 1. The token: `token`, `token_path`, `Auth` on `listen`, both directions of the check, and the extension's options page (`chrome-extension/options.html` and `options.js`, a one-input page over `chrome.storage.local.token`, with `"options_page"` and the `storage` permission in the manifest). mercury logs `token_path` at startup so the user can open it. It ships before anything can be commanded.
-2. `Client` and `Downstream` on the socket crate, plus the raised message size. `listen`'s callback grows its `&Client`, and `on_message` takes it and ignores it.
-3. The bus: `CommandBus`, `MercuryEffect::Browser`, `perform_effect` spawning it, and `Upstream::Reply` resolving it. The outcome is logged, since no handler wants it yet.
+2. `Client` and `OutgoingEffect` on the socket crate, plus the raised message size. `listen`'s callback grows its `&Client`, and `on_message` takes it and ignores it.
+3. The bus: `CommandBus`, `MercuryEffect::Browser`, `perform_effect` spawning it, and `IncomingEvent::Reply` resolving it. The outcome is logged, since no handler wants it yet.
 4. The extension's handler table.
 
 The event that carries an answer back into the model, and which handler wants it, belong to the doc for whatever feature needs one first.
