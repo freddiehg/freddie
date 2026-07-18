@@ -484,7 +484,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-dispatch2 = "0.2"
+dispatch2 = "0.3"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = [
     "NSColor", "NSControl", "NSFont", "NSPanel", "NSResponder", "NSScreen",
@@ -527,7 +527,7 @@ New `crates/freddie_overlay/src/lib.rs`. `show` and `hide` are callable from any
 
 use std::cell::RefCell;
 
-use dispatch2::Queue;
+use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
@@ -550,7 +550,7 @@ thread_local! {
 /// The panel is sized to the text, so a keymap with more rows makes a taller panel rather than a
 /// clipped one.
 pub fn show(text: &'static str) {
-    Queue::main().exec_async(move || {
+    DispatchQueue::main().exec_async(move || {
         let mtm = MainThreadMarker::new().expect("dispatched to the main queue");
         PANEL.with_borrow_mut(|slot| {
             let (panel, label) = slot.get_or_insert_with(|| build(mtm));
@@ -572,7 +572,7 @@ pub fn show(text: &'static str) {
 
 /// Hide the overlay, from any thread. A no-op if it is not up.
 pub fn hide() {
-    Queue::main().exec_async(|| {
+    DispatchQueue::main().exec_async(|| {
         PANEL.with_borrow(|slot| {
             if let Some((panel, _)) = slot {
                 // SAFETY: ordering the panel out, on the main thread.
@@ -600,7 +600,8 @@ fn build(mtm: MainThreadMarker) -> (Retained<NSPanel>, Retained<NSTextField>) {
     };
     // SAFETY: standard panel configuration, on the main thread.
     unsafe {
-        // Above normal windows and the menu bar. `NSScreenSaverWindowLevel` is 1000.
+        // Above normal windows and the menu bar. `NSScreenSaverWindowLevel` is 1000, and
+        // `NSWindowLevel` is an `NSInteger`, so the literal is the level.
         panel.setLevel(1000);
         panel.setOpaque(false);
         panel.setBackgroundColor(Some(&NSColor::clearColor()));
