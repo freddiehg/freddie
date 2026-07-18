@@ -46,8 +46,21 @@ The overlay needs neither an event nor a trigger of its own. Every timer fires `
 pub const OVERLAY_DWELL: Duration = Duration::from_secs(10);
 ```
 
-Add the content to `impl Layer`, beside `is_passthrough`. It is a fixed-width table, drawn in a
-monospace font (change 3), so the columns line up as written here:
+Each layer's keymap is a file, not a string literal. A table written with `concat!` and `\n` escapes cannot be read as the table it is, and the whole point is that the columns line up; in a file, what you see is what the overlay draws.
+
+`crates/mercury/assets/overlays/`, beside the existing `assets/mercury.png`, one file per keymap: `home.txt`, `nav.txt`, `resize.txt`, `typing.txt`, and one per app with its own bindings, `chrome.txt` and `ghostty.txt`, plus `inapp.txt` for an app with none. `nav.txt`:
+
+```
+  NAV
+  ────────────────────
+  c    chrome
+  f    finder
+  g    ghostty
+  z    zed
+  esc  home
+```
+
+They are included at compile time, so a missing file is a build error rather than a blank overlay, and nothing reads the disk at runtime. Add the content to `impl Layer`, beside `is_passthrough`:
 
 ```rust
 /// The keymap the overlay shows for this layer, read when `o` shows it.
@@ -55,47 +68,19 @@ monospace font (change 3), so the columns line up as written here:
 /// `app` is the confirmed front app, which only the in-app layer reads: its bindings are the
 /// app's, so `i` in Ghostty and `i` in Chrome are different keymaps and showing one for the other
 /// would be worse than showing nothing. Typing never binds `o`, so its arm is unreachable.
-///
-/// Fixed width by hand. The overlay draws it monospaced, so every line is a row and the columns
-/// are wherever the spaces put them.
 #[must_use]
 pub const fn overlay_content(&self, app: App) -> &'static str {
     match self {
-        Self::Home(_) => concat!(
-            "  HOME\n",
-            "  ────────────────────\n",
-            "  n    nav\n",
-            "  r    resize\n",
-            "  t    typing\n",
-            "  i    in-app\n",
-            "  o    this\n",
-            "  q    quit",
-        ),
-        Self::Nav(_) => concat!(
-            "  NAV\n",
-            "  ────────────────────\n",
-            "  c    chrome\n",
-            "  f    finder\n",
-            "  g    ghostty\n",
-            "  z    zed\n",
-            "  esc  home",
-        ),
-        Self::Resize(_) => concat!(
-            "  RESIZE\n",
-            "  ────────────────────\n",
-            "  ↑    maximize\n",
-            "  ←    left half\n",
-            "  →    right half\n",
-            "  esc  home",
-        ),
+        Self::Home(_) => include_str!("../../assets/overlays/home.txt"),
+        Self::Nav(_) => include_str!("../../assets/overlays/nav.txt"),
+        Self::Resize(_) => include_str!("../../assets/overlays/resize.txt"),
         Self::InApp(_) => app.overlay_content(),
-        Self::Typing(_) => "  TYPING\n  ────────────────────\n  jk   home",
+        Self::Typing(_) => include_str!("../../assets/overlays/typing.txt"),
     }
 }
 ```
 
-And the in-app content on `impl App`, in `crates/mercury/src/sources.rs`, since the bindings it
-lists are the app's own:
+And the in-app content on `impl App`, in `crates/mercury/src/sources.rs`, since the bindings it lists are the app's own:
 
 ```rust
 /// The keymap the overlay shows while this app is frontmost and the in-app layer is active. The
@@ -103,33 +88,14 @@ lists are the app's own:
 #[must_use]
 pub const fn overlay_content(self) -> &'static str {
     match self {
-        Self::Chrome => concat!(
-            "  CHROME\n",
-            "  ────────────────────\n",
-            "  r    refresh\n",
-            "  n    nav\n",
-            "  t    typing\n",
-            "  esc  home",
-        ),
-        Self::Ghostty => concat!(
-            "  GHOSTTY\n",
-            "  ────────────────────\n",
-            "  j k  walk panes\n",
-            "  0-9  select window\n",
-            "  n    nav\n",
-            "  t    typing\n",
-            "  esc  home",
-        ),
-        Self::Zed | Self::Other => concat!(
-            "  IN-APP\n",
-            "  ────────────────────\n",
-            "  n    nav\n",
-            "  t    typing\n",
-            "  esc  home",
-        ),
+        Self::Chrome => include_str!("../assets/overlays/chrome.txt"),
+        Self::Ghostty => include_str!("../assets/overlays/ghostty.txt"),
+        Self::Zed | Self::Other => include_str!("../assets/overlays/inapp.txt"),
     }
 }
 ```
+
+A file ends with a newline, which would draw as a blank last row. The panel trims it when it sets the label (change 2), rather than the model trimming: `str::trim_end` is not `const`, and this is a presentation concern anyway.
 
 ### the root state
 
@@ -558,7 +524,9 @@ pub fn show(text: &'static str) {
             // SAFETY: setting the label's text, resizing to fit it, and placing the panel, on the
             // main thread.
             unsafe {
-                label.setStringValue(&NSString::from_str(text));
+                // Trimmed: each keymap is a file, and a file ends with a newline, which would
+                // draw as a blank last row.
+                label.setStringValue(&NSString::from_str(text.trim_end()));
                 label.sizeToFit();
                 resize_to_label(panel, label);
                 place(panel, mtm);
