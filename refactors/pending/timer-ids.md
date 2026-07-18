@@ -37,11 +37,13 @@ self.overlay = Some(guard);
 
 and a binding pays an expression naming its own guard. There is no counter to keep, and a guard that was replaced was dropped, so "is this event still mine" is answered by state that already exists.
 
-## the trigger set becomes state-dependent, and that is fine
+## what THE CHECK sees
 
-A binding whose node holds no guard produces a trigger that matches no firing, and two such triggers compare equal. Nothing goes wrong at dispatch, since neither matches anything. What it means is that the set THE CHECK collects depends on the state it walks: two nodes with no timer set look like one trigger, and `accumulate` would call that a duplicate.
+`accumulate` collects the triggers a node claims and errors when two nodes claim the same one. A trigger read from state is not a claim of that kind: its value depends on what is held, and two nodes holding no timer would produce the same value and read as a clobber while neither could fire at all.
 
-Timer clobbering is deliberate (setting one again replaces the guard, cancelling what it replaced), no-clobber is not a property the tree has yet, and `refactors/pending/no-clobber.md` is where it is decided. Nothing calls `accumulate` in mercury today.
+So the check skips closure triggers, which the macro can tell apart syntactically. The set goes on meaning what it meant, the statically written bindings, and says nothing about the state-read ones — which is honest, since it never had anything to say about them.
+
+`refactors/pending/no-clobber.md` is where deliberate overlap gets decided; this neither helps nor hinders it.
 
 ## change 1: a timer guard, which is a drop guard plus which timer it is
 
@@ -93,7 +95,41 @@ impl TimerGuard {
 
 `drop_guard.rs` is untouched: no id, no timer, nothing to say about firings.
 
-## change 2: the timer stamps the event
+## change 2: an absent trigger matches nothing
+
+A node that may hold no timer has to produce a trigger anyway, since a binding is an expression that evaluates to one. Rather than every such trigger type growing an absent value, `Option` is that value, lifted once in `crates/bind/src/lib.rs`:
+
+```rust
+/// A trigger that may be absent, which matches nothing when it is.
+///
+/// A trigger read from state has to produce a value even when the state holds none, and this is
+/// that value: `None` answers no to every event, so a binding reads
+/// `some_state.timer().map(TimerGuard::trigger)` and nothing branches on absence.
+///
+/// One impl for one type constructor, so nothing overlaps. It does claim `Option` for every
+/// consumer: no crate can implement `EventTrigger` for an `Option` of its own trigger afterwards,
+/// since coherence will not reason about whether the inner type qualifies. The meaning imposed is
+/// the only sensible one.
+impl<T: EventTrigger> EventTrigger for Option<T> {
+    type Event = T::Event;
+    fn is_matching(&self, ev: &T::Event) -> bool {
+        self.as_ref().is_some_and(|t| t.is_matching(ev))
+    }
+}
+```
+
+THE CHECK does not see these at all. `accumulate` collects the triggers a node CLAIMS, and a value read from state is not a static claim, so `bind_macro` skips closure triggers when it emits the insertions:
+
+```rust
+    let triggers = binds
+        .iter()
+        .filter(|b| !matches!(b.trigger, Expr::Closure(_)))
+        .map(|b| &b.trigger);
+```
+
+That is also what makes `Option` work at all: `insert_or_error` takes a value, `Into::into(None)` has none to give, and skipping means the conversion is never reached. Nothing has to invent a trigger meaning "absent", and two nodes holding no timer no longer look like a duplicate claim.
+
+## change 3: the timer stamps the event
 
 `crates/freddie/src/timer.rs`, before:
 
@@ -139,7 +175,7 @@ Its name is unchanged: it hands back a guard, as it did before, and only the eve
 
 `crates/freddie/src/lib.rs` adds `TimerGuard` and `TimerId` to what it already re-exports.
 
-## change 3: one event and one trigger, replacing three types
+## change 4: one event and one trigger, replacing three types
 
 They live in `freddie`, beside the guard and the id they are about, the way `KeySequence` does and the way `freddie_keys` owns `Key` and `KeyEvent`. That is what lets a guard hand back its own trigger, so a binding never names a type at all. `freddie` takes a direct dependency on `bind` for `EventTrigger`; it already has one transitively through `freddie_keys`, and there is no cycle, since `bind` depends on `laserbeam` alone.
 
@@ -156,26 +192,19 @@ pub struct TimerFired(pub TimerId);
 /// Matches only the firing of the timer it was built from.
 ///
 /// Its value comes from the guard the bound node holds, so a binding written with it fires for its
-/// own timer and nothing else. A node holding no guard produces `None`, which matches no firing.
+/// own timer and nothing else.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct TimerTrigger(Option<TimerId>);
+pub struct TimerTrigger(TimerId);
 
 impl EventTrigger for TimerTrigger {
     type Event = TimerFired;
     fn is_matching(&self, ev: &TimerFired) -> bool {
-        self.0 == Some(ev.0)
-    }
-}
-
-impl TimerTrigger {
-    /// The trigger matching the firing of the guard held here, or matching nothing when there is
-    /// none: a state with no timer set has nothing to wait for.
-    #[must_use]
-    pub fn of(guard: Option<&TimerGuard>) -> Self {
-        guard.map_or(Self(None), TimerGuard::trigger)
+        self.0 == ev.0
     }
 }
 ```
+
+It holds no absence of its own. A node that may hold no timer binds `Option<TimerTrigger>` instead, which change 2 makes matchable.
 
 `crates/freddie/src/lib.rs` re-exports the pair alongside the rest of the timer vocabulary.
 
@@ -186,15 +215,16 @@ mercury wraps them: `model.rs`, `MercuryTrigger` before:
     JkTimeout(JkTimeout),
 ```
 
-after:
+after, with both gone and nothing replacing them:
 
 ```rust
-    TimerTrigger(TimerTrigger),
 ```
 
-and `MercuryEvent` the same way, to `Timer(TimerFired)`, with `TimerFired`'s `testing` equality living in `freddie` (change 6). `sources.rs` loses both types rather than gaining any.
+and `MercuryEvent` the same way, to `Timer(TimerFired)`, with `TimerFired`'s `testing` equality living in `freddie`. `sources.rs` loses both types rather than gaining any.
 
-## change 4: each layer binds its own firing
+`MercuryTrigger` gains nothing at all: every timer binding is a closure, and the check skips those, so no timer trigger is ever inserted into the set.
+
+## change 5: each layer binds its own firing
 
 The `Layer` node binds the return-home timeout for every variant today, so it would need to ask which variant is active and what guard it holds. It does not have to: the layers that set a timer are the ones that should bind its firing.
 
@@ -249,7 +279,7 @@ after, binding nothing at all, since `escape` already moved down to the command 
 pub enum Layer {
 ```
 
-## change 5: the root binds the jk window
+## change 6: the root binds the jk window
 
 The sequence exposes the guard its live run holds, in `crates/freddie/src/sequence.rs`:
 
@@ -277,7 +307,7 @@ after:
     Quit => quit,
     // Only this run's window: a firing from a run that has since ended matches nothing, so the
     // handler never sees it.
-    |mercury_path| TimerTrigger::of(mercury_path.typing_state.jk.window_timer()) => jk_timeout,
+    |mercury_path| mercury_path.typing_state.jk.window_timer().map(TimerGuard::trigger) => jk_timeout,
     AnyKey => maybe_pass_through,
 ```
 
@@ -287,7 +317,7 @@ Both helpers that set one take the closure form: `|id| MercuryEvent::Timer(Timer
 
 The handlers lose their event types: `to_home` is already generic over the event, and `jk_timeout` in `handlers/root.rs` takes `&TimerFired` (its `use crate::JkTimeout` becomes `use crate::TimerFired`). Neither needs a staleness check, because a stale firing no longer reaches them.
 
-## change 6: the tests, and what a timer effect compares as
+## change 7: the tests, and what a timer effect compares as
 
 26 assertions in `crates/mercury/tests/transitions.rs` rebuild a timer effect (`return_home_timer()`, `jk_timer()`) and compare it to what a transition produced. A minted id breaks every one, and rebuilding cannot fix it: the id is unpredictable by construction.
 
