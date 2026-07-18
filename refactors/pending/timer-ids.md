@@ -1,66 +1,57 @@
-# a timer that says which firing it is
+# one timer event, matched by the guard that armed it
 
-A timer that has already fired cannot be un-fired. Dropping its guard cancels the sleep, but if the sleep finished a moment earlier its event is on the channel and the handler will see it. Every timer in mercury has this race:
+Two problems, one shape.
 
-- `LayerTimeout` firing late sends you home from a layer you had just entered.
+Every timer mints its own type. `LayerTimeout` is a struct, a `MercuryTrigger` variant, a `MercuryEvent` variant, and a `self_trigger!`, all to say "the layer's idle timer went off"; `JkTimeout` is the same again, and the overlay's dwell would be a third. Nothing about any of it is per-timer except which timer fired.
+
+And every timer races. Dropping a guard cancels the sleep, but a sleep that finished a moment earlier has already put its event on the channel, and that cannot be un-sent:
+
+- `LayerTimeout` firing late sends you home from a layer you just entered.
 - `JkTimeout` firing late interrupts a run that opened after the one it belonged to.
-- The overlay's dwell firing late hides a showing that superseded it.
+- The overlay's dwell firing late hides the showing that superseded it.
 
-Today all three ignore it, because the windows are microseconds wide and the consequences are small. The fix is for a firing to say which arming it came from, and for the state that holds the guard to ignore one it is not waiting on.
-
-The reason it has not been done is the bookkeeping that usually comes with it: a counter on the state, a mint-and-bump at each arm site, an id field on each event, and the discipline to keep them in step. That is a worse cost than the race.
-
-So the id is minted by the timer, not by the caller. `timer_effect_and_guard` already builds the guard and the effect as a pair; it stamps both with the same id, and the caller never sees where the id comes from.
-
-The whole cost at a call site is a closure at arm time and one comparison at handle time:
+Both fall out of one change: a firing carries the identity of the arming it came from, and a binding matches only the firing its own guard is waiting on.
 
 ```rust
-let (guard, effect) = timer_effect_and_guard(OVERLAY_DWELL, |id| {
-    MercuryEvent::OverlayTimeout(OverlayTimeout(id))
-});
-self.overlay = Some(guard);
-```
+// one event, for every timer
+pub struct TimerFired(pub TimerId);
 
-```rust
-if self.overlay.as_ref().is_some_and(|guard| guard.armed(id)) {
-    self.overlay = None;
-    vec![MercuryEffect::HideOverlay]
-} else {
-    Vec::new()
-}
-```
-
-There is no counter to keep, nothing to bump, and no state a caller can get wrong: a guard knows its own firing, and a timer that fires twice is not representable because the pair is built once.
-
-A timer whose staleness does not matter keeps ignoring it. `arm_return_home` takes `|_id| MercuryEvent::LayerTimeout(LayerTimeout)` and nothing changes for it; adopting the check later is a one-line change at the handler, not a redesign.
-
-## where the comparison goes
-
-Written above, the handler compares. It could instead be the binding's own condition, because a trigger is not a constant: `bind_macro` parses it as a `syn::Expr` and emits `let trigger = #trigger;` INSIDE the dispatch body, where `path` is in scope and has not yet been moved into the handler. So a trigger can read the state it is bound on:
-
-```rust
-/// Matches only the firing the guard still held is waiting on.
-pub struct ArmedTimer(Option<TimerId>);
-
-impl EventTrigger for ArmedTimer {
-    type Event = OverlayTimeout;
-    fn is_matching(&self, ev: &OverlayTimeout) -> bool {
-        self.0 == Some(ev.0)
-    }
-}
-```
-
-```rust
+// the binding names the guard whose firing it wants
 #[bind(ArmedTimer(path.overlay.as_ref().map(DropGuard::id)) => hide_overlay)]
 ```
 
-A stale firing then matches no binding, so dispatch returns `None` and the handler never runs: no `if` inside it, no branch returning an empty vector, and "is this event still mine" is answered where every other "does this event apply" question is answered.
+The identity does the work the per-timer types were doing, so the types go. The match does the work a stale-check in each handler would have done, so a stale firing matches no binding at all: dispatch returns `None`, the handler never runs, and no handler contains an `if` about it.
 
-Two things to settle before taking it. The trigger set `accumulate` collects becomes state-dependent, so THE CHECK answers "no duplicates in this state" rather than "no duplicates ever". And a trigger reading `path` has not been compiled: the codegen says it works, and one attempt died on an unrelated mistake in the harness, so demonstrate it before writing the changes this way.
+## why this is affordable
+
+Ids are usually not worth it because of the bookkeeping: a counter on the state, a mint-and-bump at each arm site, an id field on each event, and the discipline to keep them in step.
+
+None of that is here. `timer_effect_and_guard` already builds the guard and the effect as a pair, so it mints the id and stamps both halves. A call site pays a closure:
+
+```rust
+let (guard, effect) = timer_effect_and_guard(OVERLAY_DWELL, |id| MercuryEvent::Timer(TimerFired(id)));
+self.overlay = Some(guard);
+```
+
+and a binding pays an expression naming its own guard. There is no counter to keep, and a guard that was replaced was dropped, so "is this event still mine" is answered by the state that already exists.
+
+## what makes it possible
+
+A trigger is not a constant. `bind_macro` parses it as a `syn::Expr` and emits `let trigger = #trigger;` INSIDE the dispatch body, where `path` is in scope and has not yet been moved into the handler. So a trigger can read the node it is bound on.
+
+That has not been compiled. The codegen says it works and one attempt died on an unrelated mistake in the harness. Demonstrate it before writing anything else here: a trigger reading `path`, dispatching correctly, in a test.
+
+## the trigger set becomes state-dependent, and that is fine
+
+`ArmedTimer(None)` is what a binding produces when its node holds no guard, and two of them compare equal. Nothing goes wrong at dispatch, because `is_matching` is `self.0 == Some(ev.0)` and `None` matches no firing. What it means is that the set of triggers THE CHECK collects depends on the state it walks: two unarmed timers look like the same trigger, and `accumulate` would call that a duplicate.
+
+That is not a reason to avoid this. Timer clobbering is deliberate here (arming again replaces the guard, cancelling what it replaced), and no-clobber is not a property the tree has yet: `refactors/pending/no-clobber.md` is the doc for making overlap a stated thing rather than an accident, and this is one more input to it. Nothing calls `accumulate` in mercury today, so nothing breaks in the meantime.
+
+What that doc will have to say about this: a trigger whose value is read from state answers "no duplicates in this state", not "no duplicates ever", so either the check learns to skip such triggers or it walks the states it cares about.
 
 ## change 1: the id, minted with the pair
 
-`crates/freddie/src/drop_guard.rs`, the guard carries the id it was armed with:
+`crates/freddie/src/drop_guard.rs`:
 
 ```rust
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -75,7 +66,7 @@ pub struct TimerId(u64);
 
 impl TimerId {
     /// The next id. Relaxed: the only requirement is that no two calls return the same value.
-    pub(crate) fn mint() -> Self {
+    fn mint() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         Self(NEXT.fetch_add(1, Ordering::Relaxed))
     }
@@ -104,18 +95,13 @@ pub struct DropGuard {
 }
 
 impl DropGuard {
-    /// Whether `id` is the firing this guard is waiting on.
-    ///
-    /// A guard that was replaced has already been dropped, so asking this of the guard a state
-    /// still holds answers "is this event still mine, or did it come from an arming I abandoned".
+    /// The arming this guard is waiting on, for a binding that matches only its own firing.
     #[must_use]
-    pub fn armed(&self, id: TimerId) -> bool {
-        self.id == id
+    pub const fn id(&self) -> TimerId {
+        self.id
     }
 }
 ```
-
-`drop_guard` mints the id and hands it back, so the timer can stamp the event with it:
 
 ```rust
 /// Build a linked guard/receiver pair, and the id identifying this arming.
@@ -149,9 +135,8 @@ after:
 ```rust
 /// Build a linked guard/event pair that fires after `delay`. The guard cancels the timer on drop.
 ///
-/// `event` is handed the id identifying this arming, so the event it builds can carry it. A
-/// handler that cares compares it against the guard its state still holds (see
-/// [`DropGuard::armed`]); one that does not takes `|_id| ..` and ignores it.
+/// `event` is handed the id identifying this arming, so the event it builds carries it and the
+/// binding that wants it can match on the guard still held.
 pub fn timer_effect_and_guard<E>(
     delay: Duration,
     event: impl FnOnce(TimerId) -> E,
@@ -170,52 +155,69 @@ pub fn timer_effect_and_guard<E>(
 
 `crates/freddie/src/lib.rs` adds `TimerId` to the `drop_guard` re-export.
 
-## change 3: mercury's arm sites
+## change 3: one event and one trigger in mercury
 
-`crates/mercury/src/state/mod.rs`, both helpers wrap their event in a closure. `arm_return_home`, before:
+`crates/mercury/src/sources.rs`, replacing `LayerTimeout` and `JkTimeout`:
 
 ```rust
-    let (guard, effect) = timer_effect_and_guard(
-        RETURN_TO_HOME_TIMEOUT,
-        MercuryEvent::LayerTimeout(LayerTimeout),
-    );
+/// A timer fired, carrying the arming it came from.
+#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
+#[derive(Debug)]
+pub struct TimerFired(pub TimerId);
+
+/// Matches only the firing of the arming it was built from.
+///
+/// Its value comes from the guard the bound node holds, so a binding written with it fires for
+/// its own timer and for nothing else. A node holding no guard produces `None`, which matches no
+/// firing at all.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ArmedTimer(pub Option<TimerId>);
+
+impl EventTrigger for ArmedTimer {
+    type Event = TimerFired;
+    fn is_matching(&self, ev: &TimerFired) -> bool {
+        self.0 == Some(ev.0)
+    }
+}
+```
+
+`model.rs` drops `LayerTimeout` and `JkTimeout` from both enums and gains `ArmedTimer(ArmedTimer)` on the trigger and `Timer(TimerFired)` on the event.
+
+## change 4: the bindings name their guards
+
+`crates/mercury/src/state/mod.rs`. `Layer`, before:
+
+```rust
+#[bind(LayerTimeout => to_home)]
+```
+
+after, where each variant's guard supplies the id:
+
+```rust
+#[bind(ArmedTimer(path.get().return_home_id()) => to_home)]
+```
+
+which needs `Layer::return_home_id(&self) -> Option<TimerId>`, returning the held guard's id for the three layers that arm one and `None` for typing and home.
+
+The root, before:
+
+```rust
+    JkTimeout => jk_timeout,
 ```
 
 after:
 
 ```rust
-    // The id is ignored: a stale return-home lands in whatever layer is active and sends it home,
-    // which is where a stale one would have sent it anyway.
-    let (guard, effect) = timer_effect_and_guard(RETURN_TO_HOME_TIMEOUT, |_id| {
-        MercuryEvent::LayerTimeout(LayerTimeout)
-    });
+    ArmedTimer(path.typing_state.jk_id()) => jk_timeout,
 ```
 
-`arm_jk_timeout` changes the same way, with `|_id| MercuryEvent::JkTimeout(JkTimeout)`.
+which needs `KeySequence` to expose the id of the guard a live run holds.
 
-`crates/mercury/tests/transitions.rs` rebuilds two timer effects to assert against (`return_home_timer` and `jk_timer`); both take the closure form. Their `testing` equality is the delay and the event, and the event no longer varies, so the assertions are unchanged.
+Both arm sites take the closure form: `|id| MercuryEvent::Timer(TimerFired(id))`.
 
-## change 4: the tests
+## change 5: the tests
 
-`crates/freddie/tests/`, new, over the primitive:
+The rebuilt timer effects in `crates/mercury/tests/transitions.rs` (`return_home_timer`, `jk_timer`) carry an id now, and a test cannot predict it: the timer mints it. So a test reads it off the effect the transition produced, and drives the firing with that id. Cases worth having beyond the existing ones:
 
-```rust
-#[test]
-fn a_guard_knows_its_own_arming() {
-    let (guard, _rx) = timer_effect_and_guard(Duration::from_secs(1), |id| id);
-    // The effect carries the id the guard was armed with.
-    assert!(guard.armed(effect.event));
-}
-
-#[test]
-fn two_armings_never_share_an_id() {
-    let (first, _) = timer_effect_and_guard(Duration::from_secs(1), |id| id);
-    let (second, other) = timer_effect_and_guard(Duration::from_secs(1), |id| id);
-    assert!(!first.armed(other.event), "the second arming's id is not the first's");
-    assert!(second.armed(other.event));
-}
-```
-
-## what this does not do
-
-It does not unify the three timer event types into one. Each timer still has its own trigger and event; this only gives every arming an identity. Folding `LayerTimeout`, `JkTimeout`, and `OverlayTimeout` into one `TimerFired` event is a separate question, and the answer changes if a timer ever needs to carry more than its identity.
+- a stale firing matches nothing: arm, supersede, then fire the first arming's id and assert no effects.
+- a live firing still fires: fire the id the current guard holds and assert the timeout's effects.
