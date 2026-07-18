@@ -4,12 +4,12 @@ The overlay is an external AppKit window, not model state. The model cannot own 
 
 `o` in any non-typing layer shows that layer's keymap hint and arms a hide timer. The overlay hides when you change layers, or after the dwell. One binding each side:
 
-- `o => show_overlay` in every non-typing layer. `o` is a keystroke, so binding it at the root would fire in typing too and you could never type the letter, which is why it is per-layer. Typing binds nothing at all now, so `o` falls to the root and is passed through like every other key.
+- `o => toggle_overlay` in every non-typing layer. `o` is a keystroke, so binding it at the root would fire in typing too and you could never type the letter, which is why it is per-layer. Typing binds nothing at all now, so `o` falls to the root and is passed through like every other key.
 - the hide timer's own firing, bound once at the root. The timeout is a timer event, not a keystroke, and hiding is not opt-in, so a single root binding covers every layer.
 
 The overlay's trace in the model is one field on the root, `overlay: Option<TimerGuard>`, the guard for the pending hide of whatever is up. It is a single thing shown from any layer, so its state is a root concern, not a per-layer one (unlike the return-home timer, which each layer owns independently). The three paths:
 
-- `show_overlay` sets the hide timer and stores its guard. Reassigning drops any previous guard, cancelling a still-pending timer, so a rapid second `o` supersedes.
+- `toggle_overlay` sets the hide timer and stores its guard, or takes the overlay down when one is already up: `o` is the key you press to ask what is bound, so it is the key you press when you are done reading.
 - `hide_overlay` takes the field: if one was up, push `HideOverlay`.
 - `set_layer` does the same, so leaving a layer takes the overlay down with it.
 
@@ -209,15 +209,17 @@ impl Default for Mercury {
 New on `impl Mercury`, beside `handle` and `set_layer`:
 
 ```rust
-/// Show the active layer's overlay and set its hide timer. Reassigning the field drops any
-/// previous guard, cancelling a still-pending timer, so a second `o` supersedes.
+/// Show the active layer's keymap, or take it down if it is already up.
 ///
 /// One of the two writers of `overlay`, which is private for the reason `layer` is: the effects a
 /// change implies come back from the method that made it, and `#[must_use]` is what stops them
 /// being dropped. `refactors/pending/drop-emits-effects.md` is the general form; nothing here
 /// waits on it.
-#[must_use = "the returned effects show the overlay and schedule its hide"]
-pub fn show_overlay(&mut self) -> Vec<MercuryEffect> {
+#[must_use = "the returned effects put the overlay up or take it down"]
+pub fn toggle_overlay(&mut self) -> Vec<MercuryEffect> {
+    if self.overlay.is_some() {
+        return self.hide_overlay();
+    }
     let content = self.layer.overlay_content(self.foreground.app());
     let (guard, effect) =
         timer_effect_and_guard(OVERLAY_DWELL, |id| MercuryEvent::Timer(TimerFired(id)));
@@ -297,11 +299,11 @@ use crate::MercuryEffect;
 /// `o` in a non-typing layer: show the active layer's overlay and arm its hide timer.
 ///
 /// Generic over the event and the path, so every non-typing layer binds it from its own node.
-pub(crate) fn show_overlay<'a, E, P: Ascend<MercuryPath<'a>>>(
+pub(crate) fn toggle_overlay<'a, E, P: Ascend<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
-    node.parent.ascend().show_overlay()
+    node.parent.ascend().toggle_overlay()
 }
 
 /// The overlay's hide timer fired. Bound at the root, so it fires from whatever layer is active,
@@ -327,12 +329,12 @@ Each non-typing layer binds `o`. `state/home.rs`, `nav.rs`, `resize.rs`, and `ap
     Key::KeyR.down() => to_resize,
     Key::KeyT.down() => to_typing,
     Key::KeyI.down() => to_inapp,
-    Key::KeyO.down() => show_overlay,
+    Key::KeyO.down() => toggle_overlay,
     Key::KeyQ.down() => quit,
 )]
 ```
 
-`nav.rs`, `resize.rs`, and `app.rs` add `Key::KeyO.down() => show_overlay,` to their own `#[bind(..)]` the same way. `typing.rs` binds nothing and gains nothing: in typing, `o` falls to the root and is typed.
+`nav.rs`, `resize.rs`, and `app.rs` add `Key::KeyO.down() => toggle_overlay,` to their own `#[bind(..)]` the same way. `typing.rs` binds nothing and gains nothing: in typing, `o` falls to the root and is typed.
 
 ### the exports
 
@@ -503,11 +505,8 @@ objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
 objc2-core-foundation = { version = "0.3", features = ["CGColor"] }
 tracing = "0.1"
 
-# Not `workspace = true`: the workspace forbids `unsafe_code`, and `forbid` cannot be relaxed from
-# inside the crate. Every AppKit call is unsafe and allowed at its site with a SAFETY comment.
-[lints.rust]
-unsafe_code = "deny"
-
+# Not `workspace = true` only for the clippy relaxations below; the crate needs no `unsafe` at
+# all, because objc2 0.6 exposes every call it makes as safe.
 [lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
