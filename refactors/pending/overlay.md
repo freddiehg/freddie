@@ -209,8 +209,13 @@ impl Default for Mercury {
 New on `impl Mercury`, beside `handle` and `set_layer`:
 
 ```rust
-/// Show the active layer's overlay and arm its hide timer. Reassigning the field drops any
+/// Show the active layer's overlay and set its hide timer. Reassigning the field drops any
 /// previous guard, cancelling a still-pending timer, so a second `o` supersedes.
+///
+/// One of the two writers of `overlay`, which is private for the reason `layer` is: the effects a
+/// change implies come back from the method that made it, and `#[must_use]` is what stops them
+/// being dropped. `refactors/pending/drop-emits-effects.md` is the general form; nothing here
+/// waits on it.
 #[must_use = "the returned effects show the overlay and schedule its hide"]
 pub fn show_overlay(&mut self) -> Vec<MercuryEffect> {
     let content = self.layer.overlay_content(self.foreground.app());
