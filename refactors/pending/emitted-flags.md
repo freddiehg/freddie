@@ -58,6 +58,10 @@ A source built for one event has nothing to accumulate. The event is then born w
 
 Cost, measured over 10,000 iterations each: an event from a shared source takes 6.6µs, from a fresh source 20.2µs, so 13.6µs more per emitted key. At 100 keys a second, which is faster than autorepeat, that is 0.14% of one core, on the effect loop rather than inside the tap callback.
 
+Not a `NULL` source, which the C API allows and is 132ns. `NULL` means the shared session state rather than no state, so the event inherits whatever the whole login session carries, including bits other processes put there. With the session contaminated it returns `0x20a00000` for a space and `0x20a00000` for an arrow, the same value for both, so it does not even carry the key's own flags. A newly created `Private` source starts empty and reflects only what is posted through it, which is why a source that lives for one event has nothing to inherit.
+
+The long-lived source is mercury's choice, not something `CoreGraphics` asks for: `CGEventCreateKeyboardEvent` takes a source per call. That a source accumulates state, and that posting updates it, is `CoreGraphics`.
+
 ## Change 1: build each emitted event from its own source
 
 `MODIFIERS` is unchanged and still correct: it clears the modifier bits so the caller's `ModifierFlags` state them outright. What changes is that `untouched` now holds only the bits the key itself carries, because there is no accumulated state left to inherit.
