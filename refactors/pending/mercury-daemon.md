@@ -11,13 +11,16 @@ mercury: a keyboard remapper
 
     mercury           start the daemon if it is not running, then follow its log
     mercury start     start the daemon if it is not running, and exit
+    mercury restart   stop the running daemon and start a fresh one
     mercury logs      follow the log, starting nothing
     mercury stop      ask the running daemon to quit
     mercury status    report whether the daemon is running, and its pid
     mercury daemon    run the daemon in this terminal, in the foreground
 ```
 
-No flags and no values, on any verb. Exit codes: 0 for success, 1 when the operation failed, 2 for an unparseable command line. `mercury status` exits 1 when no daemon is running, so a script can test it. `mercury stop` exits 0 when no daemon is running, so calling it twice is not an error.
+No flags and no values, on any verb. Exit codes: 0 for success, 1 when the operation failed, 2 for an unparseable command line. `mercury status` exits 1 when no daemon is running, so a script can test it. `mercury stop` exits 0 when no daemon is running, so calling it twice is not an error, and `mercury restart` starts one when none was running rather than refusing.
+
+`restart` is the verb a rebuild wants: `cargo build -p mercury && ./target/debug/mercury restart` replaces a running daemon with the binary just built. It stops and starts rather than signalling the daemon to re-exec itself, because the running process is the old binary and nothing about it knows the new one exists.
 
 ## Why `stop` is a signal
 
@@ -497,36 +500,61 @@ pub(crate) fn status() -> i32 {
     }
 }
 
-/// Ask the running daemon to quit, and wait for it to let go of the lock.
+/// What [`stop_daemon`] found and did.
 ///
-/// Exits 0 when there was nothing to stop, so calling this twice, or in a teardown script that
-/// does not know the state, is not an error.
-pub(crate) fn stop() -> i32 {
+/// `stop` and `restart` both need the outcome and word it differently, so the stopping reports the
+/// fact and each caller phrases its own line. The failures are worded here, because a daemon that
+/// would not go away reads the same whichever verb asked.
+enum Stopped {
+    /// A daemon was signalled and let go of the lock.
+    Was(Pid),
+    /// There was nothing to stop.
+    NotRunning,
+    /// A daemon is there and did not go away, or could not be found to signal.
+    Failed,
+}
+
+/// Ask the running daemon to quit, and wait for it to let go of the lock.
+fn stop_daemon() -> Stopped {
     let pid = match find_daemon() {
         Ok(Target::Running(pid)) => pid,
-        Ok(Target::NotRunning) => {
-            println!("mercury is not running");
-            return 0;
-        }
+        Ok(Target::NotRunning) => return Stopped::NotRunning,
         Ok(Target::Anonymous) => {
             eprintln!("mercury: something holds the lock but recorded no pid; it is starting or shutting down");
-            return 1;
+            return Stopped::Failed;
         }
         Err(e) => {
             eprintln!("mercury: {e}");
-            return 1;
+            return Stopped::Failed;
         }
     };
     if let Err(e) = terminate(pid) {
         eprintln!("mercury: could not signal pid {pid}: {e}");
-        return 1;
+        return Stopped::Failed;
     }
     if wait_until_free() {
-        println!("mercury stopped (pid {pid})");
-        0
+        Stopped::Was(pid)
     } else {
         eprintln!("mercury: pid {pid} still holds the lock; run `kill -9 {pid}` if it is wedged");
-        1
+        Stopped::Failed
+    }
+}
+
+/// `mercury stop`.
+///
+/// Exits 0 when there was nothing to stop, so calling this twice, or in a teardown script that
+/// does not know the state, is not an error.
+pub(crate) fn stop() -> i32 {
+    match stop_daemon() {
+        Stopped::Was(pid) => {
+            println!("mercury stopped (pid {pid})");
+            0
+        }
+        Stopped::NotRunning => {
+            println!("mercury is not running");
+            0
+        }
+        Stopped::Failed => 1,
     }
 }
 
@@ -751,6 +779,26 @@ pub(crate) fn start_only() -> i32 {
         Started::Failed => 1,
     }
 }
+
+/// `mercury restart`: replace the running daemon with a fresh one.
+///
+/// The two halves are already sequenced by the lock. `stop_daemon` returns only once the lock is
+/// free, which is the same condition `start` needs to find, so the new daemon never races the old
+/// one's shutdown and reports "already running" against the process it just killed.
+///
+/// A daemon that would not stop means no start is attempted: the old process still owns the tap,
+/// and spawning a second one that the lock immediately refuses would say nothing useful.
+///
+/// Starting from cold is a restart with an empty first half, rather than an error, so a script that
+/// restarts on a rebuild does not have to know whether anything was up.
+pub(crate) fn restart() -> i32 {
+    match stop_daemon() {
+        Stopped::Was(pid) => println!("mercury stopped (pid {pid})"),
+        Stopped::NotRunning => println!("mercury was not running"),
+        Stopped::Failed => return 1,
+    }
+    start_only()
+}
 ```
 
 `parse` changes its default:
@@ -762,12 +810,17 @@ pub(crate) fn start_only() -> i32 {
      };
 ```
 
-with `Command::StartAndFollow` and `Command::Start` added, `USAGE` reaching the full text at the top of this doc, and the `no_verb_runs_the_daemon` test becoming:
+with `Command::StartAndFollow`, `Command::Start`, and `Command::Restart` added, `USAGE` reaching the full text at the top of this doc, and the `no_verb_runs_the_daemon` test becoming:
 
 ```rust
 #[test]
 fn no_verb_starts_and_follows() {
     assert!(matches!(parse_args(&[]), Ok(Command::StartAndFollow)));
+}
+
+#[test]
+fn the_restart_verb_restarts() {
+    assert!(matches!(parse_args(&["restart"]), Ok(Command::Restart)));
 }
 ```
 
@@ -776,6 +829,9 @@ Verifying, from a shell with no mercury running:
 - `mercury` prints "mercury started (pid N)" and then follows the log. Ctrl-C returns to the shell; `mercury status` still reports pid N, and the keyboard still remaps.
 - `mercury` again prints "mercury is already running (pid N)" and follows.
 - Closing the terminal entirely leaves the daemon up, by `mercury status` from a new one.
+- `mercury restart` prints "mercury stopped (pid N)" then "mercury started (pid M)" with `M` a different pid, and `mercury status` reports `M`. The log shows the old daemon's `SIGTERM: quitting` and `kill: exiting` before the new one's `initial state`.
+- `mercury restart` with nothing running prints "mercury was not running" and starts one.
+- Editing a binding, `cargo build -p mercury && ./target/debug/mercury restart`, and the new binding is live without any window having been touched.
 - `mercury stop` stops it, and `mercury status` exits 1.
 - `tccutil reset Accessibility` and then `mercury`: the daemon takes the lock, the follower shows the `could not intercept the keyboard` line, and the process exits.
 
