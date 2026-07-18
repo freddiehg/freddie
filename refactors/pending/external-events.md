@@ -22,15 +22,19 @@ The transport crate stays dumb and mercury owns the vocabulary, the same split `
 /// Everything an outside process may say to mercury. A sender cannot say anything else, so remote
 /// key injection and remote quit are unrepresentable rather than filtered.
 ///
-/// Empty, so every frame is refused with `unknown variant `IncomingEvent.Tab`, there are no
-/// variants`. This doc ships the transport, and until a feature needs to be told something there
-/// is nothing mercury can be told. Variants arrive with the features that want them.
+/// `MercuryEvent` deliberately does not derive `Deserialize`: deriving it would make
+/// `MercuryEvent::Key` and `MercuryEvent::Quit` constructible from the wire, and "no remote
+/// keyboard, no remote kill" would be a rule some match arm enforces rather than something the
+/// types say.
+///
+/// Empty, so every frame is refused with ``unknown variant `IncomingEvent.Tab`, there are no
+/// variants``. Variants arrive with the features that want them.
 #[derive(serde::Deserialize, Debug)]
 #[serde(tag = "kind", content = "value")]
 pub enum IncomingEvent {}
 ```
 
-Verified against the pinned toolchain: an adjacently tagged enum with no variants derives, compiles, and errors on every input.
+Verified against the pinned toolchain: an adjacently tagged enum with no variants derives, compiles, and refuses every input. The doubled backticks in that doc comment are not a typo; a single pair would end the code span at the inner backtick around `IncomingEvent.Tab`.
 
 `chrome-tab-url.md`'s `TabEvent` adds the first variant:
 
@@ -162,10 +166,12 @@ workspace = true
 //!
 //! A source in the mold of `freddie_app_nav`: [`listen`] binds the port and calls back per frame,
 //! the caller decides what a frame means, and dropping the returned [`EventSocket`] closes
-//! everything. It knows nothing about any particular event type.
+//! everything. It knows nothing about any particular event type, so every binary in the family can
+//! take an event socket from the same call.
 //!
 //! Web pages are refused at the handshake. A browser attaches `Origin` to a WebSocket handshake and
-//! leaves the decision to the server, and WebSockets are exempt from the same-origin policy, so
+//! leaves the decision to the server, and a `WebSocket` handshake is exempt from the same-origin
+//! policy, so
 //! without this check any page in any open tab could drive the socket.
 
 use std::io;
@@ -187,7 +193,7 @@ const MAX_FRAME_BYTES: usize = 64 * 1024;
 
 /// The listener. Dropping it stops accepting and closes every live connection.
 ///
-/// It owns the only `watch::Sender`, and every task holds a receiver, so the drop is what each of
+/// It owns the only [`watch::Sender`], and every task holds a receiver, so the drop is what each of
 /// them is waiting on. There is nothing to abort by hand.
 pub struct EventSocket {
     _shutdown: watch::Sender<()>,
@@ -238,7 +244,9 @@ where
         debug!("the event socket closed");
     });
 
-    Ok(EventSocket { _shutdown: shutdown })
+    Ok(EventSocket {
+        _shutdown: shutdown,
+    })
 }
 
 /// Resolves once the [`EventSocket`] has been dropped, taking the only sender with it.
@@ -266,7 +274,14 @@ where
 
     loop {
         let frame = tokio::select! {
-            () = dropped(&mut closed) => break,
+            // The socket was dropped. Say goodbye properly: dropping `ws` here instead would reset
+            // the connection, and the client would see a protocol error rather than a close.
+            () = dropped(&mut closed) => {
+                if let Err(e) = ws.close(None).await {
+                    debug!(error = %e, "could not close cleanly");
+                }
+                break;
+            }
             frame = ws.next() => frame,
         };
         match frame {
@@ -284,12 +299,16 @@ where
 }
 
 /// The handshake gate: refuse a web page, admit everything else.
+///
+/// The large `Err` is `http::Response`, and the signature is tungstenite's `Callback`, so there is
+/// nothing here to box: it is handed to `accept_hdr_async_with_config` and never returned upward.
+#[expect(clippy::result_large_err)]
 fn check_origin(request: &Request, response: Response) -> Result<Response, ErrorResponse> {
     let origin = match request.headers().get(http::header::ORIGIN) {
         None => None,
         Some(value) => match value.to_str() {
             Ok(origin) => Some(origin),
-            // An origin that is not text is one this cannot clear, so it does not get to.
+            // An origin that is not text is one this cannot clear, so it does not get to connect.
             Err(_) => return Err(refuse()),
         },
     };
@@ -314,14 +333,19 @@ fn refuse() -> ErrorResponse {
 /// `chrome-extension://<id>`, connects; the id is not matched, because an unpacked development
 /// build's id follows from where it was loaded and a packed build's differs again.
 fn origin_allowed(origin: Option<&str>) -> bool {
-    match origin {
-        None => true,
-        Some(origin) => !origin.starts_with("http://") && !origin.starts_with("https://"),
-    }
+    origin.is_none_or(|origin| !origin.starts_with("http://") && !origin.starts_with("https://"))
 }
 ```
 
-The `lib.rs` above was compiled against `tokio-tungstenite` 0.24 and driven with a real `connect_async` client before this doc was written: it is clippy-clean under the workspace's `pedantic` and `nursery` lints, and every behavior listed below was observed rather than assumed. `Message::Text` carries a `Utf8Bytes` in 0.24, and `text.as_str()` works on both that and the `String` earlier versions used.
+That `lib.rs` was written, compiled, and driven with a real `connect_async` client, and then reverted; it is the version that passed, not a sketch. Three details in it are there because the first version failed:
+
+- The shutdown branch closes the connection rather than dropping it. Dropping `ws` resets the TCP connection, and the client sees `Protocol(ResetWithoutClosingHandshake)` instead of a close. A test caught this.
+- `check_origin` carries `#[expect(clippy::result_large_err)]`. `ErrorResponse` is 136 bytes, and the signature is tungstenite's `Callback`, so boxing it is not available.
+- `origin_allowed` is `is_none_or` rather than a `match`, which `clippy::option_if_let_else` requires under the workspace's `nursery` lints. `WebSockets` unbackticked in the module docs trips `clippy::doc_markdown` under `pedantic`.
+
+The workspace lints are stricter than they look, and the pre-commit hook is what enforces them. Run `cargo clippy --workspace --all-targets` and read its exit status: piping it through `grep -E "^error"` finds nothing even when it fails, because the output is ANSI-colored and the pattern never matches at the start of a line.
+
+`Message::Text` carries a `Utf8Bytes` in 0.24, and `text.as_str()` works on both that and the `String` earlier versions used.
 
 `crates/freddie_event_socket/tests/socket.rs` drives a real client against a listener on port 0, reading back the bound port with `TcpListener::local_addr` so concurrent test binaries never collide:
 
@@ -335,7 +359,7 @@ The `lib.rs` above was compiled against `tokio-tungstenite` 0.24 and driven with
 
 ## Change 2: mercury listens
 
-Depends on `mercury-cli.md`, which puts clap in front of mercury. `Args` gains the port here, before:
+clap is already in front of mercury (`mercury-cli.md`, shipped). `Args` gains the port here, before:
 
 ```rust
 pub struct Args {
@@ -409,15 +433,24 @@ pub use effect::{MercuryEffect, Placement};
 pub use external::{DEFAULT_PORT, on_message};
 ```
 
-`crates/mercury/src/external.rs` is new and holds `IncomingEvent`, `DEFAULT_PORT`, and:
+`crates/mercury/src/external.rs` is new. Like the socket crate's `lib.rs`, this is the version that was written, compiled, and reverted rather than a sketch:
 
 ```rust
-/// Turn one frame into an event and send it. Runs on the socket's runtime, so it parses, sends,
-/// and returns.
+//! What mercury can be told from outside the process, over `freddie_event_socket`.
+//!
+//! The transport is generic and the vocabulary is mercury's, the same split `freddie_app_nav` uses:
+//! the socket hands up a frame as a `&str`, and [`on_message`] decides what it means.
+
+use tracing::warn;
+
+// `DEFAULT_PORT` and `IncomingEvent`, both above, live here too.
+
+/// Turn one frame into an event. Runs on the socket's runtime, so it parses, dispatches, and
+/// returns.
 ///
-/// A frame that is not valid `IncomingEvent` is logged and dropped: a client speaking nonsense is a
-/// client bug, not a reason to tear the connection down. With `IncomingEvent` empty that is every
-/// frame, and connecting and being ignored is exactly what a client should see here.
+/// A frame that is not a valid [`IncomingEvent`] is logged and dropped: a client speaking nonsense
+/// is a client bug, not a reason to tear the connection down. With [`IncomingEvent`] empty that is
+/// every frame, and connecting and being ignored is what a client should see today.
 pub fn on_message(text: &str) {
     match serde_json::from_str::<IncomingEvent>(text) {
         // `IncomingEvent` has no variants, so this value cannot exist and the arm is empty. The
@@ -425,6 +458,26 @@ pub fn on_message(text: &str) {
         // goes; it takes an `event_tx` from then on.
         Ok(never) => match never {},
         Err(e) => warn!(error = %e, frame = text, "undeserializable frame"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IncomingEvent;
+
+    #[test]
+    fn every_frame_is_refused_while_the_vocabulary_is_empty() {
+        for frame in [
+            r#"{"kind":"IncomingEvent.Tab","value":{"url":"https://claude.ai/new"}}"#,
+            r#"{"kind":"MercuryEvent.Key","value":{"key":"KeyQ"}}"#,
+            "{}",
+            "not json at all",
+        ] {
+            assert!(
+                serde_json::from_str::<IncomingEvent>(frame).is_err(),
+                "{frame} should not deserialize"
+            );
+        }
     }
 }
 ```
