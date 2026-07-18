@@ -272,7 +272,7 @@ pub(crate) fn replay(presses: Vec<KeyPress>) -> Vec<MercuryEffect> {
 
 Deleting `TypingLayer`'s binding is not enough on its own. `Layer`, its parent, binds `escape` too, and dispatch tries the child first, so today the typing binding SHADOWS the parent's. Delete only the child and plain `escape` starts leaving to home unconditionally, which is the opposite of what typing wants. The parent binding has to move down onto the layers that want it.
 
-That shadowing is also a live check failure. bind's `accumulate` errors when one trigger is bound at two nodes on the active path, and with typing active it returns `Err(DuplicateTrigger)` for `Key::Escape.down()` today. Nothing calls `accumulate` in mercury, so it has never run. Moving the binding removes the duplicate.
+That shadowing is also a live check failure, as it happens: bind's `accumulate` errors when one trigger is bound at two nodes on the active path, and with typing active it returns `Err(DuplicateTrigger)` for `Key::Escape.down()` today. Moving the binding down removes the duplicate.
 
 `crates/mercury/src/state/mod.rs`, `Layer`, before:
 
@@ -325,60 +325,7 @@ pub struct TypingLayer {}
 
 Typing now binds nothing at all, so no key can bypass the sequence: every key in typing reaches `maybe_pass_through`, and `escape` breaks a run and replays ahead of itself like any other key that is not `j` or `k`.
 
-## change 5: the check runs
-
-`accumulate` is what catches a trigger bound twice on one path, and mercury never calls it. It goes in `crates/mercury/src/state/mod.rs` as a unit test rather than in `tests/`: every layer constructor is `pub(crate)`, and `NavLayer::new`/`ResizeLayer::new` return `(Self, MercuryEffect)` because they arm a timer, so only a test inside the crate can build the set. The `check` feature reaches unit tests through the dev-dependency, so `bind::accumulate` is in scope there.
-
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// THE CHECK: no trigger is bound at two nodes on any active path. It caught `escape` being
-    /// bound at both `Layer` and `TypingLayer`, which is why typing binds nothing now.
-    #[test]
-    fn no_layer_binds_a_trigger_twice() {
-        let (nav, _) = NavLayer::new();
-        let (resize, _) = ResizeLayer::new();
-        let (inapp, _) = AppLayer::new();
-        for layer in [
-            Layer::Home(HomeLayer::new()),
-            Layer::Nav(nav),
-            Layer::Resize(resize),
-            Layer::Typing(TypingLayer::new()),
-            Layer::InApp(inapp),
-        ] {
-            let mut m = Mercury::with_layer(layer);
-            assert!(
-                bind::accumulate::<MercuryStruct, Mercury>(&mut m).is_ok(),
-                "duplicate trigger in {:?}",
-                m.layer(),
-            );
-        }
-    }
-}
-```
-
-The in-app layer resolves a child per front app through `#[derived_child(app_data)]`, so the path continues into `ChromeApp` or `GhosttyApp` and the trigger set depends on `foreground`. The loop sets `m.foreground.set_front_app(app)` for every `App` and asserts per app, or it only ever checks whichever app is the default.
-
-Run against the tree as it stands, the check reports:
-
-```
-Home:           Ok(10)
-Nav:            Ok(9)
-Resize:         Ok(8)
-Typing:         Err(DuplicateTrigger)
-InApp/Chrome:   Ok(8)
-InApp/Ghostty:  Ok(19)
-InApp/Zed:      Ok(7)
-InApp/Other:    Ok(7)
-```
-
-Typing is the only failure, and change 4 is what fixes it. Nothing at the app level collides, including Ghostty's `j` and `k` for tmux panes, which live in a different layer from the sequence and so cannot meet it.
-
-Note what the check does and does not catch: it compares triggers for equality, not overlap. The root's `AnyKey` matches every key but is a different `MercuryTrigger` variant from any `KeyPress`, so it never registers as a duplicate — shadowing by specificity is the design, and only the same trigger bound at two nodes is the error.
-
-## change 6: tests
+## change 5: tests
 
 `crates/freddie_keys/tests/sequence.rs`, new, over the primitive itself: a completed run, a broken one at each point it can break, a modifier breaking it, a roll breaking it, an auto-repeat swallowed, and a key that is not in the run at all passing with an empty replay.
 
@@ -665,7 +612,7 @@ pub(crate) fn jk_timeout(_ev: &JkTimeout, node: Node<&mut Mercury, ()>) -> Vec<M
 
 `root.rs` adds `JkTimeout` to its imports. The guard is dropped whenever the run ends, so a `JkTimeout` for a run that already ended never fires; one that arrives anyway finds an idle run and emits nothing.
 
-## change 6: tests
+## change 5: tests
 
 `crates/mercury/tests/transitions.rs`. The v0 cases hold, except that the key which opens the run now also returns the `Timer` effect; rebuild the expected `Timer` to assert it (its `testing` equality is the delay and the fire event).
 
