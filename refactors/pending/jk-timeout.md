@@ -62,7 +62,7 @@ The `use crate::{..}` in `state/mod.rs` adds `JkTimeout`; `JK_TIMEOUT` joins the
 
 How long a run waits is part of what the run IS, so the constructor takes it: `Option<Duration>`, `None` for a run that never expires, which is every run today. The sequence does not arm anything itself — it has no event type and no timer — but it is what the caller asks, so the policy lives with the sequence instead of beside it. It is also what a later lazy expiry would read directly, checking the window against the incoming key's time rather than needing a timer at all.
 
-And it gains a type parameter for whatever a live run holds, defaulting to `()` so a run with nothing to hold is unchanged, dropping it wherever it clears `swallowed`.
+And the window owns the guard that cancels it, so the two live in one field: a guard with no duration would be nothing to have armed.
 
 before:
 
