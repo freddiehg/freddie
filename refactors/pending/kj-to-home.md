@@ -2,6 +2,8 @@
 
 In the typing layer, `j` then `k` returns to home; neither key reaches the app. A `j` not followed by `k` types itself.
 
+It replaces `cmd`-`escape` as the way out, so typing goes on to bind nothing at all: `escape` becomes an ordinary key the app receives, and every key in typing reaches the sequence.
+
 The machine is a general one, `KeySequence`, in `freddie_keys`: an ordered run of keys, swallowed as they arrive, replayed exactly if the run breaks and dropped if it completes. mercury holds one of them, `[j, k]`, in its `TypingState`, and turns a completed run into a layer change. v0 builds the sequence and the binding; v1 adds a timeout.
 
 Two rules bound the version we are building:
@@ -263,44 +265,100 @@ pub(crate) fn replay(presses: Vec<KeyPress>) -> Vec<MercuryEffect> {
 }
 ```
 
-## change 4: the keys typing binds break the run
+## change 4: typing stops binding escape
 
-`TypingLayer` binds `escape` (`crates/mercury/src/state/typing.rs`), and a key the active layer binds never reaches the root, so it never reaches the sequence. Without this, a plain escape typed while a `j` is held is emitted ahead of that `j`, and the `j` replays after it.
+`jk` is how you leave typing, so `cmd`-`escape` is not needed and `escape` goes back to being an ordinary key the app receives. This lands AFTER changes 1 to 3: until the sequence works, removing this is removing the only way out of typing.
 
-`crates/mercury/src/handlers/typing.rs`, `maybe_go_home`, before:
+Deleting `TypingLayer`'s binding is not enough on its own. `Layer`, its parent, binds `escape` too, and dispatch tries the child first, so today the typing binding SHADOWS the parent's. Delete only the child and plain `escape` starts leaving to home unconditionally, which is the opposite of what typing wants. The parent binding has to move down onto the layers that want it.
+
+That shadowing is also a live check failure. bind's `accumulate` errors when one trigger is bound at two nodes on the active path, and with typing active it returns `Err(DuplicateTrigger)` for `Key::Escape.down()` today. Nothing calls `accumulate` in mercury, so it has never run. Moving the binding removes the duplicate.
+
+`crates/mercury/src/state/mod.rs`, `Layer`, before:
 
 ```rust
-    let root: MercuryPath<'_> = node.parent.ascend();
-    if root.typing_state.held.meta.any_held() {
-        root.set_layer(HomeLayer::new())
-    } else {
-        vec![emit(ev.key, ev.press, root.typing_state.held.flags())]
-    }
+#[bind(
+    Key::Escape.down() => to_home,
+    LayerTimeout => to_home,
+)]
+pub enum Layer {
 ```
 
 after:
 
 ```rust
-    let root: MercuryPath<'_> = node.parent.ascend();
-    if root.typing_state.held.meta.any_held() {
-        // `set_layer` replaces the run, so a held `j` is abandoned rather than typed. Replaying it
-        // would strand the key down: the app would see a down whose up lands in a command layer
-        // and is swallowed there.
-        root.set_layer(HomeLayer::new())
-    } else {
-        let mut out = replay(root.typing_state.jk.interrupt());
-        out.push(emit(ev.key, ev.press, root.typing_state.held.flags()));
-        out
-    }
+// `escape` leaves for home from every layer that binds keys as commands, but NOT from typing,
+// where it is a key the app is waiting for. It is bound per layer rather than here so that
+// typing can simply not have it. `LayerTimeout` stays: typing arms no timer, so it never fires
+// there.
+#[bind(LayerTimeout => to_home)]
+pub enum Layer {
 ```
 
-`typing.rs` imports `replay`.
+`HomeLayer`, `NavLayer`, `ResizeLayer`, and `AppLayer` each add `Key::Escape.down() => to_home` to their own `#[bind(..)]`. `to_home` is already generic over the event and the path, so it needs no change.
 
-## change 5: tests
+`crates/mercury/src/state/typing.rs`, before:
+
+```rust
+/// The typing layer. It binds only `escape` (`cmd`-`escape` leaves to home); every other key
+/// falls to the root, which passes it through because typing is a passthrough layer.
+#[derive(Bind, Debug)]
+#[node(parent = LayerPath)]
+#[binds(MercuryStruct)]
+#[bind(Key::Escape.down() => maybe_go_home)]
+pub struct TypingLayer {}
+```
+
+after:
+
+```rust
+/// The typing layer. It binds nothing: every key falls to the root, which runs it through the
+/// `jk` sequence and passes it through, because typing is a passthrough layer. `jk` is the way
+/// out.
+#[derive(Bind, Debug)]
+#[node(parent = LayerPath)]
+#[binds(MercuryStruct)]
+pub struct TypingLayer {}
+```
+
+`crates/mercury/src/handlers/typing.rs` is deleted, along with its `mod typing;` and re-export in `handlers/mod.rs`.
+
+Typing now binds nothing at all, so no key can bypass the sequence: every key in typing reaches `maybe_pass_through`, and `escape` breaks a run and replays ahead of itself like any other key that is not `j` or `k`.
+
+## change 5: the check runs
+
+`accumulate` is what catches a trigger bound twice on one path, and mercury never calls it. `crates/mercury/tests/bindings.rs`, new:
+
+```rust
+/// THE CHECK: no trigger is bound at two nodes on the active path, in any layer. It caught
+/// `escape` being bound at both `Layer` and `TypingLayer`, which is why typing binds nothing now.
+#[test]
+fn no_layer_binds_a_trigger_twice() {
+    for layer in [
+        Layer::Home(HomeLayer {}),
+        Layer::Nav(NavLayer::new()),
+        Layer::Resize(ResizeLayer::new()),
+        Layer::Typing(TypingLayer::new()),
+        Layer::InApp(AppLayer::new(App::Chrome)),
+    ] {
+        let mut m = Mercury::with_layer(layer);
+        assert!(
+            bind::accumulate::<MercuryStruct, Mercury>(&mut m).is_ok(),
+            "duplicate trigger in {:?}",
+            m.layer(),
+        );
+    }
+}
+```
+
+The constructors each layer needs may not all be public; make them so, or build the layers through the transitions that produce them.
+
+## change 6: tests
 
 `crates/freddie_keys/tests/sequence.rs`, new, over the primitive itself: a completed run, a broken one at each point it can break, a modifier breaking it, a roll breaking it, an auto-repeat swallowed, and a key that is not in the run at all passing with an empty replay.
 
 `crates/mercury/tests/transitions.rs`, extending the typing table. `key(..)` builds a down; add `up(..)` for the release halves, and `key_with(.., flags)` for a key carrying a modifier.
+
+Two existing tests change with change 4. `typing_cmd_escape_exits_to_home` goes away, since that transition does: `jk` replaces it. `typing_plain_escape_passes_through` stays true and keeps its assertion, but for a new reason, since the escape now reaches the app through the root rather than through a typing binding.
 
 ```rust
 // jk, typed one key at a time, leaves for home and types nothing.
@@ -411,8 +469,8 @@ assert_eq!(
     ]),
 );
 
-// A plain escape is bound by the typing layer, so it never reaches the root. It still breaks the
-// run, and the j replays AHEAD of it rather than after.
+// Escape in typing is now an ordinary key: it breaks the run, so the j replays ahead of it, and
+// it reaches the app.
 let mut m = Mercury::default();
 assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
 assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
@@ -426,17 +484,20 @@ assert_eq!(
 );
 assert!(matches!(m.layer(), Layer::Typing(_)));
 
-// cmd-escape leaves for home, and the held j is abandoned: nothing of it is typed, and the only
-// effect is the sweep releasing the cmd that was passed through.
+// cmd-escape no longer leaves typing either: it types the escape, carrying the flag it arrived
+// with, and jk is the only way out.
 let mut m = Mercury::default();
-assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
 let _ = m.handle(&key_with(Key::MetaLeft, ModifierFlags::COMMAND));
 assert_eq!(
-    m.handle(&key(Key::Escape)),
-    Some(vec![emit(Key::MetaLeft, PressType::Up, ModifierFlags::empty())]),
+    m.handle(&key_with(Key::Escape, ModifierFlags::COMMAND)),
+    Some(vec![emit(Key::Escape, PressType::Down, ModifierFlags::COMMAND)]),
 );
+assert!(matches!(m.layer(), Layer::Typing(_)));
+
+// Escape still leaves for home from a command layer.
+let mut m = Mercury::with_layer(Layer::Nav(NavLayer::new()));
+let _ = m.handle(&key(Key::Escape));
 assert!(matches!(m.layer(), Layer::Home(_)));
-assert!(m.typing_state.jk.is_idle());
 ```
 
 # v1: the timeout
