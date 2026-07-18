@@ -41,7 +41,7 @@ and a binding pays an expression naming its own guard. There is no counter to ke
 
 A binding whose node holds no guard produces a trigger that matches no firing, and two such triggers compare equal. Nothing goes wrong at dispatch, since neither matches anything. What it means is that the set THE CHECK collects depends on the state it walks: two nodes with no timer set look like one trigger, and `accumulate` would call that a duplicate.
 
-Timer clobbering is deliberate (timer again replaces the guard, cancelling what it replaced), no-clobber is not a property the tree has yet, and `refactors/pending/no-clobber.md` is where it is decided. Nothing calls `accumulate` in mercury today.
+Timer clobbering is deliberate (setting one again replaces the guard, cancelling what it replaced), no-clobber is not a property the tree has yet, and `refactors/pending/no-clobber.md` is where it is decided. Nothing calls `accumulate` in mercury today.
 
 ## change 1: a timer guard, which is a drop guard plus which timer it is
 
@@ -143,7 +143,7 @@ Its name is unchanged: it hands back a guard, as it did before, and only the eve
 
 They live in `freddie`, beside the guard and the id they are about, the way `KeySequence` does and the way `freddie_keys` owns `Key` and `KeyEvent`. That is what lets a guard hand back its own trigger, so a binding never names a type at all. `freddie` takes a direct dependency on `bind` for `EventTrigger`; it already has one transitively through `freddie_keys`, and there is no cycle, since `bind` depends on `laserbeam` alone.
 
-`crates/freddie/Cargo.toml` gains `bind = { path = "../bind", default-features = false }`, and the pair joins `crates/freddie/src/timer.rs` beside `Timer`:
+`crates/freddie/Cargo.toml` gains `bind = { path = "../bind", default-features = false }`, and the pair joins `crates/freddie/src/timer.rs` beside `TimerGuard`:
 
 ```rust
 /// A timer fired, carrying which timer it was.
