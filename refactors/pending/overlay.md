@@ -714,4 +714,4 @@ The panel builds on the first `show` on the main thread and reuses thereafter; `
 ## open questions
 
 - The panel styling (size, font, position, a background card) is a first pass, not tuned.
-- Whether the overlay should also show for layers reached without a keypress (a foreground event retargeting the in-app layer, say), which today never flashes because only `o` shows it.
+- The in-app overlay can go stale while it is up. Its content comes from `foreground.app()`, and `record_front_app` changes that without a transition, so switching apps leaves the old app's keymap on screen: only `set_layer` hides the overlay, and none happened. Hide it on a foreground change, re-show it with the new app's keymap, or leave it to the dwell.
