@@ -4,5 +4,4 @@
   0-9  select window
   n    nav
   t    typing
-  o    this
   esc  home

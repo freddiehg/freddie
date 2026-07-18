@@ -2,5 +2,4 @@
   ────────────────────
   n    nav
   t    typing
-  o    this
   esc  home
