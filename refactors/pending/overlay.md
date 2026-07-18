@@ -7,13 +7,13 @@ The overlay is an external AppKit window, not model state. The model cannot own 
 - `o => show_overlay` in every non-typing layer. `o` is a keystroke, so binding it at the root would fire in typing too and you could never type the letter, which is why it is per-layer. Typing binds nothing at all now, so `o` falls to the root and is passed through like every other key.
 - `OverlayTimeout => hide_overlay` once at the root. The timeout is a timer event, not a keystroke, and hiding is not opt-in, so a single root binding covers every layer.
 
-The overlay's trace in the model is one field on the root, `overlay: Option<ShownOverlay>`, holding the showing's generation id and the guard for its pending hide timer. It is a single thing shown from any layer, so its state is a root concern, not a per-layer one (unlike the return-home timer, which each layer owns independently). Alongside it, `next_overlay_id` mints the id. The three paths:
+The overlay's trace in the model is one field on the root, `overlay: Option<DropGuard>`, the guard for the pending hide of whatever is up. It is a single thing shown from any layer, so its state is a root concern, not a per-layer one (unlike the return-home timer, which each layer owns independently). The three paths:
 
-- `show_overlay` mints an id, stamps it on the hide timer's event, and stores the id and guard. Reassigning drops any previous guard, cancelling a still-pending timer, so a rapid second `o` supersedes.
-- `hide_overlay(id)` hides only if the showing still up was armed with `id`, then clears the field.
-- `set_layer` takes the field: if one was up, push `HideOverlay`. Taking it drops the guard, cancelling the timer.
+- `show_overlay` arms the hide timer and stores its guard. Reassigning drops any previous guard, cancelling a still-pending timer, so a rapid second `o` supersedes.
+- `hide_overlay` takes the field: if one was up, push `HideOverlay`.
+- `set_layer` does the same, so leaving a layer takes the overlay down with it.
 
-The generation id is what makes the hide safe. Dropping the guard cancels the timer only if its sleep has not completed; a timer that fired in the moment before the drop has already put its `OverlayTimeout` on the event channel, and that cannot be un-sent. Since `HideOverlay` hides the one external panel, a stale timeout from a superseded showing would hide the live overlay, leaving nothing up. So the timeout carries the id it was armed with, and `hide_overlay` ignores one whose id is not the showing still up. `set_layer`'s hide needs no id: it is synchronous, you are leaving, so it hides whatever is up.
+A superseded showing can still fire. Dropping the guard cancels the timer only if its sleep has not completed; one that fired in the moment before the drop has already put its event on the channel, and that cannot be un-sent. The window is microseconds wide and needs the second `o` to land exactly as the first showing's dwell expires, and the consequence is that the overlay blinks out and you press `o` again. `LayerTimeout` and `JkTimeout` accept the same race for the same reason, so the overlay carries no generation id to tell one firing from another: it would be a counter on the root and a field on the event, bought to make a cosmetic flicker impossible.
 
 The `DropGuard` is the drop-signals-a-receiver half of today's `TimerGuard`, pulled out of `freddie::timer` (change 1) so the timer and the overlay share it. It is a pure RAII primitive: the effect that carries the paired receiver wraps it in `AlwaysEqual` for its `testing` equality; the guard itself carries no such concern.
 
@@ -237,43 +237,18 @@ fn arm_return_home() -> (DropGuard, MercuryEffect) {
     HideOverlay,
 ```
 
-### the timeout trigger, its event, and the id
+### the timeout trigger
 
-`crates/mercury/src/sources.rs`, appended. The timeout carries the generation id, so it is a manual `EventTrigger`, not a `self_trigger!` like `LayerTimeout` and `JkTimeout`.
+`crates/mercury/src/sources.rs`, appended. It carries nothing, so one type is both trigger and event, like `LayerTimeout` and `JkTimeout`.
 
-This is the third timer to mint its own trigger and event type, and `refactors/pending/timer-ids.md` is the open question of whether they should share one. The overlay does not wait on that: its trigger carries an id the others do not, so it is the one timer that would need a bespoke trigger even after a unification, and settling that question first would not change what is written here.
+That makes it the third timer to mint its own type, which is what `refactors/pending/timer-ids.md` is about. This does not wait on it: whichever way that goes, this is one more `TimerId` variant or one more `self_trigger!`, and the rest of the doc is unchanged.
 
 ```rust
-/// Identifies one showing. Each `show_overlay` mints a fresh one and stamps it on the hide timer,
-/// so a timer that fires after its showing was superseded carries a stale id.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct OverlayId(pub u64);
-
-impl OverlayId {
-    pub(crate) const fn next(self) -> Self {
-        Self(self.0 + 1)
-    }
-}
-
-/// A fired overlay hide timer, carrying the id it was armed with so the handler can tell the live
-/// showing from a superseded one.
-#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
-#[derive(Debug)]
-pub struct OverlayTimeoutEvent {
-    pub id: OverlayId,
-}
-
-/// The overlay hide timer's trigger. It matches any fired hide event; the id it carries is compared
-/// in the handler, not here.
+/// The overlay's hide timer. It carries nothing, so one type is both the trigger and the event.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct OverlayTimeout;
 
-impl EventTrigger for OverlayTimeout {
-    type Event = OverlayTimeoutEvent;
-    fn is_matching(&self, _ev: &OverlayTimeoutEvent) -> bool {
-        true
-    }
-}
+bind::self_trigger!(OverlayTimeout);
 ```
 
 ### the unified event and trigger
@@ -289,11 +264,11 @@ after:
 ```rust
 use crate::{
     AnyKey, ForegroundEvent, Foregrounded, JkTimeout, LayerTimeout, MercuryEffect, OverlayTimeout,
-    OverlayTimeoutEvent, Quit,
+    Quit,
 };
 ```
 
-`MercuryTrigger` gains `OverlayTimeout(OverlayTimeout)` and `MercuryEvent` gains `OverlayTimeout(OverlayTimeoutEvent)`. `MercuryEvent`, after:
+`MercuryTrigger` and `MercuryEvent` each gain `OverlayTimeout(OverlayTimeout)`. `MercuryEvent`, after:
 
 ```rust
 #[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
@@ -305,7 +280,7 @@ pub enum MercuryEvent {
     Quit(Quit),
     LayerTimeout(LayerTimeout),
     JkTimeout(JkTimeout),
-    OverlayTimeout(OverlayTimeoutEvent),
+    OverlayTimeout(OverlayTimeout),
 }
 ```
 
@@ -318,19 +293,87 @@ pub enum MercuryEvent {
 pub const OVERLAY_DWELL: Duration = Duration::from_secs(10);
 ```
 
-Add the content hint to `impl Layer`, beside `is_passthrough`:
+Add the content to `impl Layer`, beside `is_passthrough`. It is a fixed-width table, drawn in a
+monospace font (change 3), so the columns line up as written here:
 
 ```rust
-/// The keymap hint the overlay shows for this layer, read when `o` shows it. Typing never binds
-/// `o`, so its hint is unreachable.
+/// The keymap the overlay shows for this layer, read when `o` shows it.
+///
+/// `app` is the confirmed front app, which only the in-app layer reads: its bindings are the
+/// app's, so `i` in Ghostty and `i` in Chrome are different keymaps and showing one for the other
+/// would be worse than showing nothing. Typing never binds `o`, so its arm is unreachable.
+///
+/// Fixed width by hand. The overlay draws it monospaced, so every line is a row and the columns
+/// are wherever the spaces put them.
 #[must_use]
-pub const fn get_overlay_content(&self) -> &'static str {
+pub const fn overlay_content(&self, app: App) -> &'static str {
     match self {
-        Self::Home(_) => "n nav  r resize  t typing  i in-app  q quit",
-        Self::Nav(_) => "c chrome  f finder  g ghostty  z zed",
-        Self::Resize(_) => "arrows place the window",
-        Self::InApp(_) => "n nav  t typing",
-        Self::Typing(_) => "typing",
+        Self::Home(_) => concat!(
+            "  HOME\n",
+            "  ────────────────────\n",
+            "  n    nav\n",
+            "  r    resize\n",
+            "  t    typing\n",
+            "  i    in-app\n",
+            "  o    this\n",
+            "  q    quit",
+        ),
+        Self::Nav(_) => concat!(
+            "  NAV\n",
+            "  ────────────────────\n",
+            "  c    chrome\n",
+            "  f    finder\n",
+            "  g    ghostty\n",
+            "  z    zed\n",
+            "  esc  home",
+        ),
+        Self::Resize(_) => concat!(
+            "  RESIZE\n",
+            "  ────────────────────\n",
+            "  ↑    maximize\n",
+            "  ←    left half\n",
+            "  →    right half\n",
+            "  esc  home",
+        ),
+        Self::InApp(_) => app.overlay_content(),
+        Self::Typing(_) => "  TYPING\n  ────────────────────\n  jk   home",
+    }
+}
+```
+
+And the in-app content on `impl App`, in `crates/mercury/src/sources.rs`, since the bindings it
+lists are the app's own:
+
+```rust
+/// The keymap the overlay shows while this app is frontmost and the in-app layer is active. The
+/// first rows are the in-app layer's own keys, which every app has; the rest are the app's.
+#[must_use]
+pub const fn overlay_content(self) -> &'static str {
+    match self {
+        Self::Chrome => concat!(
+            "  CHROME\n",
+            "  ────────────────────\n",
+            "  r    refresh\n",
+            "  n    nav\n",
+            "  t    typing\n",
+            "  esc  home",
+        ),
+        Self::Ghostty => concat!(
+            "  GHOSTTY\n",
+            "  ────────────────────\n",
+            "  j k  walk panes\n",
+            "  0-9  select window\n",
+            "  n    nav\n",
+            "  t    typing\n",
+            "  esc  home",
+        ),
+        Self::Zed | Self::Other => concat!(
+            "  IN-APP\n",
+            "  ────────────────────\n",
+            "  n    nav\n",
+            "  t    typing\n",
+            "  esc  home",
+        ),
     }
 }
 ```
@@ -340,14 +383,8 @@ pub const fn get_overlay_content(&self) -> &'static str {
 The showing up, if any, is one field. Add the struct near `Mercury`:
 
 ```rust
-/// The overlay on screen: its generation id, and the guard whose drop cancels the pending hide.
-#[derive(Debug)]
-struct ShownOverlay {
-    id: OverlayId,
-    // Held for its `Drop`: dropping the guard cancels the pending hide timer.
-    #[allow(dead_code)]
-    timer: DropGuard,
-}
+The field is the guard itself: `Some` means an overlay is up, and dropping it cancels that
+showing's pending hide.
 ```
 
 The `Mercury` struct, before:
@@ -372,13 +409,10 @@ pub struct Mercury {
     pub foreground: Foreground,
     /// The state the passthrough (typing) behavior needs. See [`TypingState`].
     pub typing_state: TypingState,
-    /// The overlay currently up, if any. The overlay is an external window driven by effects; this
-    /// is its only trace in the model, held at the root because there is one overlay across all
-    /// layers.
-    overlay: Option<ShownOverlay>,
-    /// Mints the generation id each showing stamps on its hide timer, so a stale timeout (one whose
-    /// showing was superseded) is ignored rather than hiding the live overlay.
-    next_overlay_id: OverlayId,
+    /// The overlay currently up, if any: the guard whose drop cancels its pending hide. The
+    /// overlay is an external window driven by effects, so this is its only trace in the model,
+    /// held at the root because there is one overlay across all layers.
+    overlay: Option<DropGuard>,
     /// The active layer. Private, and written only through [`set_layer`](Mercury::set_layer) [..].
     #[resolve_into]
     layer: Layer,
@@ -406,7 +440,6 @@ impl Default for Mercury {
             foreground: Foreground::default(),
             typing_state: TypingState::default(),
             overlay: None,
-            next_overlay_id: OverlayId::default(),
             layer: Layer::Typing(TypingLayer::new()),
         }
     }
@@ -424,23 +457,20 @@ New on `impl Mercury`, beside `handle` and `set_layer`:
 /// previous guard, cancelling a still-pending timer, so a second `o` supersedes.
 #[must_use = "the returned effects show the overlay and schedule its hide"]
 pub fn show_overlay(&mut self) -> Vec<MercuryEffect> {
-    let content = self.layer.get_overlay_content();
-    let id = self.next_overlay_id;
-    self.next_overlay_id = id.next();
-    let (timer, effect) = timer_effect_and_guard(
+    let content = self.layer.overlay_content(self.foreground.app());
+    let (guard, effect) = timer_effect_and_guard(
         OVERLAY_DWELL,
-        MercuryEvent::OverlayTimeout(OverlayTimeoutEvent { id }),
+        MercuryEvent::OverlayTimeout(OverlayTimeout),
     );
-    self.overlay = Some(ShownOverlay { id, timer });
+    self.overlay = Some(guard);
     vec![MercuryEffect::ShowOverlay(content), MercuryEffect::Timer(effect)]
 }
 
-/// The overlay's hide timer fired: hide it only if the showing still up was armed with `id`. A
-/// superseded showing's timer holds an older id, so the stale event is ignored.
+/// Hide the overlay if one is up. Both the dwell firing and a layer change come through here, and
+/// taking the field drops the guard, cancelling a hide that has not fired yet.
 #[must_use = "the returned effect hides the overlay"]
-pub fn hide_overlay(&mut self, id: OverlayId) -> Vec<MercuryEffect> {
-    if matches!(&self.overlay, Some(shown) if shown.id == id) {
-        self.overlay = None;
+pub fn hide_overlay(&mut self) -> Vec<MercuryEffect> {
+    if self.overlay.take().is_some() {
         vec![MercuryEffect::HideOverlay]
     } else {
         Vec::new()
@@ -481,17 +511,14 @@ pub fn set_layer(&mut self, into: impl Into<Layer>) -> Vec<MercuryEffect> {
         (false, true) => self.typing_state.held.open(),
         _ => Vec::new(),
     };
-    // Leaving a layer hides any overlay. Taking it drops the guard, cancelling the pending timer;
-    // this is synchronous, so it needs no id check.
-    if self.overlay.take().is_some() {
-        effects.push(MercuryEffect::HideOverlay);
-    }
+    // Leaving a layer takes the overlay with it, cancelling its pending hide.
+    effects.append(&mut self.hide_overlay());
     effects.push(MercuryEffect::ShowLayer(self.layer.name()));
     effects
 }
 ```
 
-`state/mod.rs` needs `OverlayId`, `OverlayTimeout`, and `OverlayTimeoutEvent` in its `use crate::{..}` list (the struct, the `#[bind]`, and `show_overlay` name them).
+`state/mod.rs` needs `OverlayTimeout` in its `use crate::{..}` list, and `DropGuard` from `freddie`.
 
 ### the handlers
 
@@ -504,7 +531,7 @@ use bind::Node;
 use laserbeam::Ascend;
 
 use crate::state::{Mercury, MercuryPath};
-use crate::{MercuryEffect, OverlayTimeoutEvent};
+use crate::{MercuryEffect, OverlayTimeout};
 
 /// `o` in a non-typing layer: show the active layer's overlay and arm its hide timer.
 ///
@@ -516,13 +543,12 @@ pub(crate) fn show_overlay<'a, E, P: Ascend<MercuryPath<'a>>>(
     node.parent.ascend().show_overlay()
 }
 
-/// The overlay's hide timer fired. Bound at the root, so it fires from whatever layer is active;
-/// the id it carries is matched against the showing still up.
+/// The overlay's hide timer fired. Bound at the root, so it fires from whatever layer is active.
 pub(crate) fn hide_overlay(
-    ev: &OverlayTimeoutEvent,
+    _ev: &OverlayTimeout,
     node: Node<&mut Mercury, ()>,
 ) -> Vec<MercuryEffect> {
-    node.parent.hide_overlay(ev.id)
+    node.parent.hide_overlay()
 }
 ```
 
@@ -548,7 +574,7 @@ Each non-typing layer binds `o`. `state/home.rs`, `nav.rs`, `resize.rs`, and `ap
 
 ### the exports
 
-`crates/mercury/src/lib.rs` adds `OverlayId`, `OverlayTimeout`, and `OverlayTimeoutEvent` to the `sources` re-export, and `OVERLAY_DWELL` to the `state` re-export.
+`crates/mercury/src/lib.rs` adds `OverlayTimeout` to the `sources` re-export, and `OVERLAY_DWELL` to the `state` re-export.
 
 ### the effect-loop stub
 
@@ -561,72 +587,75 @@ MercuryEffect::HideOverlay => debug!("hide overlay (not yet drawn)"),
 
 ### tests
 
-`crates/mercury/tests/transitions.rs`. Add `OverlayId`, `OverlayTimeoutEvent`, and `OVERLAY_DWELL` to the `use mercury::{..}` list, and a helper beside `return_home_timer`:
+`crates/mercury/tests/transitions.rs`. Add `OverlayTimeout` and `OVERLAY_DWELL` to the `use mercury::{..}` list, and a helper beside `return_home_timer`:
 
 ```rust
-// The effect `o` arms: the overlay's hide timer for showing `id`. Equality under `testing`
-// compares the delay and fire event, so a rebuilt one matches what `show_overlay` produced.
-fn overlay_hide_timer(id: OverlayId) -> MercuryEffect {
+// The effect `o` arms: the overlay's hide timer. Equality under `testing` compares the delay and
+// fire event, so a rebuilt one matches what `show_overlay` produced.
+fn overlay_hide_timer() -> MercuryEffect {
     let (_guard, effect) = freddie::timer_effect_and_guard(
         OVERLAY_DWELL,
-        MercuryEvent::OverlayTimeout(OverlayTimeoutEvent { id }),
+        MercuryEvent::OverlayTimeout(OverlayTimeout),
     );
     MercuryEffect::Timer(effect)
 }
 ```
 
-Cases:
+Cases. The content is asserted by its first line rather than in full, so re-wording a keymap does
+not rewrite the test table:
 
 ```rust
 #[test]
-fn home_o_shows_the_overlay() {
-    let mut m = home();
-    assert_eq!(
-        m.handle(&key(Key::KeyO)),
-        Some(vec![
-            MercuryEffect::ShowOverlay("n nav  r resize  t typing  i in-app  q quit"),
-            overlay_hide_timer(OverlayId(0)),
-        ])
-    );
+fn o_shows_the_layers_overlay() {
+    for (enter, heading) in [
+        (None, "  HOME"),
+        (Some(Key::KeyN), "  NAV"),
+        (Some(Key::KeyR), "  RESIZE"),
+    ] {
+        let mut m = home();
+        if let Some(k) = enter {
+            let _ = m.handle(&key(k));
+        }
+        let effects = m.handle(&key(Key::KeyO)).expect("o is bound");
+        let [MercuryEffect::ShowOverlay(text), timer] = effects.as_slice() else {
+            panic!("o shows the overlay and arms its hide: {effects:?}");
+        };
+        assert!(text.starts_with(heading), "{heading}: {text}");
+        assert_eq!(*timer, overlay_hide_timer());
+    }
 }
 
 #[test]
-fn nav_o_shows_the_nav_overlay() {
-    let mut m = home();
-    let _ = m.handle(&key(Key::KeyN));
-    assert_eq!(
-        m.handle(&key(Key::KeyO)),
-        Some(vec![
-            MercuryEffect::ShowOverlay("c chrome  f finder  g ghostty  z zed"),
-            overlay_hide_timer(OverlayId(0)),
-        ])
-    );
+fn the_in_app_overlay_is_the_front_apps_keymap() {
+    // The in-app layer's bindings are the app's, so its overlay has to be too.
+    for (app, heading) in [
+        (App::Chrome, "  CHROME"),
+        (App::Ghostty, "  GHOSTTY"),
+        (App::Zed, "  IN-APP"),
+    ] {
+        let mut m = home();
+        let _ = m.handle(&foreground(app));
+        let _ = m.handle(&key(Key::KeyI));
+        let effects = m.handle(&key(Key::KeyO)).expect("o is bound");
+        let [MercuryEffect::ShowOverlay(text), _] = effects.as_slice() else {
+            panic!("o shows the overlay: {effects:?}");
+        };
+        assert!(text.starts_with(heading), "{app:?}: {text}");
+    }
 }
 
 #[test]
 fn the_overlay_hides_after_the_dwell() {
     let mut m = home();
-    let _ = m.handle(&key(Key::KeyO)); // showing 0
+    let _ = m.handle(&key(Key::KeyO));
     assert_eq!(
-        m.handle(&MercuryEvent::OverlayTimeout(OverlayTimeoutEvent { id: OverlayId(0) })),
+        m.handle(&MercuryEvent::OverlayTimeout(OverlayTimeout)),
         Some(vec![MercuryEffect::HideOverlay])
     );
-}
-
-#[test]
-fn a_stale_hide_timeout_does_not_hide_a_fresh_overlay() {
-    let mut m = home();
-    let _ = m.handle(&key(Key::KeyO)); // showing 0
-    let _ = m.handle(&key(Key::KeyO)); // reshow: showing 1, 0 superseded
-    // Showing 0's timer fires late; it must not hide showing 1.
+    // And again is a no-op: nothing is up.
     assert_eq!(
-        m.handle(&MercuryEvent::OverlayTimeout(OverlayTimeoutEvent { id: OverlayId(0) })),
+        m.handle(&MercuryEvent::OverlayTimeout(OverlayTimeout)),
         Some(vec![])
-    );
-    // Showing 1's timer does hide it.
-    assert_eq!(
-        m.handle(&MercuryEvent::OverlayTimeout(OverlayTimeoutEvent { id: OverlayId(1) })),
-        Some(vec![MercuryEffect::HideOverlay])
     );
 }
 
@@ -634,10 +663,14 @@ fn a_stale_hide_timeout_does_not_hide_a_fresh_overlay() {
 fn changing_layers_hides_the_overlay() {
     let mut m = home();
     let _ = m.handle(&key(Key::KeyO)); // overlay up
-    // Entering nav cancels the hide timer and hides the window, on top of arming nav's own timer.
+    // Entering nav hides it, on top of arming nav's own timer and naming the layer.
     assert_eq!(
         m.handle(&key(Key::KeyN)),
-        Some(vec![MercuryEffect::HideOverlay, return_home_timer()])
+        Some(vec![
+            MercuryEffect::HideOverlay,
+            shows("Nav"),
+            return_home_timer(),
+        ])
     );
 }
 
@@ -645,7 +678,10 @@ fn changing_layers_hides_the_overlay() {
 fn a_transition_with_no_overlay_does_not_hide() {
     let mut m = home();
     // No `o` first, so entering nav arms its timer and hides nothing.
-    assert_eq!(m.handle(&key(Key::KeyN)), Some(vec![return_home_timer()]));
+    assert_eq!(
+        m.handle(&key(Key::KeyN)),
+        Some(vec![shows("Nav"), return_home_timer()])
+    );
 }
 
 #[test]
@@ -655,13 +691,19 @@ fn o_in_typing_is_typed() {
 }
 ```
 
-`resize.rs` and `app.rs` get the same `o`-shows-its-hint case as `nav`. The existing transition tests are untouched: a transition hides only when an overlay is up, which they never make.
+The existing transition tests are untouched: a transition hides only when an overlay is up, which they never make.
+
+Where `HideOverlay` lands relative to `ShowLayer` is what `set_layer` does: it appends the hide before pushing the name, so a transition out of a layer with an overlay up reads `[HideOverlay, ShowLayer(..), ..]`.
 
 At this point `o` shows and hides the overlay at the model level, the effects are asserted, and a run logs the show/hide. Nothing draws yet.
 
 ## change 3: the `freddie_overlay` panel and the effect loop
 
-A borderless panel that floats above everything and shows centered text, driven by the two effects.
+A borderless panel that floats above everything and shows the keymap, driven by the two effects.
+
+It is modelled on voice-mode's hammerspoon overlay (`~/code/voicemode/hammerspoon/ui.lua`, `showLayerOverlay`), which is the shape to match: a dark rounded panel against the right edge, vertically centered, its text monospaced and left-aligned, sized to its content rather than fixed.
+
+Monospace is not decoration. The content is a fixed-width table written with spaces (change 2), so a proportional font would break every column in it.
 
 ### the crate
 
@@ -684,6 +726,9 @@ objc2-app-kit = { version = "0.3", features = [
     "NSText", "NSTextField", "NSView", "NSWindow",
 ] }
 objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString"] }
+# The rounded dark background is a layer-backed view's `CALayer`.
+objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
+objc2-core-foundation = { version = "0.3", features = ["CGColor"] }
 tracing = "0.1"
 
 # Not `workspace = true`: the workspace forbids `unsafe_code`, and `forbid` cannot be relaxed from
@@ -721,9 +766,10 @@ use dispatch2::Queue;
 use objc2::rc::Retained;
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSFont, NSPanel, NSScreen, NSTextAlignment, NSTextField,
+    NSBackingStoreType, NSColor, NSFont, NSPanel, NSScreen, NSTextAlignment, NSTextField, NSView,
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
+use objc2_core_foundation::CGColor;
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use tracing::debug;
 
@@ -735,15 +781,21 @@ thread_local! {
 }
 
 /// Show the overlay with `text`, from any thread.
+///
+/// The panel is sized to the text, so a keymap with more rows makes a taller panel rather than a
+/// clipped one.
 pub fn show(text: &'static str) {
     Queue::main().exec_async(move || {
         let mtm = MainThreadMarker::new().expect("dispatched to the main queue");
         PANEL.with_borrow_mut(|slot| {
             let (panel, label) = slot.get_or_insert_with(|| build(mtm));
-            // SAFETY: setting the label's text and repositioning the panel, on the main thread.
+            // SAFETY: setting the label's text, resizing to fit it, and placing the panel, on the
+            // main thread.
             unsafe {
                 label.setStringValue(&NSString::from_str(text));
-                center(panel, mtm);
+                label.sizeToFit();
+                resize_to_label(panel, label);
+                place(panel, mtm);
                 panel.orderFrontRegardless();
             }
         });
@@ -764,10 +816,10 @@ pub fn hide() {
     });
 }
 
-/// Build the panel and its label. Borderless, non-activating, floating above menus, click-through,
-/// on every space, with a large centered white label and no background.
+/// Build the panel, its rounded dark background, and its label. Borderless, non-activating,
+/// floating above menus, click-through, on every space.
 fn build(mtm: MainThreadMarker) -> (Retained<NSPanel>, Retained<NSTextField>) {
-    let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(700.0, 120.0));
+    let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1.0, 1.0));
     let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
     // SAFETY: the NSPanel designated initializer, on the main thread.
     let panel = unsafe {
@@ -794,42 +846,89 @@ fn build(mtm: MainThreadMarker) -> (Retained<NSPanel>, Retained<NSTextField>) {
         );
     }
 
-    // SAFETY: a non-editable, non-bezeled label filling the content rect, on the main thread.
+    // SAFETY: a layer-backed container drawing the rounded dark background, on the main thread.
+    let container = unsafe {
+        let view = NSView::initWithFrame(mtm.alloc(), frame);
+        view.setWantsLayer(true);
+        if let Some(layer) = view.layer() {
+            layer.setBackgroundColor(Some(&CGColor::new_generic_gray(0.0, 0.85)));
+            layer.setCornerRadius(10.0);
+        }
+        view
+    };
+
+    // SAFETY: a non-editable, non-bezeled, multi-line monospaced label, on the main thread.
     let label = unsafe {
         let label = NSTextField::labelWithString(&NSString::from_str(""), mtm);
-        label.setFrame(frame);
-        label.setAlignment(NSTextAlignment::Center);
+        label.setAlignment(NSTextAlignment::Left);
         label.setTextColor(Some(&NSColor::whiteColor()));
-        label.setFont(Some(&NSFont::systemFontOfSize(48.0)));
+        // Monospaced, because the content is a table laid out with spaces.
+        label.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
+            FONT_SIZE, 0.0,
+        )));
+        label.setUsesSingleLineMode(false);
+        label.setMaximumNumberOfLines(0);
         label.setDrawsBackground(false);
         label.setBezeled(false);
         label.setEditable(false);
         label.setSelectable(false);
         label
     };
-    // SAFETY: installing the label as the panel's content view, on the main thread.
-    unsafe { panel.setContentView(Some(&label)) };
+    // SAFETY: installing the label in the container and the container in the panel, on main.
+    unsafe {
+        container.addSubview(&label);
+        panel.setContentView(Some(&container));
+    }
     (panel, label)
 }
 
-/// Center the panel horizontally, a third of the way up the main screen's visible area.
+/// Grow the panel to the label's fitted size plus the padding, and inset the label inside it.
+///
+/// # Safety
+///
+/// The caller must be on the main thread.
+unsafe fn resize_to_label(panel: &NSPanel, label: &NSTextField) {
+    // SAFETY: reading the fitted label and resizing the panel and its views, on the main thread.
+    unsafe {
+        let text = label.frame().size;
+        let size = NSSize::new(text.width + PADDING * 2.0, text.height + PADDING * 2.0);
+        panel.setContentSize(size);
+        if let Some(container) = panel.contentView() {
+            container.setFrame(NSRect::new(NSPoint::new(0.0, 0.0), size));
+        }
+        label.setFrameOrigin(NSPoint::new(PADDING, PADDING));
+    }
+}
+
+/// Put the panel against the right edge of the main screen, vertically centered.
 ///
 /// # Safety
 ///
 /// The caller must be on the main thread and hold `mtm`.
-unsafe fn center(panel: &NSPanel, mtm: MainThreadMarker) {
+unsafe fn place(panel: &NSPanel, mtm: MainThreadMarker) {
     let Some(screen) = NSScreen::mainScreen(mtm) else {
         return;
     };
-    // SAFETY: reading the screen's frame and moving the panel, on the main thread.
+    // SAFETY: reading the screen's visible frame and moving the panel, on the main thread.
     unsafe {
         let vis = screen.visibleFrame();
         let size = panel.frame().size;
-        let x = vis.origin.x + (vis.size.width - size.width) / 2.0;
-        let y = vis.origin.y + vis.size.height / 3.0;
+        let x = vis.origin.x + vis.size.width - size.width - MARGIN;
+        let y = vis.origin.y + (vis.size.height - size.height) / 2.0;
         panel.setFrameOrigin(NSPoint::new(x, y));
     }
 }
+```
+
+The three numbers it reads, at the top of the file:
+
+```rust
+/// The monospaced type size the keymap is drawn at.
+const FONT_SIZE: f64 = 15.0;
+/// Space between the text and the panel's edge.
+const PADDING: f64 = 20.0;
+/// Space between the panel and the screen's right edge.
+const MARGIN: f64 = 20.0;
 ```
 
 ### wiring it into mercury
