@@ -228,6 +228,18 @@ fn keyboard_event(key: Key, press: PressType, flags: ModifierFlags) -> Result<CG
         .map_err(|_| EmitError::Post)?;
     let untouched = event.get_flags() & !MODIFIERS;
     event.set_flags(untouched | to_cg(flags));
+    // What actually goes on the wire, which the portable `KeyEvent` cannot show: the raw flag
+    // bits, what the source supplied, and the type the OS chose from the keycode
+    // (`FlagsChanged` for a modifier, `KeyDown`/`KeyUp` otherwise). At `debug` so the log file
+    // keeps it, since two presses that dispatch identically can still post differently.
+    tracing::debug!(
+        ?key,
+        ?press,
+        raw_flags = %format!("{:#010x}", event.get_flags().bits()),
+        kept_from_source = %format!("{:#010x}", untouched.bits()),
+        kind = ?event.get_type(),
+        "post"
+    );
     Ok(event)
 }
 
