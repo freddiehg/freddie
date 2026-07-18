@@ -67,12 +67,20 @@ fn no_binds_is_empty() {
 fn a_closure_trigger_is_collected_as_the_value_it_produced() {
     let mut armed = Armed {
         waiting_for: Some("g"),
+        for_child: None,
         child: ArmedChild { wants: Some("z") },
     };
     let set = bind::accumulate::<Demo, Armed>(&mut armed).unwrap();
     assert_eq!(
         set,
-        HashSet::from([waiting(Some("g")), waiting(Some("z")), kb("esc")])
+        HashSet::from([
+            waiting(Some("g")),
+            waiting(Some("z")),
+            kb("esc"),
+            // The child's other binding reads its PARENT, so the trigger it contributes comes from
+            // the root: nothing set, so the stand-in.
+            kb("none"),
+        ])
     );
 }
 
@@ -81,6 +89,7 @@ fn a_closure_trigger_is_collected_as_the_value_it_produced() {
 fn an_unarmed_closure_trigger_is_collected_as_none() {
     let mut armed = Armed {
         waiting_for: None,
+        for_child: None,
         child: ArmedChild { wants: Some("z") },
     };
     let set = bind::accumulate::<Demo, Armed>(&mut armed).unwrap();

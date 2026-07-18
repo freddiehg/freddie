@@ -10,7 +10,7 @@
 //! struct Album { title: String }
 //! let mut album = Album { title: "A Night at the Opera".to_string() };
 //!
-//! let mut path: PathMut<String, &mut Album> = PathMut::from_fn(&mut album, |a| &mut a.title);
+//! let mut path: PathMut<String, &mut Album> = PathMut::from_fn(&mut album, |a| &mut a.title, |a| &a.title);
 //! path.get_mut().push_str(" (Remastered)");
 //! drop(path);
 //!
@@ -34,6 +34,25 @@ impl<Node, Parent> ProjMut<Node, Parent> {
     }
 }
 
+/// The projection a [`PathMut`] uses to re-derive its focused node for READING.
+///
+/// Stored beside [`ProjMut`] rather than derived from it: applying that one needs `&mut Parent`,
+/// which a shared borrow of the path cannot produce, so without this a path could only be read
+/// uniquely.
+enum ProjRef<Node, Parent> {
+    Bare(fn(&Parent) -> &Node),
+    Dyn(Box<dyn for<'p> Fn(&'p Parent) -> &'p Node>),
+}
+
+impl<Node, Parent> ProjRef<Node, Parent> {
+    fn apply<'p>(&self, parent: &'p Parent) -> &'p Node {
+        match self {
+            Self::Bare(f) => f(parent),
+            Self::Dyn(f) => f(parent),
+        }
+    }
+}
+
 /// A typed, mutable path to a `Node`: its owned `Parent` plus the projection that re-derives the `Node` from that parent.
 ///
 /// The `Parent` is private, so the only way up is [`into_parent`](PathMut::into_parent), which consumes the path. That, together with [`get_mut`](PathMut::get_mut) borrowing the whole path, keeps a stale or aliasing reference from compiling.
@@ -43,7 +62,7 @@ impl<Node, Parent> ProjMut<Node, Parent> {
 /// ```compile_fail
 /// use laserbeam::PathMut;
 /// let mut root = 0_u32;
-/// let mut path: PathMut<u32, &mut u32> = PathMut::from_fn(&mut root, |r| &mut **r);
+/// let mut path: PathMut<u32, &mut u32> = PathMut::from_fn(&mut root, |r| &mut **r, |r| &**r);
 /// let leaf = path.get_mut();
 /// let parent = path.into_parent(); // moves `path` while `leaf` still borrows it
 /// let _ = (leaf, parent);
@@ -54,7 +73,7 @@ impl<Node, Parent> ProjMut<Node, Parent> {
 /// ```compile_fail
 /// use laserbeam::PathMut;
 /// let mut root = 0_u32;
-/// let mut path: PathMut<u32, &mut u32> = PathMut::from_fn(&mut root, |r| &mut **r);
+/// let mut path: PathMut<u32, &mut u32> = PathMut::from_fn(&mut root, |r| &mut **r, |r| &**r);
 /// let _parent = path.into_parent();
 /// let _leaf = path.get_mut(); // `path` has already been moved
 /// ```
@@ -64,34 +83,57 @@ impl<Node, Parent> ProjMut<Node, Parent> {
 /// ```compile_fail
 /// use laserbeam::PathMut;
 /// let mut root = 0_u32;
-/// let path: PathMut<u32, &mut u32> = PathMut::from_fn(&mut root, |r| &mut **r);
+/// let path: PathMut<u32, &mut u32> = PathMut::from_fn(&mut root, |r| &mut **r, |r| &**r);
 /// let _ = path.parent; // private field
 /// ```
 pub struct PathMut<Node, Parent> {
     parent: Parent,
     projection: ProjMut<Node, Parent>,
+    shared: ProjRef<Node, Parent>,
 }
 
 impl<Node, Parent> PathMut<Node, Parent> {
-    /// Builds a path from a parent and a non-capturing projection.
+    /// Builds a path from a parent and its two non-capturing projections: one to write the node,
+    /// one to read it.
+    ///
+    /// The pair has to address the same node. Nothing checks that, and one that disagrees is a
+    /// path whose reads and writes land in different places.
     #[must_use]
-    pub const fn from_fn(parent: Parent, projection: fn(&mut Parent) -> &mut Node) -> Self {
+    pub const fn from_fn(
+        parent: Parent,
+        projection: fn(&mut Parent) -> &mut Node,
+        shared: fn(&Parent) -> &Node,
+    ) -> Self {
         Self {
             parent,
             projection: ProjMut::Bare(projection),
+            shared: ProjRef::Bare(shared),
         }
     }
 
-    /// Builds a path from a parent and a boxed, possibly capturing, projection.
+    /// Builds a path from a parent and boxed, possibly capturing, projections.
+    ///
+    /// The pair has to address the same node, as in [`from_fn`](Self::from_fn).
     #[must_use]
     pub fn from_box(
         parent: Parent,
         projection: Box<dyn for<'p> Fn(&'p mut Parent) -> &'p mut Node>,
+        shared: Box<dyn for<'p> Fn(&'p Parent) -> &'p Node>,
     ) -> Self {
         Self {
             parent,
             projection: ProjMut::Dyn(projection),
+            shared: ProjRef::Dyn(shared),
         }
+    }
+
+    /// Returns a shared reference to the focused node, re-derived from the parent.
+    ///
+    /// Takes `&self`, so it composes with [`parent`](Self::parent): a reader holds both at once,
+    /// and a caller that only reads does not take the path uniquely.
+    #[must_use]
+    pub fn get(&self) -> &Node {
+        self.shared.apply(&self.parent)
     }
 
     /// Returns a mutable reference to the focused node, re-derived from the parent.
@@ -130,7 +172,8 @@ mod tests {
         let mut album = Sheer {
             heart: Attack { length: 1 },
         };
-        let mut path: PathMut<Attack, &mut Sheer> = PathMut::from_fn(&mut album, |a| &mut a.heart);
+        let mut path: PathMut<Attack, &mut Sheer> =
+            PathMut::from_fn(&mut album, |a| &mut a.heart, |a| &a.heart);
         path.get_mut().length = 42;
         let recovered = path.into_parent();
         assert_eq!(recovered.heart.length, 42);
@@ -141,7 +184,8 @@ mod tests {
         let mut album = Sheer {
             heart: Attack { length: 7 },
         };
-        let path: PathMut<Attack, &mut Sheer> = PathMut::from_fn(&mut album, |a| &mut a.heart);
+        let path: PathMut<Attack, &mut Sheer> =
+            PathMut::from_fn(&mut album, |a| &mut a.heart, |a| &a.heart);
         assert_eq!(path.parent().heart.length, 7);
         // Still usable afterwards because `parent` only borrows.
         assert_eq!(path.parent().heart.length, 7);
@@ -156,7 +200,9 @@ mod tests {
             let mut path: PathMut<u32, &mut Vec<u32>> = PathMut::from_box(
                 &mut setlist,
                 Box::new(move |v: &mut &mut Vec<u32>| &mut v[index]),
+                Box::new(move |v: &&mut Vec<u32>| &v[index]),
             );
+            assert_eq!(*path.get(), 20);
             *path.get_mut() += 5;
         }
         assert_eq!(setlist[1], 25);

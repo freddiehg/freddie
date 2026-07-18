@@ -297,18 +297,31 @@ pub type ArmedChildPath<'a> = PathMut<ArmedChild, ArmedPath<'a>>;
 )]
 pub struct Armed {
     pub waiting_for: Option<&'static str>,
+    /// What the CHILD's parent-reading binding watches for, kept separate so it cannot collide
+    /// with this node's own trigger.
+    pub for_child: Option<&'static str>,
     #[resolve_into]
     pub child: ArmedChild,
 }
 
-/// A deeper node, so a closure reads through a `PathMut` rather than a `&mut Root`, and reaches
-/// the level above through `parent`.
+/// A deeper node, so a closure reads through a `PathMut` rather than a `&mut Root`.
+///
+/// Its second binding reads the level ABOVE through `parent`, which is what a shared path buys:
+/// the child answers with what its root is waiting for.
 #[derive(Bind)]
 #[node(parent = ArmedPath)]
 #[binds(Demo)]
-#[bind(|child| WaitingFor(child.get_mut().wants) => on_child_armed)]
+#[bind(
+    |child| WaitingFor(child.get().wants) => on_child_armed,
+    |child| Keyboard(child.parent().for_child.unwrap_or("none")) => on_parents_key,
+)]
 pub struct ArmedChild {
     pub wants: Option<&'static str>,
+}
+
+/// Fires for the key the child's PARENT is waiting for, read through `parent()`.
+pub fn on_parents_key(ev: &KeyEvent, _node: Node<ArmedChildPath, ()>) -> usize {
+    ev.key.len() + 100
 }
 
 pub const fn on_esc_armed(ev: &KeyEvent, _node: Node<&mut Armed, ()>) -> usize {

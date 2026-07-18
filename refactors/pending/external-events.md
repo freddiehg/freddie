@@ -56,79 +56,32 @@ Every message is the project's one discriminated-union form, `{ kind: "Type.Vari
 
 ## The endpoint
 
-`127.0.0.1:8797`, overridable two ways, argument first:
+`127.0.0.1:8797`, overridable by flag or environment variable, flag first:
 
 ```
 cargo run -p mercury -- --port 9000
 MERCURY_PORT=9000 cargo run -p mercury
 ```
 
-The environment variable matches `LOG_LEVEL` in `crates/mercury/src/logging.rs`, which is the only configuration mercury has and reads it at startup from the environment. The argument is what you reach for when running a second mercury against a second extension, where exporting a variable into the shell would follow every later run in that terminal.
+`mercury-cli.md` owns that: it puts clap in front of mercury and gives `Args` a `port` field whose one `#[arg(long, env = "MERCURY_PORT", default_value_t = DEFAULT_PORT)]` declares the flag, the variable, the default, and the precedence between them. A value that is not a `u16` exits with clap's message before `main` does anything. Nothing here parses arguments.
 
-Both are parsed by hand. mercury takes no arguments today and has no argument parser, and one flag does not pay for a dependency; the same reasoning `freddie_single_instance` used for `File::try_lock`.
+The flag matters as much as the variable: running a second mercury on another port is a one-off, and exporting a variable for it would follow every later run in that terminal.
+
+What stays here is the number and why it is that number:
 
 ```rust
 // crates/mercury/src/external.rs
 
-/// The port mercury listens on when `MERCURY_PORT` says nothing. Hardcoded in the extension too.
+/// The port mercury listens on when nothing overrides it. Hardcoded in the extension too.
 ///
 /// Mercury's orbital period, 87.969 days, truncated to fit a `u16`. Below 49152, which is where
 /// macOS starts handing out ephemeral ports (`net.inet.ip.portrange.first`): a listener up there
 /// can find its port already taken by some outbound socket that grabbed it first. Unassigned in
 /// `/etc/services`.
 pub const DEFAULT_PORT: u16 = 8797;
-
-const PORT_ENV: &str = "MERCURY_PORT";
-
-/// The port to listen on: `--port` if given, then `MERCURY_PORT`, then [`DEFAULT_PORT`].
-///
-/// Anything unparseable panics, and so does an unrecognized argument. Falling back to the default
-/// would leave mercury listening somewhere the extension is not, which presents as "per-site binds
-/// stopped working" and sends you looking at the extension. The typo is in a shell profile or a
-/// command line; say so and stop.
-///
-/// Called from `main` before the single-instance lock and before the keyboard grab, so the panic
-/// costs a process that has not touched the machine yet.
-#[must_use]
-pub fn port() -> u16 {
-    arg_port()
-        .or_else(env_port)
-        .unwrap_or(DEFAULT_PORT)
-}
-
-/// `--port 9000` or `--port=9000`. Every argument is inspected, so a misspelled flag is refused
-/// rather than silently leaving mercury on the default port.
-fn arg_port() -> Option<u16> {
-    let mut args = std::env::args().skip(1);
-    let mut found = None;
-    while let Some(arg) = args.next() {
-        let raw = match arg.strip_prefix("--port") {
-            Some("") => args
-                .next()
-                .unwrap_or_else(|| panic!("--port takes a port number")),
-            Some(rest) => rest
-                .strip_prefix('=')
-                .unwrap_or_else(|| panic!("unrecognized argument: {arg}"))
-                .to_owned(),
-            None => panic!("unrecognized argument: {arg}"),
-        };
-        found = Some(
-            raw.parse::<u16>()
-                .unwrap_or_else(|_| panic!("--port {raw} is not a port number")),
-        );
-    }
-    found
-}
-
-fn env_port() -> Option<u16> {
-    let raw = std::env::var_os(PORT_ENV)?;
-    Some(
-        raw.to_str()
-            .and_then(|s| s.parse::<u16>().ok())
-            .unwrap_or_else(|| panic!("MERCURY_PORT is {raw:?}, which is not a port number")),
-    )
-}
 ```
+
+Overriding it means editing `MERCURY_URL` in the extension's `background.js` to match, since the extension hardcodes the same number.
 
 Loopback only, never `0.0.0.0`: a wildcard bind would let anything on the network tell mercury which app you are looking at.
 
@@ -382,6 +335,8 @@ The `lib.rs` above was compiled against `tokio-tungstenite` 0.24 and driven with
 
 ## Change 2: mercury listens
 
+Depends on `mercury-cli.md`'s Change 2, which is where `--port` and `Args.port` come from.
+
 `crates/mercury/Cargo.toml`, before:
 
 ```toml
@@ -427,10 +382,10 @@ mod sources;
 mod state;
 
 pub use effect::{MercuryEffect, Placement};
-pub use external::{DEFAULT_PORT, on_message, port};
+pub use external::{DEFAULT_PORT, on_message};
 ```
 
-`crates/mercury/src/external.rs` is new and holds `IncomingEvent`, `DEFAULT_PORT`, `PORT_ENV`, `port`, `arg_port`, `env_port`, all above, and:
+`crates/mercury/src/external.rs` is new and holds `IncomingEvent`, `DEFAULT_PORT`, and:
 
 ```rust
 /// Turn one frame into an event and send it. Runs on the socket's runtime, so it parses, sends,
@@ -450,31 +405,7 @@ pub fn on_message(text: &str) {
 }
 ```
 
-`crates/mercury/src/main.rs`. The port is read first, so a typo panics before the process has taken the lock, grabbed the keyboard, or drawn a menu-bar icon. Before:
-
-```rust
-fn main() {
-    let log_path = logging::init();
-    println!("mercury: logging to {}", log_path.display());
-
-    let _instance = match freddie_single_instance::acquire("mercury") {
-```
-
-after:
-
-```rust
-fn main() {
-    let log_path = logging::init();
-    println!("mercury: logging to {}", log_path.display());
-
-    // Before the lock and before the keyboard: a bad `--port` or `MERCURY_PORT` panics, and this is
-    // where that costs nothing but the process.
-    let port = mercury::port();
-
-    let _instance = match freddie_single_instance::acquire("mercury") {
-```
-
-`run` takes it. Before:
+`crates/mercury/src/main.rs`. `mercury-cli.md` has already parsed `Args` at the top of `main`, before the lock and the keyboard, so a bad `--port` has exited by this point. `run` takes the port from it. Before:
 
 ```rust
             runtime.block_on(run(event_tx, event_rx, title_tx));
@@ -483,7 +414,7 @@ fn main() {
 after:
 
 ```rust
-            runtime.block_on(run(event_tx, event_rx, title_tx, port));
+            runtime.block_on(run(event_tx, event_rx, title_tx, args.port));
 ```
 
 Before:
@@ -540,7 +471,7 @@ websocat ws://127.0.0.1:8797
 
 - `websocat -H='Origin: https://evil.com' ws://127.0.0.1:8797` is refused with 403.
 - `cargo run -p mercury -- --port 9000` and `MERCURY_PORT=9000 cargo run -p mercury` both listen on 9000, and `--port 9000` wins over `MERCURY_PORT=9001`.
-- `cargo run -p mercury -- --port abc` and `--prot 9000` both panic before the menu-bar icon appears.
+- `cargo run -p mercury -- --port abc` and `--prot 9000` both exit with clap's message before the menu-bar icon appears.
 - A second `cargo run -p mercury` on the same port is refused by the single-instance lock, and one started with `--port 9000` while another holds 8797 is refused by the lock too.
 
 Once `chrome-tab-url.md` has added `IncomingEvent::Tab`, the same frame produces a dispatch record instead of a refusal.

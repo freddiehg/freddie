@@ -193,16 +193,20 @@ impl Edge<'_> {
             // Single-parent child: its path is `Path<Child, ThisPath>`, exactly
             // what `from_fn` builds, so `.into()` is identity.
             None => {
-                let project = self.single_parent_projection(&deref);
-                quote!(::laserbeam::PathMut::from_fn(#path, #project).into())
+                let (project, project_ref) = self.single_parent_projection(&deref);
+                quote!(::laserbeam::PathMut::from_fn(#path, #project, #project_ref).into())
             }
             // Multi-parent child: wrap this node's path in the route variant named
             // after this node, and re-derive the child through it.
             Some(route) => {
                 let parent = self.parent;
                 let variant = quote!(#route::#parent);
-                let project = self.multi_parent_projection(&variant, &deref);
-                quote!(::laserbeam::PathMut::from_fn(#variant(#path.into()), #project))
+                let (project, project_ref) = self.multi_parent_projection(&variant, &deref);
+                quote!(::laserbeam::PathMut::from_fn(
+                    #variant(#path.into()),
+                    #project,
+                    #project_ref
+                ))
             }
         }
     }
@@ -227,32 +231,53 @@ impl Edge<'_> {
         }
     }
 
-    /// The projection closure for a single-parent child.
-    fn single_parent_projection(&self, deref: &TokenStream2) -> TokenStream2 {
+    /// The projection closures for a single-parent child, to write the node and to read it.
+    ///
+    /// The two are the same walk in the two mutabilities: a path stores both, because the mutable
+    /// one cannot be applied through a shared borrow.
+    fn single_parent_projection(&self, deref: &TokenStream2) -> (TokenStream2, TokenStream2) {
         match &self.via {
             Via::Field(field) => {
                 if self.is_root {
-                    quote!(|o| &mut #deref o.#field)
+                    (
+                        quote!(|o| &mut #deref o.#field),
+                        quote!(|o| & #deref o.#field),
+                    )
                 } else {
-                    quote!(|np| &mut #deref np.get_mut().#field)
+                    (
+                        quote!(|np| &mut #deref np.get_mut().#field),
+                        quote!(|np| & #deref np.get().#field),
+                    )
                 }
             }
             Via::Variant(vi) => {
-                let access = if self.boxed {
-                    quote!(&mut **c)
+                let (access, access_ref) = if self.boxed {
+                    (quote!(&mut **c), quote!(&**c))
                 } else {
-                    quote!(c)
+                    (quote!(c), quote!(c))
                 };
                 if self.is_root {
-                    quote!(|o| {
-                        let Self::#vi(c) = &mut **o else { ::core::unreachable!() };
-                        #access
-                    })
+                    (
+                        quote!(|o| {
+                            let Self::#vi(c) = &mut **o else { ::core::unreachable!() };
+                            #access
+                        }),
+                        quote!(|o| {
+                            let Self::#vi(c) = &**o else { ::core::unreachable!() };
+                            #access_ref
+                        }),
+                    )
                 } else {
-                    quote!(|np| {
-                        let Self::#vi(c) = np.get_mut() else { ::core::unreachable!() };
-                        #access
-                    })
+                    (
+                        quote!(|np| {
+                            let Self::#vi(c) = np.get_mut() else { ::core::unreachable!() };
+                            #access
+                        }),
+                        quote!(|np| {
+                            let Self::#vi(c) = np.get() else { ::core::unreachable!() };
+                            #access_ref
+                        }),
+                    )
                 }
             }
         }
@@ -265,35 +290,48 @@ impl Edge<'_> {
         &self,
         variant: &TokenStream2,
         deref: &TokenStream2,
-    ) -> TokenStream2 {
+    ) -> (TokenStream2, TokenStream2) {
         match &self.via {
             Via::Field(field) => {
-                let node = if self.is_root {
-                    quote!(pp.#field)
+                let (node, node_ref) = if self.is_root {
+                    (quote!(pp.#field), quote!(pp.#field))
                 } else {
-                    quote!(pp.get_mut().#field)
+                    (quote!(pp.get_mut().#field), quote!(pp.get().#field))
                 };
-                quote!(|p| {
-                    let #variant(pp) = p else { ::core::unreachable!() };
-                    &mut #deref #node
-                })
+                (
+                    quote!(|p| {
+                        let #variant(pp) = p else { ::core::unreachable!() };
+                        &mut #deref #node
+                    }),
+                    quote!(|p| {
+                        let #variant(pp) = p else { ::core::unreachable!() };
+                        & #deref #node_ref
+                    }),
+                )
             }
             Via::Variant(vi) => {
-                let inner = if self.boxed {
-                    quote!(&mut **inner)
+                let (inner, inner_ref) = if self.boxed {
+                    (quote!(&mut **inner), quote!(&**inner))
                 } else {
-                    quote!(inner)
+                    (quote!(inner), quote!(inner))
                 };
-                let node = if self.is_root {
-                    quote!(&mut **pp)
+                let (node, node_ref) = if self.is_root {
+                    (quote!(&mut **pp), quote!(&**pp))
                 } else {
-                    quote!(pp.get_mut())
+                    (quote!(pp.get_mut()), quote!(pp.get()))
                 };
-                quote!(|p| {
-                    let #variant(pp) = p else { ::core::unreachable!() };
-                    let Self::#vi(inner) = #node else { ::core::unreachable!() };
-                    #inner
-                })
+                (
+                    quote!(|p| {
+                        let #variant(pp) = p else { ::core::unreachable!() };
+                        let Self::#vi(inner) = #node else { ::core::unreachable!() };
+                        #inner
+                    }),
+                    quote!(|p| {
+                        let #variant(pp) = p else { ::core::unreachable!() };
+                        let Self::#vi(inner) = #node_ref else { ::core::unreachable!() };
+                        #inner_ref
+                    }),
+                )
             }
         }
     }

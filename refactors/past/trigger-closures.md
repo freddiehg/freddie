@@ -17,16 +17,14 @@ The binding names its own parameter, nothing is captured invisibly, and every co
 
 ## what it receives
 
-Whatever dispatch is holding for that node, by unique reference:
+Whatever dispatch is holding for that node, by SHARED reference:
 
-- a place node's path, `&mut Self::Path<'a>`. The root's path is `&mut Mercury`, so a closure there reads fields directly through auto-deref; a deeper node's is a `PathMut`, so it reads its node through `get_mut` and the level above through `parent`.
-- a derived level's `&mut Node<Parent, Data>`, since a derived level has no path. Its own struct is `node.data`.
+- a place node's path, `&Self::Path<'a>`. The root's path is `&mut Mercury`, so a closure there reads fields directly through auto-deref; a deeper node's is a `PathMut`, so it reads its node through `get` and the level above through `parent`.
+- a derived level's `&Node<Parent, Data>`, since a derived level has no path. Its own struct is `node.data`.
 
-Unique rather than shared because `PathMut`'s only accessor is `get_mut`: the projection re-derives the node FROM the parent, so reading the node needs a unique borrow of the path. That is also why `get_mut` and `parent` cannot be held at once, which a trigger computing a value never needs.
+Shared, so a trigger cannot write what it reads. That rests on `PathMut` storing a projection for reading beside the one for writing (`refactors/pending/path-get.md`): with only the mutable one, applying it needs `&mut Parent`, which a shared borrow of the path cannot produce.
 
 The borrow ends before `path` or `node` moves into the handler, so this composes with what dispatch already does.
-
-Nothing stops a closure mutating through `get_mut`. It should not, and no lint says so; a read-only view over the path would need laserbeam to store a second, shared projection at every level, which is a bigger change than the problem deserves.
 
 ## why the form is syntactic
 

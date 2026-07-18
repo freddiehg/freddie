@@ -678,9 +678,12 @@ fn marker_of(input: &DeriveInput) -> syn::Result<Path> {
 /// closure parameter takes its type from an expected type, not from an immediate call, and that
 /// function's signature is what supplies one. Calling it directly would make every state-reading
 /// binding annotate its own parameter with a path type it should not have to name.
+///
+/// It is handed a SHARED reference to what dispatch is holding, so a trigger reads the node it is
+/// bound on, and its parent, and cannot write either.
 fn trigger_expr(trigger: &Expr, state: &TokenStream2) -> TokenStream2 {
     if matches!(trigger, Expr::Closure(_)) {
-        quote!(::bind::call_with(&mut #state, #trigger))
+        quote!(::bind::call_with(&#state, #trigger))
     } else {
         quote!(#trigger)
     }

@@ -6,11 +6,10 @@
 //!
 //! A trigger is usually a value, `Key::KeyR` or `Quit`. It may instead be a CLOSURE, which the
 //! derive calls with the state the node is bound on, for a trigger that depends on it: a place
-//! node's closure is handed `&mut Self::Path`, so the root's reads its fields directly and a
-//! deeper node's reads through `get_mut` and `parent`, and a derived level's is handed
-//! `&mut Node`. It must not mutate what it is handed, and `get_mut` and `parent` cannot be held at
-//! once, because a `PathMut` re-derives its node from its parent. The two forms are told apart
-//! syntactically, since a trait cannot do it: blanket impls for values and for closures overlap.
+//! node's closure is handed `&Self::Path`, so the root's reads its fields directly and a deeper
+//! node's reads through `get` and `parent`, and a derived level's is handed `&Node`. It is shared,
+//! so a trigger cannot write what it reads. The two forms are told apart syntactically, since a
+//! trait cannot do it: blanket impls for values and for closures overlap.
 //!
 //! There are two halves, and only one of them ships.
 //!
@@ -194,7 +193,7 @@ impl<N, P> HasParent for ::laserbeam::PathMut<N, P> {
 /// inferred from an immediate call: it takes its type from an EXPECTED type, which this function's
 /// signature supplies. Without it every state-reading binding would have to annotate its own
 /// parameter with a path type it should not have to name.
-pub fn call_with<S, T>(state: &mut S, f: impl FnOnce(&mut S) -> T) -> T {
+pub fn call_with<S: ?Sized, T>(state: &S, f: impl FnOnce(&S) -> T) -> T {
     f(state)
 }
 

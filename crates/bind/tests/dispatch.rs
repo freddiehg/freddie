@@ -173,6 +173,7 @@ fn multi_parent_ancestor_recover() {
 fn a_closure_trigger_matches_only_what_its_node_waits_for() {
     let mut armed = Armed {
         waiting_for: Some("g"),
+        for_child: None,
         child: ArmedChild { wants: None },
     };
     assert_eq!(
@@ -186,6 +187,7 @@ fn a_closure_trigger_matches_only_what_its_node_waits_for() {
 fn a_closure_trigger_matching_nothing_dispatches_nothing() {
     let mut armed = Armed {
         waiting_for: Some("g"),
+        for_child: None,
         child: ArmedChild { wants: None },
     };
     // A key it is not waiting for reaches no binding at all: the handler never runs to decline it.
@@ -197,6 +199,7 @@ fn a_closure_trigger_matching_nothing_dispatches_nothing() {
 fn a_node_waiting_for_nothing_matches_nothing() {
     let mut armed = Armed {
         waiting_for: None,
+        for_child: None,
         child: ArmedChild { wants: None },
     };
     assert_eq!(bind::dispatch::<Demo, Armed>(&mut armed, &key("g")), None);
@@ -206,6 +209,7 @@ fn a_node_waiting_for_nothing_matches_nothing() {
 fn a_constant_trigger_still_works_beside_a_closure_one() {
     let mut armed = Armed {
         waiting_for: Some("g"),
+        for_child: None,
         child: ArmedChild { wants: None },
     };
     assert_eq!(
@@ -220,6 +224,7 @@ fn a_constant_trigger_still_works_beside_a_closure_one() {
 fn a_closure_trigger_on_a_deeper_node_reads_through_its_path() {
     let mut armed = Armed {
         waiting_for: None,
+        for_child: None,
         child: ArmedChild { wants: Some("z") },
     };
     assert_eq!(
@@ -227,4 +232,20 @@ fn a_closure_trigger_on_a_deeper_node_reads_through_its_path() {
         Some(1)
     );
     assert_eq!(armed.child.wants, None, "the child's handler ran");
+}
+
+// A shared path reads upward too: this binding's trigger comes from the node ABOVE it.
+#[test]
+fn a_closure_trigger_can_read_its_parent() {
+    let mut armed = Armed {
+        waiting_for: None,
+        for_child: Some("up"),
+        child: ArmedChild { wants: None },
+    };
+    // The child's binding fires for the key its parent named, and the handler that ran says so:
+    // the parent-reading one returns the key's length plus 100.
+    assert_eq!(
+        bind::dispatch::<Demo, Armed>(&mut armed, &key("up")),
+        Some(102)
+    );
 }
