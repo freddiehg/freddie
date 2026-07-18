@@ -38,7 +38,16 @@ Syntactic is unambiguous where it counts, because a closure can never be a valid
 
 ## change 1: the macro calls a closure trigger
 
-`crates/bind_macro/src/lib.rs`. Both emit sites build the trigger the same way, so the choice is one helper they share:
+`crates/bind_macro/src/lib.rs`. The trigger expression is emitted at FOUR sites, not one, because THE CHECK evaluates it as well:
+
+- `dispatch_impl`, a place node's `Dispatch::dispatch`: `let trigger = #trigger;`, with `path` in scope.
+- `derived_node_impl`, a derived level's `Descend::dispatch`: the same line, with `node` in scope.
+- `accumulate_impl`, a place node's `EventHandler::accumulate`: `insert_or_error(out, Into::into(#triggers))?`, with `path` in scope.
+- `derived_node_impl`'s `DerivedHandler::accumulate`: the same, with `node` in scope.
+
+Miss the accumulate pair and the `check` feature stops compiling the moment anyone writes a closure, because a closure has no `Into<Trigger>`.
+
+One helper, used by all four:
 
 ```rust
 /// The expression that produces a binding's trigger, given what dispatch is holding for this node.
@@ -46,7 +55,7 @@ Syntactic is unambiguous where it counts, because a closure can never be a valid
 /// A closure is CALLED with it, so a trigger can depend on the state it is bound on; anything else
 /// is evaluated as the value it is. The distinction is syntactic because a trait cannot make it:
 /// blanket impls for values and for closures overlap.
-fn trigger_expr(trigger: &Expr, state: &TokenStream) -> TokenStream {
+fn trigger_expr(trigger: &Expr, state: &TokenStream2) -> TokenStream2 {
     if matches!(trigger, Expr::Closure(_)) {
         quote!((#trigger)(#state))
     } else {
@@ -55,31 +64,84 @@ fn trigger_expr(trigger: &Expr, state: &TokenStream) -> TokenStream {
 }
 ```
 
-The place-node emit, before:
+`Expr` is already imported by `bind_macro`.
+
+`dispatch_impl`'s check, before:
 
 ```rust
+    let checks = binds.iter().map(|b| {
+        let trigger = &b.trigger;
+        let handler = &b.handler;
+        quote! {
+            if let ::core::option::Option::Some(ev) =
+                ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
+            {
                 let trigger = #trigger;
 ```
 
 after:
 
 ```rust
-                let trigger = #trigger_expr;
+    let checks = binds.iter().map(|b| {
+        let trigger = trigger_expr(&b.trigger, &quote!(&mut path));
+        let handler = &b.handler;
+        quote! {
+            if let ::core::option::Option::Some(ev) =
+                ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
+            {
+                let trigger = #trigger;
 ```
 
-built with `&quote!(&mut path)`, and the derived-level emit the same way with `&quote!(&mut node)`.
+`derived_node_impl`'s check is the same edit with `&quote!(&mut node)`.
 
-A closure trigger forces the existing `needs_mut`, since the path is passed by unique reference. That flag is computed from the node's shape today, so it gains a clause: any binding whose trigger is a closure needs `mut path`.
+The two accumulate sites take the trigger through the same helper. `accumulate_impl`, before:
 
-## change 2: the derive says so
+```rust
+    let triggers = binds.iter().map(|b| &b.trigger);
+```
+
+after:
+
+```rust
+    let triggers = binds
+        .iter()
+        .map(|b| trigger_expr(&b.trigger, &quote!(&mut path)));
+```
+
+and `derived_node_impl`'s with `&quote!(&mut node)`.
+
+## change 2: a closure trigger forces `mut`
+
+The path is passed by unique reference, so a node with a closure trigger needs its path binding to be `mut`. `needs_mut` comes out of `dispatch_body` and `accumulate_body` today, computed from the node's SHAPE (whether it descends into a child), and neither of them sees the binds.
+
+So the flag is OR-ed at the two call sites that have both. `dispatch_impl`, before:
+
+```rust
+    let (recurse, children, needs_mut) = dispatch_body(input, name, marker, root)?;
+```
+
+after:
+
+```rust
+    let (recurse, children, needs_mut) = dispatch_body(input, name, marker, root)?;
+    // A closure trigger reads the path, so the binding has to be `mut` even for a leaf that
+    // never reassigns it.
+    let needs_mut = needs_mut || binds.iter().any(|b| matches!(b.trigger, Expr::Closure(_)));
+```
+
+`accumulate_impl` gains the same two lines. A derived level needs nothing: its `let node = self;` is already owned and rebindable.
+
+Watch for `unused_mut` on the way through: a node whose only reason for `mut` is a closure trigger does use it, through the `&mut path` the closure is called with, so the lint stays quiet. Verify that rather than assume it, since `-D unused` is on.
+
+## change 3: the derive says so
 
 `crates/bind/src/lib.rs`, the `Bind` derive's docs and the `EventTrigger` docs both describe a trigger as a value. They gain the closure form: what it is called with per node kind, that it must not mutate, and that `node` and `parent` cannot be held at once.
 
 Without this the feature is undiscoverable, which is the whole complaint about the accidental version.
 
-## change 3: tests
+## change 4: tests
 
-`crates/bind/tests/`, over a tree with a field a trigger reads:
+`crates/bind/tests/`, over a small tree built for it: a root with `armed: Option<u64>`, a child place node with a field of its own, and a trigger type `Armed(Option<u64>)` whose `is_matching` compares against the event's id.
 
 - a closure trigger matching on state: armed with an id, the matching event dispatches to the handler.
 - the same trigger not matching: a different id, and `dispatch` returns `None` because no binding matched, rather than the handler running and declining.
@@ -87,7 +149,9 @@ Without this the feature is undiscoverable, which is the whole complaint about t
 - a constant trigger beside a closure one on the same node, both dispatching correctly, so the two forms coexist.
 - a closure reading `parent()` on a deeper node, so the upward direction is exercised.
 
-I verified the first three against mercury as a scratch experiment (a root field `armed_id: Option<u64>` with `Armed(path.armed_id) => on_fired`); they belong in `bind`'s own tests, written against a tree that exists for testing.
+I verified the first three against mercury as a scratch experiment (a root field `armed_id: Option<u64>` bound as `Armed(path.armed_id) => on_fired`, which is the accidental form this change replaces); they belong in `bind`'s own tests, written against a tree that exists for testing.
+
+One case has to run under the `check` feature, since two of the four emit sites are only compiled there: a node with a closure trigger, put through `accumulate`, asserting it collects the trigger the closure produced. Without it, the accumulate half of change 1 is untested and breaks silently for anyone who turns the feature on.
 
 ## what this does not do
 
