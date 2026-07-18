@@ -52,27 +52,25 @@ pub enum KeySequenceOutcome {
 }
 
 impl std::fmt::Debug for KeySequence {
-    /// Only what the run has swallowed, in arrival order: `KeySequence { KeyJ v, KeyJ ^ }`, or
+    /// How far the run has got: the keys it has matched, in order, as `KeySequence { KeyJ }`, or
     /// `KeySequence {}` when idle.
     ///
-    /// It is written on every dispatched event, and the keys and the window never change, so
-    /// printing them would repeat the sequence's definition on every line of the log to say
-    /// nothing about what happened.
+    /// It is written on every dispatched event, so it carries only what moves. The keys and the
+    /// window never change, so printing them would repeat the sequence's definition on every line
+    /// of the log. The swallowed ups are left out too: they exist so a broken run replays what it
+    /// took, and say nothing about how far it has got.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "KeySequence {{")?;
-        for (i, press) in self.swallowed.iter().enumerate() {
-            let arrow = match press.press {
-                PressType::Down => "v",
-                PressType::Up => "^",
-            };
-            write!(
-                f,
-                "{}{:?} {arrow}",
-                if i == 0 { " " } else { ", " },
-                press.key
-            )?;
+        let mut matched = self
+            .swallowed
+            .iter()
+            .filter(|p| p.press == PressType::Down)
+            .peekable();
+        let any = matched.peek().is_some();
+        for (i, press) in matched.enumerate() {
+            write!(f, "{}{:?}", if i == 0 { " " } else { ", " }, press.key)?;
         }
-        f.write_str(if self.swallowed.is_empty() { "}" } else { " }" })
+        f.write_str(if any { " }" } else { "}" })
     }
 }
 

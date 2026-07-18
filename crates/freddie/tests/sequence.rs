@@ -259,14 +259,23 @@ fn an_empty_sequence_is_rejected() {
 }
 
 #[test]
-fn debug_shows_only_what_is_swallowed() {
-    // It is written on every dispatched event, so it says what happened, not what the sequence is.
-    let mut s = jk();
+fn debug_shows_how_far_the_run_has_got() {
+    // It is written on every dispatched event, so it carries only what moves: the keys matched so
+    // far, never the sequence's own definition, and never the swallowed ups.
+    const JKL: &[Key] = &[Key::KeyJ, Key::KeyK, Key::KeyL];
+
+    let mut s = KeySequence::new(JKL, None);
     assert_eq!(format!("{s:?}"), "KeySequence {}");
     let _ = s.advance(&down(Key::KeyJ));
-    assert_eq!(format!("{s:?}"), "KeySequence { KeyJ v }");
+    assert_eq!(format!("{s:?}"), "KeySequence { KeyJ }");
     let _ = s.advance(&up(Key::KeyJ));
-    assert_eq!(format!("{s:?}"), "KeySequence { KeyJ v, KeyJ ^ }");
+    assert_eq!(
+        format!("{s:?}"),
+        "KeySequence { KeyJ }",
+        "an up is not progress"
+    );
+    let _ = s.advance(&down(Key::KeyK));
+    assert_eq!(format!("{s:?}"), "KeySequence { KeyJ, KeyK }");
     let _ = s.advance(&down(Key::KeyA));
     assert_eq!(format!("{s:?}"), "KeySequence {}");
 }
