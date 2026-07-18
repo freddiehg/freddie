@@ -48,7 +48,7 @@ pub const OVERLAY_DWELL: Duration = Duration::from_secs(10);
 
 Each layer's keymap is a file, not a string literal. A table written with `concat!` and `\n` escapes cannot be read as the table it is, and the whole point is that the columns line up; in a file, what you see is what the overlay draws.
 
-`crates/mercury/assets/overlays/`, beside the existing `assets/mercury.png`, one file per keymap: `home.txt`, `nav.txt`, `resize.txt`, `typing.txt`, and one per app with its own bindings, `chrome.txt` and `ghostty.txt`, plus `inapp.txt` for an app with none. `nav.txt`:
+Each file sits beside the bindings it describes: `crates/mercury/src/state/nav.txt` next to `nav.rs`, and the same for `home`, `resize`, and `typing`. The apps' keymaps go beside `app.rs`, as `chrome.txt`, `ghostty.txt`, and `inapp.txt` for an app with bindings of its own. `nav.txt`:
 
 ```
   NAV
@@ -60,7 +60,24 @@ Each layer's keymap is a file, not a string literal. A table written with `conca
   esc  home
 ```
 
-They are included at compile time, so a missing file is a build error rather than a blank overlay, and nothing reads the disk at runtime. Add the content to `impl Layer`, beside `is_passthrough`:
+Each module includes its own at compile time, so a missing file is a build error rather than a blank overlay, and nothing reads the disk at runtime. `nav.rs`, beside its `#[bind(..)]`:
+
+```rust
+/// The keymap the overlay shows for this layer. Beside the bindings it describes, so the two are
+/// changed together or the drift is obvious.
+pub(crate) const OVERLAY: &str = include_str!("nav.txt");
+```
+
+`home.rs`, `resize.rs`, and `typing.rs` do the same. `app.rs` carries one per app, since the in-app layer's bindings are the front app's:
+
+```rust
+pub(crate) const CHROME_OVERLAY: &str = include_str!("chrome.txt");
+pub(crate) const GHOSTTY_OVERLAY: &str = include_str!("ghostty.txt");
+/// For an app with no bindings of its own: the in-app layer's own keys and nothing more.
+pub(crate) const INAPP_OVERLAY: &str = include_str!("inapp.txt");
+```
+
+`impl Layer`, beside `is_passthrough`, names them:
 
 ```rust
 /// The keymap the overlay shows for this layer, read when `o` shows it.
@@ -71,26 +88,25 @@ They are included at compile time, so a missing file is a build error rather tha
 #[must_use]
 pub const fn overlay_content(&self, app: App) -> &'static str {
     match self {
-        Self::Home(_) => include_str!("../../assets/overlays/home.txt"),
-        Self::Nav(_) => include_str!("../../assets/overlays/nav.txt"),
-        Self::Resize(_) => include_str!("../../assets/overlays/resize.txt"),
-        Self::InApp(_) => app.overlay_content(),
-        Self::Typing(_) => include_str!("../../assets/overlays/typing.txt"),
+        Self::Home(_) => home::OVERLAY,
+        Self::Nav(_) => nav::OVERLAY,
+        Self::Resize(_) => resize::OVERLAY,
+        Self::InApp(_) => app::overlay_for(app),
+        Self::Typing(_) => typing::OVERLAY,
     }
 }
 ```
 
-And the in-app content on `impl App`, in `crates/mercury/src/sources.rs`, since the bindings it lists are the app's own:
+and `app.rs` maps the app to its own:
 
 ```rust
-/// The keymap the overlay shows while this app is frontmost and the in-app layer is active. The
-/// first rows are the in-app layer's own keys, which every app has; the rest are the app's.
+/// The keymap for the in-app layer while `app` is frontmost.
 #[must_use]
-pub const fn overlay_content(self) -> &'static str {
-    match self {
-        Self::Chrome => include_str!("../assets/overlays/chrome.txt"),
-        Self::Ghostty => include_str!("../assets/overlays/ghostty.txt"),
-        Self::Zed | Self::Other => include_str!("../assets/overlays/inapp.txt"),
+pub(crate) const fn overlay_for(app: App) -> &'static str {
+    match app {
+        App::Chrome => CHROME_OVERLAY,
+        App::Ghostty => GHOSTTY_OVERLAY,
+        App::Zed | App::Other => INAPP_OVERLAY,
     }
 }
 ```
