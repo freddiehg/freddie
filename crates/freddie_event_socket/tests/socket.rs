@@ -151,7 +151,7 @@ async fn a_binary_frame_is_dropped_and_the_connection_survives() {
     let (_socket, _port, url) = listen_anywhere(on_message);
 
     let mut ws = connect(&url).await;
-    ws.send(Message::Binary(vec![0, 1, 2]))
+    ws.send(Message::Binary(vec![0, 1, 2].into()))
         .await
         .expect("sending");
     ws.send(Message::Text("after the binary".into()))
@@ -168,7 +168,7 @@ async fn an_oversized_frame_closes_only_its_own_connection() {
     let (_socket, _port, url) = listen_anywhere(on_message);
 
     let mut ws = connect(&url).await;
-    ws.send(Message::Text("x".repeat(70 * 1024)))
+    ws.send(Message::Text("x".repeat(70 * 1024).into()))
         .await
         .expect("sending");
     tokio::time::sleep(SETTLE).await;
@@ -208,7 +208,7 @@ async fn dropping_the_socket_closes_clients_and_frees_the_port() {
     // The client's stream ends rather than hanging.
     let ended = tokio::time::timeout(SETTLE, futures_util::StreamExt::next(&mut ws)).await;
     assert!(
-        matches!(ended, Ok(None | Some(Ok(Message::Close(_))))),
+        matches!(ended, Ok(None) | Ok(Some(Ok(Message::Close(_))))),
         "the client saw it close: {ended:?}"
     );
 
