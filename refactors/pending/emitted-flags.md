@@ -62,7 +62,85 @@ Not a `NULL` source, which the C API allows and is 132ns. `NULL` means the share
 
 The long-lived source is mercury's choice, not something `CoreGraphics` asks for: `CGEventCreateKeyboardEvent` takes a source per call. That a source accumulates state, and that posting updates it, is `CoreGraphics`.
 
-## Change 1: one constructor owns the source
+## Change 1: the tag is a newtype
+
+A prefactor. The tag is a bare `i64` that must round-trip through one specific `CGEvent` field, and nothing type-checks that. Wrapping it puts the field name in one place and gives the read and the write a name.
+
+### `crates/freddie_keyboard/src/sys/macos.rs`
+
+Before:
+
+```rust
+fn new_tag() -> i64 {
+    // Per-process random, so an interceptor skips only its own emitter's output.
+    let mut h = RandomState::new().build_hasher();
+    h.write_u8(0);
+    i64::from_ne_bytes(h.finish().to_ne_bytes())
+}
+```
+
+After:
+
+```rust
+/// The marker an emitted event carries so the interceptor recognizes its own output.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Tag(i64);
+
+impl Tag {
+    /// Per-process random, so an interceptor skips only its own emitter's output.
+    fn new() -> Self {
+        let mut h = RandomState::new().build_hasher();
+        h.write_u8(0);
+        Self(i64::from_ne_bytes(h.finish().to_ne_bytes()))
+    }
+
+    /// Marks `event` as this emitter's, so the tap passes it rather than handling it again.
+    fn stamp(self, event: &CGEvent) {
+        event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, self.0);
+    }
+
+    /// Whether `event` carries this tag, and so came from this emitter.
+    fn marks(self, event: &CGEvent) -> bool {
+        event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA) == self.0
+    }
+}
+```
+
+`EventField::EVENT_SOURCE_USER_DATA` then appears nowhere else. The tap callback reads:
+
+Before:
+
+```rust
+                if event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA) == tag {
+                    return CallbackResult::Keep; // our own emit
+                }
+```
+
+After:
+
+```rust
+                if tag.marks(event) {
+                    return CallbackResult::Keep; // our own emit
+                }
+```
+
+And `intercept` starts with `let tag = Tag::new();`, with `EmitterState.tag` typed `Tag`.
+
+```rust
+#[test]
+fn a_tag_marks_only_its_own_events() {
+    let source = CGEventSource::new(CGEventSourceStateID::Private).expect("a private source");
+    let event =
+        CGEvent::new_keyboard_event(source, KeyCode::SPACE, true).expect("a keyboard event");
+    let (mine, theirs) = (Tag::new(), Tag(1));
+    assert!(!mine.marks(&event));
+    mine.stamp(&event);
+    assert!(mine.marks(&event));
+    assert!(!theirs.marks(&event));
+}
+```
+
+## Change 2: one constructor owns the source
 
 `CGEventSource` appears exactly once in the file, inside the constructor below, and is never held in a field. A source that outlives one event is then not something to remember to avoid; there is nowhere to put one.
 
@@ -261,7 +339,67 @@ fn a_key_with_no_code_is_unmappable() {
 }
 ```
 
-## Change 2: keep the emitter's log line
+## Change 3: the emitter is `Send`
+
+With the `CGEventSource` gone, nothing in the emitter is thread-hostile: `CGEventSource` is `!Send` because it holds a `NonNull`, while `CFRunLoop` and `i64` are both `Send`, so `Interceptor` already is. The `Rc` is the only thing left manufacturing `!Send`, and it is not there for sharing: the emitter is moved into the effect loop once and borrowed after.
+
+Before:
+
+```rust
+/// Synthesizes keys through the interceptor's tag, so they are not re-handled.
+pub struct Emitter(Rc<EmitterState>);
+```
+
+After:
+
+```rust
+/// Synthesizes keys through the interceptor's tag, so they are not re-handled.
+pub struct Emitter(EmitterState);
+```
+
+`use std::rc::Rc;` goes, and `intercept` ends with `let emitter = Emitter(EmitterState { tag });`.
+
+### `crates/mercury/src/main.rs`
+
+The effect loop's future is `Send` once the emitter is, so the expectation stops being met. Remove it and the reasoning that named the emitter:
+
+Before:
+
+```rust
+/// The `Emitter` is `!Send` by design, so this future is `!Send`; it runs on the
+/// worker thread that created the `Emitter` and never crosses a thread.
+#[expect(clippy::future_not_send)]
+async fn run_effect_loop(
+```
+
+After:
+
+```rust
+/// Runs on the worker thread, which owns the state the effects act on.
+async fn run_effect_loop(
+```
+
+`run` keeps its own `#[expect(clippy::future_not_send)]`, and only that one. It holds the `Watcher` from `freddie_app_nav::watch` across await points, and `Watcher` is `!Send` three ways: the `NonNull` inside its `RcBlock`, and the `dyn NSObjectProtocol` token being neither `Send` nor `Sync`. `run_effect_loop` holds no such thing once the emitter is `Send`, which is why its expectation is the one that goes.
+
+The comment on `run` that explains why `intercept` is called there also stops being true and becomes:
+
+Before:
+
+```rust
+/// `intercept` has to be called from here rather than from `main`, because it
+/// returns the `Emitter`, the `Emitter` is `!Send` (it holds an `Rc`), and the
+/// effect loop uses it. It has to be born on the thread it will live on.
+```
+
+After:
+
+```rust
+/// `intercept` is called from here rather than from `main` because the tap and the effect
+/// loop belong to the same thread as the state they drive, not because anything it returns
+/// is pinned to one.
+```
+
+## Change 4: keep the emitter's log line
 
 `post` writes what it actually put on the wire, at `debug` so the log file keeps it. This is what found the bug: the dispatch record showed byte-identical `ModifierFlags` for a working and a failing `cmd`-`space`, because the difference was a raw bit the portable type does not carry.
 
