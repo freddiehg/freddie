@@ -90,6 +90,11 @@ fn main() {
     // worker owns the receiver.
     let (event_tx, event_rx) = unbounded_channel::<MercuryEvent>();
 
+    // Titles for the status item. The effect loop, on the worker, sends; the main thread applies
+    // them on its next wake, because an NSStatusItem is main-thread-only. A std channel rather
+    // than tokio's: the receiving end is the main thread, which is not in the runtime.
+    let (title_tx, title_rx) = std::sync::mpsc::channel::<&'static str>();
+
     // The status item, on the main thread now that NSApp exists. A Quit click
     // enqueues the same kind of event any source does; the model turns it into
     // `Kill`, which ends the effect loop, releases the keyboard, and drops the
@@ -118,11 +123,17 @@ fn main() {
                 .enable_all()
                 .build()
                 .expect("a current-thread runtime with no reactor cannot fail to build");
-            runtime.block_on(run(event_tx, event_rx));
+            runtime.block_on(run(event_tx, event_rx, title_tx));
         })
         .expect("spawning the runtime thread");
 
-    main_loop.run(); // pumps AppKit events until the worker drops the stopper
+    // Pumps AppKit events until the worker drops the stopper, applying any pending title on each
+    // wake. Only the last one is drawn: intermediate layers in one batch are not worth showing.
+    main_loop.run(|| {
+        if let Some(name) = title_rx.try_iter().last() {
+            menu_bar.set_title(Some(name));
+        }
+    });
     let _ = worker.join();
     drop(menu_bar); // held until the loop returns, so the icon is up for the whole run
 }
@@ -137,7 +148,11 @@ fn main() {
 /// `block_on`ed by the worker's current-thread runtime and never crosses a
 /// thread.
 #[expect(clippy::future_not_send)]
-async fn run(event_tx: UnboundedSender<MercuryEvent>, event_rx: UnboundedReceiver<MercuryEvent>) {
+async fn run(
+    event_tx: UnboundedSender<MercuryEvent>,
+    event_rx: UnboundedReceiver<MercuryEvent>,
+    title_tx: std::sync::mpsc::Sender<&'static str>,
+) {
     let (effect_tx, effect_rx) = unbounded_channel::<MercuryEffect>();
 
     // Grab the keyboard: swallow every key and forward it to the model, which
@@ -190,9 +205,13 @@ async fn run(event_tx: UnboundedSender<MercuryEvent>, event_rx: UnboundedReceive
             .map_or(App::Other, |bundle_id| App::from_bundle_id(&bundle_id)),
     );
 
+    // Nothing has transitioned yet, so no `ShowLayer` has been produced: name the layer we boot
+    // into, or the item stays blank until the first layer change.
+    let _ = title_tx.send(mercury.layer().name());
+
     tokio::select! {
         () = run_event_loop(mercury, event_rx, effect_tx) => {}
-        () = run_effect_loop(effect_rx, emitter, event_tx) => {}
+        () = run_effect_loop(effect_rx, emitter, event_tx, title_tx) => {}
     }
     drop(interceptor); // hold the grab until here
 }
@@ -235,9 +254,10 @@ async fn run_effect_loop(
     mut effect_rx: UnboundedReceiver<MercuryEffect>,
     emitter: Emitter,
     event_tx: UnboundedSender<MercuryEvent>,
+    title_tx: std::sync::mpsc::Sender<&'static str>,
 ) {
     while let Some(effect) = effect_rx.recv().await {
-        if perform_effect(effect, &emitter, &event_tx).is_break() {
+        if perform_effect(effect, &emitter, &event_tx, &title_tx).is_break() {
             break;
         }
     }
@@ -253,6 +273,7 @@ fn perform_effect(
     effect: MercuryEffect,
     emitter: &Emitter,
     event_tx: &UnboundedSender<MercuryEvent>,
+    title_tx: &std::sync::mpsc::Sender<&'static str>,
 ) -> ControlFlow<()> {
     match effect {
         MercuryEffect::Foreground(app) => foreground_app(app),
@@ -270,6 +291,10 @@ fn perform_effect(
             return ControlFlow::Break(());
         }
         MercuryEffect::Timer(timer) => schedule_timer(timer, event_tx),
+        // A closed channel means the main thread has gone, which the Kill path handles.
+        MercuryEffect::ShowLayer(name) => {
+            let _ = title_tx.send(name);
+        }
     }
     ControlFlow::Continue(())
 }

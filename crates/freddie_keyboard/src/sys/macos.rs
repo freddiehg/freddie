@@ -347,6 +347,18 @@ impl EmitterState {
         let untouched = event.get_flags() & !MODIFIERS;
         event.set_flags(untouched | to_cg(flags));
         event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, self.tag);
+        // What actually goes on the wire, which the portable `KeyEvent` above cannot show: the raw
+        // flag bits after `untouched` is carried over, and the type the OS chose from the keycode
+        // (`FlagsChanged` for a modifier, `KeyDown`/`KeyUp` otherwise). At `debug` so the log file
+        // keeps it, since two presses that dispatch identically can still post differently.
+        tracing::debug!(
+            ?key,
+            down,
+            raw_flags = %format!("{:#010x}", event.get_flags().bits()),
+            kept_from_source = %format!("{:#010x}", untouched.bits()),
+            kind = ?event.get_type(),
+            "post"
+        );
         event.post(CGEventTapLocation::Session);
         Ok(())
     }

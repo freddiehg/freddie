@@ -67,6 +67,18 @@ fn cmd_r() -> Vec<MercuryEffect> {
     vec![tap(Key::KeyR, ModifierFlags::COMMAND)]
 }
 
+// A transition also tells the menu bar which layer it landed in, as the last effect it produces.
+const fn shows(layer: &'static str) -> MercuryEffect {
+    MercuryEffect::ShowLayer(layer)
+}
+
+// Effects from a transition that landed in home, which is most of them: the go-home name comes
+// last, since the handler emits its own effects before it changes the layer.
+fn leaves(mut effects: Vec<MercuryEffect>) -> Vec<MercuryEffect> {
+    effects.push(shows("Home"));
+    effects
+}
+
 // A key handled while staying in the in-app layer is activity: its return-home timer is reset, so
 // the effects come back with the re-scheduling timer effect appended. Keys that leave the in-app
 // layer (the digits' window jump, `n`, `t`, `escape`) do not, so they use the bare effects.
@@ -84,16 +96,39 @@ fn default_boots_into_typing() {
 }
 
 #[test]
+fn every_layer_has_a_name_for_the_menu_bar() {
+    // A new layer has to name itself here rather than inheriting something generic.
+    let mut m = home();
+    assert_eq!(m.layer().name(), "Home");
+    let _ = m.handle(&key(Key::KeyN));
+    assert_eq!(m.layer().name(), "Nav");
+    let _ = m.handle(&key(Key::Escape));
+    let _ = m.handle(&key(Key::KeyR));
+    assert_eq!(m.layer().name(), "Resize");
+    let _ = m.handle(&key(Key::Escape));
+    let _ = m.handle(&key(Key::KeyT));
+    assert_eq!(m.layer().name(), "Typing");
+
+    let mut m = home();
+    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&key(Key::KeyI));
+    assert_eq!(m.layer().name(), "App");
+}
+
+#[test]
 fn home_n_enters_nav() {
     let mut m = home();
-    assert_eq!(m.handle(&key(Key::KeyN)), Some(vec![return_home_timer()]));
+    assert_eq!(
+        m.handle(&key(Key::KeyN)),
+        Some(vec![shows("Nav"), return_home_timer()])
+    );
     assert!(matches!(m.layer(), Layer::Nav(_)));
 }
 
 #[test]
 fn home_t_enters_typing() {
     let mut m = home();
-    assert_eq!(m.handle(&key(Key::KeyT)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyT)), Some(vec![shows("Typing")]));
     assert!(matches!(m.layer(), Layer::Typing(_)));
 }
 
@@ -145,10 +180,10 @@ fn quit_event_kills_from_every_layer() {
 
 #[test]
 fn home_escape_does_nothing() {
-    // In home, escape re-enters home (the layer-level go-home binding): no effect,
-    // no visible change.
+    // In home, escape re-enters home (the layer-level go-home binding): it renames the layer to
+    // the one it is already in, and nothing else changes.
     let mut m = home();
-    assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::Escape)), Some(vec![shows("Home")]));
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
@@ -157,7 +192,7 @@ fn escape_goes_home_from_a_sublayer() {
     let mut m = home();
     let _ = m.handle(&key(Key::KeyN));
     assert!(matches!(m.layer(), Layer::Nav(_)));
-    assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::Escape)), Some(vec![shows("Home")]));
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
@@ -169,7 +204,7 @@ fn nav_times_out_home() {
     // The armed timer fires: drive the LayerTimeout event it would send back.
     assert_eq!(
         m.handle(&MercuryEvent::LayerTimeout(LayerTimeout)),
-        Some(vec![])
+        Some(vec![shows("Home")])
     );
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
@@ -181,7 +216,7 @@ fn layer_timeout_returns_home_from_any_layer() {
     let mut m = home();
     assert_eq!(
         m.handle(&MercuryEvent::LayerTimeout(LayerTimeout)),
-        Some(vec![])
+        Some(vec![shows("Home")])
     );
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
@@ -273,6 +308,7 @@ fn nav_c_foregrounds_chrome_and_enters_inapp() {
     assert_eq!(
         m.handle(&key(Key::KeyC)),
         Some(vec![
+            shows("App"),
             return_home_timer(),
             MercuryEffect::Foreground(App::Chrome)
         ])
@@ -297,7 +333,11 @@ fn every_nav_choice_enters_inapp() {
         assert!(matches!(m.layer(), Layer::Nav(_)));
         assert_eq!(
             m.handle(&key(k)),
-            Some(vec![return_home_timer(), MercuryEffect::Foreground(app)])
+            Some(vec![
+                shows("App"),
+                return_home_timer(),
+                MercuryEffect::Foreground(app)
+            ])
         );
         assert!(matches!(m.layer(), Layer::InApp(_)), "{app:?} left nav");
         assert!(
@@ -316,6 +356,7 @@ fn n_c_then_foreground_then_r_refreshes_chrome() {
     assert_eq!(
         m.handle(&key(Key::KeyC)),
         Some(vec![
+            shows("App"),
             return_home_timer(),
             MercuryEffect::Foreground(App::Chrome)
         ])
@@ -365,7 +406,10 @@ fn foreground_records_the_app_without_changing_layer() {
 fn i_enters_inapp_for_the_foregrounded_app() {
     let mut m = home();
     let _ = m.handle(&foreground(App::Chrome));
-    assert_eq!(m.handle(&key(Key::KeyI)), Some(vec![return_home_timer()]));
+    assert_eq!(
+        m.handle(&key(Key::KeyI)),
+        Some(vec![shows("App"), return_home_timer()])
+    );
     assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foreground.app(), App::Chrome);
 }
@@ -378,7 +422,10 @@ fn inapp_n_enters_nav() {
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(m.layer(), Layer::InApp(_)));
-    assert_eq!(m.handle(&key(Key::KeyN)), Some(vec![return_home_timer()]));
+    assert_eq!(
+        m.handle(&key(Key::KeyN)),
+        Some(vec![shows("Nav"), return_home_timer()])
+    );
     assert!(matches!(m.layer(), Layer::Nav(_)));
 }
 
@@ -388,7 +435,7 @@ fn inapp_t_enters_typing() {
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(m.layer(), Layer::InApp(_)));
-    assert_eq!(m.handle(&key(Key::KeyT)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyT)), Some(vec![shows("Typing")]));
     assert!(matches!(m.layer(), Layer::Typing(_)));
 }
 
@@ -530,7 +577,7 @@ fn the_digits_select_a_tmux_window_and_return_home() {
 
         assert_eq!(
             m.handle(&key(k)),
-            Some(tmux(ModifierFlags::SHIFT, expected)),
+            Some(leaves(tmux(ModifierFlags::SHIFT, expected))),
             "{k:?}"
         );
         // Choosing a window is a choice, not something you repeat.
@@ -562,7 +609,7 @@ fn all_ten_digits_are_bound_in_ghostty() {
         let _ = m.handle(&key(Key::KeyI));
         assert_eq!(
             m.handle(&key(digit)),
-            Some(tmux(ModifierFlags::SHIFT, digit)),
+            Some(leaves(tmux(ModifierFlags::SHIFT, digit))),
             "{digit:?} is unbound"
         );
     }
@@ -597,7 +644,7 @@ fn inapp_activity_resets_the_return_home_timer() {
     // Jumping to a window leaves for home, so nothing re-schedules it.
     assert_eq!(
         m.handle(&key(Key::Num3)),
-        Some(tmux(ModifierFlags::SHIFT, Key::Num3))
+        Some(leaves(tmux(ModifierFlags::SHIFT, Key::Num3)))
     );
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
@@ -619,7 +666,10 @@ fn the_digits_are_unbound_outside_ghostty() {
 #[test]
 fn home_r_enters_resize() {
     let mut m = home();
-    assert_eq!(m.handle(&key(Key::KeyR)), Some(vec![return_home_timer()]));
+    assert_eq!(
+        m.handle(&key(Key::KeyR)),
+        Some(vec![shows("Resize"), return_home_timer()])
+    );
     assert!(matches!(m.layer(), Layer::Resize(_)));
 }
 
@@ -638,7 +688,7 @@ fn the_arrows_place_the_window_and_return_home() {
 
         assert_eq!(
             m.handle(&key(k)),
-            Some(vec![MercuryEffect::Place(placement)]),
+            Some(leaves(vec![MercuryEffect::Place(placement)])),
             "{k:?}"
         );
         assert!(
@@ -655,7 +705,7 @@ fn escape_leaves_resize() {
     let _ = m.handle(&key(Key::KeyR));
     assert!(matches!(m.layer(), Layer::Resize(_)));
 
-    assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::Escape)), Some(vec![shows("Home")]));
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
@@ -666,12 +716,12 @@ fn placing_twice_re_enters_resize() {
     let _ = m.handle(&key(Key::KeyR));
     assert_eq!(
         m.handle(&key(Key::UpArrow)),
-        Some(vec![MercuryEffect::Place(Placement::Maximize)])
+        Some(leaves(vec![MercuryEffect::Place(Placement::Maximize)]))
     );
     let _ = m.handle(&key(Key::KeyR));
     assert_eq!(
         m.handle(&key(Key::LeftArrow)),
-        Some(vec![MercuryEffect::Place(Placement::LeftHalf)])
+        Some(leaves(vec![MercuryEffect::Place(Placement::LeftHalf)]))
     );
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
@@ -735,7 +785,9 @@ fn foregrounding_chrome_is_reported_back() {
     assert_eq!(
         performed,
         vec![
+            shows("Nav"),
             return_home_timer(),
+            shows("App"),
             return_home_timer(),
             MercuryEffect::Foreground(App::Chrome)
         ]
@@ -890,7 +942,7 @@ fn jk_typed_one_key_at_a_time_leaves_for_home() {
     assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
     assert!(!m.typing_state.jk.is_idle());
     assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
-    assert_eq!(m.handle(&key(Key::KeyK)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyK)), Some(vec![shows("Home")]));
     assert!(matches!(m.layer(), Layer::Home(_)));
     assert!(m.typing_state.jk.is_idle());
 }
@@ -902,7 +954,7 @@ fn jk_rolled_leaves_for_home_and_the_ups_land_in_home() {
     // with no downs.
     let mut m = typing();
     assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
-    assert_eq!(m.handle(&key(Key::KeyK)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyK)), Some(vec![shows("Home")]));
     assert!(matches!(m.layer(), Layer::Home(_)));
     assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
     assert_eq!(m.handle(&up(Key::KeyK)), Some(vec![]));
@@ -1012,7 +1064,7 @@ fn leaving_typing_abandons_a_held_j() {
     // its down, and its up will be swallowed by the command layer.
     let mut m = typing();
     assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
-    assert_eq!(m.handle(&key(Key::KeyK)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyK)), Some(vec![shows("Home")]));
     assert!(matches!(m.layer(), Layer::Home(_)));
     assert!(m.typing_state.jk.is_idle());
 }

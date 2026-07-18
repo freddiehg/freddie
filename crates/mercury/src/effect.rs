@@ -41,6 +41,9 @@ pub enum MercuryEffect {
     Place(Placement),
     /// Quit the program. The effect handler performs this by exiting.
     Kill,
+    /// Show this layer's name in the menu bar. Produced only by `set_layer`, so the item and the
+    /// model cannot disagree about which layer is active.
+    ShowLayer(&'static str),
     /// Arm a timer. The effect loop schedules it; it fires its event after the delay unless the
     /// guard held by the state that asked for it drops first.
     Timer(TimerEffect<MercuryEvent>),

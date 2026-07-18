@@ -17,7 +17,17 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 /// A live status item. Holding it keeps the icon up; dropping it takes the icon down.
 pub struct MenuBar {
-    _tray: TrayIcon,
+    tray: TrayIcon,
+}
+
+impl MenuBar {
+    /// Set the text shown beside the glyph, or clear it with `None`.
+    ///
+    /// Main thread only, like everything else about a status item. `TrayIcon` is `!Send`, so
+    /// holding one is what keeps this reachable only from the thread that built it.
+    pub fn set_title(&self, title: Option<&str>) {
+        self.tray.set_title(title);
+    }
 }
 
 /// Shows the menu-bar status item with a single Quit entry.
@@ -60,7 +70,7 @@ pub fn show(
         }
     }));
 
-    Ok(MenuBar { _tray: tray })
+    Ok(MenuBar { tray })
 }
 
 /// A status-item icon from `png`: the glyph, trimmed to its shape and sized for the

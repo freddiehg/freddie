@@ -156,6 +156,18 @@ impl Layer {
         matches!(self, Self::Typing(_))
     }
 
+    /// What the status item calls this layer.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Home(_) => "Home",
+            Self::Nav(_) => "Nav",
+            Self::Resize(_) => "Resize",
+            Self::Typing(_) => "Typing",
+            Self::InApp(_) => "App",
+        }
+    }
+
     /// Reset the return-home timer of a layer whose own keys keep you in it, returning the effect
     /// that re-schedules it, or `None` for a layer that has none. Only the in-app layer qualifies:
     /// nav's and resize's keys all leave, so they keep the timer they entered with.
@@ -229,11 +241,13 @@ impl Mercury {
         let after_passthrough = into.is_passthrough();
         self.layer = into;
         self.typing_state.jk = KeySequence::new(JK, Some(JK_TIMEOUT));
-        match (before_passthrough, after_passthrough) {
+        let mut effects = match (before_passthrough, after_passthrough) {
             (true, false) => self.typing_state.held.close(),
             (false, true) => self.typing_state.held.open(),
             _ => Vec::new(),
-        }
+        };
+        effects.push(MercuryEffect::ShowLayer(self.layer.name()));
+        effects
     }
 }
 

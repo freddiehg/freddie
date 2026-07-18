@@ -20,7 +20,7 @@
 //!     // ... all of the program's work, on this thread ...
 //! });
 //!
-//! main_loop.run(); // returns once the worker drops the stopper
+//! main_loop.run(|| {}); // returns once the worker drops the stopper
 //! ```
 //!
 //! This crate is not a source. Registering an `AppKit` observer is somebody else's
@@ -102,11 +102,16 @@ impl MainLoop {
     /// stalls every other source, so callbacks should hand their work to another
     /// thread and return.
     ///
+    /// `on_wake` runs on each pass, which is at least every [`SLICE`] and again whenever an
+    /// `AppKit` event arrives. It runs ON the main thread, so it is where a caller does
+    /// main-thread-only work that came from elsewhere. It must return promptly, for the same
+    /// reason a source callback must.
+    ///
     /// # Panics
     ///
     /// Panics if called off the main thread, where it would block forever without
     /// ever delivering an `AppKit` callback.
-    pub fn run(self) {
+    pub fn run(self, mut on_wake: impl FnMut()) {
         assert!(
             is_main_thread(),
             "MainLoop::run must be called on the main thread: AppKit delivers only there"
@@ -134,6 +139,7 @@ impl MainLoop {
                 if let Some(event) = event {
                     app.sendEvent(&event);
                 }
+                on_wake();
             });
         }
     }
@@ -182,7 +188,8 @@ mod tests {
     #[test]
     fn run_off_the_main_thread_panics() {
         let (main_loop, _stopper) = main_loop();
-        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| main_loop.run()));
+        let panicked =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| main_loop.run(|| {})));
         assert!(panicked.is_err(), "run() off main must panic, not hang");
     }
 
