@@ -114,14 +114,14 @@ pub fn timer_effect_and_guard<E>(delay: Duration, event: E) -> (DropGuard, Timer
 after:
 
 ```rust
-/// Build a linked timer and event that fires after `delay`. Dropping the timer cancels it.
+/// Build a linked guard and event that fires after `delay`. Dropping the guard cancels the timer.
 ///
 /// `event` is handed the id identifying this timer, so the event it builds carries it and the
-/// binding that wants it can match on the timer still held.
-pub fn set_timer<E>(
+/// binding that wants it can match on the guard still held.
+pub fn timer_effect_and_guard<E>(
     delay: Duration,
     event: impl FnOnce(TimerId) -> E,
-) -> (Timer, TimerEffect<E>) {
+) -> (TimerGuard, TimerEffect<E>) {
     let (guard, receiver) = drop_guard();
     let id = TimerId::mint();
     (
