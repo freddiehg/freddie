@@ -2,6 +2,8 @@
 
 Two problems, one shape.
 
+Changes 1 to 5 have been written once and compiled clean against the tree, then reverted pending review; the code below is what compiled. Change 6 was not reached, so its test work is unverified.
+
 Every timer mints its own type. `LayerTimeout` is a struct, a `MercuryTrigger` variant, a `MercuryEvent` variant, and a `self_trigger!`, all to say "the layer's idle timer went off"; `JkTimeout` is the same again, and the overlay's dwell would be a third. Nothing about any of it is per-timer except which timer fired.
 
 And every timer races. Dropping a guard cancels the sleep, but a sleep that finished a moment earlier has already put its event on the channel, and that cannot be un-sent:
@@ -151,7 +153,7 @@ pub fn timer_effect_and_guard<E>(
 
 ## change 3: one event and one trigger, replacing three types
 
-`crates/mercury/src/sources.rs`. `LayerTimeout` and `JkTimeout` are deleted, and this replaces both:
+`crates/mercury/src/sources.rs`, which gains `use freddie::TimerId`. `LayerTimeout` and `JkTimeout` are deleted, and this replaces both:
 
 ```rust
 /// A timer fired, carrying the arming it came from.
@@ -211,7 +213,18 @@ pub fn return_home_id(&self) -> Option<TimerId> {
 }
 ```
 
-with `timeout_id()` on each of the three, returning `self.timeout.id()`. The field stops being `#[expect(dead_code)]`: it is read now.
+with this on each of the three, in `nav.rs`, `resize.rs`, and `app.rs`:
+
+```rust
+    /// The return-home arming this layer is waiting on, for the binding that matches only its own
+    /// firing.
+    #[must_use]
+    pub(crate) const fn timeout_id(&self) -> TimerId {
+        self.timeout.id()
+    }
+```
+
+Each takes `TimerId` into its `use freddie::{..}`, and each `timeout` field drops its `#[expect(dead_code)]`: it is read now, which is the small sign the design fits. The comment above it changes with it, from "held for its `Drop`" to being read for its id as well.
 
 `crates/freddie/src/sequence.rs`, on `KeySequence`:
 
@@ -257,7 +270,7 @@ The root's path is `&mut Mercury`, so its closure reads fields directly; `Layer`
 
 Both arm helpers take the closure form: `|id| MercuryEvent::Timer(TimerFired(id))`.
 
-The handlers lose their event types: `to_home` is already generic over the event, and `jk_timeout` takes `&TimerFired`. Neither needs a staleness check, because a stale firing no longer reaches them.
+The handlers lose their event types: `to_home` is already generic over the event, and `jk_timeout` in `handlers/root.rs` takes `&TimerFired` (its `use crate::JkTimeout` becomes `use crate::TimerFired`). Neither needs a staleness check, because a stale firing no longer reaches them.
 
 ## change 6: the tests, and what a timer effect compares as
 
@@ -284,8 +297,31 @@ impl Eq for TimerFired {}
 
 The 26 assertions then stand unchanged, and the id is asserted where it means something: read off the effect a transition produced, and driven back in as a firing.
 
+Two helpers replace `jk_window_fired()`, since a test can no longer name a firing without having watched one be armed:
+
+```rust
+// A firing of `id`, which a test reads off the effect the arming produced: nothing else can know
+// it, because the timer mints it.
+const fn fired(id: freddie::TimerId) -> MercuryEvent {
+    MercuryEvent::Timer(TimerFired(id))
+}
+
+// The id a timer effect was armed with.
+fn armed_id(effect: &MercuryEffect) -> freddie::TimerId {
+    match effect {
+        MercuryEffect::Timer(timer) => match timer.event {
+            MercuryEvent::Timer(TimerFired(id)) => id,
+            ref other => panic!("not a timer firing: {other:?}"),
+        },
+        other => panic!("not a timer effect: {other:?}"),
+    }
+}
+```
+
+Every existing case that drives a firing reads the id first: `nav_times_out_home` and `layer_timeout_returns_home_from_any_layer` take it off the effect entering the layer produced, and the `jk` window cases off the effect the opening `j` produced.
+
 New cases:
 
-- a stale firing matches nothing. Arm a return-home by entering nav, read its id off the effect, leave and re-enter so a fresh timer supersedes it, then fire the first id and assert `handle` returns `None`.
+- a stale firing matches nothing. Arm a return-home by entering nav, read its id off the effect, leave and re-enter so a fresh timer supersedes it, then fire the first id and assert `handle` returns `None`, since no binding matched.
 - a live firing still fires: fire the id the current guard holds, and assert the layer went home.
-- the same for the `jk` window, whose ids come off the effect the opening `j` produced.
+- the same pair for the `jk` window: open a run, read its id, break the run, open another, and assert the first id does nothing while the second replays.
