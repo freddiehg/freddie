@@ -17,7 +17,7 @@ Both fall out of one change: a firing carries the identity of the arming it came
 pub struct TimerFired(pub TimerId);
 
 // the binding names the guard whose firing it wants
-#[bind(|nav| nav.get().timeout().armed() => to_home)]
+#[bind(|nav| nav.get().timeout().firing() => to_home)]
 ```
 
 The identity does the work the per-timer types were doing, so the types go. The match does the work a stale-check in each handler would have done, so a stale firing matches no binding at all: dispatch returns `None`, the handler never runs, and no handler contains an `if` about it.
@@ -161,9 +161,8 @@ They live in `freddie`, beside the guard and the id they are about, the way `Key
 ```rust
 /// A timer fired, carrying the arming it came from.
 ///
-/// One event for every timer mercury owns. What distinguishes them at dispatch is which guard is
-/// still holding the arming, not which type the event is.
-#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
+/// One event for every timer a consumer owns. What tells them apart at dispatch is which guard is
+/// still holding that arming, not which type the event is.
 #[derive(Debug)]
 pub struct TimerFired(pub TimerId);
 
@@ -184,17 +183,18 @@ impl EventTrigger for ArmedTimer {
 /// A guard hands back the trigger matching its own firing, so a binding names the guard and
 /// nothing else.
 impl DropGuard {
-    /// Matches the firing this guard is waiting on.
+    /// The trigger matching this guard's own firing, and no other.
     #[must_use]
-    pub const fn armed(&self) -> ArmedTimer {
+    pub const fn firing(&self) -> ArmedTimer {
         ArmedTimer(Some(self.id))
     }
 }
 
 impl ArmedTimer {
-    /// Matches the firing of the guard held here, or nothing when there is none.
+    /// The trigger matching the firing of the guard held here, or matching nothing when there is
+    /// no guard: a state that has armed nothing has nothing to wait for.
     #[must_use]
-    pub fn maybe(guard: Option<&DropGuard>) -> Self {
+    pub fn firing_of(guard: Option<&DropGuard>) -> Self {
         Self(guard.map(DropGuard::id))
     }
 }
@@ -234,7 +234,7 @@ after:
 ```rust
 #[bind(
     // Only this layer's own arming: a firing from a nav already left matches nothing.
-    |nav| nav.get().timeout().armed() => to_home,
+    |nav| nav.get().timeout().firing() => to_home,
     Key::Escape.down() => to_home,
     Key::KeyC.down() => open_chrome,
     ..
@@ -297,7 +297,7 @@ after:
     Quit => quit,
     // Only this run's window: a firing from a run that has since ended matches nothing, so the
     // handler never sees it.
-    |root| ArmedTimer::maybe(root.typing_state.jk.window_guard()) => jk_timeout,
+    |root| ArmedTimer::firing_of(root.typing_state.jk.window_guard()) => jk_timeout,
     AnyKey => maybe_pass_through,
 ```
 
