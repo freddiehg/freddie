@@ -359,7 +359,24 @@ mod tests {
 }
 ```
 
-The in-app layer resolves a child per front app, so its bindings depend on `foreground`. Run it for each `App` that has a level (`Chrome`, `Ghostty`) by setting `m.foreground.set_front_app(app)` before the assertion, since a duplicate could hide in an app's own bindings rather than the layer's.
+The in-app layer resolves a child per front app through `#[derived_child(app_data)]`, so the path continues into `ChromeApp` or `GhosttyApp` and the trigger set depends on `foreground`. The loop sets `m.foreground.set_front_app(app)` for every `App` and asserts per app, or it only ever checks whichever app is the default.
+
+Run against the tree as it stands, the check reports:
+
+```
+Home:           Ok(10)
+Nav:            Ok(9)
+Resize:         Ok(8)
+Typing:         Err(DuplicateTrigger)
+InApp/Chrome:   Ok(8)
+InApp/Ghostty:  Ok(19)
+InApp/Zed:      Ok(7)
+InApp/Other:    Ok(7)
+```
+
+Typing is the only failure, and change 4 is what fixes it. Nothing at the app level collides, including Ghostty's `j` and `k` for tmux panes, which live in a different layer from the sequence and so cannot meet it.
+
+Note what the check does and does not catch: it compares triggers for equality, not overlap. The root's `AnyKey` matches every key but is a different `MercuryTrigger` variant from any `KeyPress`, so it never registers as a duplicate — shadowing by specificity is the design, and only the same trigger bound at two nodes is the error.
 
 ## change 6: tests
 
