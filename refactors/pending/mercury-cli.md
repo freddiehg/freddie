@@ -155,6 +155,10 @@ Ships with `external-events.md`, which is what gives mercury a port to configure
  }
 ```
 
-`u16` is the whole of the validation. clap rejects `abc` and `99999` alike, naming the flag and the value, and exits before `main` runs a line of its own.
+`u16` is the whole of the validation. Confirmed against clap 4: `--port abc` exits with `invalid value 'abc' for '--port <PORT>': invalid digit found in string`, and `--port 99999` with `99999 is not in 0..=65535`, both before `main` runs a line of its own.
+
+A bad `MERCURY_PORT` produces that same message, naming `--port` rather than the variable that actually carried the value. It is clap's wording and not worth working around, but it is what you will see when the typo is in a shell profile.
+
+The precedence and the parsing were checked by building this `Args` and running it: flags beat environment variables, environment variables beat the defaults, `--log-level 'mercury=debug,bind=warn'` survives intact as a filter string, and `--help` lists both variables and both defaults.
 
 That field is the entire mercury-side story for the port. `external-events.md` keeps `DEFAULT_PORT` and the reasoning behind the number, and drops any parsing of its own.
