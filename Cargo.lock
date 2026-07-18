@@ -874,6 +874,7 @@ dependencies = [
  "freddie_keys",
  "freddie_main_loop",
  "freddie_menu_bar",
+ "freddie_single_instance",
  "freddie_windows",
  "laserbeam",
  "mercury",

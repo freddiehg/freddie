@@ -59,6 +59,19 @@ fn main() {
     let log_path = logging::init();
     println!("mercury: logging to {}", log_path.display());
 
+    // Before anything that touches the machine. Two mercuries swallow and re-emit each
+    // other's keys forever, at tens of thousands of events a second, which wedges the
+    // keyboard. The binding must outlive main (`let _instance`, never `let _`): dropping
+    // it releases the lock, and `let _` would drop it here.
+    let _instance = match freddie_single_instance::acquire("mercury") {
+        Ok(instance) => instance,
+        Err(e) => {
+            eprintln!("mercury: {e}; quit the running one from its menu-bar icon");
+            error!(error = %e, "another mercury holds the lock; not starting");
+            return;
+        }
+    };
+
     // `freddie_windows` reads the screen's visible frame, which is AppKit and so
     // main-thread-bound. Do it here, while we still are one, and cache it.
     if let Err(e) = freddie_windows::init() {

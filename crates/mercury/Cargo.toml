@@ -16,6 +16,7 @@ freddie_app_nav = { path = "../freddie_app_nav", version = "0.0.1" }
 freddie_main_loop = { path = "../freddie_main_loop", version = "0.0.1" }
 freddie_menu_bar = { path = "../freddie_menu_bar", version = "0.0.1" }
 freddie_windows = { path = "../freddie_windows", version = "0.0.1" }
+freddie_single_instance = { path = "../freddie_single_instance", version = "0.0.1" }
 derive_more = { version = "2", features = ["from", "try_into"] }
 tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 tracing = "0.1"
