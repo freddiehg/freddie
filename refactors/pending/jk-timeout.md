@@ -8,7 +8,7 @@ Two things follow, and the second is the one that bites.
 
 A `j` at the end of a line does not reach the app until the next keystroke does.
 
-And the literal string `jk` cannot be typed. There is no gap long enough to separate the two keys, so writing about `jk` in a commit message or a doc means leaving the layer. A window makes the pause work: hold off past `JK_TIMEOUT` and the `j` types itself, leaving the `k` an ordinary `k`.
+And the literal string `jk` cannot be typed. There is no gap long enough to separate the two keys, so writing about `jk` in a commit message or a doc means leaving the layer. A window makes the pause work: hold off past `JK_TIMEOUT`, a fifth of a second, and the `j` types itself, leaving the `k` an ordinary `k`.
 
 A run waits `JK_TIMEOUT` for its next key; on expiry what was swallowed replays and the run resets, so a later `k` is an ordinary `k`.
 
@@ -38,7 +38,10 @@ bind::self_trigger!(JkTimeout);
 
 ```rust
 /// How long a run waits for its next key before what it swallowed types itself.
-pub const JK_TIMEOUT: Duration = Duration::from_millis(500);
+///
+/// It bounds how long a `j` stays invisible, so shorter is better, but it has to cover a
+/// deliberately typed `jk` (down, up, down) rather than only a rolled one, which is far faster.
+pub const JK_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// Arm a run's window: the guard cancels it on drop, the effect schedules it. The delay is the
 /// run's own, read off the sequence, so this does not restate the policy.
