@@ -13,6 +13,8 @@ The overlay's trace in the model is one field on the root, `overlay: Option<Time
 - `hide_overlay` takes the field: if one was up, push `HideOverlay`.
 - `set_layer` does the same, so leaving a layer takes the overlay down with it.
 
+An overlay already up can go stale, and that is fine. Its content is read once, when `o` shows it, so an in-app overlay keeps the keymap of whatever app was frontmost then; `record_front_app` changes the front app without a transition, and nothing hides or redraws it. The dwell takes it down, or the next `o` shows the current one. It is a hint you asked for, not a live view.
+
 A superseded showing can still fire, and nothing here has to care. The binding names the guard the root holds, so a firing from a showing that was replaced matches no binding at all and the handler never runs. That is `refactors/past/timer-ids.md`, which landed: every timer shares one `TimerFired` event, and which timer fired is what the binding matches on.
 
 ## change 1: the overlay effects, content, and bindings
@@ -715,4 +717,4 @@ The panel builds on the first `show` on the main thread and reuses thereafter; `
 ## open questions
 
 - The panel styling (size, font, position, a background card) is a first pass, not tuned.
-- The in-app overlay can go stale while it is up. `refactors/pending/drop-emits-effects.md` is the general form of this: state whose visible counterpart has to be taken down when the state changes. Its content comes from `foreground.app()`, and `record_front_app` changes that without a transition, so switching apps leaves the old app's keymap on screen: only `set_layer` hides the overlay, and none happened. Hide it on a foreground change, re-show it with the new app's keymap, or leave it to the dwell.
+
