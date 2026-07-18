@@ -39,6 +39,7 @@
 
 use std::ops::ControlFlow;
 
+use clap::Parser;
 use freddie::{AlwaysEqual, TimerEffect};
 use freddie_keyboard::Emitter;
 use mercury::{App, Mercury, MercuryEffect, MercuryEvent, Placement, foreground, quit_event};
@@ -46,6 +47,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot::error::TryRecvError;
 use tracing::{debug, error, info, warn};
 
+mod cli;
 mod logging;
 
 /// Give the main thread to the run loop, and run mercury on a worker thread.
@@ -58,7 +60,11 @@ mod logging;
 /// failed keyboard grab, and a panic all exit. Declaration order below matters:
 /// the runtime drops before the `Stopper`.
 fn main() {
-    let log_path = logging::init();
+    // First, so `--help` prints and a bad flag exits before the lock, the keyboard,
+    // or the icon. clap exits the process itself rather than handing back an error.
+    let args = cli::Args::parse();
+
+    let log_path = logging::init(&args.log_level);
     println!("mercury: logging to {}", log_path.display());
 
     // Before anything that touches the machine. Two mercuries swallow and re-emit each

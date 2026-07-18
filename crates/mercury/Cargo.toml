@@ -22,6 +22,7 @@ tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
+clap = { version = "4.6.2", features = ["derive", "env"] }
 
 [features]
 # Derives the tests need and the normal build does not: effect equality, for asserting what a
