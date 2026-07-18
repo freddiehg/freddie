@@ -12,6 +12,7 @@ members = [
     "crates/freddie_main_loop",
     "crates/freddie_menu_bar",
     "crates/freddie_windows",
+    "crates/freddie_single_instance",
     "crates/mercury",
 ]
 

@@ -399,6 +399,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "freddie_single_instance"
+version = "0.0.1"
+
+[[package]]
 name = "freddie_windows"
 version = "0.0.1"
 dependencies = [

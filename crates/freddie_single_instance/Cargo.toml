@@ -1,0 +1,10 @@
+[package]
+name = "freddie_single_instance"
+description = "One process at a time, per app, through an exclusive lock on a per-user file."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
