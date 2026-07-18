@@ -162,7 +162,9 @@ and `main_loop.run` drains it, applying only the last one, since intermediate la
 ```rust
     main_loop.run(|| {
         if let Some(name) = title_rx.try_iter().last() {
-            menu_bar.set_title(Some(name));
+            // The leading space is the gap between the glyph and the text, which the status item
+            // does not put there itself.
+            menu_bar.set_title(Some(&format!(" {name}")));
         }
     });
 ```
