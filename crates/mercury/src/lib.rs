@@ -41,7 +41,7 @@
 //!
 //! Run it with `cargo run -p mercury`, or the tests with `cargo test -p mercury`.
 
-pub use freddie_keys::{Key, KeyEvent, KeyPress, ModifierFlags, PressType};
+pub use freddie_keys::{Key, KeyEvent, KeyPress, KeySequence, ModifierFlags, PressType};
 
 mod effect;
 mod handlers;

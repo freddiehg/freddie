@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use bind::Bind;
 use freddie::{TimerGuard, timer_effect_and_guard};
-use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
+use freddie_keys::{Key, KeyEvent, KeySequence, ModifierFlags, PressType};
 use laserbeam::PathMut;
 
 // The derive generates a call to each named handler at its node's definition site below, so
@@ -211,6 +211,7 @@ impl Mercury {
         let before_passthrough = self.layer.is_passthrough();
         let after_passthrough = into.is_passthrough();
         self.layer = into;
+        self.typing_state.jk = KeySequence::new(JK);
         match (before_passthrough, after_passthrough) {
             (true, false) => self.typing_state.held.close(),
             (false, true) => self.typing_state.held.open(),
@@ -219,15 +220,30 @@ impl Mercury {
     }
 }
 
+/// The keys that leave typing for home.
+const JK: &[Key] = &[Key::KeyJ, Key::KeyK];
+
 /// The state the passthrough (typing) behavior needs. It lives at the root, so it outlives the
 /// layer.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct TypingState {
     /// The physical truth about which modifier keys are down, updated by [`maybe_pass_through`] on
     /// every modifier event in every layer. It has to outlive the layer, because entering and
     /// leaving a passthrough layer reads it to synchronize the app's modifier view. See
     /// [`HeldModifiers`].
     pub held: HeldModifiers,
+    /// The `jk` run. Replaced with a fresh one on every layer change, so a hold never outlives the
+    /// layer it was typed in.
+    pub jk: KeySequence,
+}
+
+impl Default for TypingState {
+    fn default() -> Self {
+        Self {
+            held: HeldModifiers::default(),
+            jk: KeySequence::new(JK),
+        }
+    }
 }
 
 /// One modifier's two physical keys. A modifier's flag is set while EITHER side is down.
