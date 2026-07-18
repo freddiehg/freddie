@@ -34,6 +34,30 @@ There is no counter to keep, nothing to bump, and no state a caller can get wron
 
 A timer whose staleness does not matter keeps ignoring it. `arm_return_home` takes `|_id| MercuryEvent::LayerTimeout(LayerTimeout)` and nothing changes for it; adopting the check later is a one-line change at the handler, not a redesign.
 
+## where the comparison goes
+
+Written above, the handler compares. It could instead be the binding's own condition, because a trigger is not a constant: `bind_macro` parses it as a `syn::Expr` and emits `let trigger = #trigger;` INSIDE the dispatch body, where `path` is in scope and has not yet been moved into the handler. So a trigger can read the state it is bound on:
+
+```rust
+/// Matches only the firing the guard still held is waiting on.
+pub struct ArmedTimer(Option<TimerId>);
+
+impl EventTrigger for ArmedTimer {
+    type Event = OverlayTimeout;
+    fn is_matching(&self, ev: &OverlayTimeout) -> bool {
+        self.0 == Some(ev.0)
+    }
+}
+```
+
+```rust
+#[bind(ArmedTimer(path.overlay.as_ref().map(DropGuard::id)) => hide_overlay)]
+```
+
+A stale firing then matches no binding, so dispatch returns `None` and the handler never runs: no `if` inside it, no branch returning an empty vector, and "is this event still mine" is answered where every other "does this event apply" question is answered.
+
+Two things to settle before taking it. The trigger set `accumulate` collects becomes state-dependent, so THE CHECK answers "no duplicates in this state" rather than "no duplicates ever". And a trigger reading `path` has not been compiled: the codegen says it works, and one attempt died on an unrelated mistake in the harness, so demonstrate it before writing the changes this way.
+
 ## change 1: the id, minted with the pair
 
 `crates/freddie/src/drop_guard.rs`, the guard carries the id it was armed with:
