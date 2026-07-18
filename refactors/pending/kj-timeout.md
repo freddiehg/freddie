@@ -2,7 +2,13 @@
 
 `jk` leaves typing for home, built on `KeySequence` in `freddie_keys`: an ordered run of keys, swallowed as they arrive, replayed in arrival order if the run breaks and dropped when it completes. mercury holds one, `[j, k]`, in `TypingState`, and `maybe_pass_through` feeds every typing key to it.
 
-What is missing is a bound on how long a run can sit half-typed. A `j` with no `k` after it stays swallowed until some other key breaks the run, so a `j` typed at the end of a line does not reach the app until the next keystroke does.
+What is missing is a bound on how long a run can sit half-typed, and there is no bound at all today: a `j` swallowed now completes a run against a `k` pressed at any later moment, minutes later, because nothing but another key ever ends it.
+
+Two things follow, and the second is the one that bites.
+
+A `j` at the end of a line does not reach the app until the next keystroke does.
+
+And the literal string `jk` cannot be typed. There is no gap long enough to separate the two keys, so writing about `jk` in a commit message or a doc means leaving the layer. A window makes the pause work: hold off past `JK_TIMEOUT` and the `j` types itself, leaving the `k` an ordinary `k`.
 
 A run waits `JK_TIMEOUT` for its next key; on expiry what was swallowed replays and the run resets, so a later `k` is an ordinary `k`. The guard lives in mercury next to the sequence rather than inside it, so `freddie_keys` stays free of `freddie`'s timer types.
 
