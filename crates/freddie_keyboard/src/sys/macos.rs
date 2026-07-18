@@ -162,11 +162,27 @@ fn decide(input: &KeyEvent, out: Option<KeyEvent>) -> Decision {
 // The tap and the posting (FFI).
 // ---------------------------------------------------------------------------
 
-fn new_tag() -> i64 {
-    // Per-process random, so an interceptor skips only its own emitter's output.
-    let mut h = RandomState::new().build_hasher();
-    h.write_u8(0);
-    i64::from_ne_bytes(h.finish().to_ne_bytes())
+/// The marker an emitted event carries so the interceptor recognizes its own output.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Tag(i64);
+
+impl Tag {
+    /// Per-process random, so an interceptor skips only its own emitter's output.
+    fn new() -> Self {
+        let mut h = RandomState::new().build_hasher();
+        h.write_u8(0);
+        Self(i64::from_ne_bytes(h.finish().to_ne_bytes()))
+    }
+
+    /// Marks `event` as this emitter's, so the tap passes it rather than handling it again.
+    fn stamp(self, event: &CGEvent) {
+        event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, self.0);
+    }
+
+    /// Whether `event` carries this tag, and so came from this emitter.
+    fn marks(self, event: &CGEvent) -> bool {
+        event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA) == self.0
+    }
 }
 
 fn press_of(kind: CGEventType, event: &CGEvent) -> Option<PressType> {
@@ -205,7 +221,7 @@ fn encode(source: Option<&CGEventSource>, out: &KeyEvent) -> Option<CGEvent> {
 pub fn intercept(
     on_key: impl Fn(KeyEvent) -> Option<KeyEvent> + Send + 'static,
 ) -> Result<(Interceptor, Emitter), CaptureError> {
-    let tag = new_tag();
+    let tag = Tag::new();
     let (ready_tx, ready_rx) = mpsc::channel::<Result<CFRunLoop, ()>>();
     let signal = ready_tx.clone();
 
@@ -221,7 +237,7 @@ pub fn intercept(
                 CGEventType::FlagsChanged,
             ],
             |_proxy, kind, event| {
-                if event.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA) == tag {
+                if tag.marks(event) {
                     return CallbackResult::Keep; // our own emit
                 }
                 let Some(press) = press_of(kind, event) else {
@@ -331,7 +347,7 @@ fn from_cg(flags: CGEventFlags) -> ModifierFlags {
 
 struct EmitterState {
     source: CGEventSource,
-    tag: i64,
+    tag: Tag,
 }
 
 impl EmitterState {
@@ -346,7 +362,7 @@ impl EmitterState {
             .map_err(|_| EmitError::Post)?;
         let untouched = event.get_flags() & !MODIFIERS;
         event.set_flags(untouched | to_cg(flags));
-        event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, self.tag);
+        self.tag.stamp(&event);
         // What actually goes on the wire, which the portable `KeyEvent` above cannot show: the raw
         // flag bits after `untouched` is carried over, and the type the OS chose from the keycode
         // (`FlagsChanged` for a modifier, `KeyDown`/`KeyUp` otherwise). At `debug` so the log file
@@ -392,8 +408,9 @@ impl Emitter {
 
 #[cfg(test)]
 mod tests {
-    use super::{Decision, decide, flag_for, from_code, to_code};
-    use core_graphics::event::{CGEventFlags, KeyCode};
+    use super::{Decision, Tag, decide, flag_for, from_code, to_code};
+    use core_graphics::event::{CGEvent, CGEventFlags, KeyCode};
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
     use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 
     fn ev(key: Key) -> KeyEvent {
@@ -458,6 +475,20 @@ mod tests {
             flags: ModifierFlags::empty(),
         };
         assert_eq!(decide(&down, Some(up.clone())), Decision::Remap(up));
+    }
+
+    // The tag is what keeps the interceptor from handling its own emissions, so it must mark
+    // an event it stamped and no other.
+    #[test]
+    fn a_tag_marks_only_its_own_events() {
+        let source = CGEventSource::new(CGEventSourceStateID::Private).expect("a private source");
+        let event =
+            CGEvent::new_keyboard_event(source, KeyCode::SPACE, true).expect("a keyboard event");
+        let (mine, theirs) = (Tag::new(), Tag(1));
+        assert!(!mine.marks(&event));
+        mine.stamp(&event);
+        assert!(mine.marks(&event));
+        assert!(!theirs.marks(&event));
     }
 
     #[test]
