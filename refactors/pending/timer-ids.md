@@ -17,12 +17,12 @@ Both fall out of one change: a firing carries the identity of the arming it came
 pub struct TimerFired(pub TimerId);
 
 // the binding names the guard whose firing it wants
-#[bind(|root| ArmedTimer(root.overlay_id()) => hide_overlay)]
+#[bind(|root| ArmedTimer::from(root.overlay_guard()) => hide_overlay)]
 ```
 
 The identity does the work the per-timer types were doing, so the types go. The match does the work a stale-check in each handler would have done, so a stale firing matches no binding at all: dispatch returns `None`, the handler never runs, and no handler contains an `if` about it.
 
-Built on `refactors/past/trigger-closures.md`, which landed: a binding may be written as a closure and the derive calls it with the node's path, so `|root| ArmedTimer(root.overlay_id())` is a supported form rather than a capture of a name the macro happens to use.
+Built on `refactors/past/trigger-closures.md`, which landed: a binding may be written as a closure and the derive calls it with the node's path, so naming a guard from a binding is a supported form rather than a capture of a name the macro happens to use.
 
 ## why the ids are affordable
 
@@ -39,7 +39,7 @@ and a binding pays an expression naming its own guard. There is no counter to ke
 
 ## the trigger set becomes state-dependent, and that is fine
 
-`ArmedTimer(None)` is what a binding produces when its node holds no guard, and two of them compare equal. Nothing goes wrong at dispatch, because `is_matching` is `self.0 == Some(ev.0)` and `None` matches no firing. What it means is that the set THE CHECK collects depends on the state it walks: two unarmed timers look like one trigger, and `accumulate` would call that a duplicate.
+A binding whose node holds no guard produces a trigger that matches no firing, and two such triggers compare equal. Nothing goes wrong at dispatch, since neither matches anything. What it means is that the set THE CHECK collects depends on the state it walks: two unarmed timers look like one trigger, and `accumulate` would call that a duplicate.
 
 Timer clobbering is deliberate (arming again replaces the guard, cancelling what it replaced), no-clobber is not a property the tree has yet, and `refactors/pending/no-clobber.md` is where it is decided. Nothing calls `accumulate` in mercury today.
 
@@ -170,12 +170,27 @@ pub struct TimerFired(pub TimerId);
 /// Its value comes from the guard the bound node holds, so a binding written with it fires for its
 /// own timer and nothing else. A node holding no guard produces `None`, which matches no firing.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct ArmedTimer(pub Option<TimerId>);
+pub struct ArmedTimer(Option<TimerId>);
 
 impl EventTrigger for ArmedTimer {
     type Event = TimerFired;
     fn is_matching(&self, ev: &TimerFired) -> bool {
         self.0 == Some(ev.0)
+    }
+}
+
+/// A binding names the guard it is waiting on, not the id inside it: the guard is what the state
+/// holds, and the id is `freddie`'s business.
+impl From<&DropGuard> for ArmedTimer {
+    fn from(guard: &DropGuard) -> Self {
+        Self(Some(guard.id()))
+    }
+}
+
+/// For a state that may hold no guard at all, which matches no firing.
+impl From<Option<&DropGuard>> for ArmedTimer {
+    fn from(guard: Option<&DropGuard>) -> Self {
+        Self(guard.map(DropGuard::id))
     }
 }
 ```
@@ -214,25 +229,25 @@ after:
 ```rust
 #[bind(
     // Only this layer's own arming: a firing from a nav already left matches nothing.
-    |nav| ArmedTimer(Some(nav.get_mut().timeout_id())) => to_home,
+    |nav| ArmedTimer::from(nav.get_mut().timeout()) => to_home,
     Key::Escape.down() => to_home,
     Key::KeyC.down() => open_chrome,
     ..
 )]
 ```
 
-`resize.rs` and `app.rs` gain the same line, reading their own `timeout_id()`. Each of the three exposes it:
+`resize.rs` and `app.rs` gain the same line, reading their own guard. Each of the three exposes it:
 
 ```rust
-    /// The return-home arming this layer is waiting on, for the binding that matches only its own
+    /// The guard for this layer's return-home timer, for the binding that matches only its own
     /// firing.
     #[must_use]
-    pub(crate) const fn timeout_id(&self) -> TimerId {
-        self.timeout.id()
+    pub(crate) const fn timeout(&self) -> &DropGuard {
+        &self.timeout
     }
 ```
 
-Each takes `TimerId` into its `use freddie::{..}`, and each `timeout` field drops its `#[expect(dead_code)]`: it is read now. The comment above it changes with it, from "held for its `Drop`" to being read for its id as well.
+Each `timeout` field drops its `#[expect(dead_code)]`: it is read now. The comment above it changes with it, from "held for its `Drop`" to being read for its arming as well. No layer mentions `TimerId`.
 
 `Home` and `Typing` arm nothing and bind nothing, so there is no `None` case anywhere: the absence is the absent binding.
 
@@ -247,6 +262,18 @@ after, binding nothing at all, since `escape` already moved down to the command 
 
 ```rust
 pub enum Layer {
+```
+
+The sequence exposes its own, in `crates/freddie/src/sequence.rs`:
+
+```rust
+    /// The guard for a live run's window, or `None` when no run is live or this sequence has no
+    /// window. What a binding matches against, so a firing from a run that has since ended matches
+    /// nothing.
+    #[must_use]
+    pub fn window_guard(&self) -> Option<&DropGuard> {
+        self.window.as_ref()?.timer.as_ref()
+    }
 ```
 
 ## change 5: the root binds the jk window
@@ -265,7 +292,7 @@ after:
     Quit => quit,
     // Only this run's window: a firing from a run that has since ended matches nothing, so the
     // handler never sees it.
-    |root| ArmedTimer(root.typing_state.jk.window_id()) => jk_timeout,
+    |root| ArmedTimer::from(root.typing_state.jk.window_guard()) => jk_timeout,
     AnyKey => maybe_pass_through,
 ```
 
