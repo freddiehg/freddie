@@ -18,4 +18,8 @@ pub struct Args {
     /// accepted.
     #[arg(long, env = "LOG_LEVEL", default_value = "info")]
     pub log_level: String,
+
+    /// The loopback port the event socket listens on.
+    #[arg(long, env = "MERCURY_PORT", default_value_t = mercury::DEFAULT_PORT)]
+    pub port: u16,
 }
