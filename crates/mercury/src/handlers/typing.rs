@@ -18,9 +18,9 @@ pub(crate) fn maybe_go_home<'a, P: Ascend<MercuryPath<'a>>>(
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
     let root: MercuryPath<'_> = node.parent.ascend();
-    if root.held.meta.any_held() {
+    if root.typing_state.held.meta.any_held() {
         root.set_layer(HomeLayer::new())
     } else {
-        vec![emit(ev.key, ev.press, root.held.flags())]
+        vec![emit(ev.key, ev.press, root.typing_state.held.flags())]
     }
 }

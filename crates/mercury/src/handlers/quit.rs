@@ -19,7 +19,7 @@ pub(crate) fn quit<'a, E, P: Ascend<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
-    let mut effects = node.parent.ascend().held.open();
+    let mut effects = node.parent.ascend().typing_state.held.open();
     effects.push(MercuryEffect::Kill);
     effects
 }

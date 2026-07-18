@@ -59,10 +59,8 @@ fn arm_return_home() -> (TimerGuard, MercuryEffect) {
 pub struct Mercury {
     /// The frontmost app and whether a nav is in flight. See [`Foreground`].
     pub foreground: Foreground,
-    /// The physical truth about which modifier keys are down, updated by [`maybe_pass_through`] on every
-    /// modifier event in every layer. It has to outlive the layer, because entering and leaving a
-    /// passthrough layer reads it to synchronize the app's modifier view. See [`HeldModifiers`].
-    pub held: HeldModifiers,
+    /// The state the passthrough (typing) behavior needs. See [`TypingState`].
+    pub typing_state: TypingState,
     /// The active layer. Private, and written only through [`set_layer`](Mercury::set_layer), so
     /// no transition can change the layer without going through the modifier flush.
     #[resolve_into]
@@ -162,7 +160,7 @@ impl Default for Mercury {
     fn default() -> Self {
         Self {
             foreground: Foreground::default(),
-            held: HeldModifiers::default(),
+            typing_state: TypingState::default(),
             // Typing, the passthrough layer, so a fresh mercury (and one launched at login) leaves
             // the keyboard working rather than swallowing everything in Home. See launch-at-login.
             layer: Layer::Typing(TypingLayer::new()),
@@ -214,11 +212,22 @@ impl Mercury {
         let after_passthrough = into.is_passthrough();
         self.layer = into;
         match (before_passthrough, after_passthrough) {
-            (true, false) => self.held.close(),
-            (false, true) => self.held.open(),
+            (true, false) => self.typing_state.held.close(),
+            (false, true) => self.typing_state.held.open(),
             _ => Vec::new(),
         }
     }
+}
+
+/// The state the passthrough (typing) behavior needs. It lives at the root, so it outlives the
+/// layer.
+#[derive(Debug, Default)]
+pub struct TypingState {
+    /// The physical truth about which modifier keys are down, updated by [`maybe_pass_through`] on
+    /// every modifier event in every layer. It has to outlive the layer, because entering and
+    /// leaving a passthrough layer reads it to synchronize the app's modifier view. See
+    /// [`HeldModifiers`].
+    pub held: HeldModifiers,
 }
 
 /// One modifier's two physical keys. A modifier's flag is set while EITHER side is down.

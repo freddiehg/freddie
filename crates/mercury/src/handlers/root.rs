@@ -19,7 +19,7 @@ pub(crate) fn maybe_pass_through(
 ) -> Vec<MercuryEffect> {
     let root = node.parent;
     if ev.key.is_modifier() {
-        root.held.apply(ev);
+        root.typing_state.held.apply(ev);
     }
     if root.layer().is_passthrough() {
         vec![emit(ev.key, ev.press, ev.flags)]
