@@ -17,7 +17,7 @@ Both fall out of one change: a firing carries the identity of the arming it came
 pub struct TimerFired(pub TimerId);
 
 // the binding names the guard whose firing it wants
-#[bind(|root| ArmedTimer::from(root.overlay_guard()) => hide_overlay)]
+#[bind(|root| ArmedTimer::from_optional(root.overlay_guard()) => hide_overlay)]
 ```
 
 The identity does the work the per-timer types were doing, so the types go. The match does the work a stale-check in each handler would have done, so a stale firing matches no binding at all: dispatch returns `None`, the handler never runs, and no handler contains an `if` about it.
@@ -179,17 +179,19 @@ impl EventTrigger for ArmedTimer {
     }
 }
 
-/// A binding names the guard it is waiting on, not the id inside it: the guard is what the state
-/// holds, and the id is `freddie`'s business.
-impl From<&DropGuard> for ArmedTimer {
-    fn from(guard: &DropGuard) -> Self {
+impl ArmedTimer {
+    /// Matches the firing this guard is waiting on.
+    ///
+    /// A binding names the guard, not the id inside it: the guard is what the state holds, and the
+    /// id is `freddie`'s business.
+    #[must_use]
+    pub fn from_guard(guard: &DropGuard) -> Self {
         Self(Some(guard.id()))
     }
-}
 
-/// For a state that may hold no guard at all, which matches no firing.
-impl From<Option<&DropGuard>> for ArmedTimer {
-    fn from(guard: Option<&DropGuard>) -> Self {
+    /// The same, for a state that may hold no guard at all, which matches no firing.
+    #[must_use]
+    pub fn from_optional(guard: Option<&DropGuard>) -> Self {
         Self(guard.map(DropGuard::id))
     }
 }
@@ -229,7 +231,7 @@ after:
 ```rust
 #[bind(
     // Only this layer's own arming: a firing from a nav already left matches nothing.
-    |nav| ArmedTimer::from(nav.get_mut().timeout()) => to_home,
+    |nav| ArmedTimer::from_guard(nav.get_mut().timeout()) => to_home,
     Key::Escape.down() => to_home,
     Key::KeyC.down() => open_chrome,
     ..
@@ -292,7 +294,7 @@ after:
     Quit => quit,
     // Only this run's window: a firing from a run that has since ended matches nothing, so the
     // handler never sees it.
-    |root| ArmedTimer::from(root.typing_state.jk.window_guard()) => jk_timeout,
+    |root| ArmedTimer::from_optional(root.typing_state.jk.window_guard()) => jk_timeout,
     AnyKey => maybe_pass_through,
 ```
 
