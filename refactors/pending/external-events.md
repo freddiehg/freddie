@@ -56,7 +56,16 @@ Every message is the project's one discriminated-union form, `{ kind: "Type.Vari
 
 ## The endpoint
 
-`127.0.0.1:8797`, overridable with `MERCURY_PORT`, which is the same shape as `LOG_LEVEL` in `crates/mercury/src/logging.rs`: an environment variable read at startup, no config file, because mercury has no config file to put it in.
+`127.0.0.1:8797`, overridable two ways, argument first:
+
+```
+cargo run -p mercury -- --port 9000
+MERCURY_PORT=9000 cargo run -p mercury
+```
+
+The environment variable matches `LOG_LEVEL` in `crates/mercury/src/logging.rs`, which is the only configuration mercury has and reads it at startup from the environment. The argument is what you reach for when running a second mercury against a second extension, where exporting a variable into the shell would follow every later run in that terminal.
+
+Both are parsed by hand. mercury takes no arguments today and has no argument parser, and one flag does not pay for a dependency; the same reasoning `freddie_single_instance` used for `File::try_lock`.
 
 ```rust
 // crates/mercury/src/external.rs
@@ -71,22 +80,53 @@ pub const DEFAULT_PORT: u16 = 8797;
 
 const PORT_ENV: &str = "MERCURY_PORT";
 
-/// The port to listen on.
+/// The port to listen on: `--port` if given, then `MERCURY_PORT`, then [`DEFAULT_PORT`].
 ///
-/// A `MERCURY_PORT` that is not a `u16` panics. Falling back to the default would leave mercury
-/// listening somewhere the extension is not, which presents as "per-site binds stopped working"
-/// and sends you looking at the extension. The typo is in a shell profile; say so and stop.
+/// Anything unparseable panics, and so does an unrecognized argument. Falling back to the default
+/// would leave mercury listening somewhere the extension is not, which presents as "per-site binds
+/// stopped working" and sends you looking at the extension. The typo is in a shell profile or a
+/// command line; say so and stop.
 ///
 /// Called from `main` before the single-instance lock and before the keyboard grab, so the panic
 /// costs a process that has not touched the machine yet.
 #[must_use]
 pub fn port() -> u16 {
-    let Some(raw) = std::env::var_os(PORT_ENV) else {
-        return DEFAULT_PORT;
-    };
-    raw.to_str()
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or_else(|| panic!("MERCURY_PORT is {raw:?}, which is not a port number"))
+    arg_port()
+        .or_else(env_port)
+        .unwrap_or(DEFAULT_PORT)
+}
+
+/// `--port 9000` or `--port=9000`. Every argument is inspected, so a misspelled flag is refused
+/// rather than silently leaving mercury on the default port.
+fn arg_port() -> Option<u16> {
+    let mut args = std::env::args().skip(1);
+    let mut found = None;
+    while let Some(arg) = args.next() {
+        let raw = match arg.strip_prefix("--port") {
+            Some("") => args
+                .next()
+                .unwrap_or_else(|| panic!("--port takes a port number")),
+            Some(rest) => rest
+                .strip_prefix('=')
+                .unwrap_or_else(|| panic!("unrecognized argument: {arg}"))
+                .to_owned(),
+            None => panic!("unrecognized argument: {arg}"),
+        };
+        found = Some(
+            raw.parse::<u16>()
+                .unwrap_or_else(|_| panic!("--port {raw} is not a port number")),
+        );
+    }
+    found
+}
+
+fn env_port() -> Option<u16> {
+    let raw = std::env::var_os(PORT_ENV)?;
+    Some(
+        raw.to_str()
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or_else(|| panic!("MERCURY_PORT is {raw:?}, which is not a port number")),
+    )
 }
 ```
 
