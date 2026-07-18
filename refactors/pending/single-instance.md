@@ -250,6 +250,8 @@ mod tests {
 
 ## Verifying it by hand
 
+By hand, and only by hand. Nothing automated ever starts mercury: a running mercury grabs the keyboard of the machine it is on, and if the lock is broken, two of them wedge that keyboard at tens of thousands of events a second rather than failing a test. The suite exercises `acquire` as the file operation it is, against scratch paths, and stops there.
+
 ```
 cargo build -p mercury
 ./target/debug/mercury &            # takes the lock
