@@ -1,6 +1,6 @@
 # jk's timeout
 
-`jk` leaves typing for home, built on `KeySequence` in `freddie_keys`: an ordered run of keys, swallowed as they arrive, replayed in arrival order if the run breaks and dropped when it completes. mercury holds one, `[j, k]`, in `TypingState`, and `maybe_pass_through` feeds every typing key to it.
+`jk` leaves typing for home, built on `KeySequence` in `freddie`: an ordered run of keys, swallowed as they arrive, replayed in arrival order if the run breaks and dropped when it completes. mercury holds one, `[j, k]`, in `TypingState`, and `maybe_pass_through` feeds every typing key to it.
 
 What is missing is a bound on how long a run can sit half-typed, and there is no bound at all today: a `j` swallowed now completes a run against a `k` pressed at any later moment, minutes later, because nothing but another key ever ends it.
 
@@ -12,21 +12,9 @@ And the literal string `jk` cannot be typed. There is no gap long enough to sepa
 
 A run waits `JK_TIMEOUT` for its next key; on expiry what was swallowed replays and the run resets, so a later `k` is an ordinary `k`.
 
-The guard lives INSIDE the run. A guard beside the sequence is two things that have to agree about whether a run is live, and nothing but a comment keeps them in step: every path that ends a run would have to remember to drop it. Owned by the run, it is dropped by the same code that clears `swallowed`, and cancelling on drop then falls out of the existing lifetime rather than being maintained.
+The guard lives INSIDE the run. A guard beside the sequence is two things that have to agree about whether a run is live, and nothing but a comment keeps them in step: every path that ends a run would have to remember to drop it. Owned by the run, it is dropped by the same code that clears `swallowed`, so cancelling falls out of the run ending rather than being maintained.
 
-`KeySequence` still does not name `freddie`'s types. It is generic over what a live run holds, since it cares only that the thing dies when the run does:
-
-```rust
-pub struct KeySequence<G = ()> {
-    keys: &'static [Key],
-    swallowed: Vec<KeyPress>,
-    /// Held while the run is live and dropped with it. `()` for a run with nothing to hold;
-    /// mercury's is a `TimerGuard`, whose `Drop` cancels the window.
-    held: Option<G>,
-}
-```
-
-mercury's is a `KeySequence<TimerGuard>`. `freddie_keys` gains no dependency, and `freddie` (which pulls tokio) stays out of the vocabulary crate.
+The sequence already lives in `freddie`, next to `TimerGuard`, so it names the guard concretely. It was moved there for this: a `TimerGuard` field pulls tokio into whatever crate holds it, and `freddie` is the crate that already has it.
 
 Builds on `refactors/past/timer-events.md` and `refactors/past/layer-timeout.md`.
 
@@ -67,7 +55,7 @@ The `use crate::{..}` in `state/mod.rs` adds `JkTimeout`; `JK_TIMEOUT` joins the
 
 ## change 3: the run owns its window and holds what dies with it
 
-`crates/freddie_keys/src/sequence.rs`. Two changes to the same struct.
+`crates/freddie/src/sequence.rs`. Two changes to the same struct.
 
 How long a run waits is part of what the run IS, so the constructor takes it: `Option<Duration>`, `None` for a run that never expires, which is every run today. The sequence does not arm anything itself — it has no event type and no timer — but it is what the caller asks, so the policy lives with the sequence instead of beside it. It is also what a later lazy expiry would read directly, checking the window against the incoming key's time rather than needing a timer at all.
 
@@ -85,20 +73,23 @@ pub struct KeySequence {
 after:
 
 ```rust
-pub struct KeySequence<G = ()> {
+#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
+#[derive(Debug)]
+pub struct KeySequence {
     keys: &'static [Key],
     /// How long the run waits for its next key, or `None` for one that waits forever. The run
     /// does not enforce it; the caller reads it to arm whatever wakes the run up.
     window: Option<Duration>,
     swallowed: Vec<KeyPress>,
-    /// Held while the run is live and dropped with it, so a caller cannot leave it behind. `()`
-    /// for a run with nothing to hold; mercury's is a `TimerGuard`, whose `Drop` cancels the
-    /// window.
-    held: Option<G>,
+    /// Cancels the window when the run ends, by being dropped with it. A caller cannot leave it
+    /// behind, because nothing but the run owns it.
+    timer: Option<TimerGuard>,
 }
 ```
 
-`new` takes the window and sets `held: None`, before:
+The derives move behind `testing`, the way `TimerEffect` and `TimerGuard` already do: `TimerGuard`'s equality only exists there, so a `KeySequence` holding one cannot derive `PartialEq` unconditionally.
+
+`new` takes the window and sets `timer: None`, before:
 
 ```rust
     pub const fn new(keys: &'static [Key]) -> Self {
@@ -119,7 +110,7 @@ after:
             keys,
             window,
             swallowed: Vec::new(),
-            held: None,
+            timer: None,
         }
     }
 
@@ -130,7 +121,7 @@ after:
     }
 ```
 
-`sequence.rs` imports `std::time::Duration`, which is std, so `freddie_keys` gains no dependency. The two places that end a run clear `held`. `interrupt`, before:
+`sequence.rs` imports `std::time::Duration` and `crate::TimerGuard`. The two places that end a run clear `timer`. `interrupt`, before:
 
 ```rust
     pub fn interrupt(&mut self) -> Vec<KeyPress> {
@@ -142,7 +133,7 @@ after:
 
 ```rust
     pub fn interrupt(&mut self) -> Vec<KeyPress> {
-        self.held = None;
+        self.timer = None;
         std::mem::take(&mut self.swallowed)
     }
 ```
@@ -160,26 +151,26 @@ after:
 ```rust
                 if matched + 1 == self.keys.len() {
                     self.swallowed.clear();
-                    self.held = None;
+                    self.timer = None;
                     KeySequenceOutcome::Completed
 ```
 
 The caller hands over what to hold when a run opens:
 
 ```rust
-    /// Give the live run something to own until it ends: a timer guard, typically, so the window
-    /// is cancelled by the run ending rather than by the caller remembering to.
+    /// Give the live run the guard for its window, so the window is cancelled by the run ending
+    /// rather than by the caller remembering to.
     ///
     /// # Panics
     ///
-    /// If the run is idle. Nothing would ever drop it.
-    pub fn hold(&mut self, guard: G) {
+    /// If the run is idle. Nothing would ever drop the guard.
+    pub fn hold(&mut self, guard: TimerGuard) {
         assert!(!self.is_idle(), "an idle run has no life to tie a guard to");
-        self.held = Some(guard);
+        self.timer = Some(guard);
     }
 ```
 
-`TypingState`'s field becomes `pub jk: KeySequence<TimerGuard>`, and `state/mod.rs` already imports `TimerGuard`. Both `KeySequence::new(JK)` call sites there become `KeySequence::new(JK, Some(JK_TIMEOUT))`, as do the ones in `crates/freddie_keys/tests/sequence.rs`, which pass `None`: those cases assert the machine, and none of them involves a window.
+`TypingState`'s field stays `pub jk: KeySequence`. Both `KeySequence::new(JK)` call sites in `state/mod.rs` become `KeySequence::new(JK, Some(JK_TIMEOUT))`, and the ones in `crates/freddie/tests/sequence.rs` pass `None`: those cases assert the machine, and none of them involves a window.
 
 ## change 4: the handler arms and disarms
 
