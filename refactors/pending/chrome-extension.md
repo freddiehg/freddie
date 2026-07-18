@@ -1,89 +1,20 @@
-# a Chrome extension bridge for mercury
+# the mercury Chrome extension
 
-Not built. mercury needs Chrome's active-tab URL for per-site key remaps (`chrome-tab-url.md`), and later a channel to drive Chrome directly (run page JavaScript, open and close tabs, read the selection). A Chrome extension is the bridge for both, over the localhost WebSocket that `external-events.md` defines. Two phases share one connection: v0 streams the URL up; the command bus adds commands down and results up.
+Not built. mercury needs Chrome's active-tab URL for per-site key remaps (`chrome-tab-url.md`), and later a way to drive Chrome directly (run page JavaScript, open and close tabs, read the selection). This extension is the bridge for both, over the loopback WebSocket mercury listens on.
 
-This doc owns the browser side (the extension) and the wire contract both sides speak. The mercury side is split off: `external-events.md` owns the WebSocket source that terminates the connection and maps each message to a `MercuryEvent`, and `chrome-tab-url.md` owns the `TabEvent { url }` and the model that remaps keys from it.
+This doc owns the browser side only. `external-events.md` owns mercury's side: the port, `MERCURY_PORT`, the `freddie_event_socket` crate, the token, the `Upstream` / `Downstream` / `Command` / `CommandResult` types, and the mapping from a message to a `MercuryEvent`. Read it for the wire contract; this doc only builds the JSON it defines.
 
-The extension pushes; it never answers a timer. There is no keepalive and no poll loop. When there is nothing to report the connection may lapse, and the next tab event reopens it (see "The service-worker lifetime" below).
+Two phases share one connection. v0 streams the URL up; the command bus adds commands down and results up.
 
-## The wire contract
-
-One tagged JSON envelope, chosen up front so v0 and the command bus share it and shipping the bus does not rev the v0 message format. Every message is a JS discriminated union in the project's one form, `{ kind: "Type.Variant", value: T }`: `kind` is the dotted union-and-variant name and `value` is the whole payload.
-
-```jsonc
-// extension -> mercury
-{ "kind": "Upstream.Tab", "value": { "url": "https://claude.ai/new" } }
-{ "kind": "Upstream.Reply", "value": { "id": 42, "result": { "kind": "Result.Ok", "value": "…" } } }
-{ "kind": "Upstream.Reply", "value": { "id": 42, "result": { "kind": "Result.Err", "value": "no active tab" } } }
-
-// mercury -> extension
-{ "kind": "Downstream.Command", "value": { "id": 42, "command": { "kind": "Command.RunJs", "value": { "code": "document.title" } } } }
-```
-
-The Rust side of the contract, in the WebSocket source (`external-events.md` wires these into the event loop; they are written here because they are the shared contract):
-
-```rust
-/// A message the extension sends up to mercury.
-#[derive(serde::Deserialize)]
-#[serde(tag = "kind", content = "value")]
-pub enum Upstream {
-    /// The active tab changed URL. The v0 stream; benign, needs no token.
-    #[serde(rename = "Upstream.Tab")]
-    Tab { url: String },
-    /// A reply to a command mercury sent down. Only after the command bus ships.
-    #[serde(rename = "Upstream.Reply")]
-    Reply { id: u64, result: Result },
-}
-
-/// A message mercury sends down to the extension. Only the command bus uses it.
-#[derive(serde::Serialize)]
-#[serde(tag = "kind", content = "value")]
-pub enum Downstream {
-    #[serde(rename = "Downstream.Command")]
-    Command { id: u64, command: Command },
-}
-
-#[derive(serde::Serialize)]
-#[serde(tag = "kind", content = "value")]
-pub enum Command {
-    #[serde(rename = "Command.RunJs")]
-    RunJs { code: String },
-    #[serde(rename = "Command.OpenTab")]
-    OpenTab { url: String },
-    #[serde(rename = "Command.CloseTabs")]
-    CloseTabs { url_glob: String },
-    #[serde(rename = "Command.ReadSelection")]
-    ReadSelection,
-}
-
-/// Named `Result` (shadowing the prelude in this module) so its wire tag is
-/// `Result.Ok`/`Result.Err` and its `Type` prefix matches the type, per the union
-/// convention. Refer to the prelude's as `std::result::Result` here.
-#[derive(serde::Deserialize)]
-#[serde(tag = "kind", content = "value")]
-pub enum Result {
-    /// The command's return value, whatever JSON the handler produced.
-    #[serde(rename = "Result.Ok")]
-    Ok(serde_json::Value),
-    /// The error message from a command that threw.
-    #[serde(rename = "Result.Err")]
-    Err(String),
-}
-```
-
-`Upstream::Tab` maps to `TabEvent { url }` (`chrome-tab-url.md`); the source drops any other upstream variant until the bus exists.
-
-### The endpoint
-
-mercury listens on `127.0.0.1:48291`. The port is the shared constant; `external-events.md`'s source binds it and the extension connects to it. Loopback-only is the security floor for v0 (see "Auth").
+The extension pushes; it never answers a timer. There is no keepalive and no poll loop. When there is nothing to report the connection may lapse, and the next tab event reopens it.
 
 ## The service-worker lifetime
 
-An MV3 background service worker is killed after roughly 30s idle, which closes the WebSocket. This is why there is no persistent connection to hold and no timer to keep it warm: the worker's registered `chrome.tabs` listeners revive it when a tab event fires, and the handler reopens the socket if it is closed before sending. So a dead socket during idle is correct, not a bug, and it costs one reconnect on the next real event. No keepalive ping, which would be both a timer and pointless traffic.
+An MV3 background service worker is killed after roughly 30s idle, which closes the WebSocket. This is why there is no persistent connection to hold and no timer to keep one warm: the worker's registered `chrome.tabs` listeners revive it when a tab event fires, and the handler reopens the socket if it is closed before sending. A dead socket during idle is correct, and it costs one reconnect on the next real event. A keepalive ping would be both a timer and pointless traffic.
 
 ## Change 1: v0, stream the active tab's URL
 
-The whole v0 extension is two files under `chrome-extension/`. It depends on `external-events.md`'s WebSocket source being live on `127.0.0.1:48291` and on `chrome-tab-url.md`'s `TabEvent`; with both, this ships the URL stream end to end.
+Two files under `chrome-extension/`. It depends on `external-events.md`'s Change 2 being live on `127.0.0.1:48291` and on `chrome-tab-url.md`'s `TabEvent`; with both, this ships the URL stream end to end.
 
 `chrome-extension/manifest.json`:
 
@@ -98,14 +29,14 @@ The whole v0 extension is two files under `chrome-extension/`. It depends on `ex
 }
 ```
 
-`tabs` grants the `url` field on a `Tab`. `host_permissions` for the loopback lets the worker open the WebSocket; Chrome checks a `ws://` connection against the matching `http://` host permission, and match patterns ignore the port, so `http://127.0.0.1/*` covers `:48291`.
+`tabs` grants the `url` field on a `Tab`. `host_permissions` for the loopback lets the worker open the WebSocket: Chrome checks a `ws://` connection against the matching `http://` host permission, and match patterns ignore the port, so `http://127.0.0.1/*` covers `:48291`.
 
 `chrome-extension/background.js`:
 
 ```js
-// The mercury bridge service worker. Opens a loopback WebSocket to mercury and
-// pushes the active tab's URL on every tab switch and in-tab navigation.
-// Event-driven: reconnect on the next event, no keepalive timer, no poll.
+// The mercury bridge service worker. Opens a loopback WebSocket to mercury and pushes the active
+// tab's URL on every tab switch and in-tab navigation. Event-driven: it reconnects on the next
+// event, with no keepalive timer and no poll.
 
 const MERCURY_URL = "ws://127.0.0.1:48291";
 
@@ -150,11 +81,26 @@ chrome.tabs.onUpdated.addListener((_tabId, info, tab) => {
 
 Install for development by loading `chrome-extension/` unpacked at `chrome://extensions`. A packed or store build is deferred; nothing in the code depends on which.
 
-## Change 2: the command bus
+## Change 2: the token
 
-The bidirectional phase. mercury sends `Downstream::Command` down; the extension runs each with the real extension APIs and sends `Upstream::Reply` back up. It depends on `external-events.md`'s source going bidirectional: assigning a monotonic `id` per command, holding an `id -> oneshot::Sender<Result>` map with a per-command timeout, and enforcing the token gate below.
+Depends on `external-events.md`'s Change 3, which makes mercury refuse a connection whose `?token=` does not match the one in its state directory.
 
-### The extension's half
+`chrome-extension/options.html` and `chrome-extension/options.js` are a one-input page that reads and writes `chrome.storage.local.token`, and the manifest gains `"options_page": "options.html"` and the `storage` permission. mercury logs the token's path at startup; the user pastes the contents once, and it survives restarts of both sides.
+
+`background.js` reads the token before connecting, so `connect` becomes async and `pushUrl` awaits it:
+
+```js
+async function mercuryUrl() {
+  const { token } = await chrome.storage.local.get("token");
+  return token ? `${MERCURY_URL}/?token=${encodeURIComponent(token)}` : MERCURY_URL;
+}
+```
+
+A query parameter rather than a header or a handshake message: a service worker's `WebSocket` constructor cannot set headers, and putting it in the URL means an unauthorized client is refused at the handshake and never sends a frame.
+
+## Change 3: the command bus
+
+The bidirectional phase. mercury sends `Downstream.Command` down; the extension runs each with the real extension APIs and sends `Upstream.Reply` back up. It depends on `external-events.md`'s Change 4, which assigns the ids, holds the pending map, and enforces the timeout.
 
 The manifest gains `scripting` (to inject into pages) and host permissions for the sites it will script:
 
@@ -211,30 +157,19 @@ socket.addEventListener("message", async (ev) => {
   let result;
   try {
     const value = await HANDLERS[command.kind](command.value ?? {});
-    result = { kind: "Result.Ok", value };
+    result = { kind: "CommandResult.Ok", value };
   } catch (e) {
-    result = { kind: "Result.Err", value: String(e) };
+    result = { kind: "CommandResult.Err", value: String(e) };
   }
   socket.send(JSON.stringify({ kind: "Upstream.Reply", value: { id, result } }));
 });
 ```
 
-`Command.RunJs` and `Command.ReadSelection` run in `world: "MAIN"` so page globals (`getSelection`, page functions) are in scope; `Command.CloseTabs` takes a Chrome URL match pattern in `url_glob`.
+`command.value ?? {}` covers `Command.ReadSelection`, which is a unit variant and so arrives with no `value` at all.
 
-### Auth
+`Command.RunJs` and `Command.ReadSelection` run in `world: "MAIN"` so page globals (`getSelection`, page functions) are in scope. `Command.CloseTabs` takes a Chrome URL match pattern in `url_glob`.
 
-v0 ships tokenless: loopback plus a vocabulary restricted to `Upstream::Tab` is the boundary, and a tab URL from a stray local process is benign. The bus can run arbitrary JavaScript in your tabs, so it gates on a shared token.
-
-mercury generates a token at startup and logs it. The user pastes it into the extension's options page, which stores it in `chrome.storage.local`; the extension appends it to the connect URL, `ws://127.0.0.1:48291/?token=…`, and mercury's source rejects the connection if it does not match. A query-param token is CSP-friendly from a service worker and needs no extra handshake message.
-
-`chrome-extension/options.html` and `chrome-extension/options.js` are a one-input page that reads and writes `chrome.storage.local.token`; the manifest adds `"options_page": "options.html"`. `background.js` reads the token before connecting:
-
-```js
-async function mercuryUrl() {
-  const { token } = await chrome.storage.local.get("token");
-  return token ? `${MERCURY_URL}/?token=${encodeURIComponent(token)}` : MERCURY_URL;
-}
-```
+The listener is registered inside `connect`, on the socket it just created, so a reconnect after the worker was killed re-registers it.
 
 ## Other browsers
 
