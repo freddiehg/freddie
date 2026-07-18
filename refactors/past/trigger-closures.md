@@ -8,12 +8,12 @@ So the trigger may be written as a closure, and the macro calls it with the path
 
 ```rust
 #[bind(
-    |root| ArmedTimer(root.jk_timer_id()) => jk_timeout,
+    |path| ArmedTimer::firing_of(path.typing_state.jk.window_guard()) => jk_timeout,
     Quit => quit,
 )]
 ```
 
-The binding names its own parameter, nothing is captured invisibly, and every constant trigger is written exactly as it is today.
+The binding names its own parameter, nothing is captured invisibly, and every constant trigger is written exactly as it is today. What the parameter holds is the node's PATH, so `path` is what it is worth calling.
 
 ## what it receives
 

@@ -17,7 +17,7 @@ Both fall out of one change: a firing carries the identity of the arming it came
 pub struct TimerFired(pub TimerId);
 
 // the binding names the guard whose firing it wants
-#[bind(|nav| nav.get().timeout().firing() => to_home)]
+#[bind(|path| path.get().timeout.firing() => to_home)]
 ```
 
 The identity does the work the per-timer types were doing, so the types go. The match does the work a stale-check in each handler would have done, so a stale firing matches no binding at all: dispatch returns `None`, the handler never runs, and no handler contains an `if` about it.
@@ -237,25 +237,24 @@ after:
 ```rust
 #[bind(
     // Only this layer's own arming: a firing from a nav already left matches nothing.
-    |nav| nav.get().timeout().firing() => to_home,
+    |path| path.get().timeout.firing() => to_home,
     Key::Escape.down() => to_home,
     Key::KeyC.down() => open_chrome,
     ..
 )]
 ```
 
-`resize.rs` and `app.rs` gain the same line, reading their own guard. Each of the three exposes it:
+`resize.rs` and `app.rs` gain the same line, reading their own guard. The field becomes `pub(crate)` rather than growing an accessor: a binding needs to read it, and a `&DropGuard` reached through a shared path can do nothing but name its own firing.
 
 ```rust
-    /// The guard for this layer's return-home timer, for the binding that matches only its own
-    /// firing.
-    #[must_use]
-    pub(crate) const fn timeout(&self) -> &DropGuard {
-        &self.timeout
-    }
+pub struct NavLayer {
+    // Read for the trigger that matches its firing, and held for its `Drop`: dropping the guard
+    // cancels nav's return-home timer.
+    pub(crate) timeout: DropGuard,
+}
 ```
 
-Each `timeout` field drops its `#[expect(dead_code)]`: it is read now. The comment above it changes with it, from "held for its `Drop`" to being read for its arming as well. No layer mentions `TimerId`.
+Its `#[expect(dead_code)]` goes: it is read now. No layer mentions `TimerId`.
 
 `Home` and `Typing` arm nothing and bind nothing, so there is no `None` case anywhere: the absence is the absent binding.
 
@@ -300,11 +299,11 @@ after:
     Quit => quit,
     // Only this run's window: a firing from a run that has since ended matches nothing, so the
     // handler never sees it.
-    |root| ArmedTimer::firing_of(root.typing_state.jk.window_guard()) => jk_timeout,
+    |path| ArmedTimer::firing_of(path.typing_state.jk.window_guard()) => jk_timeout,
     AnyKey => maybe_pass_through,
 ```
 
-The root's path is `&mut Mercury`, so its closure reads fields directly; a layer's is a `PathMut`, so its closure reads through `get`.
+A closure is handed the node's PATH, which is why both are named for it: the root's is `&mut Mercury`, so its closure reads fields straight through the deref, and a layer's is a `PathMut`, so its closure reads the layer through `get`.
 
 Both arm helpers take the closure form: `|id| MercuryEvent::Timer(TimerFired(id))`.
 

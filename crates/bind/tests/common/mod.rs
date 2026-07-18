@@ -292,7 +292,7 @@ pub type ArmedChildPath<'a> = PathMut<ArmedChild, ArmedPath<'a>>;
 #[node(root)]
 #[binds(Demo)]
 #[bind(
-    |root| WaitingFor(root.waiting_for) => on_armed,
+    |path| WaitingFor(path.waiting_for) => on_armed,
     Keyboard("esc") => on_esc_armed,
 )]
 pub struct Armed {
@@ -312,8 +312,8 @@ pub struct Armed {
 #[node(parent = ArmedPath)]
 #[binds(Demo)]
 #[bind(
-    |child| WaitingFor(child.get().wants) => on_child_armed,
-    |child| Keyboard(child.parent().for_child.unwrap_or("none")) => on_parents_key,
+    |path| WaitingFor(path.get().wants) => on_child_armed,
+    |path| Keyboard(path.parent().for_child.unwrap_or("none")) => on_parents_key,
 )]
 pub struct ArmedChild {
     pub wants: Option<&'static str>,
