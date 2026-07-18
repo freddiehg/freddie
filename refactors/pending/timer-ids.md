@@ -39,7 +39,18 @@ and a binding pays an expression naming its own guard. There is no counter to ke
 
 A trigger is not a constant. `bind_macro` parses it as a `syn::Expr` and emits `let trigger = #trigger;` INSIDE the dispatch body, where `path` is in scope and has not yet been moved into the handler. So a trigger can read the node it is bound on.
 
-Verified, not assumed. A trigger bound as `Armed(path.armed_id) => on_fired`, against a root field `armed_id: Option<u64>`, compiles and dispatches: an unarmed node matched no firing, a stale id matched no firing, and its own id ran the handler. So the whole design rests on something the tree does today, not on a plan for `bind`.
+Verified, not assumed. A trigger bound as `Armed(path.armed_id) => on_fired`, against a root field `armed_id: Option<u64>`, compiles and dispatches: an unarmed node matched no firing, a stale id matched no firing, and its own id ran the handler.
+
+But `path` is not a name `bind` offers. It is the identifier the generated `dispatch` happens to bind its parameter as (`bind_macro/src/lib.rs`, the place-node impl), so a trigger reading it is capturing a macro-internal name unhygienically. A derived level's generated body binds `node` instead, so the name a trigger may use depends on which kind of node it is bound on, and neither is documented.
+
+So this takes a prefactor: `bind_macro` binds one documented name for the state a trigger may read, the same in both kinds of node, and says so in the derive's docs. Something like
+
+```rust
+let state = /* the path, or the node */;
+let trigger = #trigger;
+```
+
+with `#[bind(ArmedTimer(state.overlay_id()) => hide_overlay)]` as the written form. Then a state-reading trigger is a feature of the macro rather than a thing that works by accident, and renaming a parameter inside `bind_macro` cannot silently break every binding that uses one.
 
 ## the trigger set becomes state-dependent, and that is fine
 
