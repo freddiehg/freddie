@@ -4,6 +4,14 @@
 //! its bindings with `#[bind(trigger => handler, ..)]`. The derive implements
 //! two halves:
 //!
+//! A trigger is usually a value, `Key::KeyR` or `Quit`. It may instead be a CLOSURE, which the
+//! derive calls with the state the node is bound on, for a trigger that depends on it: a place
+//! node's closure is handed `&mut Self::Path`, so the root's reads its fields directly and a
+//! deeper node's reads through `get_mut` and `parent`, and a derived level's is handed
+//! `&mut Node`. It must not mutate what it is handed, and `get_mut` and `parent` cannot be held at
+//! once, because a `PathMut` re-derives its node from its parent. The two forms are told apart
+//! syntactically, since a trait cannot do it: blanket impls for values and for closures overlap.
+//!
 //! There are two halves, and only one of them ships.
 //!
 //! [`Dispatch`] runs the handler the active state binds for a fired event. It is what a
@@ -178,6 +186,16 @@ impl<N, P> HasParent for ::laserbeam::PathMut<N, P> {
     fn into_parent(self) -> P {
         Self::into_parent(self)
     }
+}
+
+/// Calls a closure trigger with the state its binding is bound on.
+///
+/// The macro emits this rather than `(#closure)(state)`, because a closure parameter is not
+/// inferred from an immediate call: it takes its type from an EXPECTED type, which this function's
+/// signature supplies. Without it every state-reading binding would have to annotate its own
+/// parameter with a path type it should not have to name.
+pub fn call_with<S, T>(state: &mut S, f: impl FnOnce(&mut S) -> T) -> T {
+    f(state)
 }
 
 /// A trigger matches its source's event. Extracting the source event from the

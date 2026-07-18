@@ -5,7 +5,10 @@ mod common;
 
 use std::collections::HashSet;
 
-use common::{App, Clash, ClashChild, Deep, Demo, Empty, Layer, Nav, Typing, fg, kb};
+use common::{
+    App, Armed, ArmedChild, Clash, ClashChild, Deep, Demo, Empty, Layer, Nav, Typing, fg, kb,
+    waiting,
+};
 
 // Through the Layer enum and the non-boxed `#[resolve_into]` App -> Layer.
 #[test]
@@ -55,4 +58,31 @@ fn duplicate_trigger_is_error() {
 fn no_binds_is_empty() {
     let set = bind::accumulate::<Demo, Empty>(&mut Empty {}).unwrap();
     assert!(set.is_empty());
+}
+
+// THE CHECK evaluates a trigger too, so a closure one has to be called there as well. This is the
+// only test of that half: without it the accumulate emit breaks silently for anyone enabling the
+// feature.
+#[test]
+fn a_closure_trigger_is_collected_as_the_value_it_produced() {
+    let mut armed = Armed {
+        waiting_for: Some("g"),
+        child: ArmedChild { wants: Some("z") },
+    };
+    let set = bind::accumulate::<Demo, Armed>(&mut armed).unwrap();
+    assert_eq!(
+        set,
+        HashSet::from([waiting(Some("g")), waiting(Some("z")), kb("esc")])
+    );
+}
+
+// A node waiting for nothing still contributes a trigger; it is one that matches no event.
+#[test]
+fn an_unarmed_closure_trigger_is_collected_as_none() {
+    let mut armed = Armed {
+        waiting_for: None,
+        child: ArmedChild { wants: Some("z") },
+    };
+    let set = bind::accumulate::<Demo, Armed>(&mut armed).unwrap();
+    assert!(set.contains(&waiting(None)));
 }

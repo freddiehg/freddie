@@ -230,7 +230,7 @@ fn derived_node_impl(
     let descend = derived_dispatch_descent(input, marker)?;
     let acc_descend = derived_accumulate_descent(input, marker)?;
     let checks = binds.iter().map(|b| {
-        let trigger = &b.trigger;
+        let trigger = trigger_expr(&b.trigger, &quote!(node));
         let handler = &b.handler;
         quote! {
             if let ::core::option::Option::Some(ev) =
@@ -243,7 +243,9 @@ fn derived_node_impl(
             }
         }
     });
-    let triggers = binds.iter().map(|b| &b.trigger);
+    let triggers = binds
+        .iter()
+        .map(|b| trigger_expr(&b.trigger, &quote!(node)));
     Ok(quote! {
         #[automatically_derived]
         #[expect(clippy::useless_conversion)]
@@ -392,12 +394,16 @@ fn accumulate_impl(
     } else {
         quote!(where #(#children: ::bind::EventHandler<#marker>,)*)
     };
-    let binding = if needs_mut {
+    // A closure trigger is called with `&mut path`, so it needs the binding to be `mut` even on a
+    // node whose shape never reassigns it.
+    let binding = if needs_mut || any_closure_trigger(binds) {
         quote!(mut path)
     } else {
         quote!(path)
     };
-    let triggers = binds.iter().map(|b| &b.trigger);
+    let triggers = binds
+        .iter()
+        .map(|b| trigger_expr(&b.trigger, &quote!(path)));
     Ok(quote! {
         ::bind::check_only! {
         #[automatically_derived]
@@ -517,7 +523,9 @@ fn dispatch_impl(
     } else {
         quote!(where #(#children: ::bind::Dispatch<#marker>,)*)
     };
-    let binding = if needs_mut {
+    // A closure trigger is called with `&mut path`, so it needs the binding to be `mut` even on a
+    // node whose shape never reassigns it.
+    let binding = if needs_mut || any_closure_trigger(binds) {
         quote!(mut path)
     } else {
         quote!(path)
@@ -526,7 +534,7 @@ fn dispatch_impl(
     // (the key match). The trigger is built once into a local; `TryFrom` and the
     // handler pin the source-event type by inference.
     let checks = binds.iter().map(|b| {
-        let trigger = &b.trigger;
+        let trigger = trigger_expr(&b.trigger, &quote!(path));
         let handler = &b.handler;
         quote! {
             if let ::core::option::Option::Some(ev) =
@@ -657,6 +665,31 @@ fn marker_of(input: &DeriveInput) -> syn::Result<Path> {
         }
     }
     found.ok_or_else(|| syn::Error::new(input.span(), "missing `#[binds(Marker)]`"))
+}
+
+/// The expression that produces a binding's trigger, given what dispatch is holding for this node.
+///
+/// A closure is CALLED with it, so a trigger can depend on the state it is bound on; anything else
+/// is evaluated as the value it is. The distinction is syntactic because a trait cannot make it:
+/// blanket impls for values and for closures overlap, and rustc cannot prove no type is both an
+/// `EventTrigger` and an `Fn`.
+///
+/// A closure goes through [`bind::call_with`](::bind::call_with) rather than being called here: a
+/// closure parameter takes its type from an expected type, not from an immediate call, and that
+/// function's signature is what supplies one. Calling it directly would make every state-reading
+/// binding annotate its own parameter with a path type it should not have to name.
+fn trigger_expr(trigger: &Expr, state: &TokenStream2) -> TokenStream2 {
+    if matches!(trigger, Expr::Closure(_)) {
+        quote!(::bind::call_with(&mut #state, #trigger))
+    } else {
+        quote!(#trigger)
+    }
+}
+
+/// Whether any of these bindings reads the node it is bound on, which is what makes the path
+/// binding need `mut`: the closure is called with a unique reference to it.
+fn any_closure_trigger(binds: &[Binding]) -> bool {
+    binds.iter().any(|b| matches!(b.trigger, Expr::Closure(_)))
 }
 
 /// One `trigger => handler` pair. `accumulate` uses the trigger; `dispatch` uses

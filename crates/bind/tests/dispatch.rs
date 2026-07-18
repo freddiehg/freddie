@@ -5,7 +5,10 @@
 
 mod common;
 
-use common::{Album, App, Deep, Demo, Layer, Media, Nav, Song, Title, Typing, foreground, key};
+use common::{
+    Album, App, Armed, ArmedChild, Deep, Demo, Layer, Media, Nav, Song, Title, Typing, foreground,
+    key,
+};
 
 const fn nav_app() -> App {
     App {
@@ -160,4 +163,68 @@ fn multi_parent_ancestor_recover() {
         unreachable!()
     };
     assert_eq!(a.title.hits, 0);
+}
+
+// ---- a trigger that reads the node it is bound on ----
+
+// The closure form: the trigger's value comes from the node, so the same key matches or does not
+// depending on what the node is waiting for.
+#[test]
+fn a_closure_trigger_matches_only_what_its_node_waits_for() {
+    let mut armed = Armed {
+        waiting_for: Some("g"),
+        child: ArmedChild { wants: None },
+    };
+    assert_eq!(
+        bind::dispatch::<Demo, Armed>(&mut armed, &key("g")),
+        Some(1)
+    );
+    assert_eq!(armed.waiting_for, None, "the handler ran and cleared it");
+}
+
+#[test]
+fn a_closure_trigger_matching_nothing_dispatches_nothing() {
+    let mut armed = Armed {
+        waiting_for: Some("g"),
+        child: ArmedChild { wants: None },
+    };
+    // A key it is not waiting for reaches no binding at all: the handler never runs to decline it.
+    assert_eq!(bind::dispatch::<Demo, Armed>(&mut armed, &key("h")), None);
+    assert_eq!(armed.waiting_for, Some("g"), "nothing was cleared");
+}
+
+#[test]
+fn a_node_waiting_for_nothing_matches_nothing() {
+    let mut armed = Armed {
+        waiting_for: None,
+        child: ArmedChild { wants: None },
+    };
+    assert_eq!(bind::dispatch::<Demo, Armed>(&mut armed, &key("g")), None);
+}
+
+#[test]
+fn a_constant_trigger_still_works_beside_a_closure_one() {
+    let mut armed = Armed {
+        waiting_for: Some("g"),
+        child: ArmedChild { wants: None },
+    };
+    assert_eq!(
+        bind::dispatch::<Demo, Armed>(&mut armed, &key("esc")),
+        Some(3)
+    );
+}
+
+// A deeper node reads through a `PathMut` rather than a `&mut Root`, and its binding wins over the
+// root's the way any child's does.
+#[test]
+fn a_closure_trigger_on_a_deeper_node_reads_through_its_path() {
+    let mut armed = Armed {
+        waiting_for: None,
+        child: ArmedChild { wants: Some("z") },
+    };
+    assert_eq!(
+        bind::dispatch::<Demo, Armed>(&mut armed, &key("z")),
+        Some(1)
+    );
+    assert_eq!(armed.child.wants, None, "the child's handler ran");
 }

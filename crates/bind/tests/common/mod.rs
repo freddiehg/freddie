@@ -38,6 +38,7 @@ impl EventTrigger for Foreground {
 pub enum DemoTrigger {
     Keyboard(Keyboard),
     Foreground(Foreground),
+    WaitingFor(WaitingFor),
 }
 impl From<Keyboard> for DemoTrigger {
     fn from(k: Keyboard) -> Self {
@@ -104,6 +105,13 @@ pub fn on_d(ev: &KeyEvent, mut node: Node<DeepPath, ()>) -> usize {
     node.parent.get_mut().hits += 1;
     ev.key.len()
 }
+/// A handler for the armed node: clears what it was waiting on, so a test can see it ran.
+pub const fn on_armed(ev: &KeyEvent, node: Node<&mut Armed, ()>) -> usize {
+    let armed = node.parent;
+    armed.waiting_for = None;
+    ev.key.len()
+}
+
 /// A handler for nodes a dispatch test never fires (any path, ignored).
 pub fn ignore<P>(ev: &KeyEvent, _node: Node<P, ()>) -> usize {
     ev.key.len()
@@ -247,7 +255,67 @@ pub const fn fg(s: &'static str) -> DemoTrigger {
 pub const fn key(s: &'static str) -> DemoEvent {
     DemoEvent::Keyboard(KeyEvent { key: s })
 }
+/// A `WaitingFor` trigger, for an accumulate assertion.
+#[must_use]
+pub const fn waiting(k: Option<&'static str>) -> DemoTrigger {
+    DemoTrigger::WaitingFor(WaitingFor(k))
+}
+
 /// A fired foreground event, for dispatch.
 pub const fn foreground(s: &'static str) -> DemoEvent {
     DemoEvent::Foreground(FgEvent { app: s })
+}
+
+// A trigger whose value is read from the node it is bound on: it matches a key only while the node
+// is waiting for that key. The closure form is what supplies the value.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct WaitingFor(pub Option<&'static str>);
+
+impl EventTrigger for WaitingFor {
+    type Event = KeyEvent;
+    fn is_matching(&self, ev: &KeyEvent) -> bool {
+        self.0 == Some(ev.key)
+    }
+}
+
+impl From<WaitingFor> for DemoTrigger {
+    fn from(w: WaitingFor) -> Self {
+        Self::WaitingFor(w)
+    }
+}
+
+pub type ArmedPath<'a> = &'a mut Armed;
+pub type ArmedChildPath<'a> = PathMut<ArmedChild, ArmedPath<'a>>;
+
+/// A root whose binding reads its own state, beside a constant one, so the two forms coexist.
+#[derive(Bind)]
+#[node(root)]
+#[binds(Demo)]
+#[bind(
+    |root| WaitingFor(root.waiting_for) => on_armed,
+    Keyboard("esc") => on_esc_armed,
+)]
+pub struct Armed {
+    pub waiting_for: Option<&'static str>,
+    #[resolve_into]
+    pub child: ArmedChild,
+}
+
+/// A deeper node, so a closure reads through a `PathMut` rather than a `&mut Root`, and reaches
+/// the level above through `parent`.
+#[derive(Bind)]
+#[node(parent = ArmedPath)]
+#[binds(Demo)]
+#[bind(|child| WaitingFor(child.get_mut().wants) => on_child_armed)]
+pub struct ArmedChild {
+    pub wants: Option<&'static str>,
+}
+
+pub const fn on_esc_armed(ev: &KeyEvent, _node: Node<&mut Armed, ()>) -> usize {
+    ev.key.len()
+}
+
+pub fn on_child_armed(ev: &KeyEvent, mut node: Node<ArmedChildPath, ()>) -> usize {
+    node.parent.get_mut().wants = None;
+    ev.key.len()
 }
