@@ -56,13 +56,11 @@ pub(crate) fn arm_jk_timeout(window: Duration) -> (TimerGuard, MercuryEffect) {
 
 The `use crate::{..}` in `state/mod.rs` adds `JkTimeout`; `JK_TIMEOUT` joins the `pub use` through `state/mod.rs` and `lib.rs`.
 
-## change 3: the run owns its window and holds what dies with it
+## change 3: a run, and the guard that lives as long as it
 
-`crates/freddie/src/sequence.rs`. Two changes to the same struct.
+`crates/freddie/src/sequence.rs`. The split is configuration versus live state. `keys` and the window duration are configuration and never change. What is swallowed and the guard cancelling the wait both exist only while a run is in progress, so they live together in a `Run` that exists only then.
 
-How long a run waits is part of what the run IS, so the constructor takes it: `Option<Duration>`, `None` for a run that never expires, which is every run today. The sequence does not arm anything itself — it has no event type and no timer — but it is what the caller asks, so the policy lives with the sequence instead of beside it. It is also what a later lazy expiry would read directly, checking the window against the incoming key's time rather than needing a timer at all.
-
-And it gains a type parameter for whatever a live run holds, defaulting to `()` so a run with nothing to hold is unchanged, dropping it wherever it clears `swallowed`.
+The guard then has nowhere to live except a run, and `hold` asserts the rest: a caller that hands over a guard with no run in progress is a bug, and the assert says so rather than the type. That is the one correlation left, the guard existing iff a run and a window both do, and expressing it in the type needs either type-state or dropping windowless sequences. Neither is worth it for one assert.
 
 before:
 
@@ -80,21 +78,24 @@ after:
 #[derive(Debug)]
 pub struct KeySequence {
     keys: &'static [Key],
-    /// The window this run waits, and the guard for it while one is live. `None` for a sequence
-    /// that waits forever.
-    window: Option<Window>,
-    swallowed: Vec<KeyPress>,
+    /// How long a run of this sequence waits for its next key, or `None` for one that waits
+    /// forever. Configuration: it outlives every run.
+    window: Option<Duration>,
+    /// The run in progress, or `None` when nothing is held back.
+    run: Option<Run>,
 }
 
-/// How long a run waits for its next key, and what cancels that wait.
+/// A run in progress: what it has swallowed, and what cancels its wait.
 ///
-/// The two are one field because a guard without a duration is nonsense: there is nothing to have
-/// armed. Two `Option`s side by side would let that state exist.
+/// It exists only while keys are held back, so a guard with no run to cancel is unrepresentable
+/// rather than asserted against.
 #[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
 #[derive(Debug)]
-struct Window {
-    duration: Duration,
-    /// Armed while a run is live, dropped when it ends, which is what cancels the wait.
+struct Run {
+    /// In arrival order, and never empty: a run holding nothing is no run.
+    swallowed: Vec<KeyPress>,
+    /// Present iff the sequence has a window. Dropped with the run, which is what cancels the
+    /// wait.
     timer: Option<TimerGuard>,
 }
 ```
@@ -116,88 +117,75 @@ The derives move behind `testing`, the way `TimerEffect` and `TimerGuard` alread
 after:
 
 ```rust
-    pub fn new(keys: &'static [Key], window: Option<Duration>) -> Self {
+    pub const fn new(keys: &'static [Key], window: Option<Duration>) -> Self {
         assert!(!keys.is_empty(), "a sequence needs at least one key");
         Self {
             keys,
-            window: window.map(|duration| Window {
-                duration,
-                timer: None,
-            }),
-            swallowed: Vec::new(),
+            window,
+            run: None,
         }
     }
+```
 
-    /// How long this run waits for its next key, or `None` if it waits forever.
+`is_idle` reads the run rather than the keys:
+
+```rust
     #[must_use]
-    pub fn window(&self) -> Option<Duration> {
-        self.window.as_ref().map(|w| w.duration)
+    pub const fn is_idle(&self) -> bool {
+        self.run.is_none()
     }
 ```
 
-`new` stops being `const`: `Option::map` is not usable in one. `sequence.rs` imports `std::time::Duration` and `crate::TimerGuard`. The two places that end a run disarm the window. `interrupt`, before:
+`interrupt` takes the whole run, so the guard goes with it:
 
 ```rust
     pub fn interrupt(&mut self) -> Vec<KeyPress> {
-        std::mem::take(&mut self.swallowed)
+        self.run.take().map_or_else(Vec::new, |run| run.swallowed)
     }
+```
+
+`advance` keeps its signature. `matched` and `is_down` read `self.run`, returning `0` and `false` when there is none, and the arms that push read `self.run`, opening one if this key is the first. The opening arm, before:
+
+```rust
+            PressType::Down if ev.key == self.keys[matched] && !self.is_down(ev.key) => {
+                self.swallowed.push(ev.key.down());
 ```
 
 after:
 
 ```rust
-    pub fn interrupt(&mut self) -> Vec<KeyPress> {
-        self.disarm();
-        std::mem::take(&mut self.swallowed)
-    }
+            PressType::Down if ev.key == self.keys[matched] && !self.is_down(ev.key) => {
+                self.run
+                    .get_or_insert_with(|| Run {
+                        swallowed: Vec::new(),
+                        timer: None,
+                    })
+                    .swallowed
+                    .push(ev.key.down());
 ```
 
-and the completing arm of `advance`, before:
+The caller arms the window and hands the guard over, which is the one thing the type does not enforce:
 
 ```rust
-                if matched + 1 == self.keys.len() {
-                    self.swallowed.clear();
-                    KeySequenceOutcome::Completed
-```
-
-after:
-
-```rust
-                if matched + 1 == self.keys.len() {
-                    self.swallowed.clear();
-                    self.disarm();
-                    KeySequenceOutcome::Completed
-```
-
-The caller hands over what to hold when a run opens:
-
-```rust
-    /// Give the live run the guard for its window, so the window is cancelled by the run ending
-    /// rather than by the caller remembering to.
+    /// Give the run in progress the guard for its window, so the wait is cancelled by the run
+    /// ending rather than by the caller remembering to.
     ///
     /// # Panics
     ///
-    /// If the run is idle, since nothing would ever drop the guard, or if this sequence has no
-    /// window, since then there was nothing to arm.
+    /// If no run is in progress. There would be nothing to drop the guard.
     pub fn hold(&mut self, guard: TimerGuard) {
-        assert!(!self.is_idle(), "an idle run has no life to tie a guard to");
-        let window = self
-            .window
+        let run = self
+            .run
             .as_mut()
-            .expect("a sequence with no window cannot have armed one");
-        window.timer = Some(guard);
+            .expect("a guard belongs to a run in progress; there is none");
+        run.timer = Some(guard);
     }
 
-    /// Drop the guard, cancelling the wait, and leave the duration in place: the sequence still
-    /// has a window, it is just not running one.
-    fn disarm(&mut self) {
-        if let Some(window) = self.window.as_mut() {
-            window.timer = None;
-        }
+    /// How long a run of this sequence waits, or `None` if it waits forever.
+    #[must_use]
+    pub const fn window(&self) -> Option<Duration> {
+        self.window
     }
-```
-
-`TypingState`'s field stays `pub jk: KeySequence`. Both `KeySequence::new(JK)` call sites in `state/mod.rs` become `KeySequence::new(JK, Some(JK_TIMEOUT))`, and the ones in `crates/freddie/tests/sequence.rs` pass `None`: those cases assert the machine, and none of them involves a window.
 
 ## change 4: the handler arms and disarms
 
