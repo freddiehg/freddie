@@ -11,10 +11,6 @@
 
 use bind::EventTrigger;
 
-mod sequence;
-
-pub use sequence::{KeySequence, KeySequenceOutcome};
-
 /// A physical key, named by its US-ANSI position, independent of layout or OS.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Key {

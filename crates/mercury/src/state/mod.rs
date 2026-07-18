@@ -7,8 +7,8 @@
 use std::time::Duration;
 
 use bind::Bind;
-use freddie::{TimerGuard, timer_effect_and_guard};
-use freddie_keys::{Key, KeyEvent, KeySequence, ModifierFlags, PressType};
+use freddie::{KeySequence, TimerGuard, timer_effect_and_guard};
+use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 use laserbeam::PathMut;
 
 // The derive generates a call to each named handler at its node's definition site below, so

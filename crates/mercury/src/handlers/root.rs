@@ -2,7 +2,8 @@
 //! when no layer bound it.
 
 use bind::Node;
-use freddie_keys::{KeyEvent, KeySequenceOutcome};
+use freddie::KeySequenceOutcome;
+use freddie_keys::KeyEvent;
 
 use crate::MercuryEffect;
 use crate::effect::{emit, replay};

@@ -348,6 +348,7 @@ checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 name = "freddie"
 version = "0.0.1"
 dependencies = [
+ "freddie_keys",
  "tokio",
 ]
 

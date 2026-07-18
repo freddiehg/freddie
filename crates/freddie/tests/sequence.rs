@@ -3,7 +3,8 @@
 //! Every case is a stream of key events fed to one sequence, asserting the outcome of each. The
 //! machine is a pure function of what it has swallowed and the event, so the table is checkable.
 
-use freddie_keys::{Key, KeyEvent, KeySequence, KeySequenceOutcome, ModifierFlags, PressType};
+use freddie::{KeySequence, KeySequenceOutcome};
+use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 
 const JK: &[Key] = &[Key::KeyJ, Key::KeyK];
 

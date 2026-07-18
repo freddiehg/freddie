@@ -1,6 +1,6 @@
 //! An ordered run of keys, typed with no modifiers, that the caller acts on when it completes.
 
-use crate::{Key, KeyEvent, KeyPress, PressType};
+use freddie_keys::{Key, KeyEvent, KeyPress, PressType};
 
 /// A run of keys that means something other than what it types: `jk`, say.
 ///
