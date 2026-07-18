@@ -299,6 +299,9 @@ fn perform_effect(
             return ControlFlow::Break(());
         }
         MercuryEffect::Timer(timer) => schedule_timer(timer, event_tx),
+        // Change 2 draws these; for now a run says what it would have drawn.
+        MercuryEffect::ShowOverlay(text) => debug!(text, "overlay shown"),
+        MercuryEffect::HideOverlay => debug!("overlay hidden"),
         // A closed channel means the main thread has gone, which the Kill path handles.
         MercuryEffect::ShowLayer(name) => {
             let _ = title_tx.send(name);

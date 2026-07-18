@@ -1,0 +1,6 @@
+  RESIZE
+  ────────────────────
+  ↑    maximize
+  ←    left half
+  →    right half
+  esc  home

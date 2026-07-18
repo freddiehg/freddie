@@ -8,6 +8,10 @@ use crate::{MercuryEffect, MercuryStruct};
 
 use super::{LayerPath, arm_return_home};
 
+/// The keymap the overlay shows for this layer. Beside the bindings it describes, so the two are
+/// changed together or the drift is obvious.
+pub(crate) const OVERLAY: &str = include_str!("overlays/nav.txt");
+
 #[derive(Bind, Debug)]
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
@@ -15,6 +19,7 @@ use super::{LayerPath, arm_return_home};
     // Only this layer's own timer: a firing from a layer already left matches nothing.
     |path| path.get().home_timeout.trigger() => to_home,
     Key::Escape.down() => to_home,
+    Key::KeyO.down() => show_overlay,
     Key::KeyC.down() => open_chrome,
     Key::KeyF.down() => open_finder,
     Key::KeyG.down() => open_ghostty,

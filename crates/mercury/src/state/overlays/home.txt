@@ -1,0 +1,8 @@
+  HOME
+  ────────────────────
+  n    nav
+  r    resize
+  t    typing
+  i    in-app
+  o    this
+  q    quit

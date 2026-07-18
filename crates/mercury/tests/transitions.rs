@@ -6,8 +6,8 @@
 use bind::SimpleRunner;
 use mercury::{
     App, HomeLayer, JK_TIMEOUT, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryEvent,
-    MercuryStruct, ModifierFlags, Placement, PressType, RETURN_TO_HOME_TIMEOUT, foreground, key,
-    quit_event,
+    MercuryStruct, ModifierFlags, OVERLAY_DWELL, Placement, PressType, RETURN_TO_HOME_TIMEOUT,
+    foreground, key, quit_event,
 };
 
 // Entering nav, resize, or the in-app layer arms the return-to-home timer; this is the effect
@@ -1191,4 +1191,120 @@ fn the_window_is_armed_once_per_run_not_once_per_key() {
     let mut m = typing();
     assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
     assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
+}
+
+// ---- the overlay: `o` shows the active layer's keymap ----
+
+// The effect `o` produces beside the text: the overlay's hide timer. Equality under `testing`
+// compares the delay and the fire event, and a firing compares equal whatever its id.
+fn overlay_hide_timer() -> MercuryEffect {
+    let (_guard, effect) = freddie::timer_effect_and_guard(OVERLAY_DWELL, fired);
+    MercuryEffect::Timer(effect)
+}
+
+// The keymap `o` put up, asserted by its heading rather than in full, so re-wording a row does not
+// rewrite the test table.
+fn shown_heading(effects: &[MercuryEffect]) -> &'static str {
+    // The dwell follows the text, and in the in-app layer a third effect follows both: the key
+    // kept you there, so that layer's own return-home timer is rearmed.
+    match effects {
+        [
+            MercuryEffect::ShowOverlay(text),
+            MercuryEffect::Timer(_),
+            ..,
+        ] => text.lines().next().expect("a keymap has a heading"),
+        other => panic!("o shows the overlay and sets its hide: {other:?}"),
+    }
+}
+
+#[test]
+fn o_shows_the_layers_keymap() {
+    for (enter, heading) in [
+        (None, "  HOME"),
+        (Some(Key::KeyN), "  NAV"),
+        (Some(Key::KeyR), "  RESIZE"),
+    ] {
+        let mut m = home();
+        if let Some(k) = enter {
+            let _ = m.handle(&key(k));
+        }
+        let effects = m.handle(&key(Key::KeyO)).expect("o is bound");
+        assert_eq!(shown_heading(&effects), heading);
+        assert_eq!(effects[1], overlay_hide_timer());
+    }
+}
+
+#[test]
+fn the_in_app_keymap_is_the_front_apps() {
+    // The in-app layer's bindings are the app's, so its keymap has to be too.
+    for (app, heading) in [
+        (App::Chrome, "  CHROME"),
+        (App::Ghostty, "  GHOSTTY"),
+        (App::Zed, "  IN-APP"),
+    ] {
+        let mut m = home();
+        let _ = m.handle(&foreground(app));
+        let _ = m.handle(&key(Key::KeyI));
+        let effects = m.handle(&key(Key::KeyO)).expect("o is bound");
+        assert_eq!(shown_heading(&effects), heading, "{app:?}");
+    }
+}
+
+#[test]
+fn the_overlay_hides_after_the_dwell() {
+    let mut m = home();
+    let shown = m.handle(&key(Key::KeyO)).expect("o is bound");
+    assert_eq!(
+        m.handle(&fired(timer_id(&shown))),
+        Some(vec![MercuryEffect::HideOverlay])
+    );
+    // And again matches nothing: the field was taken, so no binding names that guard.
+    assert_eq!(m.handle(&fired(timer_id(&shown))), None);
+}
+
+#[test]
+fn a_dwell_from_a_superseded_showing_matches_nothing() {
+    // Two `o`s in a row: the first showing's dwell arrives after the second replaced it, and must
+    // not take the live overlay down.
+    let mut m = home();
+    let first = timer_id(&m.handle(&key(Key::KeyO)).expect("o is bound"));
+    let second = timer_id(&m.handle(&key(Key::KeyO)).expect("o is bound"));
+    assert_ne!(first, second, "each showing sets its own dwell");
+
+    assert_eq!(m.handle(&fired(first)), None);
+    assert_eq!(
+        m.handle(&fired(second)),
+        Some(vec![MercuryEffect::HideOverlay])
+    );
+}
+
+#[test]
+fn changing_layers_takes_the_overlay_down() {
+    let mut m = home();
+    let _ = m.handle(&key(Key::KeyO));
+    // Entering nav hides it, ahead of naming the layer and setting nav's own timer.
+    assert_eq!(
+        m.handle(&key(Key::KeyN)),
+        Some(vec![
+            MercuryEffect::HideOverlay,
+            shows("Nav"),
+            return_home_timer(),
+        ])
+    );
+}
+
+#[test]
+fn a_transition_with_no_overlay_hides_nothing() {
+    let mut m = home();
+    assert_eq!(
+        m.handle(&key(Key::KeyN)),
+        Some(vec![shows("Nav"), return_home_timer()])
+    );
+}
+
+#[test]
+fn o_in_typing_is_typed() {
+    // Typing binds nothing, so `o` falls to the root and reaches the app.
+    let mut m = typing();
+    assert_eq!(m.handle(&key(Key::KeyO)), Some(passed(Key::KeyO)));
 }

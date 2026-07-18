@@ -1,0 +1,7 @@
+  NAV
+  ────────────────────
+  c    chrome
+  f    finder
+  g    ghostty
+  z    zed
+  esc  home

@@ -54,6 +54,6 @@ pub use model::{MercuryEvent, MercuryStruct, MercuryTrigger};
 pub use sources::{AnyKey, App, ForegroundEvent, Foregrounded, Quit};
 pub use state::{
     AppData, AppLayer, ChromeApp, Foreground, GhosttyApp, HomeLayer, JK_TIMEOUT, Layer, Mercury,
-    NavLayer, RETURN_TO_HOME_TIMEOUT, ResizeLayer, TypingLayer, TypingState, foreground, key,
-    quit_event,
+    NavLayer, OVERLAY_DWELL, RETURN_TO_HOME_TIMEOUT, ResizeLayer, TypingLayer, TypingState,
+    foreground, key, quit_event,
 };

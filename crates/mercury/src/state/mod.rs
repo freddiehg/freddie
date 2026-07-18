@@ -46,6 +46,9 @@ fn arm_return_home() -> (TimerGuard, MercuryEffect) {
     (guard, MercuryEffect::Timer(effect))
 }
 
+/// How long the overlay stays up before its hide timer fires.
+pub const OVERLAY_DWELL: Duration = Duration::from_secs(10);
+
 /// How long a `jk` run waits for its next key before what it swallowed types itself.
 ///
 /// It bounds how long a `j` stays invisible, so shorter is better, but it has to cover a
@@ -71,6 +74,8 @@ pub(crate) fn arm_jk_timeout(window: Duration) -> (TimerGuard, MercuryEffect) {
     // Only this run's window: a firing from a run that has since ended matches nothing, so the
     // handler never sees it.
     |mercury_path| mercury_path.typing_state.jk.window_timer().map(TimerGuard::trigger) => jk_timeout,
+    // Only the showing that is up: a dwell from one already replaced matches nothing.
+    |mercury_path| mercury_path.overlay_timer().map(TimerGuard::trigger) => hide_overlay,
     AnyKey => maybe_pass_through,
 )]
 pub struct Mercury {
@@ -78,6 +83,14 @@ pub struct Mercury {
     pub foreground: Foreground,
     /// The state the passthrough (typing) behavior needs. See [`TypingState`].
     pub typing_state: TypingState,
+    /// The overlay currently up, if any: the guard for its pending hide. The overlay is an
+    /// external window driven by effects, so this is its only trace in the model, held at the root
+    /// because there is one overlay across all layers. The root's binding names it, so a firing
+    /// from a showing that was replaced matches nothing.
+    ///
+    /// Private for the reason `layer` is: the effects a change implies come back from the method
+    /// that made it.
+    overlay: Option<TimerGuard>,
     /// The active layer. Private, and written only through [`set_layer`](Mercury::set_layer), so
     /// no transition can change the layer without going through the modifier flush.
     #[resolve_into]
@@ -156,6 +169,21 @@ impl Layer {
         matches!(self, Self::Typing(_))
     }
 
+    /// The keymap the overlay shows for this layer, read when `o` shows it.
+    ///
+    /// `app` is the confirmed front app, which only the in-app layer reads. Typing never binds
+    /// `o`, so its arm is unreachable.
+    #[must_use]
+    pub const fn overlay_content(&self, app: App) -> &'static str {
+        match self {
+            Self::Home(_) => home::OVERLAY,
+            Self::Nav(_) => nav::OVERLAY,
+            Self::Resize(_) => resize::OVERLAY,
+            Self::InApp(_) => app::overlay_for(app),
+            Self::Typing(_) => typing::OVERLAY,
+        }
+    }
+
     /// What the status item calls this layer.
     #[must_use]
     pub const fn name(&self) -> &'static str {
@@ -190,6 +218,7 @@ impl Default for Mercury {
         Self {
             foreground: Foreground::default(),
             typing_state: TypingState::default(),
+            overlay: None,
             // Typing, the passthrough layer, so a fresh mercury (and one launched at login) leaves
             // the keyboard working rather than swallowing everything in Home. See launch-at-login.
             layer: Layer::Typing(TypingLayer::new()),
@@ -230,6 +259,40 @@ impl Mercury {
         &self.layer
     }
 
+    /// Show the active layer's overlay and set its hide timer.
+    ///
+    /// Reassigning the field drops any previous guard, cancelling a still-pending timer, so a
+    /// second `o` supersedes. No hide is pushed for it: the panel is shared, so the new showing
+    /// overwrites what was there.
+    #[must_use = "the returned effects show the overlay and schedule its hide"]
+    pub fn show_overlay(&mut self) -> Vec<MercuryEffect> {
+        let content = self.layer.overlay_content(self.foreground.app());
+        let (guard, effect) =
+            timer_effect_and_guard(OVERLAY_DWELL, |id| MercuryEvent::Timer(TimerFired(id)));
+        self.overlay = Some(guard);
+        vec![
+            MercuryEffect::ShowOverlay(content),
+            MercuryEffect::Timer(effect),
+        ]
+    }
+
+    /// Take the overlay down if one is up. The dwell firing and every layer change come through
+    /// here, and taking the field drops the guard, cancelling a hide that has not fired yet.
+    #[must_use = "the returned effect takes the overlay off the screen"]
+    pub fn hide_overlay(&mut self) -> Vec<MercuryEffect> {
+        if self.overlay.take().is_some() {
+            vec![MercuryEffect::HideOverlay]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The guard for the overlay's pending hide, which its binding matches on.
+    #[must_use]
+    pub const fn overlay_timer(&self) -> Option<&TimerGuard> {
+        self.overlay.as_ref()
+    }
+
     /// Replace the active layer, returning the modifier flush the change implies. It flushes only
     /// when the passthrough state changed: `close` on leaving a passthrough layer (a command layer
     /// swallows the real modifier ups, so release them here), `open` on entering one (catch the app
@@ -241,11 +304,12 @@ impl Mercury {
         let after_passthrough = into.is_passthrough();
         self.layer = into;
         self.typing_state.jk = KeySequence::new(JK, Some(JK_TIMEOUT));
-        let mut effects = match (before_passthrough, after_passthrough) {
+        let mut effects = self.hide_overlay();
+        effects.extend(match (before_passthrough, after_passthrough) {
             (true, false) => self.typing_state.held.close(),
             (false, true) => self.typing_state.held.open(),
             _ => Vec::new(),
-        };
+        });
         effects.push(MercuryEffect::ShowLayer(self.layer.name()));
         effects
     }

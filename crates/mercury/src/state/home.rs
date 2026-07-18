@@ -7,11 +7,16 @@ use crate::handlers::*;
 
 use super::LayerPath;
 
+/// The keymap the overlay shows for this layer. Beside the bindings it describes, so the two are
+/// changed together or the drift is obvious.
+pub(crate) const OVERLAY: &str = include_str!("overlays/home.txt");
+
 #[derive(Bind, Debug)]
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
     Key::Escape.down() => to_home,
+    Key::KeyO.down() => show_overlay,
     Key::KeyN.down() => to_nav,
     Key::KeyR.down() => to_resize,
     Key::KeyT.down() => to_typing,

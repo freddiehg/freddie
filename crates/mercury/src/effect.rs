@@ -41,6 +41,10 @@ pub enum MercuryEffect {
     Place(Placement),
     /// Quit the program. The effect handler performs this by exiting.
     Kill,
+    /// Put the overlay up, showing `text`. Replaces whatever it was showing.
+    ShowOverlay(&'static str),
+    /// Take the overlay down. A no-op if nothing is up.
+    HideOverlay,
     /// Show this layer's name in the menu bar. Produced only by `set_layer`, so the item and the
     /// model cannot disagree about which layer is active.
     ShowLayer(&'static str),

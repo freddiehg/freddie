@@ -8,6 +8,24 @@ use crate::{App, MercuryEffect, MercuryStruct};
 
 use super::{AppLayerPath, LayerPath, arm_return_home};
 
+pub(crate) const CHROME_OVERLAY: &str = include_str!("overlays/chrome.txt");
+pub(crate) const GHOSTTY_OVERLAY: &str = include_str!("overlays/ghostty.txt");
+/// For an app with no bindings of its own: the in-app layer's own keys and nothing more.
+pub(crate) const INAPP_OVERLAY: &str = include_str!("overlays/inapp.txt");
+
+/// The keymap the overlay shows for the in-app layer while `app` is frontmost.
+///
+/// The in-app layer's bindings are the app's, so `i` in Ghostty and `i` in Chrome are different
+/// keymaps and showing one for the other would be worse than showing nothing.
+#[must_use]
+pub(crate) const fn overlay_for(app: App) -> &'static str {
+    match app {
+        App::Chrome => CHROME_OVERLAY,
+        App::Ghostty => GHOSTTY_OVERLAY,
+        App::Finder | App::Zed | App::Other => INAPP_OVERLAY,
+    }
+}
+
 /// The in-app layer. It stores NO app: `root.foreground` is the only copy, and [`app_data`]
 /// builds the app's level from it on every dispatch. There is nothing to keep in sync and
 /// nothing to go stale.
@@ -19,6 +37,7 @@ use super::{AppLayerPath, LayerPath, arm_return_home};
     // Only this layer's own timer: a firing from a layer already left matches nothing.
     |path| path.get().home_timeout.trigger() => to_home,
     Key::Escape.down() => to_home,
+    Key::KeyO.down() => show_overlay,
     Key::KeyN.down() => to_nav,
     Key::KeyT.down() => to_typing,
 )]
