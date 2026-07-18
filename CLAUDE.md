@@ -22,6 +22,7 @@ This section is extremely important. A frequent source of frustration is deviati
   - An ordered list of changes. Each change should be self-contained and independently shippable. It should be ordered such that early changes are prefactors that make the actual, consequential change as easy as possible.
 - When we are discussing a change, always try to identify independently shippable changes. If these changes are guaranteed (or nigh thereunto), then we can ship them as a prefactor, and thus limit the complexity of the actual change (and planning document).
 - When a doc is not being actively worked on, it may become stale. That is okay. It should be updated to not be stale when we start working on it in the future. In other words, if we are working on `A`, and `B` depends on `A`, we do not need to keep `B` up to date unless it's part of the discussion.
+- If a refactor is too large and should be broken up into smaller steps (e.g. "Chrome extension that informs mercury of changes" -> "Mercury receives events on a port" + "Chrome extension that sends events"), let the user know, and do so. The files should be "conceptually different".
 
 ## Tests
 
