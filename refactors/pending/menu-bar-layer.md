@@ -68,12 +68,18 @@ after:
         effects
 ```
 
-Every existing test that asserts a transition's effects gains the `ShowLayer` at the end of the vector. There are enough of them that a helper is worth it in `transitions.rs`:
+Every existing test that asserts a transition's effects gains a `ShowLayer`, where the handler called `set_layer` rather than at the end: entering nav produces `[ShowLayer("Nav"), Timer(..)]`, because the handler changes the layer and then arms the timer, while placing a window produces `[Place(..), ShowLayer("Home")]`. Two helpers in `transitions.rs` cover both shapes:
 
 ```rust
-// A transition also tells the menu bar which layer it landed in.
-fn shows(layer: &'static str) -> MercuryEffect {
+const fn shows(layer: &'static str) -> MercuryEffect {
     MercuryEffect::ShowLayer(layer)
+}
+
+// Effects from a transition that landed in home, which is most of them: the go-home name comes
+// last, since the handler emits its own effects before it changes the layer.
+fn leaves(mut effects: Vec<MercuryEffect>) -> Vec<MercuryEffect> {
+    effects.push(shows("Home"));
+    effects
 }
 ```
 
