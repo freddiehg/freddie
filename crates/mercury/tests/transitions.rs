@@ -40,6 +40,24 @@ fn passed(key: Key) -> Vec<MercuryEffect> {
     vec![emit(key, PressType::Down)]
 }
 
+// A key's release, for the halves the jk sequence cares about.
+const fn up(key: Key) -> MercuryEvent {
+    MercuryEvent::Key(KeyEvent {
+        key,
+        press: PressType::Up,
+        flags: ModifierFlags::empty(),
+    })
+}
+
+// A key carrying a modifier, the way the source stamps it.
+const fn key_with(key: Key, flags: ModifierFlags) -> MercuryEvent {
+    MercuryEvent::Key(KeyEvent {
+        key,
+        press: PressType::Down,
+        flags,
+    })
+}
+
 const fn tap(key: Key, flags: ModifierFlags) -> MercuryEffect {
     MercuryEffect::Tap { key, flags }
 }
@@ -845,4 +863,166 @@ fn inapp_follows_the_front_app_across_a_switch() {
     assert_eq!(m.foreground.app(), App::Zed);
     assert!(matches!(m.layer(), Layer::InApp(_)));
     assert!(matches!(m.foreground.app(), App::Zed | App::Other));
+}
+
+// ---- jk: the sequence that leaves typing ----
+
+// A mercury in typing, the passthrough layer, with the jk run idle.
+fn typing() -> Mercury {
+    Mercury::default()
+}
+
+#[test]
+fn jk_typed_one_key_at_a_time_leaves_for_home() {
+    let mut m = typing();
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+    assert!(!m.typing_state.jk.is_idle());
+    assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyK)), Some(vec![]));
+    assert!(matches!(m.layer(), Layer::Home(_)));
+    assert!(m.typing_state.jk.is_idle());
+}
+
+#[test]
+fn jk_rolled_leaves_for_home_and_the_ups_land_in_home() {
+    // k goes down before j comes up. The two ups that follow arrive in Home, which binds neither
+    // and is not a passthrough layer, so they are swallowed rather than reaching the app as ups
+    // with no downs.
+    let mut m = typing();
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyK)), Some(vec![]));
+    assert!(matches!(m.layer(), Layer::Home(_)));
+    assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&up(Key::KeyK)), Some(vec![]));
+}
+
+#[test]
+fn a_j_tap_then_another_key_types_the_j_first() {
+    let mut m = typing();
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
+    assert_eq!(
+        m.handle(&key(Key::KeyA)),
+        Some(vec![
+            emit(Key::KeyJ, PressType::Down),
+            emit(Key::KeyJ, PressType::Up),
+            emit(Key::KeyA, PressType::Down),
+        ]),
+    );
+}
+
+#[test]
+fn a_held_j_then_another_key_replays_only_its_down() {
+    // Only the j down was swallowed, so only it replays. The real j up passes through later, with
+    // the run already idle.
+    let mut m = typing();
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+    assert_eq!(
+        m.handle(&key(Key::KeyA)),
+        Some(vec![
+            emit(Key::KeyJ, PressType::Down),
+            emit(Key::KeyA, PressType::Down),
+        ]),
+    );
+    assert_eq!(
+        m.handle(&up(Key::KeyJ)),
+        Some(vec![emit(Key::KeyJ, PressType::Up)]),
+    );
+}
+
+#[test]
+fn a_j_carrying_a_modifier_never_opens_the_run() {
+    let mut m = typing();
+    assert_eq!(
+        m.handle(&key_with(Key::KeyJ, ModifierFlags::COMMAND)),
+        Some(vec![emit_with(
+            Key::KeyJ,
+            PressType::Down,
+            ModifierFlags::COMMAND
+        )]),
+    );
+    assert!(m.typing_state.jk.is_idle());
+}
+
+#[test]
+fn a_modifier_arriving_mid_run_breaks_it() {
+    let mut m = typing();
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+    assert_eq!(
+        m.handle(&key_with(Key::MetaLeft, ModifierFlags::COMMAND)),
+        Some(vec![
+            emit(Key::KeyJ, PressType::Down),
+            emit_with(Key::MetaLeft, PressType::Down, ModifierFlags::COMMAND),
+        ]),
+    );
+    assert!(m.typing_state.jk.is_idle());
+}
+
+#[test]
+fn a_held_js_auto_repeat_breaks_the_run() {
+    // The swallowed down replays ahead of the repeat, so the app sees the same two downs it would
+    // have seen unwatched, and the k after it is an ordinary k.
+    let mut m = typing();
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+    assert_eq!(
+        m.handle(&key(Key::KeyJ)),
+        Some(vec![
+            emit(Key::KeyJ, PressType::Down),
+            emit(Key::KeyJ, PressType::Down),
+        ]),
+    );
+    assert!(m.typing_state.jk.is_idle());
+    assert_eq!(m.handle(&key(Key::KeyK)), Some(passed(Key::KeyK)));
+    assert!(matches!(m.layer(), Layer::Typing(_)));
+}
+
+#[test]
+fn escape_in_typing_breaks_the_run_and_reaches_the_app() {
+    // Typing binds nothing, so escape runs through the sequence like any other key and the j
+    // replays AHEAD of it.
+    let mut m = typing();
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
+    assert_eq!(
+        m.handle(&key(Key::Escape)),
+        Some(vec![
+            emit(Key::KeyJ, PressType::Down),
+            emit(Key::KeyJ, PressType::Up),
+            emit(Key::Escape, PressType::Down),
+        ]),
+    );
+    assert!(matches!(m.layer(), Layer::Typing(_)));
+}
+
+#[test]
+fn leaving_typing_abandons_a_held_j() {
+    // The layer change replaces the run, and the j is dropped rather than typed: the app never saw
+    // its down, and its up will be swallowed by the command layer.
+    let mut m = typing();
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyK)), Some(vec![]));
+    assert!(matches!(m.layer(), Layer::Home(_)));
+    assert!(m.typing_state.jk.is_idle());
+}
+
+#[test]
+fn j_and_k_still_type_themselves_when_they_are_not_a_run() {
+    // j, j, k: the second j breaks the first run and does not open a second, so all three type.
+    let mut m = typing();
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
+    assert_eq!(
+        m.handle(&key(Key::KeyJ)),
+        Some(vec![
+            emit(Key::KeyJ, PressType::Down),
+            emit(Key::KeyJ, PressType::Up),
+            emit(Key::KeyJ, PressType::Down),
+        ]),
+    );
+    assert_eq!(
+        m.handle(&up(Key::KeyJ)),
+        Some(vec![emit(Key::KeyJ, PressType::Up)]),
+    );
+    assert_eq!(m.handle(&key(Key::KeyK)), Some(passed(Key::KeyK)));
+    assert!(matches!(m.layer(), Layer::Typing(_)));
 }
