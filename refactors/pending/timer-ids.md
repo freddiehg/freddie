@@ -17,7 +17,7 @@ Both fall out of one change: a firing carries the identity of the arming it came
 pub struct TimerFired(pub TimerId);
 
 // the binding names the guard whose firing it wants
-#[bind(|path| path.get().timeout.firing() => to_home)]
+#[bind(|nav_layer_path| nav_layer_path.get().home_timeout.firing() => to_home)]
 ```
 
 The identity does the work the per-timer types were doing, so the types go. The match does the work a stale-check in each handler would have done, so a stale firing matches no binding at all: dispatch returns `None`, the handler never runs, and no handler contains an `if` about it.
@@ -237,7 +237,7 @@ after:
 ```rust
 #[bind(
     // Only this layer's own arming: a firing from a nav already left matches nothing.
-    |path| path.get().timeout.firing() => to_home,
+    |nav_layer_path| nav_layer_path.get().home_timeout.firing() => to_home,
     Key::Escape.down() => to_home,
     Key::KeyC.down() => open_chrome,
     ..
@@ -250,11 +250,13 @@ after:
 pub struct NavLayer {
     // Read for the trigger that matches its firing, and held for its `Drop`: dropping the guard
     // cancels nav's return-home timer.
-    pub(crate) timeout: DropGuard,
+    pub(crate) home_timeout: DropGuard,
 }
 ```
 
-Its `#[expect(dead_code)]` goes: it is read now. No layer mentions `TimerId`.
+The field is renamed from `timeout` on all three layers, since a binding reads it now and "the timeout" says nothing about which one; its `#[expect(dead_code)]` goes with the rename, because it is read. No layer mentions `TimerId`.
+
+A closure's parameter is named for the path it is: `nav_layer_path`, not `path` or `nav`. It is neither the layer nor a generic path, and `nav.get()` reads as though it were the layer itself.
 
 `Home` and `Typing` arm nothing and bind nothing, so there is no `None` case anywhere: the absence is the absent binding.
 
@@ -299,11 +301,11 @@ after:
     Quit => quit,
     // Only this run's window: a firing from a run that has since ended matches nothing, so the
     // handler never sees it.
-    |path| ArmedTimer::firing_of(path.typing_state.jk.window_guard()) => jk_timeout,
+    |mercury_path| ArmedTimer::firing_of(mercury_path.typing_state.jk.window_guard()) => jk_timeout,
     AnyKey => maybe_pass_through,
 ```
 
-A closure is handed the node's PATH, which is why both are named for it: the root's is `&mut Mercury`, so its closure reads fields straight through the deref, and a layer's is a `PathMut`, so its closure reads the layer through `get`.
+The root's path is `&mut Mercury`, so its closure reads fields straight through the deref; a layer's is a `PathMut`, so its closure reads the layer through `get`.
 
 Both arm helpers take the closure form: `|id| MercuryEvent::Timer(TimerFired(id))`.
 
