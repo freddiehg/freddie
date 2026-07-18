@@ -98,7 +98,7 @@ impl TimerGuard {
 `crates/freddie/src/timer.rs`, before:
 
 ```rust
-pub fn set_timer<E>(delay: Duration, event: E) -> (DropGuard, TimerEffect<E>) {
+pub fn timer_effect_and_guard<E>(delay: Duration, event: E) -> (DropGuard, TimerEffect<E>) {
     let (guard, receiver) = drop_guard();
     (
         guard,
