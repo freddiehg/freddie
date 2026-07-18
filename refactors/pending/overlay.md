@@ -5,225 +5,19 @@ The overlay is an external AppKit window, not model state. The model cannot own 
 `o` in any non-typing layer shows that layer's keymap hint and arms a hide timer. The overlay hides when you change layers, or after the dwell. One binding each side:
 
 - `o => show_overlay` in every non-typing layer. `o` is a keystroke, so binding it at the root would fire in typing too and you could never type the letter, which is why it is per-layer. Typing binds nothing at all now, so `o` falls to the root and is passed through like every other key.
-- `OverlayTimeout => hide_overlay` once at the root. The timeout is a timer event, not a keystroke, and hiding is not opt-in, so a single root binding covers every layer.
+- the hide timer's own firing, bound once at the root. The timeout is a timer event, not a keystroke, and hiding is not opt-in, so a single root binding covers every layer.
 
-The overlay's trace in the model is one field on the root, `overlay: Option<DropGuard>`, the guard for the pending hide of whatever is up. It is a single thing shown from any layer, so its state is a root concern, not a per-layer one (unlike the return-home timer, which each layer owns independently). The three paths:
+The overlay's trace in the model is one field on the root, `overlay: Option<TimerGuard>`, the guard for the pending hide of whatever is up. It is a single thing shown from any layer, so its state is a root concern, not a per-layer one (unlike the return-home timer, which each layer owns independently). The three paths:
 
-- `show_overlay` arms the hide timer and stores its guard. Reassigning drops any previous guard, cancelling a still-pending timer, so a rapid second `o` supersedes.
+- `show_overlay` sets the hide timer and stores its guard. Reassigning drops any previous guard, cancelling a still-pending timer, so a rapid second `o` supersedes.
 - `hide_overlay` takes the field: if one was up, push `HideOverlay`.
 - `set_layer` does the same, so leaving a layer takes the overlay down with it.
 
-A superseded showing can still fire. Dropping the guard cancels the timer only if its sleep has not completed; one that fired in the moment before the drop has already put its event on the channel, and that cannot be un-sent. The window is microseconds wide and needs the second `o` to land exactly as the first showing's dwell expires, and the consequence is that the overlay blinks out and you press `o` again. `LayerTimeout` and `JkTimeout` accept the same race for the same reason, so the overlay carries no generation id to tell one firing from another: it would be a counter on the root and a field on the event, bought to make a cosmetic flicker impossible.
+A superseded showing can still fire, and nothing here has to care. The binding names the guard the root holds, so a firing from a showing that was replaced matches no binding at all and the handler never runs. That is `refactors/past/timer-ids.md`, which landed: every timer shares one `TimerFired` event, and which timer fired is what the binding matches on.
 
-`refactors/pending/timer-ids.md` closes it for every timer at once, by minting the id inside `timer_effect_and_guard` and stamping it on both the guard and the fired event, so no caller keeps a counter. When that lands, `hide_overlay` gains an id parameter and one comparison against the guard the root holds. Until then the race stands, here and in the other two.
+## change 1: the overlay effects, content, and bindings
 
-The `DropGuard` is the drop-signals-a-receiver half of today's `TimerGuard`, pulled out of `freddie::timer` (change 1) so the timer and the overlay share it. It is a pure RAII primitive: the effect that carries the paired receiver wraps it in `AlwaysEqual` for its `testing` equality; the guard itself carries no such concern.
-
-## change 1: extract `DropGuard` in freddie
-
-The cancel mechanism, a sender whose drop wakes a paired receiver, is today buried in `TimerGuard`. Pull it into its own `freddie` primitive so the overlay's hide timer reuses it. `TimerGuard` goes away; the effect keeps the receiver and the `AlwaysEqual` around it.
-
-### the new module
-
-New `crates/freddie/src/drop_guard.rs`:
-
-```rust
-//! A guard whose drop cancels a paired async job.
-
-use tokio::sync::oneshot;
-
-/// The cancelling half of a drop pair. The owning node holds it; dropping it (a transition that
-/// replaces the node, or a clobber that overwrites it) closes the channel and wakes the paired
-/// receiver, so whatever waits on that receiver tears down at once.
-///
-/// A pure RAII primitive: it knows nothing about testing equality. A consumer that needs a
-/// comparable effect wraps its own half in `AlwaysEqual` (see [`TimerEffect`](crate::TimerEffect)).
-#[must_use = "dropping the guard cancels immediately"]
-pub struct DropGuard(
-    // Held only to be dropped: dropping the sender wakes the paired receiver. Never read.
-    #[allow(dead_code)] oneshot::Sender<()>,
-);
-
-impl std::fmt::Debug for DropGuard {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("DropGuard")
-    }
-}
-
-/// Build a linked guard/receiver pair. The guard goes in the node; the receiver rides an effect to
-/// whatever performs the cancellable job.
-#[must_use]
-pub fn drop_guard() -> (DropGuard, oneshot::Receiver<()>) {
-    let (sender, receiver) = oneshot::channel();
-    (DropGuard(sender), receiver)
-}
-```
-
-### the timer, on top of it
-
-`crates/freddie/src/timer.rs`, before:
-
-```rust
-use std::time::Duration;
-
-use tokio::sync::oneshot;
-
-use crate::AlwaysEqual;
-
-/// The cancelling half, held by the node that owns the timer.
-///
-/// Dropping it (a transition that replaces the node, or a clobber that overwrites the guard)
-/// cancels the timer at once, because the paired receiver wakes when this sender goes.
-#[must_use = "dropping the guard cancels the timer immediately"]
-#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
-#[derive(Debug)]
-pub struct TimerGuard(
-    // Held for its `Drop`: dropping the sender wakes the paired receiver and cancels the timer. It
-    // is read only under `testing` (the equality derive), so it is otherwise never read.
-    #[cfg_attr(not(feature = "testing"), allow(dead_code))] AlwaysEqual<oneshot::Sender<()>>,
-);
-
-/// The scheduling half: a delay, the event to fire, and the cancel channel.
-///
-/// A handler returns it as an effect and the effect loop pattern-matches it to schedule. It owns
-/// the event and the receiver, so it is used once. The receiver sits in `AlwaysEqual`, so the
-/// effect's `testing` equality is the delay and the event.
-#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
-#[derive(Debug)]
-pub struct TimerEffect<E> {
-    pub delay: Duration,
-    pub event: E,
-    pub cancel: AlwaysEqual<oneshot::Receiver<()>>,
-}
-
-/// Build a linked guard/event pair that fires `event` after `delay`.
-pub fn timer_effect_and_guard<E>(delay: Duration, event: E) -> (TimerGuard, TimerEffect<E>) {
-    let (sender, cancel) = oneshot::channel();
-    (
-        TimerGuard(AlwaysEqual(sender)),
-        TimerEffect {
-            delay,
-            event,
-            cancel: AlwaysEqual(cancel),
-        },
-    )
-}
-```
-
-after (the guard comes from `drop_guard`; the effect wraps its own receiver in `AlwaysEqual`):
-
-```rust
-use std::time::Duration;
-
-use tokio::sync::oneshot;
-
-use crate::AlwaysEqual;
-use crate::drop_guard::{DropGuard, drop_guard};
-
-/// The scheduling half: a delay, the event to fire, and the cancel channel.
-///
-/// A handler returns it as an effect and the effect loop pattern-matches it to schedule. It owns
-/// the event and the receiver, so it is used once. The receiver sits in `AlwaysEqual`, so the
-/// effect's `testing` equality is the delay and the event; the effect, not the guard, carries the
-/// testing concern.
-#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
-#[derive(Debug)]
-pub struct TimerEffect<E> {
-    pub delay: Duration,
-    pub event: E,
-    pub cancel: AlwaysEqual<oneshot::Receiver<()>>,
-}
-
-/// Build a linked guard/event pair that fires `event` after `delay`. The guard cancels the timer
-/// on drop.
-pub fn timer_effect_and_guard<E>(delay: Duration, event: E) -> (DropGuard, TimerEffect<E>) {
-    let (guard, receiver) = drop_guard();
-    (
-        guard,
-        TimerEffect {
-            delay,
-            event,
-            cancel: AlwaysEqual(receiver),
-        },
-    )
-}
-```
-
-### the exports
-
-`crates/freddie/src/lib.rs`, before:
-
-```rust
-//! freddie: a framework for typed event-to-state machines. Work in progress.
-
-pub mod always_equal;
-pub mod timer;
-
-pub use always_equal::AlwaysEqual;
-pub use timer::{TimerEffect, TimerGuard, timer_effect_and_guard};
-```
-
-after:
-
-```rust
-//! freddie: a framework for typed event-to-state machines. Work in progress.
-
-pub mod always_equal;
-pub mod drop_guard;
-pub mod timer;
-
-pub use always_equal::AlwaysEqual;
-pub use drop_guard::{DropGuard, drop_guard};
-pub use timer::{TimerEffect, timer_effect_and_guard};
-```
-
-### the mercury side of the rename
-
-The return-home guard the layers hold is now a `DropGuard`. In `crates/mercury/src/state/nav.rs`, `resize.rs`, and `app.rs`, the field and its `use` change identically. `nav.rs`, before:
-
-```rust
-use freddie::TimerGuard;
-// ...
-pub struct NavLayer {
-    // Held for its `Drop`: dropping the guard cancels nav's return-home timer.
-    #[allow(dead_code)]
-    timeout: TimerGuard,
-}
-```
-
-after:
-
-```rust
-use freddie::DropGuard;
-// ...
-pub struct NavLayer {
-    // Held for its `Drop`: dropping the guard cancels nav's return-home timer.
-    #[allow(dead_code)]
-    timeout: DropGuard,
-}
-```
-
-`crates/mercury/src/state/mod.rs`, before:
-
-```rust
-use freddie::{TimerGuard, timer_effect_and_guard};
-// ...
-fn arm_return_home() -> (TimerGuard, MercuryEffect) {
-```
-
-after:
-
-```rust
-use freddie::{DropGuard, timer_effect_and_guard};
-// ...
-fn arm_return_home() -> (DropGuard, MercuryEffect) {
-```
-
-`crates/mercury/tests/transitions.rs` destructures the pair as `let (_guard, effect) = ...`, so it needs no change.
-
-## change 2: the overlay effects, content, and bindings
-
-`o` shows the active layer's hint and arms the hide timer; `OverlayTimeout` and every layer change hide it. Rendering is a `debug!` line here; change 3 makes it draw.
+`o` shows the active layer's hint and sets the hide timer; its firing and every layer change hide it. Rendering is a `debug!` line here; change 2 makes it draw.
 
 ### the effects
 
@@ -239,52 +33,9 @@ fn arm_return_home() -> (DropGuard, MercuryEffect) {
     HideOverlay,
 ```
 
-### the timeout trigger
+### no timeout trigger
 
-`crates/mercury/src/sources.rs`, appended. It carries nothing, so one type is both trigger and event, like `LayerTimeout` and `JkTimeout`.
-
-That makes it the third timer to mint its own type, which is what `refactors/pending/timer-ids.md` is about. This does not wait on it: whichever way that goes, this is one more `TimerId` variant or one more `self_trigger!`, and the rest of the doc is unchanged.
-
-```rust
-/// The overlay's hide timer. It carries nothing, so one type is both the trigger and the event.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct OverlayTimeout;
-
-bind::self_trigger!(OverlayTimeout);
-```
-
-### the unified event and trigger
-
-`crates/mercury/src/model.rs`, the `use`, before:
-
-```rust
-use crate::{AnyKey, ForegroundEvent, Foregrounded, JkTimeout, LayerTimeout, MercuryEffect, Quit};
-```
-
-after:
-
-```rust
-use crate::{
-    AnyKey, ForegroundEvent, Foregrounded, JkTimeout, LayerTimeout, MercuryEffect, OverlayTimeout,
-    Quit,
-};
-```
-
-`MercuryTrigger` and `MercuryEvent` each gain `OverlayTimeout(OverlayTimeout)`. `MercuryEvent`, after:
-
-```rust
-#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
-#[derive(Debug, derive_more::TryInto)]
-#[try_into(ref)]
-pub enum MercuryEvent {
-    Key(KeyEvent),
-    Foreground(ForegroundEvent),
-    Quit(Quit),
-    LayerTimeout(LayerTimeout),
-    JkTimeout(JkTimeout),
-    OverlayTimeout(OverlayTimeout),
-}
-```
+The overlay needs neither an event nor a trigger of its own. Every timer fires `freddie::TimerFired`, and what tells one from another is which guard the firing came from, so the root binds the guard it is holding and nothing else is added to `sources.rs`, `MercuryTrigger`, or `MercuryEvent`.
 
 ### the layer's content
 
@@ -411,10 +162,11 @@ pub struct Mercury {
     pub foreground: Foreground,
     /// The state the passthrough (typing) behavior needs. See [`TypingState`].
     pub typing_state: TypingState,
-    /// The overlay currently up, if any: the guard whose drop cancels its pending hide. The
-    /// overlay is an external window driven by effects, so this is its only trace in the model,
-    /// held at the root because there is one overlay across all layers.
-    overlay: Option<DropGuard>,
+    /// The overlay currently up, if any: the guard for its pending hide. The overlay is an
+    /// external window driven by effects, so this is its only trace in the model, held at the root
+    /// because there is one overlay across all layers. The root's binding names it, so a firing
+    /// from a showing that was replaced matches nothing.
+    overlay: Option<TimerGuard>,
     /// The active layer. Private, and written only through [`set_layer`](Mercury::set_layer) [..].
     #[resolve_into]
     layer: Layer,
@@ -428,7 +180,8 @@ The root's `#[bind(..)]` gains the hide, and `Default` gains the fields. Bind, a
     Foregrounded => record_front_app,
     Quit => quit,
     JkTimeout => jk_timeout,
-    OverlayTimeout => hide_overlay,
+    // Only the showing that is up: a dwell from one already replaced matches nothing.
+    |mercury_path| mercury_path.overlay.as_ref().map(TimerGuard::trigger) => hide_overlay,
     AnyKey => maybe_pass_through,
 )]
 ```
@@ -460,10 +213,8 @@ New on `impl Mercury`, beside `handle` and `set_layer`:
 #[must_use = "the returned effects show the overlay and schedule its hide"]
 pub fn show_overlay(&mut self) -> Vec<MercuryEffect> {
     let content = self.layer.overlay_content(self.foreground.app());
-    let (guard, effect) = timer_effect_and_guard(
-        OVERLAY_DWELL,
-        MercuryEvent::OverlayTimeout(OverlayTimeout),
-    );
+    let (guard, effect) =
+        timer_effect_and_guard(OVERLAY_DWELL, |id| MercuryEvent::Timer(TimerFired(id)));
     self.overlay = Some(guard);
     vec![MercuryEffect::ShowOverlay(content), MercuryEffect::Timer(effect)]
 }
@@ -520,7 +271,7 @@ pub fn set_layer(&mut self, into: impl Into<Layer>) -> Vec<MercuryEffect> {
 }
 ```
 
-`state/mod.rs` needs `OverlayTimeout` in its `use crate::{..}` list, and `DropGuard` from `freddie`.
+`state/mod.rs` needs `TimerFired` and `TimerGuard` from `freddie`; it adds nothing to its `use crate::{..}`.
 
 ### the handlers
 
@@ -532,8 +283,10 @@ New `crates/mercury/src/handlers/overlay.rs`:
 use bind::Node;
 use laserbeam::Ascend;
 
+use freddie::TimerFired;
+
 use crate::state::{Mercury, MercuryPath};
-use crate::{MercuryEffect, OverlayTimeout};
+use crate::MercuryEffect;
 
 /// `o` in a non-typing layer: show the active layer's overlay and arm its hide timer.
 ///
@@ -545,9 +298,10 @@ pub(crate) fn show_overlay<'a, E, P: Ascend<MercuryPath<'a>>>(
     node.parent.ascend().show_overlay()
 }
 
-/// The overlay's hide timer fired. Bound at the root, so it fires from whatever layer is active.
+/// The overlay's hide timer fired. Bound at the root, so it fires from whatever layer is active,
+/// and only for the showing still up: the binding matches the guard the root holds.
 pub(crate) fn hide_overlay(
-    _ev: &OverlayTimeout,
+    _ev: &TimerFired,
     node: Node<&mut Mercury, ()>,
 ) -> Vec<MercuryEffect> {
     node.parent.hide_overlay()
@@ -576,7 +330,7 @@ Each non-typing layer binds `o`. `state/home.rs`, `nav.rs`, `resize.rs`, and `ap
 
 ### the exports
 
-`crates/mercury/src/lib.rs` adds `OverlayTimeout` to the `sources` re-export, and `OVERLAY_DWELL` to the `state` re-export.
+`crates/mercury/src/lib.rs` adds `OVERLAY_DWELL` to the `state` re-export, and nothing to the `sources` one.
 
 ### the effect-loop stub
 
@@ -589,16 +343,13 @@ MercuryEffect::HideOverlay => debug!("hide overlay (not yet drawn)"),
 
 ### tests
 
-`crates/mercury/tests/transitions.rs`. Add `OverlayTimeout` and `OVERLAY_DWELL` to the `use mercury::{..}` list, and a helper beside `return_home_timer`:
+`crates/mercury/tests/transitions.rs`. Add `OVERLAY_DWELL` to the `use mercury::{..}` list, and a helper beside `return_home_timer`, built with the `fired` and `timer_id` helpers that are already there:
 
 ```rust
-// The effect `o` arms: the overlay's hide timer. Equality under `testing` compares the delay and
-// fire event, so a rebuilt one matches what `show_overlay` produced.
+// The effect `o` produces: the overlay's hide timer. Equality under `testing` compares the delay
+// and the fire event, and a firing compares equal whatever its id, so a rebuilt one matches.
 fn overlay_hide_timer() -> MercuryEffect {
-    let (_guard, effect) = freddie::timer_effect_and_guard(
-        OVERLAY_DWELL,
-        MercuryEvent::OverlayTimeout(OverlayTimeout),
-    );
+    let (_guard, effect) = freddie::timer_effect_and_guard(OVERLAY_DWELL, fired);
     MercuryEffect::Timer(effect)
 }
 ```
@@ -649,15 +400,28 @@ fn the_in_app_overlay_is_the_front_apps_keymap() {
 #[test]
 fn the_overlay_hides_after_the_dwell() {
     let mut m = home();
-    let _ = m.handle(&key(Key::KeyO));
+    let shown = m.handle(&key(Key::KeyO)).expect("o is bound");
     assert_eq!(
-        m.handle(&MercuryEvent::OverlayTimeout(OverlayTimeout)),
+        m.handle(&fired(timer_id(&shown))),
         Some(vec![MercuryEffect::HideOverlay])
     );
-    // And again is a no-op: nothing is up.
+    // And again matches nothing: the field was taken, so no binding names that guard.
+    assert_eq!(m.handle(&fired(timer_id(&shown))), None);
+}
+
+#[test]
+fn a_dwell_from_a_superseded_showing_matches_nothing() {
+    // Two `o`s in a row: the first showing's dwell arrives after the second replaced it, and must
+    // not take the live overlay down.
+    let mut m = home();
+    let first = timer_id(&m.handle(&key(Key::KeyO)).expect("o is bound"));
+    let second = timer_id(&m.handle(&key(Key::KeyO)).expect("o is bound"));
+    assert_ne!(first, second, "each showing sets its own dwell");
+
+    assert_eq!(m.handle(&fired(first)), None);
     assert_eq!(
-        m.handle(&MercuryEvent::OverlayTimeout(OverlayTimeout)),
-        Some(vec![])
+        m.handle(&fired(second)),
+        Some(vec![MercuryEffect::HideOverlay])
     );
 }
 
@@ -699,7 +463,7 @@ Where `HideOverlay` lands relative to `ShowLayer` is what `set_layer` does: it a
 
 At this point `o` shows and hides the overlay at the model level, the effects are asserted, and a run logs the show/hide. Nothing draws yet.
 
-## change 3: the `freddie_overlay` panel and the effect loop
+## change 2: the `freddie_overlay` panel and the effect loop
 
 A borderless panel that floats above everything and shows the keymap, driven by the two effects.
 
@@ -937,7 +701,7 @@ const MARGIN: f64 = 20.0;
 
 `crates/mercury/Cargo.toml` adds `freddie_overlay = { path = "../freddie_overlay" }`.
 
-`crates/mercury/src/main.rs`, `perform_effect`, replace the change-2 stubs:
+`crates/mercury/src/main.rs`, `perform_effect`, replace the change-1 stubs:
 
 ```rust
 MercuryEffect::ShowOverlay(text) => freddie_overlay::show(text),
