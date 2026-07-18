@@ -25,6 +25,18 @@ The properties, verified on macOS 25.5.0 (Darwin) against a standalone binary:
 - A second `open` from the *same* process also fails, because the lock belongs to the open file description rather than the process. That is what lets the tests below run in one process.
 - The kernel releases the lock when the holder dies by any means, `SIGKILL` included, so there is no stale lock and nothing to clean up. The zero-byte lock file stays on disk between runs and is reused.
 
+## Where the lock file lives
+
+`~/Library/Application Support/mercury/mercury.lock`, and the directory it sits in is a correctness constraint rather than a convention.
+
+The lock belongs to the inode, not to the path. Delete the file while a mercury holds it and the holder keeps its lock, but the next mercury creates a fresh file at the same path and takes it without contest: two mercuries, and nothing in the log saying why. So the lock must live somewhere the system never prunes, which means:
+
+- Not `$TMPDIR` (`/var/folders/<user>/T/`). `com.apple.bsd.dirhelper` runs `/usr/libexec/dirhelper` at load and daily at 03:35 with `CLEAN_FILES_OLDER_THAN_DAYS=3`. Mercury is a login agent that holds the lock for weeks and never touches the file after `open`, so its atime never advances; it is exactly what that job deletes.
+- Not `~/Library/Caches` or `/var/folders/<user>/C/`, purgeable under disk pressure by design.
+- Not `~/Library/Logs/mercury/`, next to the log file. `logging::log_dir` already builds that directory, but log directories are what people and tools prune, and pruning this one silently disables the guard.
+
+Per-user rather than system-wide (`/var/run`), because two users logged in under fast user switching each have their own session and their own tap, so each legitimately gets a mercury.
+
 ## Change: `mercury` refuses to start when another mercury holds the lock
 
 ### `crates/mercury/Cargo.toml`
@@ -194,7 +206,11 @@ mod tests {
     use super::{Instance, LockError, acquire, lock_path};
     use std::path::PathBuf;
 
-    // A path of this test's own, so the suite never touches the real lock.
+    // A path of this test's own, so the suite never touches the real lock. Both halves of
+    // the name are needed, and for different collisions: `name` keeps libtest's threads,
+    // which share a pid, off each other's files, and the pid keeps two test binaries running
+    // at once (a watch loop against the pre-commit hook) off each other's. Tests never share
+    // a `name`, so nothing here needs `--test-threads=1`.
     fn temp_lock(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("mercury-{}-{name}.lock", std::process::id()))
     }
