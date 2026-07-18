@@ -48,7 +48,24 @@ pub const OVERLAY_DWELL: Duration = Duration::from_secs(10);
 
 Each layer's keymap is a file, not a string literal. A table written with `concat!` and `\n` escapes cannot be read as the table it is, and the whole point is that the columns line up; in a file, what you see is what the overlay draws.
 
-Each file sits beside the bindings it describes: `crates/mercury/src/state/nav.txt` next to `nav.rs`, and the same for `home`, `resize`, and `typing`. The apps' keymaps go beside `app.rs`, as `chrome.txt`, `ghostty.txt`, and `inapp.txt` for an app with bindings of its own. `nav.txt`:
+They live in one folder beside the layers, `crates/mercury/src/state/overlays/`, one file per keymap:
+
+```
+crates/mercury/src/state/
+  overlays/
+    home.txt
+    nav.txt
+    resize.txt
+    typing.txt
+    chrome.txt
+    ghostty.txt
+    inapp.txt
+  home.rs
+  nav.rs
+  ..
+```
+
+`inapp.txt` is for an app with no bindings of its own. `nav.txt`:
 
 ```
   NAV
@@ -65,16 +82,16 @@ Each module includes its own at compile time, so a missing file is a build error
 ```rust
 /// The keymap the overlay shows for this layer. Beside the bindings it describes, so the two are
 /// changed together or the drift is obvious.
-pub(crate) const OVERLAY: &str = include_str!("nav.txt");
+pub(crate) const OVERLAY: &str = include_str!("overlays/nav.txt");
 ```
 
 `home.rs`, `resize.rs`, and `typing.rs` do the same. `app.rs` carries one per app, since the in-app layer's bindings are the front app's:
 
 ```rust
-pub(crate) const CHROME_OVERLAY: &str = include_str!("chrome.txt");
-pub(crate) const GHOSTTY_OVERLAY: &str = include_str!("ghostty.txt");
+pub(crate) const CHROME_OVERLAY: &str = include_str!("overlays/chrome.txt");
+pub(crate) const GHOSTTY_OVERLAY: &str = include_str!("overlays/ghostty.txt");
 /// For an app with no bindings of its own: the in-app layer's own keys and nothing more.
-pub(crate) const INAPP_OVERLAY: &str = include_str!("inapp.txt");
+pub(crate) const INAPP_OVERLAY: &str = include_str!("overlays/inapp.txt");
 ```
 
 `impl Layer`, beside `is_passthrough`, names them:
@@ -696,6 +713,5 @@ The panel builds on the first `show` on the main thread and reuses thereafter; `
 
 ## open questions
 
-- The hint strings are hand-written per layer. Deriving them from the layer's `#[bind(..)]` set would keep them in step with the bindings automatically; that needs a way to read a node's triggers, which `bind` does not expose yet.
 - The panel styling (size, font, position, a background card) is a first pass, not tuned.
 - Whether the overlay should also show for layers reached without a keypress (a foreground event retargeting the in-app layer, say), which today never flashes because only `o` shows it.
