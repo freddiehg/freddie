@@ -1,7 +1,7 @@
 //! What a handler asks the consumer to do, and the window placement it can request.
 
 use freddie::TimerEffect;
-use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
+use freddie_keys::{Key, KeyEvent, KeyPress, ModifierFlags, PressType};
 
 use crate::MercuryEvent;
 
@@ -54,4 +54,13 @@ pub(crate) const fn tap(key: Key, flags: ModifierFlags) -> MercuryEffect {
 /// modifier synchronization sweeps.
 pub(crate) const fn emit(key: Key, press: PressType, flags: ModifierFlags) -> MercuryEffect {
     MercuryEffect::Emit(KeyEvent { key, press, flags })
+}
+
+/// The effects that replay what a key sequence swallowed. Every key a run takes arrived with no
+/// modifier, so every one of them goes back out bare.
+pub(crate) fn replay(presses: Vec<KeyPress>) -> Vec<MercuryEffect> {
+    presses
+        .into_iter()
+        .map(|p| emit(p.key, p.press, ModifierFlags::empty()))
+        .collect()
 }
