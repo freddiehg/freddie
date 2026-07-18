@@ -5,9 +5,9 @@
 
 use bind::SimpleRunner;
 use mercury::{
-    App, HomeLayer, Key, KeyEvent, Layer, LayerTimeout, Mercury, MercuryEffect, MercuryEvent,
-    MercuryStruct, ModifierFlags, Placement, PressType, RETURN_TO_HOME_TIMEOUT, foreground, key,
-    quit_event,
+    App, HomeLayer, JK_TIMEOUT, JkTimeout, Key, KeyEvent, Layer, LayerTimeout, Mercury,
+    MercuryEffect, MercuryEvent, MercuryStruct, ModifierFlags, Placement, PressType,
+    RETURN_TO_HOME_TIMEOUT, foreground, key, quit_event,
 };
 
 // Entering nav, resize, or the in-app layer arms the return-to-home timer; this is the effect
@@ -867,6 +867,18 @@ fn inapp_follows_the_front_app_across_a_switch() {
 
 // ---- jk: the sequence that leaves typing ----
 
+// The event the jk window fires when it elapses.
+const fn jk_window_fired() -> MercuryEvent {
+    MercuryEvent::JkTimeout(JkTimeout)
+}
+
+// Opening a run arms its window; this is the effect that schedules it. Equality under `testing`
+// compares the delay and the fire event, so a rebuilt one matches what the run produced.
+fn jk_timer() -> MercuryEffect {
+    let (_guard, effect) = freddie::timer_effect_and_guard(JK_TIMEOUT, jk_window_fired());
+    MercuryEffect::Timer(effect)
+}
+
 // A mercury in typing, the passthrough layer, with the jk run idle.
 fn typing() -> Mercury {
     Mercury::default()
@@ -875,7 +887,7 @@ fn typing() -> Mercury {
 #[test]
 fn jk_typed_one_key_at_a_time_leaves_for_home() {
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
     assert!(!m.typing_state.jk.is_idle());
     assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
     assert_eq!(m.handle(&key(Key::KeyK)), Some(vec![]));
@@ -889,7 +901,7 @@ fn jk_rolled_leaves_for_home_and_the_ups_land_in_home() {
     // and is not a passthrough layer, so they are swallowed rather than reaching the app as ups
     // with no downs.
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
     assert_eq!(m.handle(&key(Key::KeyK)), Some(vec![]));
     assert!(matches!(m.layer(), Layer::Home(_)));
     assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
@@ -899,7 +911,7 @@ fn jk_rolled_leaves_for_home_and_the_ups_land_in_home() {
 #[test]
 fn a_j_tap_then_another_key_types_the_j_first() {
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
     assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
     assert_eq!(
         m.handle(&key(Key::KeyA)),
@@ -916,7 +928,7 @@ fn a_held_j_then_another_key_replays_only_its_down() {
     // Only the j down was swallowed, so only it replays. The real j up passes through later, with
     // the run already idle.
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
     assert_eq!(
         m.handle(&key(Key::KeyA)),
         Some(vec![
@@ -947,7 +959,7 @@ fn a_j_carrying_a_modifier_never_opens_the_run() {
 #[test]
 fn a_modifier_arriving_mid_run_breaks_it() {
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
     assert_eq!(
         m.handle(&key_with(Key::MetaLeft, ModifierFlags::COMMAND)),
         Some(vec![
@@ -963,7 +975,7 @@ fn a_held_js_auto_repeat_breaks_the_run() {
     // The swallowed down replays ahead of the repeat, so the app sees the same two downs it would
     // have seen unwatched, and the k after it is an ordinary k.
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
     assert_eq!(
         m.handle(&key(Key::KeyJ)),
         Some(vec![
@@ -981,7 +993,7 @@ fn escape_in_typing_breaks_the_run_and_reaches_the_app() {
     // Typing binds nothing, so escape runs through the sequence like any other key and the j
     // replays AHEAD of it.
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
     assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
     assert_eq!(
         m.handle(&key(Key::Escape)),
@@ -999,7 +1011,7 @@ fn leaving_typing_abandons_a_held_j() {
     // The layer change replaces the run, and the j is dropped rather than typed: the app never saw
     // its down, and its up will be swallowed by the command layer.
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
     assert_eq!(m.handle(&key(Key::KeyK)), Some(vec![]));
     assert!(matches!(m.layer(), Layer::Home(_)));
     assert!(m.typing_state.jk.is_idle());
@@ -1009,7 +1021,7 @@ fn leaving_typing_abandons_a_held_j() {
 fn j_and_k_still_type_themselves_when_they_are_not_a_run() {
     // j, j, k: the second j breaks the first run and does not open a second, so all three type.
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
     assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
     assert_eq!(
         m.handle(&key(Key::KeyJ)),
@@ -1025,4 +1037,49 @@ fn j_and_k_still_type_themselves_when_they_are_not_a_run() {
     );
     assert_eq!(m.handle(&key(Key::KeyK)), Some(passed(Key::KeyK)));
     assert!(matches!(m.layer(), Layer::Typing(_)));
+}
+
+#[test]
+fn a_half_typed_run_types_itself_when_the_window_elapses() {
+    let mut m = typing();
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
+    assert_eq!(
+        m.handle(&jk_window_fired()),
+        Some(vec![emit(Key::KeyJ, PressType::Down)]),
+    );
+    assert!(m.typing_state.jk.is_idle());
+    // The k that follows is an ordinary k, not the second half of anything.
+    assert_eq!(m.handle(&key(Key::KeyK)), Some(passed(Key::KeyK)));
+    assert!(matches!(m.layer(), Layer::Typing(_)));
+}
+
+#[test]
+fn a_full_tap_types_itself_when_the_window_elapses() {
+    // Both halves were swallowed, so both replay, in the order they arrived.
+    let mut m = typing();
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
+    assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
+    assert_eq!(
+        m.handle(&jk_window_fired()),
+        Some(vec![
+            emit(Key::KeyJ, PressType::Down),
+            emit(Key::KeyJ, PressType::Up),
+        ]),
+    );
+}
+
+#[test]
+fn a_timeout_with_no_run_in_progress_emits_nothing() {
+    // The guard is dropped when a run ends, so this never arrives in practice; one that raced in
+    // finds an idle run and does nothing.
+    let mut m = typing();
+    assert_eq!(m.handle(&jk_window_fired()), Some(vec![]));
+}
+
+#[test]
+fn the_window_is_armed_once_per_run_not_once_per_key() {
+    // The j up advances the run without re-arming: the window runs from the first key.
+    let mut m = typing();
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
+    assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
 }

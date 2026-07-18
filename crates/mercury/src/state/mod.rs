@@ -18,8 +18,8 @@ use crate::effect::emit;
 #[allow(clippy::wildcard_imports)]
 use crate::handlers::*;
 use crate::{
-    AnyKey, App, ForegroundEvent, Foregrounded, LayerTimeout, MercuryEffect, MercuryEvent,
-    MercuryStruct, Quit,
+    AnyKey, App, ForegroundEvent, Foregrounded, JkTimeout, LayerTimeout, MercuryEffect,
+    MercuryEvent, MercuryStruct, Quit,
 };
 
 mod app;
@@ -48,12 +48,29 @@ fn arm_return_home() -> (TimerGuard, MercuryEffect) {
     (guard, MercuryEffect::Timer(effect))
 }
 
+/// How long a `jk` run waits for its next key before what it swallowed types itself.
+///
+/// It bounds how long a `j` stays invisible, so shorter is better, but it has to cover a
+/// deliberately typed `jk` (down, up, down) rather than only a rolled one, which is far faster.
+pub const JK_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// Arm a run's window: the guard cancels it on drop, the effect schedules it. The delay is the
+/// run's own, read off the sequence, so this does not restate the policy.
+///
+/// `pub(crate)` where `arm_return_home` is private, because the root's handlers call this one and
+/// they are not children of this module.
+pub(crate) fn arm_jk_timeout(window: Duration) -> (TimerGuard, MercuryEffect) {
+    let (guard, effect) = timer_effect_and_guard(window, MercuryEvent::JkTimeout(JkTimeout));
+    (guard, MercuryEffect::Timer(effect))
+}
+
 #[derive(Bind, Debug)]
 #[node(root)]
 #[binds(MercuryStruct)]
 #[bind(
     Foregrounded => record_front_app,
     Quit => quit,
+    JkTimeout => jk_timeout,
     AnyKey => maybe_pass_through,
 )]
 pub struct Mercury {
@@ -211,7 +228,7 @@ impl Mercury {
         let before_passthrough = self.layer.is_passthrough();
         let after_passthrough = into.is_passthrough();
         self.layer = into;
-        self.typing_state.jk = KeySequence::new(JK);
+        self.typing_state.jk = KeySequence::new(JK, Some(JK_TIMEOUT));
         match (before_passthrough, after_passthrough) {
             (true, false) => self.typing_state.held.close(),
             (false, true) => self.typing_state.held.open(),
@@ -241,7 +258,7 @@ impl Default for TypingState {
     fn default() -> Self {
         Self {
             held: HeldModifiers::default(),
-            jk: KeySequence::new(JK),
+            jk: KeySequence::new(JK, Some(JK_TIMEOUT)),
         }
     }
 }

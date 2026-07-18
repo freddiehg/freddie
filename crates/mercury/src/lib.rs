@@ -51,8 +51,9 @@ mod state;
 
 pub use effect::{MercuryEffect, Placement};
 pub use model::{MercuryEvent, MercuryStruct, MercuryTrigger};
-pub use sources::{AnyKey, App, ForegroundEvent, Foregrounded, LayerTimeout, Quit};
+pub use sources::{AnyKey, App, ForegroundEvent, Foregrounded, JkTimeout, LayerTimeout, Quit};
 pub use state::{
-    AppData, AppLayer, ChromeApp, Foreground, GhosttyApp, HomeLayer, Layer, Mercury, NavLayer,
-    RETURN_TO_HOME_TIMEOUT, ResizeLayer, TypingLayer, TypingState, foreground, key, quit_event,
+    AppData, AppLayer, ChromeApp, Foreground, GhosttyApp, HomeLayer, JK_TIMEOUT, Layer, Mercury,
+    NavLayer, RETURN_TO_HOME_TIMEOUT, ResizeLayer, TypingLayer, TypingState, foreground, key,
+    quit_event,
 };

@@ -5,9 +5,11 @@ use bind::Node;
 use freddie::KeySequenceOutcome;
 use freddie_keys::KeyEvent;
 
+use crate::JkTimeout;
+
 use crate::MercuryEffect;
 use crate::effect::{emit, replay};
-use crate::state::{HomeLayer, Mercury};
+use crate::state::{HomeLayer, Mercury, arm_jk_timeout};
 
 /// Any key the active layer did not bind.
 ///
@@ -30,7 +32,18 @@ pub(crate) fn maybe_pass_through(
     if !root.layer().is_passthrough() {
         return Vec::new();
     }
+    // The run is idle before this key iff this key opens it, which is when its window is armed.
+    // Every other outcome ends the run, which drops the guard and cancels the wait.
+    let opening = root.typing_state.jk.is_idle();
     match root.typing_state.jk.advance(ev) {
+        KeySequenceOutcome::Advanced if opening => match root.typing_state.jk.window() {
+            Some(window) => {
+                let (guard, timer) = arm_jk_timeout(window);
+                root.typing_state.jk.hold(guard);
+                vec![timer]
+            }
+            None => Vec::new(),
+        },
         KeySequenceOutcome::Advanced => Vec::new(),
         KeySequenceOutcome::Passed(presses) => {
             let mut out = replay(presses);
@@ -39,4 +52,11 @@ pub(crate) fn maybe_pass_through(
         }
         KeySequenceOutcome::Completed => root.set_layer(HomeLayer::new()),
     }
+}
+
+/// The window elapsed with no next key: what the run swallowed types itself, exactly as a key that
+/// broke the run would have made it.
+pub(crate) fn jk_timeout(_ev: &JkTimeout, node: Node<&mut Mercury, ()>) -> Vec<MercuryEffect> {
+    let root = node.parent;
+    replay(root.typing_state.jk.interrupt())
 }

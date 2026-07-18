@@ -8,8 +8,8 @@ use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 
 const JK: &[Key] = &[Key::KeyJ, Key::KeyK];
 
-const fn jk() -> KeySequence {
-    KeySequence::new(JK)
+fn jk() -> KeySequence {
+    KeySequence::new(JK, None)
 }
 
 const fn down(key: Key) -> KeyEvent {
@@ -211,13 +211,13 @@ fn interrupt_hands_back_what_was_swallowed() {
 fn a_repeated_key_sequence_fires_on_a_double_tap_but_not_on_a_hold() {
     const JJ: &[Key] = &[Key::KeyJ, Key::KeyJ];
 
-    let mut s = KeySequence::new(JJ);
+    let mut s = KeySequence::new(JJ, None);
     assert_eq!(s.advance(&down(Key::KeyJ)), KeySequenceOutcome::Advanced);
     assert_eq!(s.advance(&up(Key::KeyJ)), KeySequenceOutcome::Advanced);
     assert_eq!(s.advance(&down(Key::KeyJ)), KeySequenceOutcome::Completed);
 
     // Held, the repeat arrives with j still down and breaks it instead.
-    let mut s = KeySequence::new(JJ);
+    let mut s = KeySequence::new(JJ, None);
     let _ = s.advance(&down(Key::KeyJ));
     assert_eq!(
         replayed(s.advance(&down(Key::KeyJ))),
@@ -231,7 +231,7 @@ fn a_longer_run_replays_interleaved_ups_in_arrival_order() {
     // arrived in reproduces the stream.
     const JKL: &[Key] = &[Key::KeyJ, Key::KeyK, Key::KeyL];
 
-    let mut s = KeySequence::new(JKL);
+    let mut s = KeySequence::new(JKL, None);
     assert_eq!(s.advance(&down(Key::KeyJ)), KeySequenceOutcome::Advanced);
     assert_eq!(s.advance(&down(Key::KeyK)), KeySequenceOutcome::Advanced);
     assert_eq!(s.advance(&up(Key::KeyJ)), KeySequenceOutcome::Advanced);
@@ -245,7 +245,7 @@ fn a_longer_run_replays_interleaved_ups_in_arrival_order() {
 fn a_longer_run_completes_rolled() {
     const JKL: &[Key] = &[Key::KeyJ, Key::KeyK, Key::KeyL];
 
-    let mut s = KeySequence::new(JKL);
+    let mut s = KeySequence::new(JKL, None);
     let _ = s.advance(&down(Key::KeyJ));
     let _ = s.advance(&down(Key::KeyK));
     assert_eq!(s.advance(&down(Key::KeyL)), KeySequenceOutcome::Completed);
@@ -255,5 +255,5 @@ fn a_longer_run_completes_rolled() {
 #[test]
 #[should_panic(expected = "a sequence needs at least one key")]
 fn an_empty_sequence_is_rejected() {
-    let _ = KeySequence::new(&[]);
+    let _ = KeySequence::new(&[], None);
 }
