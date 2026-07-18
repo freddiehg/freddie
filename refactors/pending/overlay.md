@@ -4,7 +4,7 @@ The overlay is an external AppKit window, not model state. The model cannot own 
 
 `o` in any non-typing layer shows that layer's keymap hint and arms a hide timer. The overlay hides when you change layers, or after the dwell. One binding each side:
 
-- `o => show_overlay` in every non-typing layer. `o` is a keystroke, so binding it at the root would fire in typing too and you could never type the letter, which is why it is per-layer and typing passes `o` through.
+- `o => show_overlay` in every non-typing layer. `o` is a keystroke, so binding it at the root would fire in typing too and you could never type the letter, which is why it is per-layer. Typing binds nothing at all now, so `o` falls to the root and is passed through like every other key.
 - `OverlayTimeout => hide_overlay` once at the root. The timeout is a timer event, not a keystroke, and hiding is not opt-in, so a single root binding covers every layer.
 
 The overlay's trace in the model is one field on the root, `overlay: Option<ShownOverlay>`, holding the showing's generation id and the guard for its pending hide timer. It is a single thing shown from any layer, so its state is a root concern, not a per-layer one (unlike the return-home timer, which each layer owns independently). Alongside it, `next_overlay_id` mints the id. The three paths:
@@ -239,7 +239,9 @@ fn arm_return_home() -> (DropGuard, MercuryEffect) {
 
 ### the timeout trigger, its event, and the id
 
-`crates/mercury/src/sources.rs`, appended. The timeout carries the generation id, so it is a manual `EventTrigger`, not a `self_trigger!` like `LayerTimeout`:
+`crates/mercury/src/sources.rs`, appended. The timeout carries the generation id, so it is a manual `EventTrigger`, not a `self_trigger!` like `LayerTimeout` and `JkTimeout`.
+
+This is the third timer to mint its own trigger and event type, and `refactors/pending/timer-ids.md` is the open question of whether they should share one. The overlay does not wait on that: its trigger carries an id the others do not, so it is the one timer that would need a bespoke trigger even after a unification, and settling that question first would not change what is written here.
 
 ```rust
 /// Identifies one showing. Each `show_overlay` mints a fresh one and stamps it on the hide timer,
@@ -279,18 +281,15 @@ impl EventTrigger for OverlayTimeout {
 `crates/mercury/src/model.rs`, the `use`, before:
 
 ```rust
-use crate::{
-    AnyModifierKey, AnyNonModifierKey, ForegroundEvent, Foregrounded, LayerTimeout, MercuryEffect,
-    Quit,
-};
+use crate::{AnyKey, ForegroundEvent, Foregrounded, JkTimeout, LayerTimeout, MercuryEffect, Quit};
 ```
 
 after:
 
 ```rust
 use crate::{
-    AnyModifierKey, AnyNonModifierKey, ForegroundEvent, Foregrounded, LayerTimeout, MercuryEffect,
-    OverlayTimeout, OverlayTimeoutEvent, Quit,
+    AnyKey, ForegroundEvent, Foregrounded, JkTimeout, LayerTimeout, MercuryEffect, OverlayTimeout,
+    OverlayTimeoutEvent, Quit,
 };
 ```
 
@@ -305,6 +304,7 @@ pub enum MercuryEvent {
     Foreground(ForegroundEvent),
     Quit(Quit),
     LayerTimeout(LayerTimeout),
+    JkTimeout(JkTimeout),
     OverlayTimeout(OverlayTimeoutEvent),
 }
 ```
@@ -356,8 +356,8 @@ The `Mercury` struct, before:
 pub struct Mercury {
     /// The frontmost app and whether a nav is in flight. See [`Foreground`].
     pub foreground: Foreground,
-    /// The physical truth about which modifier keys are down [..]. See [`HeldModifiers`].
-    pub held: HeldModifiers,
+    /// The state the passthrough (typing) behavior needs. See [`TypingState`].
+    pub typing_state: TypingState,
     /// The active layer. Private, and written only through [`set_layer`](Mercury::set_layer) [..].
     #[resolve_into]
     layer: Layer,
@@ -370,8 +370,8 @@ after:
 pub struct Mercury {
     /// The frontmost app and whether a nav is in flight. See [`Foreground`].
     pub foreground: Foreground,
-    /// The physical truth about which modifier keys are down [..]. See [`HeldModifiers`].
-    pub held: HeldModifiers,
+    /// The state the passthrough (typing) behavior needs. See [`TypingState`].
+    pub typing_state: TypingState,
     /// The overlay currently up, if any. The overlay is an external window driven by effects; this
     /// is its only trace in the model, held at the root because there is one overlay across all
     /// layers.
@@ -391,9 +391,9 @@ The root's `#[bind(..)]` gains the hide, and `Default` gains the fields. Bind, a
 #[bind(
     Foregrounded => record_front_app,
     Quit => quit,
+    JkTimeout => jk_timeout,
     OverlayTimeout => hide_overlay,
-    AnyModifierKey => track_modifier,
-    AnyNonModifierKey => maybe_pass_through,
+    AnyKey => maybe_pass_through,
 )]
 ```
 
@@ -404,7 +404,7 @@ impl Default for Mercury {
     fn default() -> Self {
         Self {
             foreground: Foreground::default(),
-            held: HeldModifiers::default(),
+            typing_state: TypingState::default(),
             overlay: None,
             next_overlay_id: OverlayId::default(),
             layer: Layer::Typing(TypingLayer::new()),
@@ -456,11 +456,14 @@ pub fn set_layer(&mut self, into: impl Into<Layer>) -> Vec<MercuryEffect> {
     let before_passthrough = self.layer.is_passthrough();
     let after_passthrough = into.is_passthrough();
     self.layer = into;
-    match (before_passthrough, after_passthrough) {
-        (true, false) => self.held.close(),
-        (false, true) => self.held.open(),
+    self.typing_state.jk = KeySequence::new(JK, Some(JK_TIMEOUT));
+    let mut effects = match (before_passthrough, after_passthrough) {
+        (true, false) => self.typing_state.held.close(),
+        (false, true) => self.typing_state.held.open(),
         _ => Vec::new(),
-    }
+    };
+    effects.push(MercuryEffect::ShowLayer(self.layer.name()));
+    effects
 }
 ```
 
@@ -472,9 +475,10 @@ pub fn set_layer(&mut self, into: impl Into<Layer>) -> Vec<MercuryEffect> {
     let before_passthrough = self.layer.is_passthrough();
     let after_passthrough = into.is_passthrough();
     self.layer = into;
+    self.typing_state.jk = KeySequence::new(JK, Some(JK_TIMEOUT));
     let mut effects = match (before_passthrough, after_passthrough) {
-        (true, false) => self.held.close(),
-        (false, true) => self.held.open(),
+        (true, false) => self.typing_state.held.close(),
+        (false, true) => self.typing_state.held.open(),
         _ => Vec::new(),
     };
     // Leaving a layer hides any overlay. Taking it drops the guard, cancelling the pending timer;
@@ -482,6 +486,7 @@ pub fn set_layer(&mut self, into: impl Into<Layer>) -> Vec<MercuryEffect> {
     if self.overlay.take().is_some() {
         effects.push(MercuryEffect::HideOverlay);
     }
+    effects.push(MercuryEffect::ShowLayer(self.layer.name()));
     effects
 }
 ```
@@ -529,6 +534,7 @@ Each non-typing layer binds `o`. `state/home.rs`, `nav.rs`, `resize.rs`, and `ap
 
 ```rust
 #[bind(
+    Key::Escape.down() => to_home,
     Key::KeyN.down() => to_nav,
     Key::KeyR.down() => to_resize,
     Key::KeyT.down() => to_typing,
@@ -538,7 +544,7 @@ Each non-typing layer binds `o`. `state/home.rs`, `nav.rs`, `resize.rs`, and `ap
 )]
 ```
 
-`nav.rs`, `resize.rs`, and `app.rs` add `Key::KeyO.down() => show_overlay,` to their own `#[bind(..)]` the same way. `typing.rs` does not: in typing, `o` falls through and is typed.
+`nav.rs`, `resize.rs`, and `app.rs` add `Key::KeyO.down() => show_overlay,` to their own `#[bind(..)]` the same way. `typing.rs` binds nothing and gains nothing: in typing, `o` falls to the root and is typed.
 
 ### the exports
 
