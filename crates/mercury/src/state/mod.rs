@@ -18,8 +18,8 @@ use crate::effect::emit;
 #[allow(clippy::wildcard_imports)]
 use crate::handlers::*;
 use crate::{
-    AnyModifierKey, AnyNonModifierKey, App, ForegroundEvent, Foregrounded, LayerTimeout,
-    MercuryEffect, MercuryEvent, MercuryStruct, Quit,
+    AnyKey, App, ForegroundEvent, Foregrounded, LayerTimeout, MercuryEffect, MercuryEvent,
+    MercuryStruct, Quit,
 };
 
 mod app;
@@ -54,13 +54,12 @@ fn arm_return_home() -> (TimerGuard, MercuryEffect) {
 #[bind(
     Foregrounded => record_front_app,
     Quit => quit,
-    AnyModifierKey => track_modifier,
-    AnyNonModifierKey => maybe_pass_through,
+    AnyKey => maybe_pass_through,
 )]
 pub struct Mercury {
     /// The frontmost app and whether a nav is in flight. See [`Foreground`].
     pub foreground: Foreground,
-    /// The physical truth about which modifier keys are down, updated by [`track_modifier`] on every
+    /// The physical truth about which modifier keys are down, updated by [`maybe_pass_through`] on every
     /// modifier event in every layer. It has to outlive the layer, because entering and leaving a
     /// passthrough layer reads it to synchronize the app's modifier view. See [`HeldModifiers`].
     pub held: HeldModifiers,

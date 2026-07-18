@@ -3,18 +3,14 @@
 use bind::Bindings;
 use freddie_keys::{Key, KeyEvent, KeyPress};
 
-use crate::{
-    AnyModifierKey, AnyNonModifierKey, ForegroundEvent, Foregrounded, LayerTimeout, MercuryEffect,
-    Quit,
-};
+use crate::{AnyKey, ForegroundEvent, Foregrounded, LayerTimeout, MercuryEffect, Quit};
 
 /// Every trigger Mercury can register, one variant per source.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, derive_more::From)]
 pub enum MercuryTrigger {
     Key(Key),
     KeyPress(KeyPress),
-    AnyModifierKey(AnyModifierKey),
-    AnyNonModifierKey(AnyNonModifierKey),
+    AnyKey(AnyKey),
     Foregrounded(Foregrounded),
     Quit(Quit),
     LayerTimeout(LayerTimeout),
