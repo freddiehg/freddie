@@ -52,7 +52,11 @@ So this takes a prefactor: a trigger may be written as a CLOSURE, and the macro 
 )]
 ```
 
-The binding names its own parameter, so nothing is captured invisibly, and a constant trigger is written exactly as it is today. It needs no new grammar either: `binds()` already parses each trigger as a `syn::Expr`, and a closure is one, so this is a `match` on `Expr::Closure` in the emit.
+The binding names its own parameter, so nothing is captured invisibly, and a constant trigger is written exactly as it is today. It needs no new grammar either: `binds()` already parses each trigger as a `syn::Expr`, and a closure is one, so this is a `match` on `Expr::Closure` in the emit: a call for a closure, an evaluation for anything else.
+
+The distinction has to be syntactic. The unified alternative — one trait, blanket-implemented for `T: EventTrigger` and for `F: Fn(&PathView) -> T`, so the macro emits one call either way — does not compile: coherence rejects the two blankets as overlapping, since rustc cannot prove no type is both an `EventTrigger` and an `Fn`.
+
+Syntactic is unambiguous where it counts, because a closure can never be a valid trigger: closures do not implement `EventTrigger`, so no expression is legitimately both. The seam is indirection, `make_trigger() => handler` where the function returns a closure, which is treated as a value and fails with a trait error rather than being called. Not silent, just an error that reads worse than it should, and nothing is written that way today.
 
 What it is called with is a read-only view over the node it is bound on:
 
