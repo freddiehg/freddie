@@ -41,16 +41,25 @@ A trigger is not a constant. `bind_macro` parses it as a `syn::Expr` and emits `
 
 Verified, not assumed. A trigger bound as `Armed(path.armed_id) => on_fired`, against a root field `armed_id: Option<u64>`, compiles and dispatches: an unarmed node matched no firing, a stale id matched no firing, and its own id ran the handler.
 
-But `path` is not a name `bind` offers. It is the identifier the generated `dispatch` happens to bind its parameter as (`bind_macro/src/lib.rs`, the place-node impl), so a trigger reading it is capturing a macro-internal name unhygienically. A derived level's generated body binds `node` instead, so the name a trigger may use depends on which kind of node it is bound on, and neither is documented.
+But `path` is not a name `bind` offers. It is the identifier the generated `dispatch` happens to bind its parameter as, so a trigger reading it captures a macro-internal name unhygienically, and a derived level's generated body binds `node` instead. Neither is documented, and renaming either inside `bind_macro` would silently break every binding that read it.
 
-So this takes a prefactor: `bind_macro` binds one documented name for the state a trigger may read, the same in both kinds of node, and says so in the derive's docs. Something like
+So this takes a prefactor: a trigger may be written as a CLOSURE, and the macro calls it with the node's own struct rather than evaluating it.
 
 ```rust
-let state = /* the path, or the node */;
-let trigger = #trigger;
+#[bind(
+    |root| ArmedTimer(root.overlay_id()) => hide_overlay,
+    Quit => quit,
+)]
 ```
 
-with `#[bind(ArmedTimer(state.overlay_id()) => hide_overlay)]` as the written form. Then a state-reading trigger is a feature of the macro rather than a thing that works by accident, and renaming a parameter inside `bind_macro` cannot silently break every binding that uses one.
+The binding names its own parameter, so nothing is captured invisibly, and a constant trigger is written exactly as it is today. It needs no new grammar either: `binds()` already parses each trigger as a `syn::Expr`, and a closure is one, so this is a `match` on `Expr::Closure` in the emit.
+
+What it is called with is "whatever struct this node is", which is one rule with two spellings, because the two kinds of node hold their state differently:
+
+- A place node passes `&Self`. The root's path IS `&mut Self`, so the emit is `(#closure)(&*path)`; a deeper node's path is a `PathMut`, whose only accessor is `get_mut`, so the emit is `(#closure)(&*path.get_mut())` and the binding forces the existing `needs_mut` to true.
+- A derived level passes `&Data`, its own struct: `(#closure)(&node.data)`.
+
+The reborrow ends before `path` or `node` moves into the handler, so the closure form composes with what dispatch already does.
 
 ## the trigger set becomes state-dependent, and that is fine
 
