@@ -1,5 +1,5 @@
 use bind::Bind;
-use freddie::TimerGuard;
+use freddie::DropGuard;
 use freddie_keys::Key;
 
 #[allow(clippy::wildcard_imports)]
@@ -22,7 +22,7 @@ use super::{AppLayerPath, LayerPath, arm_return_home};
 )]
 pub struct AppLayer {
     // Held for its `Drop`: dropping the guard cancels the in-app layer's return-home timer.
-    timeout: TimerGuard,
+    timeout: DropGuard,
 }
 
 impl AppLayer {

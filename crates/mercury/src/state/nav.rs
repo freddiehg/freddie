@@ -1,5 +1,5 @@
 use bind::Bind;
-use freddie::TimerGuard;
+use freddie::DropGuard;
 use freddie_keys::Key;
 
 #[allow(clippy::wildcard_imports)]
@@ -21,7 +21,7 @@ use super::{LayerPath, arm_return_home};
 pub struct NavLayer {
     // Held for its `Drop`: dropping the guard cancels nav's return-home timer.
     #[expect(dead_code)]
-    timeout: TimerGuard,
+    timeout: DropGuard,
 }
 
 impl NavLayer {

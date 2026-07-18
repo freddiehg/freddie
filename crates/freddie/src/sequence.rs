@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use freddie_keys::{Key, KeyEvent, KeyPress, PressType};
 
-use crate::TimerGuard;
+use crate::DropGuard;
 
 /// A run of keys that means something other than what it types: `jk`, say.
 ///
@@ -13,7 +13,6 @@ use crate::TimerGuard;
 ///
 /// The run demands its keys bare, and takes them rolled: any modifier flag breaks it, but the next
 /// key may go down before the one before it comes up.
-#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
 pub struct KeySequence {
     keys: &'static [Key],
     /// The window a run of this sequence waits, and the guard for it while one is live. `None`
@@ -30,12 +29,15 @@ pub struct KeySequence {
 ///
 /// The two are one field because a guard without a duration is nonsense: there would be nothing
 /// to have armed. Two `Option`s side by side would let that state exist.
-#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
+///
+/// No equality, even under `testing`: it holds a `DropGuard`, which is a pure RAII primitive with
+/// no comparable identity. Nothing compares sequences; the effects they produce are what tests
+/// assert on.
 #[derive(Debug)]
 struct Window {
     duration: Duration,
     /// Armed while a run is live, dropped when it ends, which is what cancels the wait.
-    timer: Option<TimerGuard>,
+    timer: Option<DropGuard>,
 }
 
 /// What one key did to a [`KeySequence`].
@@ -106,7 +108,7 @@ impl KeySequence {
     ///
     /// If no run is in progress, since nothing would ever drop the guard, or if this sequence has
     /// no window, since then there was nothing to arm.
-    pub fn hold(&mut self, guard: TimerGuard) {
+    pub fn hold(&mut self, guard: DropGuard) {
         assert!(!self.is_idle(), "an idle run has no life to tie a guard to");
         let window = self
             .window

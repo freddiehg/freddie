@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use bind::Bind;
-use freddie::{KeySequence, TimerGuard, timer_effect_and_guard};
+use freddie::{DropGuard, KeySequence, timer_effect_and_guard};
 use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 use laserbeam::PathMut;
 
@@ -40,7 +40,7 @@ pub const RETURN_TO_HOME_TIMEOUT: Duration = Duration::from_secs(10);
 /// Arm the return-to-home timer a layer holds: the guard cancels it on drop, and the effect
 /// schedules it. It fires [`LayerTimeout`] after [`RETURN_TO_HOME_TIMEOUT`], which the `Layer`
 /// node binds home.
-fn arm_return_home() -> (TimerGuard, MercuryEffect) {
+fn arm_return_home() -> (DropGuard, MercuryEffect) {
     let (guard, effect) = timer_effect_and_guard(
         RETURN_TO_HOME_TIMEOUT,
         MercuryEvent::LayerTimeout(LayerTimeout),
@@ -59,7 +59,7 @@ pub const JK_TIMEOUT: Duration = Duration::from_millis(200);
 ///
 /// `pub(crate)` where `arm_return_home` is private, because the root's handlers call this one and
 /// they are not children of this module.
-pub(crate) fn arm_jk_timeout(window: Duration) -> (TimerGuard, MercuryEffect) {
+pub(crate) fn arm_jk_timeout(window: Duration) -> (DropGuard, MercuryEffect) {
     let (guard, effect) = timer_effect_and_guard(window, MercuryEvent::JkTimeout(JkTimeout));
     (guard, MercuryEffect::Timer(effect))
 }
