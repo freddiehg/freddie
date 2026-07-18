@@ -77,19 +77,28 @@ after:
 #[derive(Debug)]
 pub struct KeySequence {
     keys: &'static [Key],
-    /// How long the run waits for its next key, or `None` for one that waits forever. The run
-    /// does not enforce it; the caller reads it to arm whatever wakes the run up.
-    window: Option<Duration>,
+    /// The window this run waits, and the guard for it while one is live. `None` for a sequence
+    /// that waits forever.
+    window: Option<Window>,
     swallowed: Vec<KeyPress>,
-    /// Cancels the window when the run ends, by being dropped with it. A caller cannot leave it
-    /// behind, because nothing but the run owns it.
+}
+
+/// How long a run waits for its next key, and what cancels that wait.
+///
+/// The two are one field because a guard without a duration is nonsense: there is nothing to have
+/// armed. Two `Option`s side by side would let that state exist.
+#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
+#[derive(Debug)]
+struct Window {
+    duration: Duration,
+    /// Armed while a run is live, dropped when it ends, which is what cancels the wait.
     timer: Option<TimerGuard>,
 }
 ```
 
 The derives move behind `testing`, the way `TimerEffect` and `TimerGuard` already do: `TimerGuard`'s equality only exists there, so a `KeySequence` holding one cannot derive `PartialEq` unconditionally.
 
-`new` takes the window and sets `timer: None`, before:
+`new` takes the window, before:
 
 ```rust
     pub const fn new(keys: &'static [Key]) -> Self {
@@ -104,24 +113,26 @@ The derives move behind `testing`, the way `TimerEffect` and `TimerGuard` alread
 after:
 
 ```rust
-    pub const fn new(keys: &'static [Key], window: Option<Duration>) -> Self {
+    pub fn new(keys: &'static [Key], window: Option<Duration>) -> Self {
         assert!(!keys.is_empty(), "a sequence needs at least one key");
         Self {
             keys,
-            window,
+            window: window.map(|duration| Window {
+                duration,
+                timer: None,
+            }),
             swallowed: Vec::new(),
-            timer: None,
         }
     }
 
     /// How long this run waits for its next key, or `None` if it waits forever.
     #[must_use]
-    pub const fn window(&self) -> Option<Duration> {
-        self.window
+    pub fn window(&self) -> Option<Duration> {
+        self.window.as_ref().map(|w| w.duration)
     }
 ```
 
-`sequence.rs` imports `std::time::Duration` and `crate::TimerGuard`. The two places that end a run clear `timer`. `interrupt`, before:
+`new` stops being `const`: `Option::map` is not usable in one. `sequence.rs` imports `std::time::Duration` and `crate::TimerGuard`. The two places that end a run disarm the window. `interrupt`, before:
 
 ```rust
     pub fn interrupt(&mut self) -> Vec<KeyPress> {
@@ -133,7 +144,7 @@ after:
 
 ```rust
     pub fn interrupt(&mut self) -> Vec<KeyPress> {
-        self.timer = None;
+        self.disarm();
         std::mem::take(&mut self.swallowed)
     }
 ```
@@ -151,7 +162,7 @@ after:
 ```rust
                 if matched + 1 == self.keys.len() {
                     self.swallowed.clear();
-                    self.timer = None;
+                    self.disarm();
                     KeySequenceOutcome::Completed
 ```
 
@@ -163,10 +174,23 @@ The caller hands over what to hold when a run opens:
     ///
     /// # Panics
     ///
-    /// If the run is idle. Nothing would ever drop the guard.
+    /// If the run is idle, since nothing would ever drop the guard, or if this sequence has no
+    /// window, since then there was nothing to arm.
     pub fn hold(&mut self, guard: TimerGuard) {
         assert!(!self.is_idle(), "an idle run has no life to tie a guard to");
-        self.timer = Some(guard);
+        let window = self
+            .window
+            .as_mut()
+            .expect("a sequence with no window cannot have armed one");
+        window.timer = Some(guard);
+    }
+
+    /// Drop the guard, cancelling the wait, and leave the duration in place: the sequence still
+    /// has a window, it is just not running one.
+    fn disarm(&mut self) {
+        if let Some(window) = self.window.as_mut() {
+            window.timer = None;
+        }
     }
 ```
 
