@@ -2,7 +2,7 @@
 
 In the typing layer, `j` then `k` returns to home; neither key reaches the app. A `j` not followed by `k` types itself.
 
-The machine is a general one, `Sequence`, in `freddie_keys`: an ordered run of keys, swallowed as they arrive, replayed exactly if the run breaks and dropped if it completes. mercury holds one of them, `[j, k]`, in its `TypingState`, and turns a completed run into a layer change. v0 builds the sequence and the binding; v1 adds a timeout.
+The machine is a general one, `KeySequence`, in `freddie_keys`: an ordered run of keys, swallowed as they arrive, replayed exactly if the run breaks and dropped if it completes. mercury holds one of them, `[j, k]`, in its `TypingState`, and turns a completed run into a layer change. v0 builds the sequence and the binding; v1 adds a timeout.
 
 Two rules bound the version we are building:
 
@@ -20,9 +20,9 @@ A key that breaks a run is typed and nothing more: it does not open a new one. `
 
 # v0: the sequence
 
-## change 1: the Sequence primitive
+## change 1: the KeySequence primitive
 
-`crates/freddie_keys/src/sequence.rs`, new, and `mod sequence; pub use sequence::{Sequence, SequenceOutcome};` in `crates/freddie_keys/src/lib.rs`.
+`crates/freddie_keys/src/sequence.rs`, new, and `mod sequence; pub use sequence::{KeySequence, KeySequenceOutcome};` in `crates/freddie_keys/src/lib.rs`.
 
 ```rust
 //! An ordered run of keys, typed with no modifiers, that the caller acts on when it completes.
@@ -36,7 +36,7 @@ use crate::{Key, KeyEvent, KeyPress, PressType};
 /// The run demands its keys bare, and takes them rolled: any modifier flag breaks it, but the next
 /// key may go down before the one before it comes up.
 #[derive(Debug, PartialEq, Eq)]
-pub struct Sequence {
+pub struct KeySequence {
     keys: &'static [Key],
     /// What the run has swallowed, in arrival order; empty when it is idle. Every `Down` in it
     /// matched the next key of `keys`, so counting them is how far the run has got, and every `Up`
@@ -45,8 +45,8 @@ pub struct Sequence {
     swallowed: Vec<KeyPress>,
 }
 
-/// What one key did to a [`Sequence`].
-pub enum SequenceOutcome {
+/// What one key did to a [`KeySequence`].
+pub enum KeySequenceOutcome {
     /// The key belongs to the run: it was swallowed, and nothing is emitted.
     Advanced,
     /// The key is not part of the run. These presses replay, in order, and then the key itself,
@@ -57,7 +57,7 @@ pub enum SequenceOutcome {
     Completed,
 }
 
-impl Sequence {
+impl KeySequence {
     /// A sequence of `keys`, idle.
     ///
     /// # Panics
@@ -79,9 +79,9 @@ impl Sequence {
     }
 
     /// Feed one key to the run.
-    pub fn advance(&mut self, ev: &KeyEvent) -> SequenceOutcome {
+    pub fn advance(&mut self, ev: &KeyEvent) -> KeySequenceOutcome {
         if !ev.flags.is_empty() {
-            return SequenceOutcome::Passed(self.interrupt());
+            return KeySequenceOutcome::Passed(self.interrupt());
         }
         // Never `keys.len()`: the key that matches the last slot completes the run and clears it.
         let matched = self.matched();
@@ -94,17 +94,17 @@ impl Sequence {
                 self.swallowed.push(ev.key.down());
                 if matched + 1 == self.keys.len() {
                     self.swallowed.clear();
-                    SequenceOutcome::Completed
+                    KeySequenceOutcome::Completed
                 } else {
-                    SequenceOutcome::Advanced
+                    KeySequenceOutcome::Advanced
                 }
             }
             // A key the run took, coming up.
             PressType::Up if self.is_down(ev.key) => {
                 self.swallowed.push(ev.key.up());
-                SequenceOutcome::Advanced
+                KeySequenceOutcome::Advanced
             }
-            _ => SequenceOutcome::Passed(self.interrupt()),
+            _ => KeySequenceOutcome::Passed(self.interrupt()),
         }
     }
 
@@ -147,7 +147,7 @@ impl Sequence {
 
 ## change 2: TypingState holds the jk sequence
 
-`crates/mercury/src/state/mod.rs`. `TypingState` stops deriving `Default`, because a `Sequence` has no meaningful empty value: it is defined by its keys.
+`crates/mercury/src/state/mod.rs`. `TypingState` stops deriving `Default`, because a `KeySequence` has no meaningful empty value: it is defined by its keys.
 
 before:
 
@@ -171,14 +171,14 @@ pub struct TypingState {
     pub held: HeldModifiers,
     /// The `jk` run. Replaced with a fresh one on every layer change, so a hold never outlives the
     /// layer it was typed in.
-    pub jk: Sequence,
+    pub jk: KeySequence,
 }
 
 impl Default for TypingState {
     fn default() -> Self {
         Self {
             held: HeldModifiers::default(),
-            jk: Sequence::new(JK),
+            jk: KeySequence::new(JK),
         }
     }
 }
@@ -195,11 +195,11 @@ after:
 
 ```rust
         self.layer = into;
-        self.typing_state.jk = Sequence::new(JK);
+        self.typing_state.jk = KeySequence::new(JK);
         match (before_passthrough, after_passthrough) {
 ```
 
-`state/mod.rs` imports `Sequence` from `freddie_keys`.
+`state/mod.rs` imports `KeySequence` from `freddie_keys`.
 
 ## change 3: the handler runs the sequence
 
@@ -237,18 +237,18 @@ pub(crate) fn maybe_pass_through(
         return Vec::new();
     }
     match root.typing_state.jk.advance(ev) {
-        SequenceOutcome::Advanced => Vec::new(),
-        SequenceOutcome::Passed(presses) => {
+        KeySequenceOutcome::Advanced => Vec::new(),
+        KeySequenceOutcome::Passed(presses) => {
             let mut out = replay(presses);
             out.push(emit(ev.key, ev.press, ev.flags));
             out
         }
-        SequenceOutcome::Completed => root.set_layer(HomeLayer::new()),
+        KeySequenceOutcome::Completed => root.set_layer(HomeLayer::new()),
     }
 }
 ```
 
-`root.rs` imports `HomeLayer`, `SequenceOutcome`, and `replay`.
+`root.rs` imports `HomeLayer`, `KeySequenceOutcome`, and `replay`.
 
 `crates/mercury/src/effect.rs`, beside `emit`, since two handlers replay a broken run:
 
@@ -483,7 +483,7 @@ The `use crate::{..}` in `state/mod.rs` adds `JkTimeout`; `JK_TIMEOUT` joins the
 ```rust
 pub struct TypingState {
     pub held: HeldModifiers,
-    pub jk: Sequence,
+    pub jk: KeySequence,
 }
 ```
 
@@ -492,7 +492,7 @@ after:
 ```rust
 pub struct TypingState {
     pub held: HeldModifiers,
-    pub jk: Sequence,
+    pub jk: KeySequence,
     /// Live exactly while `jk` is mid-run: dropping it cancels the timeout. Written only by
     /// `maybe_pass_through`, in the same match that reads the run's outcome, so the two cannot
     /// disagree.
@@ -500,7 +500,7 @@ pub struct TypingState {
 }
 ```
 
-`Default for TypingState` adds `jk_timer: None`, and `set_layer`'s `self.typing_state.jk = Sequence::new(JK)` is followed by `self.typing_state.jk_timer = None`.
+`Default for TypingState` adds `jk_timer: None`, and `set_layer`'s `self.typing_state.jk = KeySequence::new(JK)` is followed by `self.typing_state.jk_timer = None`.
 
 ## change 4: the handler arms and disarms
 
@@ -510,7 +510,7 @@ before:
 
 ```rust
     match root.typing_state.jk.advance(ev) {
-        SequenceOutcome::Advanced => Vec::new(),
+        KeySequenceOutcome::Advanced => Vec::new(),
 ```
 
 after:
@@ -518,18 +518,18 @@ after:
 ```rust
     let opening = root.typing_state.jk.is_idle();
     match root.typing_state.jk.advance(ev) {
-        SequenceOutcome::Advanced if opening => {
+        KeySequenceOutcome::Advanced if opening => {
             let (guard, timer) = arm_jk_timeout();
             root.typing_state.jk_timer = Some(guard);
             vec![timer]
         }
-        SequenceOutcome::Advanced => Vec::new(),
+        KeySequenceOutcome::Advanced => Vec::new(),
 ```
 
 and the other two arms clear it:
 
 ```rust
-        SequenceOutcome::Passed(replay) => {
+        KeySequenceOutcome::Passed(replay) => {
             root.typing_state.jk_timer = None;
             replay
                 .into_iter()
@@ -537,7 +537,7 @@ and the other two arms clear it:
                 .chain(std::iter::once(emit(ev.key, ev.press, ev.flags)))
                 .collect()
         }
-        SequenceOutcome::Completed => {
+        KeySequenceOutcome::Completed => {
             root.typing_state.jk_timer = None;
             root.set_layer(HomeLayer::new())
         }
