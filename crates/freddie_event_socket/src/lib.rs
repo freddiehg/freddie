@@ -6,7 +6,8 @@
 //! take an event socket from the same call.
 //!
 //! Web pages are refused at the handshake. A browser attaches `Origin` to a WebSocket handshake and
-//! leaves the decision to the server, and WebSockets are exempt from the same-origin policy, so
+//! leaves the decision to the server, and a `WebSocket` handshake is exempt from the same-origin
+//! policy, so
 //! without this check any page in any open tab could drive the socket.
 
 use std::io;
@@ -134,6 +135,10 @@ where
 }
 
 /// The handshake gate: refuse a web page, admit everything else.
+///
+/// The large `Err` is `http::Response`, and the signature is tungstenite's `Callback`, so there is
+/// nothing here to box: it is handed to `accept_hdr_async_with_config` and never returned upward.
+#[expect(clippy::result_large_err)]
 fn check_origin(request: &Request, response: Response) -> Result<Response, ErrorResponse> {
     let origin = match request.headers().get(http::header::ORIGIN) {
         None => None,
@@ -164,10 +169,7 @@ fn refuse() -> ErrorResponse {
 /// `chrome-extension://<id>`, connects; the id is not matched, because an unpacked development
 /// build's id follows from where it was loaded and a packed build's differs again.
 fn origin_allowed(origin: Option<&str>) -> bool {
-    match origin {
-        None => true,
-        Some(origin) => !origin.starts_with("http://") && !origin.starts_with("https://"),
-    }
+    origin.is_none_or(|origin| !origin.starts_with("http://") && !origin.starts_with("https://"))
 }
 
 #[cfg(test)]
