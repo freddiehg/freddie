@@ -11,6 +11,10 @@
 
 use bind::EventTrigger;
 
+mod sequence;
+
+pub use sequence::{KeySequence, KeySequenceOutcome};
+
 /// A physical key, named by its US-ANSI position, independent of layout or OS.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Key {
@@ -163,6 +167,12 @@ impl ModifierFlags {
     #[must_use]
     pub const fn empty() -> Self {
         Self(0)
+    }
+
+    /// Whether no modifier is set.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
     }
 
     /// The raw bits, for a backend mapping them to native flags.
