@@ -13,6 +13,19 @@ event.set_flags(untouched | to_cg(flags));
 
 `MODIFIERS` names six bits: `AlphaShift`, `Shift`, `Control`, `Alternate`, `Command`, `SecondaryFn`. It does not name `NumericPad` (`0x0020_0000`), which the arrows and the keypad carry.
 
+Two steps feed each other. Posting an event updates its source's flag state, and `CGEventCreateKeyboardEvent` seeds a new event's flags from that state, which is what the comment on `post` already describes. So posting an arrow, whose event genuinely carries `NumericPad`, leaves that bit in the source. Every following key then inherits it through `untouched`, and `post` writes it back out, which reaffirms it in the source. Mercury re-poisons its own source on every keystroke.
+
+The state itself is not sticky, and a single post with the bit cleared ends it:
+
+```
+clean source, space born:            0x20000000
+after an arrow, space born:          0x20200000   source state now carries NumericPad
+after posting 'a' mercury-style:     0x20200000   posting it back keeps it alive
+after one post with it masked off:   0x20000000   one clean post clears it
+```
+
+That is why `SecondaryFn` never caused this despite the arrows carrying it too: `MODIFIERS` names it, so it is stripped before every post and the loop cannot close.
+
 Posting is what contaminates. Creating events without posting them leaves the source clean, which is why this hides from any test that does not post:
 
 ```
