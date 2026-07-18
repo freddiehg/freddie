@@ -15,6 +15,8 @@ The overlay's trace in the model is one field on the root, `overlay: Option<Drop
 
 A superseded showing can still fire. Dropping the guard cancels the timer only if its sleep has not completed; one that fired in the moment before the drop has already put its event on the channel, and that cannot be un-sent. The window is microseconds wide and needs the second `o` to land exactly as the first showing's dwell expires, and the consequence is that the overlay blinks out and you press `o` again. `LayerTimeout` and `JkTimeout` accept the same race for the same reason, so the overlay carries no generation id to tell one firing from another: it would be a counter on the root and a field on the event, bought to make a cosmetic flicker impossible.
 
+`refactors/pending/timer-ids.md` closes it for every timer at once, by minting the id inside `timer_effect_and_guard` and stamping it on both the guard and the fired event, so no caller keeps a counter. When that lands, `hide_overlay` gains an id parameter and one comparison against the guard the root holds. Until then the race stands, here and in the other two.
+
 The `DropGuard` is the drop-signals-a-receiver half of today's `TimerGuard`, pulled out of `freddie::timer` (change 1) so the timer and the overlay share it. It is a pure RAII primitive: the effect that carries the paired receiver wraps it in `AlwaysEqual` for its `testing` equality; the guard itself carries no such concern.
 
 ## change 1: extract `DropGuard` in freddie
