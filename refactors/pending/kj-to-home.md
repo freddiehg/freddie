@@ -1,142 +1,211 @@
 # jk leaves typing for home
 
-In the typing layer, `j` then `k` returns to home; neither key reaches the app. A `j` not followed by `k` types itself. The passthrough state (the held modifiers and the pending `j`) lives in the root's `TypingState`; `TypingState::process` runs the sequence. v0 adds the `jk` state machine, v1 a timeout.
+In the typing layer, `j` then `k` returns to home; neither key reaches the app. A `j` not followed by `k` types itself.
 
-Holding a `j` swallows its down and its up. The key and the direction are fixed by the state, so the only thing a replay needs is the flags the `j` arrived with, which the state carries. `JDown` replays the down alone, while `j` is still physically down; `JUp` replays down and up, a full tap. The flags are captured at the `j` down rather than read from `held` at flush time: `held` has already recorded the modifier that caused the flush, and it never carries `FN`, which is not a key and rides in only as a flag on other events. A held modifier suspends the sequence: with any modifier down, `j` passes straight through.
+The machine is a general one, `Sequence`, in `freddie_keys`: an ordered run of keys, swallowed as they arrive, replayed exactly if the run breaks and dropped if it completes. mercury holds one of them, `[j, k]`, in its `TypingState`, and turns a completed run into a layer change. v0 builds the sequence and the binding; v1 adds a timeout.
 
-# v0: the jk sequence
+Two rules bound the version we are building:
 
-## change 1: JkState and the jk_state field
+- No modifiers. Any flag on an incoming key breaks the run, so `cmd`-`j` types `cmd`-`j` and a `k` under `shift` is not the second half of a `jk`. Every key a sequence swallows therefore arrived bare, so a replay is always `ModifierFlags::empty()` and the state stores no flags.
+- Rolled or deliberate, both count. `j` down, `j` up, `k` down is the run; so is `j` down, `k` down, `j` up, `k` up, which is what typing it at speed produces. The next key may go down while the one before it is still down, so several keys can be down at once and their ups interleave. The state is therefore what was swallowed, in arrival order, so that a break replays the stream as it happened rather than a reconstruction of it.
 
-`crates/mercury/src/state/mod.rs`, new. The flags ride from the `j` down through to the flush, and one set covers both halves of the replayed tap: every flag change that mercury can see arrives as a key event, which resolves the hold before it can matter. `fn` is the exception, because its `FlagsChanged` never becomes a `KeyEvent` (`press_of` in `freddie_keyboard`'s macOS backend takes only control/command/alt/shift) and so rides in only as a bit on the next event. A `j` up that gained `FN` mid-hold replays with the down's flags, which is the tap the app should see.
+Exactly two events keep a run alive, in whatever order they arrive:
 
-```rust
-/// Progress through the `jk` escape sequence, carrying the flags the held `j` arrived with so a
-/// flush replays it as it was pressed.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub enum JkState {
-    #[default]
-    None,
-    /// `j` down was swallowed; `j` is still physically down.
-    JDown(ModifierFlags),
-    /// `j` down and up were both swallowed; `j` is physically up.
-    JUp(ModifierFlags),
-}
-```
+- the down of its next key, when that key is not already down;
+- the up of a key it already swallowed and has not seen come up.
 
-`TypingState` gains the field, before:
+Everything else breaks it, a held key's auto-repeat included: a repeat is a down of a key that is already down, so it never counts, and holding `j` types `jjjj` the way it would if nothing were watching. That "not already down" is also what lets a sequence repeat a key. `[j, j]` fires on a double tap and not on a held `j`, because the deliberate second press is the one that came up first.
+
+A key that breaks a run is typed and nothing more: it does not open a new one. `j`, `j`, `k` types `jjk` rather than typing `j` and then leaving for home, because the second `j` is what broke the first run. The caller emits the breaking key itself, so the run never has to say "I took this one after all".
+
+# v0: the sequence
+
+## change 1: the Sequence primitive
+
+`crates/freddie_keys/src/sequence.rs`, new, and `mod sequence; pub use sequence::{Sequence, SequenceOutcome};` in `crates/freddie_keys/src/lib.rs`.
 
 ```rust
-pub struct TypingState {
-    pub held: HeldModifiers,
-}
-```
+//! An ordered run of keys, typed with no modifiers, that the caller acts on when it completes.
 
-after:
+use crate::{Key, KeyEvent, KeyPress, PressType};
 
-```rust
-pub struct TypingState {
-    pub held: HeldModifiers,
-    /// A `j` held in typing, pending a `k`. Cleared on every layer change.
-    pub jk_state: JkState,
-}
-```
-
-`set_layer` clears it, before:
-
-```rust
-        self.layer = into;
-        match (before_passthrough, after_passthrough) {
-```
-
-after:
-
-```rust
-        self.layer = into;
-        self.typing_state.jk_state = JkState::None;
-        match (before_passthrough, after_passthrough) {
-```
-
-`state/mod.rs` and `lib.rs` add `JkState` to their `pub use`.
-
-## change 2: the sequence logic
-
-`crates/mercury/src/state/mod.rs`. `TypingState::process` is the entry: a held modifier suspends the sequence, otherwise `JkState::advance` runs it. `advance` returns the effects, or `GoHome` for the caller to leave to home; `flush` drains the held `j` and resets. `emit`, `Key`, `KeyEvent`, and `PressType` are already in scope.
-
-```rust
-/// The result of feeding one key to [`JkState::advance`].
-pub(crate) enum JkOutcome {
-    /// Emit these and stay in typing.
-    Emit(Vec<MercuryEffect>),
-    /// `jk` completed: leave to home.
-    GoHome,
+/// A run of keys that means something other than what it types: `jk`, say. Each key is swallowed
+/// as it arrives, so nothing reaches the app until the run breaks, when the swallowed keys replay
+/// in order, or completes, when they are dropped and the caller acts.
+///
+/// The run demands its keys bare, and takes them rolled: any modifier flag breaks it, but the next
+/// key may go down before the one before it comes up.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Sequence {
+    keys: &'static [Key],
+    /// What the run has swallowed, in arrival order; empty when it is idle. Every `Down` in it
+    /// matched the next key of `keys`, so counting them is how far the run has got, and every `Up`
+    /// belongs to a key already matched. Rolling puts several keys down at once, so the two
+    /// interleave and only the order they arrived in can replay them.
+    swallowed: Vec<KeyPress>,
 }
 
-impl TypingState {
-    /// Run the passthrough sequence for one key. A held modifier suspends `jk`, so flush any held
-    /// `j` and pass the key through; otherwise advance the `jk` state.
-    pub(crate) fn process(&mut self, ev: &KeyEvent) -> JkOutcome {
-        if self.held.any_held() {
-            let mut out = self.jk_state.flush();
-            out.push(emit(ev.key, ev.press, ev.flags));
-            return JkOutcome::Emit(out);
-        }
-        self.jk_state.advance(ev)
-    }
+/// What one key did to a [`Sequence`].
+pub enum SequenceOutcome {
+    /// The key belongs to the run: it was swallowed, and nothing is emitted.
+    Advanced,
+    /// The key is not part of the run. These presses replay, in order, and then the key itself,
+    /// which the caller emits, since it alone knows the flags that key carried. Empty when the run
+    /// was idle, which is every ordinary keystroke.
+    Passed(Vec<KeyPress>),
+    /// The last key landed. Everything swallowed is dropped and the caller acts on the run.
+    Completed,
 }
 
-impl JkState {
-    /// Replay the held `j` and reset: its down while `j` is still physically down, the whole tap
-    /// once its up has been swallowed.
-    pub(crate) fn flush(&mut self) -> Vec<MercuryEffect> {
-        match std::mem::take(self) {
-            Self::None => Vec::new(),
-            Self::JDown(flags) => vec![emit(Key::KeyJ, PressType::Down, flags)],
-            Self::JUp(flags) => vec![
-                emit(Key::KeyJ, PressType::Down, flags),
-                emit(Key::KeyJ, PressType::Up, flags),
-            ],
-        }
-    }
-
-    /// Advance the sequence for one key (no modifier held).
-    pub(crate) fn advance(&mut self, ev: &KeyEvent) -> JkOutcome {
-        match (&*self, ev.key, ev.press) {
-            (Self::None, Key::KeyJ, PressType::Down) => {
-                *self = Self::JDown(ev.flags);
-                JkOutcome::Emit(Vec::new())
-            }
-            (Self::JDown(flags), Key::KeyJ, PressType::Up) => {
-                *self = Self::JUp(*flags);
-                JkOutcome::Emit(Vec::new())
-            }
-            (Self::JDown(_), Key::KeyJ, PressType::Down) => JkOutcome::Emit(Vec::new()),
-            (Self::JDown(_) | Self::JUp(_), Key::KeyK, PressType::Down) => JkOutcome::GoHome,
-            (Self::JDown(_) | Self::JUp(_), ..) => {
-                let mut out = self.flush();
-                out.push(emit(ev.key, ev.press, ev.flags));
-                JkOutcome::Emit(out)
-            }
-            (Self::None, ..) => JkOutcome::Emit(vec![emit(ev.key, ev.press, ev.flags)]),
-        }
-    }
-}
-```
-
-`HeldModifiers` gains `any_held`:
-
-```rust
-    /// Whether any tracked modifier (control/command/alt/shift) is down.
+impl Sequence {
+    /// A sequence of `keys`, idle.
+    ///
+    /// # Panics
+    ///
+    /// If `keys` is empty.
     #[must_use]
-    pub const fn any_held(&self) -> bool {
-        self.control.any_held()
-            || self.meta.any_held()
-            || self.alt.any_held()
-            || self.shift.any_held()
+    pub const fn new(keys: &'static [Key]) -> Self {
+        assert!(!keys.is_empty(), "a sequence needs at least one key");
+        Self {
+            keys,
+            swallowed: Vec::new(),
+        }
+    }
+
+    /// Whether the run is idle: it has swallowed nothing.
+    #[must_use]
+    pub fn is_idle(&self) -> bool {
+        self.swallowed.is_empty()
+    }
+
+    /// Feed one key to the run.
+    pub fn advance(&mut self, ev: &KeyEvent) -> SequenceOutcome {
+        if !ev.flags.is_empty() {
+            return SequenceOutcome::Passed(self.interrupt());
+        }
+        // Never `keys.len()`: the key that matches the last slot completes the run and clears it.
+        let matched = self.matched();
+        match ev.press {
+            // The next key of the run. The one before it may still be down, which is what a roll
+            // is. The key itself must NOT still be down: a sequence may repeat a key (`[j, j]`),
+            // and the only thing separating a deliberate second press from a held key's
+            // auto-repeat is that the deliberate one came up first.
+            PressType::Down if ev.key == self.keys[matched] && !self.is_down(ev.key) => {
+                self.swallowed.push(ev.key.down());
+                if matched + 1 == self.keys.len() {
+                    self.swallowed.clear();
+                    SequenceOutcome::Completed
+                } else {
+                    SequenceOutcome::Advanced
+                }
+            }
+            // A key the run took, coming up.
+            PressType::Up if self.is_down(ev.key) => {
+                self.swallowed.push(ev.key.up());
+                SequenceOutcome::Advanced
+            }
+            _ => SequenceOutcome::Passed(self.interrupt()),
+        }
+    }
+
+    /// Forget what was swallowed, replaying nothing. For a caller whose own state moved on (a
+    /// layer change), where the held keys are abandoned rather than typed.
+    pub fn reset(&mut self) {
+        self.swallowed.clear();
+    }
+
+    /// End the run and hand back what it swallowed, in arrival order, leaving it idle. `advance`
+    /// calls it for a key that breaks the run; a caller calls it when something outside the keys
+    /// ends it, either a key the caller bound itself or a window elapsing.
+    pub fn interrupt(&mut self) -> Vec<KeyPress> {
+        std::mem::take(&mut self.swallowed)
+    }
+
+    /// How many keys of the run have matched: one per `Down`, since every `Up` in `swallowed`
+    /// belongs to a key already matched.
+    fn matched(&self) -> usize {
+        self.swallowed
+            .iter()
+            .filter(|p| p.press == PressType::Down)
+            .count()
+    }
+
+    /// Whether the run took `key` and has not seen it come up.
+    fn is_down(&self, key: Key) -> bool {
+        self.swallowed
+            .iter()
+            .rev()
+            .find(|p| p.key == key)
+            .is_some_and(|p| p.press == PressType::Down)
+    }
+}
+```
+
+`ModifierFlags` gains the test the gate reads, in `crates/freddie_keys/src/lib.rs` beside `empty`:
+
+```rust
+    /// Whether no modifier is set.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
     }
 ```
 
-`JkOutcome` joins the `state/mod.rs` `pub use`.
+## change 2: TypingState holds the jk sequence
+
+`crates/mercury/src/state/mod.rs`. `TypingState` stops deriving `Default`, because a `Sequence` has no meaningful empty value: it is defined by its keys.
+
+before:
+
+```rust
+#[derive(Debug, Default)]
+pub struct TypingState {
+    /// The physical truth about which modifier keys are down [..]
+    pub held: HeldModifiers,
+}
+```
+
+after:
+
+```rust
+/// The keys that leave typing for home.
+const JK: &[Key] = &[Key::KeyJ, Key::KeyK];
+
+#[derive(Debug)]
+pub struct TypingState {
+    /// The physical truth about which modifier keys are down [..]
+    pub held: HeldModifiers,
+    /// The `jk` run. Reset on every layer change, so a hold never outlives the layer it was typed
+    /// in.
+    pub jk: Sequence,
+}
+
+impl Default for TypingState {
+    fn default() -> Self {
+        Self {
+            held: HeldModifiers::default(),
+            jk: Sequence::new(JK),
+        }
+    }
+}
+```
+
+`set_layer`, before:
+
+```rust
+        self.layer = into;
+        match (before_passthrough, after_passthrough) {
+```
+
+after:
+
+```rust
+        self.layer = into;
+        self.typing_state.jk.reset();
+        match (before_passthrough, after_passthrough) {
+```
+
+`state/mod.rs` imports `Sequence` from `freddie_keys`.
 
 ## change 3: the handler runs the sequence
 
@@ -173,36 +242,133 @@ pub(crate) fn maybe_pass_through(
     if !root.layer().is_passthrough() {
         return Vec::new();
     }
-    match root.typing_state.process(ev) {
-        JkOutcome::Emit(effects) => effects,
-        JkOutcome::GoHome => root.set_layer(HomeLayer::new()),
+    match root.typing_state.jk.advance(ev) {
+        SequenceOutcome::Advanced => Vec::new(),
+        SequenceOutcome::Passed(presses) => {
+            let mut out = replay(presses);
+            out.push(emit(ev.key, ev.press, ev.flags));
+            out
+        }
+        SequenceOutcome::Completed => root.set_layer(HomeLayer::new()),
     }
 }
 ```
 
-`root.rs` imports `HomeLayer` and `JkOutcome`.
+`root.rs` imports `HomeLayer`, `SequenceOutcome`, and `replay`.
 
-## change 4: tests
-
-`crates/mercury/tests/transitions.rs`, extending the typing table. `key(..)` builds a down; add `up(..)` for the release halves. State is checked with `matches!`; a replayed `j` is asserted with the `emit` helper.
+`crates/mercury/src/effect.rs`, beside `emit`, since two handlers replay a broken run:
 
 ```rust
-// jk deliberate.
+/// The effects that replay what a sequence swallowed. Every key it took arrived with no modifier,
+/// so every one of them goes back out bare.
+pub(crate) fn replay(presses: Vec<KeyPress>) -> Vec<MercuryEffect> {
+    presses
+        .into_iter()
+        .map(|p| emit(p.key, p.press, ModifierFlags::empty()))
+        .collect()
+}
+```
+
+## change 4: the keys typing binds break the run
+
+`TypingLayer` binds `escape` (`crates/mercury/src/state/typing.rs`), and a key the active layer binds never reaches the root, so it never reaches the sequence. Without this, a plain escape typed while a `j` is held is emitted ahead of that `j`, and the `j` replays after it.
+
+`crates/mercury/src/handlers/typing.rs`, `maybe_go_home`, before:
+
+```rust
+    let root: MercuryPath<'_> = node.parent.ascend();
+    if root.typing_state.held.meta.any_held() {
+        root.set_layer(HomeLayer::new())
+    } else {
+        vec![emit(ev.key, ev.press, root.typing_state.held.flags())]
+    }
+```
+
+after:
+
+```rust
+    let root: MercuryPath<'_> = node.parent.ascend();
+    if root.typing_state.held.meta.any_held() {
+        // `set_layer` resets the run, so a held `j` is abandoned rather than typed: the layer is
+        // leaving, and the app is getting the modifier sweep instead.
+        root.set_layer(HomeLayer::new())
+    } else {
+        let mut out = replay(root.typing_state.jk.interrupt());
+        out.push(emit(ev.key, ev.press, root.typing_state.held.flags()));
+        out
+    }
+```
+
+`typing.rs` imports `replay`.
+
+## change 5: tests
+
+`crates/freddie_keys/tests/sequence.rs`, new, over the primitive itself: a completed run, a broken one at each point it can break, a modifier breaking it, a roll breaking it, an auto-repeat swallowed, and a key that is not in the run at all passing with an empty replay.
+
+`crates/mercury/tests/transitions.rs`, extending the typing table. `key(..)` builds a down; add `up(..)` for the release halves, and `key_with(.., flags)` for a key carrying a modifier.
+
+```rust
+// jk, typed one key at a time, leaves for home and types nothing.
 let mut m = Mercury::default();
 assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
-assert!(matches!(m.typing_state.jk_state, JkState::JDown(_)));
+assert!(!m.typing_state.jk.is_idle());
 assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
-assert!(matches!(m.typing_state.jk_state, JkState::JUp(_)));
 assert_eq!(m.handle(&key(Key::KeyK)), Some(vec![]));
 assert!(matches!(m.layer(), Layer::Home(_)));
+assert!(m.typing_state.jk.is_idle());
 
-// jk rolled.
+// Rolled, k down before j comes up: the run completes the same way, and the two ups that follow
+// arrive in Home, which binds neither and is not a passthrough layer, so they are swallowed
+// rather than reaching the app as ups with no downs.
 let mut m = Mercury::default();
 assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
 assert_eq!(m.handle(&key(Key::KeyK)), Some(vec![]));
 assert!(matches!(m.layer(), Layer::Home(_)));
+assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
+assert_eq!(m.handle(&up(Key::KeyK)), Some(vec![]));
 
-// j then a, deliberate: the j tap flushes ahead of a.
+// The auto-repeat of a held j breaks the run: the swallowed down replays ahead of the repeat, so
+// the app sees the same two downs it would have seen unwatched, and the run is idle for the rest.
+let mut m = Mercury::default();
+assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+assert_eq!(
+    m.handle(&key(Key::KeyJ)),
+    Some(vec![
+        emit(Key::KeyJ, PressType::Down, ModifierFlags::empty()),
+        emit(Key::KeyJ, PressType::Down, ModifierFlags::empty()),
+    ]),
+);
+assert!(m.typing_state.jk.is_idle());
+assert_eq!(
+    m.handle(&key(Key::KeyK)),
+    Some(vec![emit(Key::KeyK, PressType::Down, ModifierFlags::empty())]),
+);
+assert!(matches!(m.layer(), Layer::Typing(_)));
+
+// j, j, k types all three: the second j breaks the first run and does not open a second.
+let mut m = Mercury::default();
+assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
+assert_eq!(
+    m.handle(&key(Key::KeyJ)),
+    Some(vec![
+        emit(Key::KeyJ, PressType::Down, ModifierFlags::empty()),
+        emit(Key::KeyJ, PressType::Up, ModifierFlags::empty()),
+        emit(Key::KeyJ, PressType::Down, ModifierFlags::empty()),
+    ]),
+);
+assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![emit(
+    Key::KeyJ,
+    PressType::Up,
+    ModifierFlags::empty()
+)]));
+assert_eq!(
+    m.handle(&key(Key::KeyK)),
+    Some(vec![emit(Key::KeyK, PressType::Down, ModifierFlags::empty())]),
+);
+assert!(matches!(m.layer(), Layer::Typing(_)));
+
+// j then a: the whole j tap replays ahead of the a.
 let mut m = Mercury::default();
 assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
 assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
@@ -215,7 +381,8 @@ assert_eq!(
     ]),
 );
 
-// j then a, rolled: only j down flushes, its real up passes through later.
+// j held, then a: only the j down has been swallowed, so only it replays. The real j up passes
+// through later, with the run already idle.
 let mut m = Mercury::default();
 assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
 assert_eq!(
@@ -230,27 +397,56 @@ assert_eq!(
     Some(vec![emit(Key::KeyJ, PressType::Up, ModifierFlags::empty())]),
 );
 
-// j with a modifier held passes straight through.
+// A j carrying a modifier never opens the run.
 let mut m = Mercury::default();
-m.handle(&key(Key::MetaLeft));
 assert_eq!(
-    m.handle(&key(Key::KeyJ)),
+    m.handle(&key_with(Key::KeyJ, ModifierFlags::COMMAND)),
     Some(vec![emit(Key::KeyJ, PressType::Down, ModifierFlags::COMMAND)]),
 );
-assert!(matches!(m.typing_state.jk_state, JkState::None));
+assert!(m.typing_state.jk.is_idle());
 
-// j then cmd-escape: the held j is dropped, none emitted.
+// A modifier arriving mid-run breaks it: the held j replays ahead of the modifier.
 let mut m = Mercury::default();
 assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
-m.handle(&key(Key::MetaLeft));
-assert_eq!(m.handle(&key(Key::Escape)), Some(vec![]));
+assert_eq!(
+    m.handle(&key_with(Key::MetaLeft, ModifierFlags::COMMAND)),
+    Some(vec![
+        emit(Key::KeyJ, PressType::Down, ModifierFlags::empty()),
+        emit(Key::MetaLeft, PressType::Down, ModifierFlags::COMMAND),
+    ]),
+);
+
+// A plain escape is bound by the typing layer, so it never reaches the root. It still breaks the
+// run, and the j replays AHEAD of it rather than after.
+let mut m = Mercury::default();
+assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
+assert_eq!(
+    m.handle(&key(Key::Escape)),
+    Some(vec![
+        emit(Key::KeyJ, PressType::Down, ModifierFlags::empty()),
+        emit(Key::KeyJ, PressType::Up, ModifierFlags::empty()),
+        emit(Key::Escape, PressType::Down, ModifierFlags::empty()),
+    ]),
+);
+assert!(matches!(m.layer(), Layer::Typing(_)));
+
+// cmd-escape leaves for home, and the held j is abandoned: nothing of it is typed, and the only
+// effect is the sweep releasing the cmd that was passed through.
+let mut m = Mercury::default();
+assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![]));
+let _ = m.handle(&key_with(Key::MetaLeft, ModifierFlags::COMMAND));
+assert_eq!(
+    m.handle(&key(Key::Escape)),
+    Some(vec![emit(Key::MetaLeft, PressType::Up, ModifierFlags::empty())]),
+);
 assert!(matches!(m.layer(), Layer::Home(_)));
-assert!(matches!(m.typing_state.jk_state, JkState::None));
+assert!(m.typing_state.jk.is_idle());
 ```
 
 # v1: the timeout
 
-A held `j` waits `JK_TIMEOUT` for a `k`; on expiry it flushes and resets, so a later `k` is an ordinary `k`. `JDown`/`JUp` carry the `TimerGuard`; dropping it cancels the timer. `TimerGuard` derives `PartialEq`/`Eq` only under `testing`, so `JkState` gates them the same way.
+A run waits `JK_TIMEOUT` for its next key; on expiry what was swallowed replays and the run resets, so a later `k` is an ordinary `k`. The guard lives in mercury next to the sequence rather than inside it, so `freddie_keys` stays free of `freddie`'s timer types.
 
 Builds on `refactors/past/timer-events.md` and `refactors/past/layer-timeout.md`.
 
@@ -259,7 +455,7 @@ Builds on `refactors/past/timer-events.md` and `refactors/past/layer-timeout.md`
 `crates/mercury/src/sources.rs`, appended:
 
 ```rust
-/// The `jk` hold's timeout. It carries nothing, so one type is both the trigger and the event.
+/// The `jk` run's timeout. It carries nothing, so one type is both the trigger and the event.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct JkTimeout;
 
@@ -273,8 +469,8 @@ bind::self_trigger!(JkTimeout);
 `crates/mercury/src/state/mod.rs`, by `RETURN_TO_HOME_TIMEOUT` and `arm_return_home`:
 
 ```rust
-/// How long a held `j` waits for a `k` before it flushes as an ordinary keystroke.
-pub const JK_TIMEOUT: Duration = Duration::from_millis(200);
+/// How long a run waits for its next key before what it swallowed types itself.
+pub const JK_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Arm the `jk` timeout: the guard cancels it on drop, the effect schedules it.
 fn arm_jk_timeout() -> (TimerGuard, MercuryEffect) {
@@ -285,139 +481,74 @@ fn arm_jk_timeout() -> (TimerGuard, MercuryEffect) {
 
 The `use crate::{..}` in `state/mod.rs` adds `JkTimeout`; `JK_TIMEOUT` joins the `pub use` through `state/mod.rs` and `lib.rs`.
 
-## change 3: JkState carries the guard and arms it
+## change 3: TypingState holds the guard
 
-The flags gain a companion, so the payload becomes a struct rather than a second tuple field. `TimerGuard` is not `Copy`, so `advance` matches on the state BY VALUE (`std::mem::take`) and each arm states what it leaves behind; the arms that resolve the hold leave `None`, and the guard they took drops there.
-
-`crates/mercury/src/state/mod.rs`, `JkState`, before:
+`crates/mercury/src/state/mod.rs`, `TypingState`, before:
 
 ```rust
-#[derive(Debug, Default, PartialEq, Eq)]
-pub enum JkState {
-    #[default]
-    None,
-    /// `j` down was swallowed; `j` is still physically down.
-    JDown(ModifierFlags),
-    /// `j` down and up were both swallowed; `j` is physically up.
-    JUp(ModifierFlags),
+pub struct TypingState {
+    pub held: HeldModifiers,
+    pub jk: Sequence,
 }
 ```
 
 after:
 
 ```rust
-/// A `j` held pending a `k`: the flags it arrived with, and the guard whose drop cancels its
-/// timeout.
-#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
-#[derive(Debug)]
-pub struct HeldJ {
-    flags: ModifierFlags,
-    timer: TimerGuard,
-}
-
-#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
-#[derive(Debug, Default)]
-pub enum JkState {
-    #[default]
-    None,
-    /// `j` down was swallowed; `j` is still physically down.
-    JDown(HeldJ),
-    /// `j` down and up were both swallowed; `j` is physically up. The guard carries over from
-    /// `JDown`, so the window runs from the first `j`.
-    JUp(HeldJ),
+pub struct TypingState {
+    pub held: HeldModifiers,
+    pub jk: Sequence,
+    /// Live exactly while `jk` is mid-run: dropping it cancels the timeout. Written only by
+    /// `maybe_pass_through`, in the same match that reads the run's outcome, so the two cannot
+    /// disagree.
+    jk_timer: Option<TimerGuard>,
 }
 ```
 
-`flush` splits: `into_replay` consumes the state (and so the guard), and `flush` is that over a `take`. `flush` and `advance`, before:
+`Default for TypingState` adds `jk_timer: None`, and `set_layer`'s `self.typing_state.jk.reset()` is followed by `self.typing_state.jk_timer = None`.
+
+## change 4: the handler arms and disarms
+
+`crates/mercury/src/handlers/root.rs`, `maybe_pass_through`. The run is idle before the key iff this key opens it, so that is when the timer is armed; every other outcome ends the run and drops the guard.
+
+before:
 
 ```rust
-    pub(crate) fn flush(&mut self) -> Vec<MercuryEffect> {
-        match std::mem::take(self) {
-            Self::None => Vec::new(),
-            Self::JDown(flags) => vec![emit(Key::KeyJ, PressType::Down, flags)],
-            Self::JUp(flags) => vec![
-                emit(Key::KeyJ, PressType::Down, flags),
-                emit(Key::KeyJ, PressType::Up, flags),
-            ],
-        }
-    }
-
-    pub(crate) fn advance(&mut self, ev: &KeyEvent) -> JkOutcome {
-        match (&*self, ev.key, ev.press) {
-            (Self::None, Key::KeyJ, PressType::Down) => {
-                *self = Self::JDown(ev.flags);
-                JkOutcome::Emit(Vec::new())
-            }
-            (Self::JDown(flags), Key::KeyJ, PressType::Up) => {
-                *self = Self::JUp(*flags);
-                JkOutcome::Emit(Vec::new())
-            }
-            (Self::JDown(_), Key::KeyJ, PressType::Down) => JkOutcome::Emit(Vec::new()),
-            (Self::JDown(_) | Self::JUp(_), Key::KeyK, PressType::Down) => JkOutcome::GoHome,
-            (Self::JDown(_) | Self::JUp(_), ..) => {
-                let mut out = self.flush();
-                out.push(emit(ev.key, ev.press, ev.flags));
-                JkOutcome::Emit(out)
-            }
-            (Self::None, ..) => JkOutcome::Emit(vec![emit(ev.key, ev.press, ev.flags)]),
-        }
-    }
+    match root.typing_state.jk.advance(ev) {
+        SequenceOutcome::Advanced => Vec::new(),
 ```
 
 after:
 
 ```rust
-    /// Replay the held `j`: its down while `j` is still physically down, the whole tap once its up
-    /// has been swallowed. It consumes the state, so the guard drops and the timeout is cancelled.
-    fn into_replay(self) -> Vec<MercuryEffect> {
-        match self {
-            Self::None => Vec::new(),
-            Self::JDown(held) => vec![emit(Key::KeyJ, PressType::Down, held.flags)],
-            Self::JUp(held) => vec![
-                emit(Key::KeyJ, PressType::Down, held.flags),
-                emit(Key::KeyJ, PressType::Up, held.flags),
-            ],
+    let opening = root.typing_state.jk.is_idle();
+    match root.typing_state.jk.advance(ev) {
+        SequenceOutcome::Advanced if opening => {
+            let (guard, timer) = arm_jk_timeout();
+            root.typing_state.jk_timer = Some(guard);
+            vec![timer]
         }
-    }
-
-    pub(crate) fn flush(&mut self) -> Vec<MercuryEffect> {
-        std::mem::take(self).into_replay()
-    }
-
-    pub(crate) fn advance(&mut self, ev: &KeyEvent) -> JkOutcome {
-        match (std::mem::take(self), ev.key, ev.press) {
-            (Self::None, Key::KeyJ, PressType::Down) => {
-                let (timer, effect) = arm_jk_timeout();
-                *self = Self::JDown(HeldJ {
-                    flags: ev.flags,
-                    timer,
-                });
-                JkOutcome::Emit(vec![effect])
-            }
-            (Self::JDown(held), Key::KeyJ, PressType::Up) => {
-                *self = Self::JUp(held);
-                JkOutcome::Emit(Vec::new())
-            }
-            (held @ Self::JDown(_), Key::KeyJ, PressType::Down) => {
-                *self = held;
-                JkOutcome::Emit(Vec::new())
-            }
-            (Self::JDown(_) | Self::JUp(_), Key::KeyK, PressType::Down) => JkOutcome::GoHome,
-            (held @ (Self::JDown(_) | Self::JUp(_)), ..) => {
-                let mut out = held.into_replay();
-                out.push(emit(ev.key, ev.press, ev.flags));
-                JkOutcome::Emit(out)
-            }
-            (Self::None, ..) => JkOutcome::Emit(vec![emit(ev.key, ev.press, ev.flags)]),
-        }
-    }
+        SequenceOutcome::Advanced => Vec::new(),
 ```
 
-The `take` leaves `None` behind, so an arm that resolves the hold is done: `GoHome` and the catch-all drop the guard where they took it, and only the two arms that keep holding write a state back.
+and the other two arms clear it:
 
-`HeldJ` joins the `pub use` in `state/mod.rs` and `lib.rs`.
+```rust
+        SequenceOutcome::Passed(replay) => {
+            root.typing_state.jk_timer = None;
+            replay
+                .into_iter()
+                .map(|p| emit(p.key, p.press, ModifierFlags::empty()))
+                .chain(std::iter::once(emit(ev.key, ev.press, ev.flags)))
+                .collect()
+        }
+        SequenceOutcome::Completed => {
+            root.typing_state.jk_timer = None;
+            root.set_layer(HomeLayer::new())
+        }
+```
 
-## change 4: the root binds the timeout
+## change 5: the root binds the timeout
 
 `crates/mercury/src/state/mod.rs`, `Mercury`'s `#[bind(..)]`, before:
 
@@ -437,30 +568,38 @@ after:
 `crates/mercury/src/handlers/root.rs`, new handler:
 
 ```rust
-/// The window elapsed with no `k`: flush the held `j` and reset.
+/// The window elapsed with no next key: what the run swallowed types itself.
 pub(crate) fn jk_timeout(_ev: &JkTimeout, node: Node<&mut Mercury, ()>) -> Vec<MercuryEffect> {
-    node.parent.typing_state.jk_state.flush()
+    let root = node.parent;
+    root.typing_state.jk_timer = None;
+    root.typing_state
+        .jk
+        .interrupt()
+        .into_iter()
+        .map(|p| emit(p.key, p.press, ModifierFlags::empty()))
+        .collect()
 }
 ```
 
-`root.rs` adds `JkTimeout` to its imports. `jk_state` is non-`None` only while typing, so a `JkTimeout` after the hold resolved finds `None` and flushes nothing.
+`root.rs` adds `JkTimeout` to its imports. The guard is dropped whenever the run ends, so a `JkTimeout` for a run that already ended never fires; one that arrives anyway finds an idle run and emits nothing.
 
-## change 5: tests
+## change 6: tests
 
-`crates/mercury/tests/transitions.rs`. The v0 cases hold, except `j` down now also returns the `Timer` effect; rebuild the expected `Timer` to assert it (its `testing` equality is the delay and the fire event).
+`crates/mercury/tests/transitions.rs`. The v0 cases hold, except that the key which opens the run now also returns the `Timer` effect; rebuild the expected `Timer` to assert it (its `testing` equality is the delay and the fire event).
 
 ```rust
 let (_guard, effect) =
     freddie::timer_effect_and_guard(JK_TIMEOUT, MercuryEvent::JkTimeout(JkTimeout));
 assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![MercuryEffect::Timer(effect)]));
 
-// window elapses while j is still down: flush its down only.
+// The window elapses with j still down: its down types itself.
 assert_eq!(
     m.handle(&MercuryEvent::JkTimeout(JkTimeout)),
     Some(vec![emit(Key::KeyJ, PressType::Down, ModifierFlags::empty())]),
 );
+assert!(m.typing_state.jk.is_idle());
 
-// a JkTimeout with nothing pending is a no-op.
+// A JkTimeout with no run in progress emits nothing.
 let mut m = Mercury::default();
 assert_eq!(m.handle(&MercuryEvent::JkTimeout(JkTimeout)), Some(vec![]));
 ```
