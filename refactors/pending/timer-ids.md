@@ -231,7 +231,7 @@ after:
 ```rust
 #[bind(
     // Only this layer's own arming: a firing from a nav already left matches nothing.
-    |nav| ArmedTimer::from_guard(nav.get_mut().timeout()) => to_home,
+    |nav| ArmedTimer::from_guard(nav.get().timeout()) => to_home,
     Key::Escape.down() => to_home,
     Key::KeyC.down() => open_chrome,
     ..
@@ -298,7 +298,7 @@ after:
     AnyKey => maybe_pass_through,
 ```
 
-The root's path is `&mut Mercury`, so its closure reads fields directly; a layer's is a `PathMut`, so its closure reads through `get_mut`.
+The root's path is `&mut Mercury`, so its closure reads fields directly; a layer's is a `PathMut`, so its closure reads through `get`.
 
 Both arm helpers take the closure form: `|id| MercuryEvent::Timer(TimerFired(id))`.
 
