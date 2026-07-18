@@ -19,7 +19,7 @@ pub(crate) const OVERLAY: &str = include_str!("overlays/nav.txt");
     // Only this layer's own timer: a firing from a layer already left matches nothing.
     |path| path.get().home_timeout.trigger() => to_home,
     Key::Escape.down() => to_home,
-    Key::KeyO.down() => show_overlay,
+    Key::KeyO.down() => toggle_overlay,
     Key::KeyC.down() => open_chrome,
     Key::KeyF.down() => open_finder,
     Key::KeyG.down() => open_ghostty,

@@ -37,7 +37,7 @@ pub(crate) const fn overlay_for(app: App) -> &'static str {
     // Only this layer's own timer: a firing from a layer already left matches nothing.
     |path| path.get().home_timeout.trigger() => to_home,
     Key::Escape.down() => to_home,
-    Key::KeyO.down() => show_overlay,
+    Key::KeyO.down() => toggle_overlay,
     Key::KeyN.down() => to_nav,
     Key::KeyT.down() => to_typing,
 )]

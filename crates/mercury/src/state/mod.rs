@@ -259,13 +259,15 @@ impl Mercury {
         &self.layer
     }
 
-    /// Show the active layer's overlay and set its hide timer.
+    /// Show the active layer's keymap, or take it down if it is already up.
     ///
-    /// Reassigning the field drops any previous guard, cancelling a still-pending timer, so a
-    /// second `o` supersedes. No hide is pushed for it: the panel is shared, so the new showing
-    /// overwrites what was there.
-    #[must_use = "the returned effects show the overlay and schedule its hide"]
-    pub fn show_overlay(&mut self) -> Vec<MercuryEffect> {
+    /// `o` is a toggle: it is the key you press to ask what is bound, so it is the key you press
+    /// again when you are done reading.
+    #[must_use = "the returned effects put the overlay up or take it down"]
+    pub fn toggle_overlay(&mut self) -> Vec<MercuryEffect> {
+        if self.overlay.is_some() {
+            return self.hide_overlay();
+        }
         let content = self.layer.overlay_content(self.foreground.app());
         let (guard, effect) =
             timer_effect_and_guard(OVERLAY_DWELL, |id| MercuryEvent::Timer(TimerFired(id)));

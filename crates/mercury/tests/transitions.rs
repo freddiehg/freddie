@@ -1263,11 +1263,26 @@ fn the_overlay_hides_after_the_dwell() {
 }
 
 #[test]
-fn a_dwell_from_a_superseded_showing_matches_nothing() {
-    // Two `o`s in a row: the first showing's dwell arrives after the second replaced it, and must
-    // not take the live overlay down.
+fn o_again_takes_it_down() {
+    // `o` is the key you press to ask what is bound, so it is the key you press when you are done.
+    let mut m = home();
+    let _ = m.handle(&key(Key::KeyO));
+    assert_eq!(
+        m.handle(&key(Key::KeyO)),
+        Some(vec![MercuryEffect::HideOverlay])
+    );
+    // And a third press puts it back up.
+    let effects = m.handle(&key(Key::KeyO)).expect("o is bound");
+    assert_eq!(shown_heading(&effects), "  HOME");
+}
+
+#[test]
+fn a_dwell_from_a_showing_already_gone_matches_nothing() {
+    // Show one in home, leave for nav (which takes it down), and show nav's. The first showing's
+    // dwell arrives late and must not take the live one down.
     let mut m = home();
     let first = timer_id(&m.handle(&key(Key::KeyO)).expect("o is bound"));
+    let _ = m.handle(&key(Key::KeyN));
     let second = timer_id(&m.handle(&key(Key::KeyO)).expect("o is bound"));
     assert_ne!(first, second, "each showing sets its own dwell");
 

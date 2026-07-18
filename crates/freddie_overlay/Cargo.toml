@@ -1,0 +1,33 @@
+[package]
+name = "freddie_overlay"
+description = "A borderless macOS overlay panel for freddie."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dispatch2 = "0.3"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = [
+    "NSColor", "NSControl", "NSFont", "NSPanel", "NSResponder", "NSScreen",
+    "NSText", "NSTextField", "NSView", "NSWindow",
+] }
+# The rounded dark background is a layer-backed view's `CALayer`.
+objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
+objc2-core-graphics = { version = "0.3", features = ["CGColor"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSString"] }
+tracing = "0.1"
+
+# Not `workspace = true`: the workspace forbids `unsafe_code`, and `forbid` cannot be relaxed from
+# inside the crate. Every AppKit call is unsafe and allowed at its site with a SAFETY comment.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+multiple_crate_versions = "allow"
+cargo_common_metadata = "allow"

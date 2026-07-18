@@ -1,5 +1,5 @@
-//! Showing and hiding the overlay: `o` in a layer that binds keys shows its keymap, and the hide
-//! timer takes it down.
+//! Showing and hiding the overlay: `o` in a layer that binds keys toggles its keymap, and the
+//! hide timer takes it down on its own.
 
 use bind::Node;
 use freddie::TimerFired;
@@ -8,14 +8,14 @@ use laserbeam::Ascend;
 use crate::MercuryEffect;
 use crate::state::{Mercury, MercuryPath};
 
-/// `o` in a layer that binds keys: show that layer's keymap and set its hide timer.
+/// `o` in a layer that binds keys: show that layer's keymap, or take it down if it is up.
 ///
 /// Generic over the event and the path, so every such layer binds it from its own node.
-pub(crate) fn show_overlay<'a, E, P: Ascend<MercuryPath<'a>>>(
+pub(crate) fn toggle_overlay<'a, E, P: Ascend<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
-    node.parent.ascend().show_overlay()
+    node.parent.ascend().toggle_overlay()
 }
 
 /// The overlay's hide timer fired. Bound at the root, so it fires from whatever layer is active,
