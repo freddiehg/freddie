@@ -120,17 +120,18 @@ Adjacent tagging (`tag = "kind", content = "value"`) over newtype variants produ
 
 ## The endpoint
 
-`127.0.0.1:48291`, overridable with `MERCURY_PORT`, which is the same shape as `LOG_LEVEL` in `crates/mercury/src/logging.rs`: an environment variable read at startup, no config file, because mercury has no config file to put it in.
+`127.0.0.1:8797`, overridable with `MERCURY_PORT`, which is the same shape as `LOG_LEVEL` in `crates/mercury/src/logging.rs`: an environment variable read at startup, no config file, because mercury has no config file to put it in.
 
 ```rust
 // crates/mercury/src/external.rs
 
 /// The port mercury listens on when `MERCURY_PORT` says nothing. Hardcoded in the extension too.
 ///
-/// Below 49152, which is where macOS starts handing out ephemeral ports
+/// Mercury's orbital period, 87.969 days, truncated to fit a `u16`. Below 49152, which is where
+/// macOS starts handing out ephemeral ports
 /// (`net.inet.ip.portrange.first`): a listener up there can find its port already taken by some
 /// outbound socket that grabbed it first. Unassigned in `/etc/services`.
-pub const DEFAULT_PORT: u16 = 48291;
+pub const DEFAULT_PORT: u16 = 8797;
 
 const PORT_ENV: &str = "MERCURY_PORT";
 
@@ -264,7 +265,7 @@ pub fn on_message(text: &str, event_tx: &UnboundedSender<MercuryEvent>) {
     };
 ```
 
-Verify by hand with any WebSocket client: connect to `ws://127.0.0.1:48291`, send `{"kind":"Upstream.Tab","value":{"url":"https://claude.ai/new"}}`, and watch `~/Library/Logs/mercury/mercury.log` record the dispatch and the resulting state.
+Verify by hand with any WebSocket client: connect to `ws://127.0.0.1:8797`, send `{"kind":"Upstream.Tab","value":{"url":"https://claude.ai/new"}}`, and watch `~/Library/Logs/mercury/mercury.log` record the dispatch and the resulting state.
 
 ## Change 3: the token
 
