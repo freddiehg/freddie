@@ -108,12 +108,6 @@ impl Sequence {
         }
     }
 
-    /// Forget what was swallowed, replaying nothing. For a caller whose own state moved on (a
-    /// layer change), where the held keys are abandoned rather than typed.
-    pub fn reset(&mut self) {
-        self.swallowed.clear();
-    }
-
     /// End the run and hand back what it swallowed, in arrival order, leaving it idle. `advance`
     /// calls it for a key that breaks the run; a caller calls it when something outside the keys
     /// ends it, either a key the caller bound itself or a window elapsing.
@@ -175,8 +169,8 @@ const JK: &[Key] = &[Key::KeyJ, Key::KeyK];
 pub struct TypingState {
     /// The physical truth about which modifier keys are down [..]
     pub held: HeldModifiers,
-    /// The `jk` run. Reset on every layer change, so a hold never outlives the layer it was typed
-    /// in.
+    /// The `jk` run. Replaced with a fresh one on every layer change, so a hold never outlives the
+    /// layer it was typed in.
     pub jk: Sequence,
 }
 
@@ -201,7 +195,7 @@ after:
 
 ```rust
         self.layer = into;
-        self.typing_state.jk.reset();
+        self.typing_state.jk = Sequence::new(JK);
         match (before_passthrough, after_passthrough) {
 ```
 
@@ -289,8 +283,9 @@ after:
 ```rust
     let root: MercuryPath<'_> = node.parent.ascend();
     if root.typing_state.held.meta.any_held() {
-        // `set_layer` resets the run, so a held `j` is abandoned rather than typed: the layer is
-        // leaving, and the app is getting the modifier sweep instead.
+        // `set_layer` replaces the run, so a held `j` is abandoned rather than typed. Replaying it
+        // would strand the key down: the app would see a down whose up lands in a command layer
+        // and is swallowed there.
         root.set_layer(HomeLayer::new())
     } else {
         let mut out = replay(root.typing_state.jk.interrupt());
@@ -505,7 +500,7 @@ pub struct TypingState {
 }
 ```
 
-`Default for TypingState` adds `jk_timer: None`, and `set_layer`'s `self.typing_state.jk.reset()` is followed by `self.typing_state.jk_timer = None`.
+`Default for TypingState` adds `jk_timer: None`, and `set_layer`'s `self.typing_state.jk = Sequence::new(JK)` is followed by `self.typing_state.jk_timer = None`.
 
 ## change 4: the handler arms and disarms
 
