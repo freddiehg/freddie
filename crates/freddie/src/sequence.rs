@@ -14,7 +14,6 @@ use crate::TimerGuard;
 /// The run demands its keys bare, and takes them rolled: any modifier flag breaks it, but the next
 /// key may go down before the one before it comes up.
 #[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
-#[derive(Debug)]
 pub struct KeySequence {
     keys: &'static [Key],
     /// The window a run of this sequence waits, and the guard for it while one is live. `None`
@@ -50,6 +49,31 @@ pub enum KeySequenceOutcome {
     Passed(Vec<KeyPress>),
     /// The last key landed. Everything swallowed is dropped and the caller acts on the run.
     Completed,
+}
+
+impl std::fmt::Debug for KeySequence {
+    /// Only what the run has swallowed, in arrival order: `KeySequence { KeyJ v, KeyJ ^ }`, or
+    /// `KeySequence {}` when idle.
+    ///
+    /// It is written on every dispatched event, and the keys and the window never change, so
+    /// printing them would repeat the sequence's definition on every line of the log to say
+    /// nothing about what happened.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "KeySequence {{")?;
+        for (i, press) in self.swallowed.iter().enumerate() {
+            let arrow = match press.press {
+                PressType::Down => "v",
+                PressType::Up => "^",
+            };
+            write!(
+                f,
+                "{}{:?} {arrow}",
+                if i == 0 { " " } else { ", " },
+                press.key
+            )?;
+        }
+        f.write_str(if self.swallowed.is_empty() { "}" } else { " }" })
+    }
 }
 
 impl KeySequence {

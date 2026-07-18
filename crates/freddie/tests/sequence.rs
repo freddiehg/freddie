@@ -257,3 +257,16 @@ fn a_longer_run_completes_rolled() {
 fn an_empty_sequence_is_rejected() {
     let _ = KeySequence::new(&[], None);
 }
+
+#[test]
+fn debug_shows_only_what_is_swallowed() {
+    // It is written on every dispatched event, so it says what happened, not what the sequence is.
+    let mut s = jk();
+    assert_eq!(format!("{s:?}"), "KeySequence {}");
+    let _ = s.advance(&down(Key::KeyJ));
+    assert_eq!(format!("{s:?}"), "KeySequence { KeyJ v }");
+    let _ = s.advance(&up(Key::KeyJ));
+    assert_eq!(format!("{s:?}"), "KeySequence { KeyJ v, KeyJ ^ }");
+    let _ = s.advance(&down(Key::KeyA));
+    assert_eq!(format!("{s:?}"), "KeySequence {}");
+}
