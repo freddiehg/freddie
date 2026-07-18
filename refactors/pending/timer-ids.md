@@ -17,12 +17,12 @@ Both fall out of one change: a firing carries the identity of the arming it came
 pub struct TimerFired(pub TimerId);
 
 // the binding names the guard whose firing it wants
-#[bind(|root| ArmedTimer::from_optional(root.overlay_guard()) => hide_overlay)]
+#[bind(|nav| ArmedTimer::from_guard(nav.get().timeout()) => to_home)]
 ```
 
 The identity does the work the per-timer types were doing, so the types go. The match does the work a stale-check in each handler would have done, so a stale firing matches no binding at all: dispatch returns `None`, the handler never runs, and no handler contains an `if` about it.
 
-Built on `refactors/past/trigger-closures.md`, which landed: a binding may be written as a closure and the derive calls it with the node's path, so naming a guard from a binding is a supported form rather than a capture of a name the macro happens to use.
+Built on two landed changes. `refactors/past/trigger-closures.md` lets a binding be written as a closure, which the derive calls with what dispatch is holding for that node; `refactors/past/path-get.md` makes that a shared reference, so a closure reads its node through `get`, reads the level above through `parent`, and cannot write either.
 
 ## why the ids are affordable
 
@@ -266,7 +266,9 @@ after, binding nothing at all, since `escape` already moved down to the command 
 pub enum Layer {
 ```
 
-The sequence exposes its own, in `crates/freddie/src/sequence.rs`:
+## change 5: the root binds the jk window
+
+The sequence exposes the guard its live run holds, in `crates/freddie/src/sequence.rs`:
 
 ```rust
     /// The guard for a live run's window, or `None` when no run is live or this sequence has no
@@ -277,8 +279,6 @@ The sequence exposes its own, in `crates/freddie/src/sequence.rs`:
         self.window.as_ref()?.timer.as_ref()
     }
 ```
-
-## change 5: the root binds the jk window
 
 `crates/mercury/src/state/mod.rs`, `Mercury`'s `#[bind(..)]`, before:
 
