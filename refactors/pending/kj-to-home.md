@@ -326,31 +326,38 @@ Typing now binds nothing at all, so no key can bypass the sequence: every key in
 
 ## change 5: the check runs
 
-`accumulate` is what catches a trigger bound twice on one path, and mercury never calls it. `crates/mercury/tests/bindings.rs`, new:
+`accumulate` is what catches a trigger bound twice on one path, and mercury never calls it. It goes in `crates/mercury/src/state/mod.rs` as a unit test rather than in `tests/`: every layer constructor is `pub(crate)`, and `NavLayer::new`/`ResizeLayer::new` return `(Self, MercuryEffect)` because they arm a timer, so only a test inside the crate can build the set. The `check` feature reaches unit tests through the dev-dependency, so `bind::accumulate` is in scope there.
 
 ```rust
-/// THE CHECK: no trigger is bound at two nodes on the active path, in any layer. It caught
-/// `escape` being bound at both `Layer` and `TypingLayer`, which is why typing binds nothing now.
-#[test]
-fn no_layer_binds_a_trigger_twice() {
-    for layer in [
-        Layer::Home(HomeLayer {}),
-        Layer::Nav(NavLayer::new()),
-        Layer::Resize(ResizeLayer::new()),
-        Layer::Typing(TypingLayer::new()),
-        Layer::InApp(AppLayer::new(App::Chrome)),
-    ] {
-        let mut m = Mercury::with_layer(layer);
-        assert!(
-            bind::accumulate::<MercuryStruct, Mercury>(&mut m).is_ok(),
-            "duplicate trigger in {:?}",
-            m.layer(),
-        );
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// THE CHECK: no trigger is bound at two nodes on any active path. It caught `escape` being
+    /// bound at both `Layer` and `TypingLayer`, which is why typing binds nothing now.
+    #[test]
+    fn no_layer_binds_a_trigger_twice() {
+        let (nav, _) = NavLayer::new();
+        let (resize, _) = ResizeLayer::new();
+        for layer in [
+            Layer::Home(HomeLayer::new()),
+            Layer::Nav(nav),
+            Layer::Resize(resize),
+            Layer::Typing(TypingLayer::new()),
+            Layer::InApp(AppLayer::new()),
+        ] {
+            let mut m = Mercury::with_layer(layer);
+            assert!(
+                bind::accumulate::<MercuryStruct, Mercury>(&mut m).is_ok(),
+                "duplicate trigger in {:?}",
+                m.layer(),
+            );
+        }
     }
 }
 ```
 
-The constructors each layer needs may not all be public; make them so, or build the layers through the transitions that produce them.
+The in-app layer resolves a child per front app, so its bindings depend on `foreground`. Run it for each `App` that has a level (`Chrome`, `Ghostty`) by setting `m.foreground.set_front_app(app)` before the assertion, since a duplicate could hide in an app's own bindings rather than the layer's.
 
 ## change 6: tests
 
