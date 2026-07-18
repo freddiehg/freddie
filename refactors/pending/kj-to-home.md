@@ -2,44 +2,25 @@
 
 In the typing layer, `j` then `k` returns to home; neither key reaches the app. A `j` not followed by `k` types itself. The passthrough state (the held modifiers and the pending `j`) lives in the root's `TypingState`; `TypingState::process` runs the sequence. v0 adds the `jk` state machine, v1 a timeout.
 
-Holding a `j` swallows its down and its up, so the sequence keeps them and a flush replays them exactly. `JDown` holds the down alone, replayed while `j` is still physically down. `JUp` holds both, replayed as a full tap. A held modifier suspends the sequence: with any modifier down, `j` passes straight through.
+Holding a `j` swallows its down and its up. The key and the direction are fixed by the state, so the only thing a replay needs is the flags the `j` arrived with, which the state carries. `JDown` replays the down alone, while `j` is still physically down; `JUp` replays down and up, a full tap. The flags are captured at the `j` down rather than read from `held` at flush time: `held` has already recorded the modifier that caused the flush, and it never carries `FN`, which is not a key and rides in only as a flag on other events. A held modifier suspends the sequence: with any modifier down, `j` passes straight through.
 
 # v0: the jk sequence
 
-## change 1: the event newtypes, JkState, and the jk_state field
+## change 1: JkState and the jk_state field
 
-`crates/mercury/src/state/mod.rs`, new. `DownEvent`/`UpEvent` wrap a `KeyEvent` whose direction is fixed, built only in the matched arms of `advance`.
+`crates/mercury/src/state/mod.rs`, new. The flags ride from the `j` down through to the flush, and one set covers both halves of the replayed tap: every flag change that mercury can see arrives as a key event, which resolves the hold before it can matter. `fn` is the exception, because its `FlagsChanged` never becomes a `KeyEvent` (`press_of` in `freddie_keyboard`'s macOS backend takes only control/command/alt/shift) and so rides in only as a bit on the next event. A `j` up that gained `FN` mid-hold replays with the down's flags, which is the tap the app should see.
 
 ```rust
-/// A key event known to be a press-down, kept so the held key replays exactly.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct DownEvent(KeyEvent);
-
-/// A key event known to be a release.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct UpEvent(KeyEvent);
-
-impl DownEvent {
-    fn emit(&self) -> MercuryEffect {
-        MercuryEffect::Emit(self.0.clone())
-    }
-}
-
-impl UpEvent {
-    fn emit(&self) -> MercuryEffect {
-        MercuryEffect::Emit(self.0.clone())
-    }
-}
-
-/// Progress through the `jk` escape sequence, keeping the held `j`'s events.
+/// Progress through the `jk` escape sequence, carrying the flags the held `j` arrived with so a
+/// flush replays it as it was pressed.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub enum JkState {
     #[default]
     None,
     /// `j` down was swallowed; `j` is still physically down.
-    JDown(DownEvent),
+    JDown(ModifierFlags),
     /// `j` down and up were both swallowed; `j` is physically up.
-    JUp((DownEvent, UpEvent)),
+    JUp(ModifierFlags),
 }
 ```
 
@@ -76,7 +57,7 @@ after:
         match (before_passthrough, after_passthrough) {
 ```
 
-`state/mod.rs` and `lib.rs` add `DownEvent`, `UpEvent`, `JkState` to their `pub use`.
+`state/mod.rs` and `lib.rs` add `JkState` to their `pub use`.
 
 ## change 2: the sequence logic
 
@@ -105,29 +86,28 @@ impl TypingState {
 }
 
 impl JkState {
-    /// Replay the held `j` and reset: its down while `j` is still physically down, both once its up
-    /// has been swallowed.
+    /// Replay the held `j` and reset: its down while `j` is still physically down, the whole tap
+    /// once its up has been swallowed.
     pub(crate) fn flush(&mut self) -> Vec<MercuryEffect> {
-        let out = match self {
+        match std::mem::take(self) {
             Self::None => Vec::new(),
-            Self::JDown(down) => vec![down.emit()],
-            Self::JUp((down, up)) => vec![down.emit(), up.emit()],
-        };
-        *self = Self::None;
-        out
+            Self::JDown(flags) => vec![emit(Key::KeyJ, PressType::Down, flags)],
+            Self::JUp(flags) => vec![
+                emit(Key::KeyJ, PressType::Down, flags),
+                emit(Key::KeyJ, PressType::Up, flags),
+            ],
+        }
     }
 
     /// Advance the sequence for one key (no modifier held).
     pub(crate) fn advance(&mut self, ev: &KeyEvent) -> JkOutcome {
         match (&*self, ev.key, ev.press) {
             (Self::None, Key::KeyJ, PressType::Down) => {
-                *self = Self::JDown(DownEvent(ev.clone()));
+                *self = Self::JDown(ev.flags);
                 JkOutcome::Emit(Vec::new())
             }
-            (Self::JDown(_), Key::KeyJ, PressType::Up) => {
-                if let Self::JDown(down) = std::mem::replace(self, Self::None) {
-                    *self = Self::JUp((down, UpEvent(ev.clone())));
-                }
+            (Self::JDown(flags), Key::KeyJ, PressType::Up) => {
+                *self = Self::JUp(*flags);
                 JkOutcome::Emit(Vec::new())
             }
             (Self::JDown(_), Key::KeyJ, PressType::Down) => JkOutcome::Emit(Vec::new()),
@@ -307,6 +287,8 @@ The `use crate::{..}` in `state/mod.rs` adds `JkTimeout`; `JK_TIMEOUT` joins the
 
 ## change 3: JkState carries the guard and arms it
 
+The flags gain a companion, so the payload becomes a struct rather than a second tuple field. `TimerGuard` is not `Copy`, so `advance` matches on the state BY VALUE (`std::mem::take`) and each arm states what it leaves behind; the arms that resolve the hold leave `None`, and the guard they took drops there.
+
 `crates/mercury/src/state/mod.rs`, `JkState`, before:
 
 ```rust
@@ -314,50 +296,60 @@ The `use crate::{..}` in `state/mod.rs` adds `JkTimeout`; `JK_TIMEOUT` joins the
 pub enum JkState {
     #[default]
     None,
-    JDown(DownEvent),
-    JUp((DownEvent, UpEvent)),
+    /// `j` down was swallowed; `j` is still physically down.
+    JDown(ModifierFlags),
+    /// `j` down and up were both swallowed; `j` is physically up.
+    JUp(ModifierFlags),
 }
 ```
 
 after:
 
 ```rust
+/// A `j` held pending a `k`: the flags it arrived with, and the guard whose drop cancels its
+/// timeout.
+#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
+#[derive(Debug)]
+pub struct HeldJ {
+    flags: ModifierFlags,
+    timer: TimerGuard,
+}
+
 #[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
 #[derive(Debug, Default)]
 pub enum JkState {
     #[default]
     None,
-    /// `j` down was swallowed; `j` is still physically down. The guard arms the timeout.
-    JDown(DownEvent, TimerGuard),
+    /// `j` down was swallowed; `j` is still physically down.
+    JDown(HeldJ),
     /// `j` down and up were both swallowed; `j` is physically up. The guard carries over from
     /// `JDown`, so the window runs from the first `j`.
-    JUp((DownEvent, UpEvent), TimerGuard),
+    JUp(HeldJ),
 }
 ```
 
-`flush` matches the extra field; `advance` arms on the first `j` and carries the guard, dropping it on the paths that resolve the hold. `flush` and `advance`, before:
+`flush` splits: `into_replay` consumes the state (and so the guard), and `flush` is that over a `take`. `flush` and `advance`, before:
 
 ```rust
     pub(crate) fn flush(&mut self) -> Vec<MercuryEffect> {
-        let out = match self {
+        match std::mem::take(self) {
             Self::None => Vec::new(),
-            Self::JDown(down) => vec![down.emit()],
-            Self::JUp((down, up)) => vec![down.emit(), up.emit()],
-        };
-        *self = Self::None;
-        out
+            Self::JDown(flags) => vec![emit(Key::KeyJ, PressType::Down, flags)],
+            Self::JUp(flags) => vec![
+                emit(Key::KeyJ, PressType::Down, flags),
+                emit(Key::KeyJ, PressType::Up, flags),
+            ],
+        }
     }
 
     pub(crate) fn advance(&mut self, ev: &KeyEvent) -> JkOutcome {
         match (&*self, ev.key, ev.press) {
             (Self::None, Key::KeyJ, PressType::Down) => {
-                *self = Self::JDown(DownEvent(ev.clone()));
+                *self = Self::JDown(ev.flags);
                 JkOutcome::Emit(Vec::new())
             }
-            (Self::JDown(_), Key::KeyJ, PressType::Up) => {
-                if let Self::JDown(down) = std::mem::replace(self, Self::None) {
-                    *self = Self::JUp((down, UpEvent(ev.clone())));
-                }
+            (Self::JDown(flags), Key::KeyJ, PressType::Up) => {
+                *self = Self::JUp(*flags);
                 JkOutcome::Emit(Vec::new())
             }
             (Self::JDown(_), Key::KeyJ, PressType::Down) => JkOutcome::Emit(Vec::new()),
@@ -375,33 +367,44 @@ pub enum JkState {
 after:
 
 ```rust
-    pub(crate) fn flush(&mut self) -> Vec<MercuryEffect> {
-        let out = match self {
+    /// Replay the held `j`: its down while `j` is still physically down, the whole tap once its up
+    /// has been swallowed. It consumes the state, so the guard drops and the timeout is cancelled.
+    fn into_replay(self) -> Vec<MercuryEffect> {
+        match self {
             Self::None => Vec::new(),
-            Self::JDown(down, _) => vec![down.emit()],
-            Self::JUp((down, up), _) => vec![down.emit(), up.emit()],
-        };
-        *self = Self::None;
-        out
+            Self::JDown(held) => vec![emit(Key::KeyJ, PressType::Down, held.flags)],
+            Self::JUp(held) => vec![
+                emit(Key::KeyJ, PressType::Down, held.flags),
+                emit(Key::KeyJ, PressType::Up, held.flags),
+            ],
+        }
+    }
+
+    pub(crate) fn flush(&mut self) -> Vec<MercuryEffect> {
+        std::mem::take(self).into_replay()
     }
 
     pub(crate) fn advance(&mut self, ev: &KeyEvent) -> JkOutcome {
-        match (&*self, ev.key, ev.press) {
+        match (std::mem::take(self), ev.key, ev.press) {
             (Self::None, Key::KeyJ, PressType::Down) => {
-                let (guard, timer) = arm_jk_timeout();
-                *self = Self::JDown(DownEvent(ev.clone()), guard);
-                JkOutcome::Emit(vec![timer])
+                let (timer, effect) = arm_jk_timeout();
+                *self = Self::JDown(HeldJ {
+                    flags: ev.flags,
+                    timer,
+                });
+                JkOutcome::Emit(vec![effect])
             }
-            (Self::JDown(..), Key::KeyJ, PressType::Up) => {
-                if let Self::JDown(down, guard) = std::mem::replace(self, Self::None) {
-                    *self = Self::JUp((down, UpEvent(ev.clone())), guard);
-                }
+            (Self::JDown(held), Key::KeyJ, PressType::Up) => {
+                *self = Self::JUp(held);
                 JkOutcome::Emit(Vec::new())
             }
-            (Self::JDown(..), Key::KeyJ, PressType::Down) => JkOutcome::Emit(Vec::new()),
-            (Self::JDown(..) | Self::JUp(..), Key::KeyK, PressType::Down) => JkOutcome::GoHome,
-            (Self::JDown(..) | Self::JUp(..), ..) => {
-                let mut out = self.flush();
+            (held @ Self::JDown(_), Key::KeyJ, PressType::Down) => {
+                *self = held;
+                JkOutcome::Emit(Vec::new())
+            }
+            (Self::JDown(_) | Self::JUp(_), Key::KeyK, PressType::Down) => JkOutcome::GoHome,
+            (held @ (Self::JDown(_) | Self::JUp(_)), ..) => {
+                let mut out = held.into_replay();
                 out.push(emit(ev.key, ev.press, ev.flags));
                 JkOutcome::Emit(out)
             }
@@ -410,7 +413,9 @@ after:
     }
 ```
 
-`flush` in the catch-all drops the guard as it resets; `GoHome` drops it when `set_layer` clears `jk_state`.
+The `take` leaves `None` behind, so an arm that resolves the hold is done: `GoHome` and the catch-all drop the guard where they took it, and only the two arms that keep holding write a state back.
+
+`HeldJ` joins the `pub use` in `state/mod.rs` and `lib.rs`.
 
 ## change 4: the root binds the timeout
 
