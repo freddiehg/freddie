@@ -94,11 +94,23 @@ Loopback only, never `0.0.0.0`: a wildcard bind would let anything on the networ
 
 A failed bind is fatal. A mercury that came up without its socket is a mercury whose per-site binds silently do nothing, and there is no way to tell that apart from a broken extension without reading the log; there should be no "running, but deaf" mercury to be in. The single-instance lock already means the squatter is some other program, so the message names the port and says how to find it.
 
-## No token
+## No token, but web pages are refused
 
-Anything that can reach this socket can tell mercury which URL is frontmost, and nothing else. The worst a hostile local process achieves is a lie about the current tab, which makes a site-specific key send a chord to the wrong page. That is a nuisance, and it costs less than a shared secret the user has to paste in.
+Anything that can reach this socket can tell mercury which URL is frontmost, and nothing else. The worst a hostile client achieves is a lie about the current tab, which makes a site-specific key send a chord to the wrong page, and only on the next press of that key. That is a nuisance, and it costs less than a shared secret the user has to paste in. `external-effects.md` is where this stops being true, and it is the doc that introduces the token.
 
-`external-effects.md` is where this stops being true, and it is the doc that introduces the token.
+A web page is a different matter, and it is closed here rather than left to the token. WebSockets are exempt from the same-origin policy: the handshake is allowed to cross origins, the browser attaches an `Origin` header, and the server decides. So any page in any open tab can `new WebSocket("ws://127.0.0.1:8797")` and start talking. Chrome's Private Network Access work aims at this, but its WebSocket enforcement has been partial and has moved around, so nothing here depends on it.
+
+The rule is a denylist, not an allowlist:
+
+- An `Origin` of `http://` or `https://` is a web page. Refuse it.
+- No `Origin` at all is a native client (a CLI, `websocat`, the test harness). Allow it.
+- A `chrome-extension://` origin is the extension. Allow it.
+
+An allowlist that demanded `chrome-extension://` would lock out the CLI and the test harness, which are clients this doc exists to serve. The denylist costs those nothing and still removes every page on the web from the set of things that can reach mercury.
+
+The extension's id is not pinned. An unpacked development build's id depends on where it is loaded from and differs from a packed one, so pinning it would break the install path in `chrome-extension.md` for no gain: the remaining set is "other extensions the user chose to install," which is not the set the check is for.
+
+Confirm at implementation time that a Chrome MV3 service worker's `WebSocket` actually sends `Origin: chrome-extension://<id>`, and drop to "absent `Origin`" as the extension's case if it does not. The denylist works either way; only the third bullet depends on it.
 
 ## `freddie_event_socket`
 
@@ -117,10 +129,23 @@ pub struct EventSocket { /* the accept task's `JoinHandle`, aborted on drop */ }
 pub fn listen<F>(port: u16, on_message: F) -> std::io::Result<EventSocket>
 where
     F: Fn(&str) + Send + Sync + 'static;
+
+/// Whether a handshake carrying this `Origin` may connect.
+///
+/// A browser attaches `Origin` to a WebSocket handshake and leaves the decision to the server,
+/// which is the whole of what stops a page in an open tab from driving the socket. Native clients
+/// send none, so absent is allowed; a page's `http`/`https` origin is not.
+fn origin_allowed(origin: Option<&str>) -> bool {
+    match origin {
+        None => true,
+        Some(o) => !o.starts_with("http://") && !o.starts_with("https://"),
+    }
+}
 ```
 
 `tokio-tungstenite` is the transport, on the runtime mercury already has. Per accepted connection the crate spawns a read task, and:
 
+- The handshake is refused with 403 when `origin_allowed` says no, before any frame is read.
 - Only text frames reach `on_message`. A binary frame is dropped with a `debug` line; pings are answered by tungstenite itself.
 - `max_message_size` is 64 KiB. A URL is small, and nothing that arrives here should be able to make mercury allocate without bound.
 - Concurrent connections are fine and expected (the extension and a CLI at once). Every connection's frames land on the same `on_message`.
@@ -133,6 +158,7 @@ Tests, driven by a `tokio-tungstenite` client against a listener on port 0:
 
 - A text frame arrives at `on_message` intact.
 - Two concurrent connections both deliver.
+- A handshake with `Origin: https://evil.com` is refused, one with `Origin: http://localhost:3000` is refused too (a page served from loopback is still a page), and one with `chrome-extension://abc` or no `Origin` connects.
 - A binary frame does not reach `on_message`, and the connection stays open.
 - A frame over `max_message_size` closes that connection and leaves the listener accepting.
 - Dropping the `EventSocket` closes live connections and frees the port for an immediate rebind.
