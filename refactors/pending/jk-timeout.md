@@ -12,21 +12,31 @@ And the literal string `jk` cannot be typed. There is no gap long enough to sepa
 
 A run waits `JK_TIMEOUT` for its next key; on expiry what was swallowed replays and the run resets, so a later `k` is an ordinary `k`. The guard lives in mercury next to the sequence rather than inside it, so `freddie_keys` stays free of `freddie`'s timer types.
 
-Builds on `refactors/past/timer-events.md` and `refactors/past/layer-timeout.md`.
+Builds on `refactors/pending/timer-ids.md`, which has to land first: it makes a timer's firing one event carrying which timer it was, so this adds a `TimerId` variant instead of a bespoke trigger. Also `refactors/past/timer-events.md` and `refactors/past/layer-timeout.md`.
 
-## change 1: the timeout trigger
+## change 1: the timer id and the arm helper
 
-`crates/mercury/src/sources.rs`, appended:
+Depends on `timer-ids.md`: one `TimerFired` event carries which timer went off, so this adds a variant rather than a trigger, an event, and a `self_trigger!` impl of its own.
+
+`crates/mercury/src/sources.rs`, `TimerId`, before:
 
 ```rust
-/// The `jk` run's timeout. It carries nothing, so one type is both the trigger and the event.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct JkTimeout;
-
-bind::self_trigger!(JkTimeout);
+pub enum TimerId {
+    /// A chooser layer idling back home. Armed by `arm_return_home`.
+    ReturnHome,
+}
 ```
 
-`model.rs` adds `JkTimeout(JkTimeout)` to `MercuryTrigger` and `MercuryEvent`; its `use crate::{..}` picks up `JkTimeout`. `lib.rs` adds `JkTimeout` to the `sources` re-export.
+after:
+
+```rust
+pub enum TimerId {
+    /// A chooser layer idling back home. Armed by `arm_return_home`.
+    ReturnHome,
+    /// A half-typed key sequence's window. Armed by `arm_jk_timeout`.
+    JkWindow,
+}
+```
 
 ## change 2: the duration and the arm helper
 
@@ -41,12 +51,17 @@ pub const JK_TIMEOUT: Duration = Duration::from_millis(500);
 /// `pub(crate)` where `arm_return_home` is private, because the root's handlers call this one and
 /// they are not children of this module.
 pub(crate) fn arm_jk_timeout() -> (TimerGuard, MercuryEffect) {
-    let (guard, effect) = timer_effect_and_guard(JK_TIMEOUT, MercuryEvent::JkTimeout(JkTimeout));
+    let (guard, effect) = timer_effect_and_guard(
+        JK_TIMEOUT,
+        MercuryEvent::Timer(TimerFired {
+            id: TimerId::JkWindow,
+        }),
+    );
     (guard, MercuryEffect::Timer(effect))
 }
 ```
 
-The `use crate::{..}` in `state/mod.rs` adds `JkTimeout`; `JK_TIMEOUT` joins the `pub use` through `state/mod.rs` and `lib.rs`.
+`JK_TIMEOUT` joins the `pub use` through `state/mod.rs` and `lib.rs`.
 
 ## change 3: TypingState holds the guard
 
@@ -126,22 +141,24 @@ after:
 
 ```rust
     Quit => quit,
-    JkTimeout => jk_timeout,
+    Timer(TimerId::JkWindow) => jk_timeout,
     AnyKey => maybe_pass_through,
 ```
+
+The `Layer` node binds `Timer(TimerId::ReturnHome)`, a different trigger value, so the two never collide however the layers nest.
 
 `crates/mercury/src/handlers/root.rs`, new handler:
 
 ```rust
 /// The window elapsed with no next key: what the run swallowed types itself.
-pub(crate) fn jk_timeout(_ev: &JkTimeout, node: Node<&mut Mercury, ()>) -> Vec<MercuryEffect> {
+pub(crate) fn jk_timeout(_ev: &TimerFired, node: Node<&mut Mercury, ()>) -> Vec<MercuryEffect> {
     let root = node.parent;
     root.typing_state.jk_timer = None;
     replay(root.typing_state.jk.interrupt())
 }
 ```
 
-`root.rs` adds `JkTimeout` to its imports. The guard is dropped whenever the run ends, so a `JkTimeout` for a run that already ended never fires; one that arrives anyway finds an idle run and emits nothing.
+`root.rs` adds `TimerFired` to its imports. The guard is dropped whenever the run ends, so a `JkWindow` firing for a run that already ended never arrives; one that arrives anyway finds an idle run and emits nothing.
 
 ## change 6: tests
 
@@ -150,10 +167,15 @@ pub(crate) fn jk_timeout(_ev: &JkTimeout, node: Node<&mut Mercury, ()>) -> Vec<M
 `emit(key, press)` is the existing helper and stamps no flags; `typing()` is the one that starts in the passthrough layer.
 
 ```rust
-// The armed timer, rebuilt to assert against.
+// The event the jk window fires, and the armed timer rebuilt to assert against.
+const fn jk_window_fired() -> MercuryEvent {
+    MercuryEvent::Timer(TimerFired {
+        id: TimerId::JkWindow,
+    })
+}
+
 fn jk_timer() -> MercuryEffect {
-    let (_guard, effect) =
-        freddie::timer_effect_and_guard(JK_TIMEOUT, MercuryEvent::JkTimeout(JkTimeout));
+    let (_guard, effect) = freddie::timer_effect_and_guard(JK_TIMEOUT, jk_window_fired());
     MercuryEffect::Timer(effect)
 }
 
@@ -162,7 +184,7 @@ fn a_half_typed_run_types_itself_when_the_window_elapses() {
     let mut m = typing();
     assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
     assert_eq!(
-        m.handle(&MercuryEvent::JkTimeout(JkTimeout)),
+        m.handle(&jk_window_fired()),
         Some(vec![emit(Key::KeyJ, PressType::Down)]),
     );
     assert!(m.typing_state.jk.is_idle());
@@ -174,7 +196,7 @@ fn a_half_typed_run_types_itself_when_the_window_elapses() {
 #[test]
 fn a_timeout_with_no_run_in_progress_emits_nothing() {
     let mut m = typing();
-    assert_eq!(m.handle(&MercuryEvent::JkTimeout(JkTimeout)), Some(vec![]));
+    assert_eq!(m.handle(&jk_window_fired()), Some(vec![]));
 }
 
 #[test]
