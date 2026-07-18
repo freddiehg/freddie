@@ -326,7 +326,7 @@ fn a_recorded_pid_replaces_the_whole_file() {
 
 Pure prefactor: `mercury` and `mercury daemon` both do exactly what `mercury` does today. Each later change adds its own variant to `Command` and its own arm to the match.
 
-`crates/mercury/src/main.rs` keeps `main`, the usage text, and the parser. Everything else in the file today (`run`, `run_event_loop`, `dispatch_event`, `run_effect_loop`, `perform_effect`, `schedule_timer`, `place_window`, `foreground_app`, and the module doc describing the threads) moves verbatim into a new `crates/mercury/src/daemon.rs`, with today's `fn main` body becoming `pub(crate) fn run()`. `mod logging;` stays in `main.rs`, and `daemon.rs` reaches it as `crate::logging`.
+`crates/mercury/src/main.rs` keeps `main` and the clap types. Everything else in the file today (`run`, `run_event_loop`, `dispatch_event`, `run_effect_loop`, `perform_effect`, `schedule_timer`, `place_window`, `foreground_app`, and the module doc describing the threads) moves verbatim into a new `crates/mercury/src/daemon.rs`, with today's `fn main` body becoming `pub(crate) fn run()`. `mod logging;` stays in `main.rs`, and `daemon.rs` reaches it as `crate::logging`.
 
 `clap` with its `derive` feature is already a mercury dependency by the time this lands, so nothing here adds it.
 
@@ -595,7 +595,7 @@ fn wait_until_free() -> bool {
 
 `stop` does not escalate to SIGKILL. A daemon that ignores SIGTERM is one whose event loop is wedged, and killing it uncleanly leaves exactly the state the graceful path exists to avoid, so the decision to do it is the user's and the message says how.
 
-`USAGE`, `Command`, `parse`, and `run` gain `status` and `stop`.
+`Verb` gains `Status` and `Stop`, each with the doc comment that becomes its help line, and `run` gains the two arms calling `cli::status()` and `cli::stop()`.
 
 Verifying: `mercury status` with nothing running prints "not running" and exits 1; `cargo run -p mercury daemon` in another pane, then `mercury status` prints the pid, `mercury stop` prints "mercury stopped", and the daemon's log ends with `SIGTERM: quitting` and `kill: exiting`.
 
@@ -637,6 +637,8 @@ pub(crate) fn logs() -> i32 {
     }
 }
 ```
+
+`Verb` gains `Logs`, and `run` gains the arm calling `cli::logs()`.
 
 Verifying: `mercury logs` with no daemon running follows an empty or absent file and prints nothing; starting a daemon in another pane makes its lines appear. Ctrl-C returns to the shell.
 
@@ -784,26 +786,45 @@ pub(crate) fn restart() -> i32 {
 }
 ```
 
-`parse` changes its default:
+`Verb` gains its last two variants, and `run` stops treating the bare `mercury` as `daemon`:
 
 ```diff
-     let Some(verb) = args.next() else {
--        return Ok(Command::Daemon);
-+        return Ok(Command::StartAndFollow);
-     };
+ enum Verb {
++    /// Start the daemon if it is not running, and exit.
++    Start,
++    /// Stop the running daemon and start a fresh one.
++    Restart,
+     /// Run the daemon in this terminal, in the foreground.
+     Daemon,
+ }
+
+ fn run(verb: Option<Verb>) -> i32 {
+     match verb {
+-        None | Some(Verb::Daemon) => {
++        None => cli::start_and_follow(),
++        Some(Verb::Start) => cli::start_only(),
++        Some(Verb::Restart) => cli::restart(),
++        Some(Verb::Daemon) => {
+             daemon::run();
+             0
+         }
+     }
+ }
 ```
 
-with `Command::StartAndFollow`, `Command::Start`, and `Command::Restart` added, `USAGE` reaching the full text at the top of this doc, and the `no_verb_runs_the_daemon` test becoming:
+Declaration order is help order, so the finished `Verb` reads `Start`, `Restart`, `Logs`, `Stop`, `Status`, `Daemon`, reproducing the listing at the top of this doc with `daemon` last as the one a user rarely types.
+
+`None` is still what the bare `mercury` parses to. What moved is the arm in `run` that interprets it, so the test that changes is the one naming the behavior:
 
 ```rust
 #[test]
 fn no_verb_starts_and_follows() {
-    assert!(matches!(parse_args(&[]), Ok(Command::StartAndFollow)));
+    assert_eq!(verb_of(&[]), None);
 }
 
 #[test]
 fn the_restart_verb_restarts() {
-    assert!(matches!(parse_args(&["restart"]), Ok(Command::Restart)));
+    assert_eq!(verb_of(&["restart"]), Some(Verb::Restart));
 }
 ```
 
