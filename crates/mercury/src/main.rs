@@ -29,9 +29,11 @@
 //! loop for the `CGEventTap`. It has always been off main, which is why the
 //! keyboard works whatever main is doing.
 //!
-//! The worker thread runs the tokio runtime, owns the state and the `!Send`
-//! `Emitter`, and runs both the event and effect loops. It is the only place
-//! state is mutated, so there is no shared mutable state and no `Mutex`.
+//! The worker thread runs the tokio runtime, owns the state and the `Emitter`, and runs both
+//! the event and effect loops. It is the only place state is mutated, so there is no shared
+//! mutable state and no `Mutex`, and it is the only consumer of the effect channel, so effects
+//! are performed in the order dispatch produced them: a modifier reaches the OS before the key
+//! carrying its flag.
 //!
 //! On macOS this needs Accessibility (and Input Monitoring). `cargo run -p mercury`
 
@@ -142,12 +144,11 @@ fn main() {
 
 /// Everything mercury does, on the worker thread.
 ///
-/// `intercept` has to be called from here rather than from `main`, because it
-/// returns the `Emitter`, the `Emitter` is `!Send` (it holds an `Rc`), and the
-/// effect loop uses it. It has to be born on the thread it will live on.
+/// `intercept` is called from here rather than from `main` because the tap and the effect loop
+/// belong with the state they drive, not because anything it returns is pinned to a thread.
 ///
-/// Which is exactly why this future is `!Send`, and why that is fine: it is
-/// `block_on`ed by the worker's current-thread runtime and never crosses a
+/// This future is `!Send` because it holds the `Watcher` from `freddie_app_nav::watch`, and that
+/// is fine: it is `block_on`ed by the worker's current-thread runtime and never crosses a
 /// thread.
 #[expect(clippy::future_not_send)]
 async fn run(
@@ -249,9 +250,8 @@ fn dispatch_event(
 /// The effect loop: read the effect channel and perform each effect, until one of
 /// them says to stop.
 ///
-/// The `Emitter` is `!Send` by design, so this future is `!Send`; it runs on the
-/// worker thread that created the `Emitter` and never crosses a thread.
-#[expect(clippy::future_not_send)]
+/// Runs on the worker thread, the one consumer of the effect channel, so effects are performed
+/// in the order dispatch produced them.
 async fn run_effect_loop(
     mut effect_rx: UnboundedReceiver<MercuryEffect>,
     emitter: Emitter,

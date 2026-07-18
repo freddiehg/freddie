@@ -3,7 +3,6 @@
 //! and the posting are FFI that needs a real keyboard to exercise.
 
 use std::hash::{BuildHasher, Hasher, RandomState};
-use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
@@ -310,7 +309,7 @@ pub fn intercept(
         run_loop,
         thread: Some(thread),
     };
-    let emitter = Emitter(Rc::new(EmitterState { tag }));
+    let emitter = Emitter { tag };
     Ok((interceptor, emitter))
 }
 
@@ -369,35 +368,30 @@ fn from_cg(flags: CGEventFlags) -> ModifierFlags {
     out
 }
 
-struct EmitterState {
+/// Synthesizes keys through the interceptor's tag, so they are not re-handled.
+pub struct Emitter {
     tag: Tag,
 }
 
-impl EmitterState {
+impl Emitter {
     /// Post `key` going down or coming up, carrying exactly `flags`.
     ///
-    /// A `CGEvent`'s own flags are baked in from the source's state when it is created, which
-    /// lags a modifier posted microseconds earlier. So the event states its own modifiers rather
-    /// than trusting the source: whoever built it said what it carries, and we apply exactly that.
+    /// The event states its own modifiers rather than trusting a source: whoever built it said
+    /// what it carries, and we apply exactly that. See [`keyboard_event`].
     fn post(&self, key: Key, press: PressType, flags: ModifierFlags) -> Result<(), EmitError> {
         let event = keyboard_event(key, press, flags)?;
         self.tag.stamp(&event);
         event.post(CGEventTapLocation::Session);
         Ok(())
     }
-}
 
-/// Synthesizes keys through the interceptor's tag, so they are not re-handled.
-pub struct Emitter(Rc<EmitterState>);
-
-impl Emitter {
     /// Emit one key event, a press or a release, carrying `flags`.
     ///
     /// # Errors
     ///
     /// Returns [`EmitError`] if the key has no code on this OS or could not be posted.
     pub fn emit(&self, key: Key, press: PressType, flags: ModifierFlags) -> Result<(), EmitError> {
-        self.0.post(key, press, flags)
+        self.post(key, press, flags)
     }
 
     /// Press then release `key`, both halves carrying `flags`. A chord: `cmd`-`r` is
