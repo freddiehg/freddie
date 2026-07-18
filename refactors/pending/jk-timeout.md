@@ -31,7 +31,10 @@ bind::self_trigger!(JkTimeout);
 pub const JK_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Arm the `jk` timeout: the guard cancels it on drop, the effect schedules it.
-fn arm_jk_timeout() -> (TimerGuard, MercuryEffect) {
+///
+/// `pub(crate)` where `arm_return_home` is private, because the root's handlers call this one and
+/// they are not children of this module.
+pub(crate) fn arm_jk_timeout() -> (TimerGuard, MercuryEffect) {
     let (guard, effect) = timer_effect_and_guard(JK_TIMEOUT, MercuryEvent::JkTimeout(JkTimeout));
     (guard, MercuryEffect::Timer(effect))
 }
@@ -56,10 +59,10 @@ after:
 pub struct TypingState {
     pub held: HeldModifiers,
     pub jk: KeySequence,
-    /// Live exactly while `jk` is mid-run: dropping it cancels the timeout. Written only by
-    /// `maybe_pass_through`, in the same match that reads the run's outcome, so the two cannot
-    /// disagree.
-    jk_timer: Option<TimerGuard>,
+    /// Live exactly while `jk` is mid-run: dropping it cancels the timeout. Written by the two
+    /// root handlers only, each in the same breath as the run it belongs to, so the two cannot
+    /// disagree. `pub(crate)` because those handlers are not in this module.
+    pub(crate) jk_timer: Option<TimerGuard>,
 }
 ```
 
@@ -92,13 +95,11 @@ after:
 and the other two arms clear it:
 
 ```rust
-        KeySequenceOutcome::Passed(replay) => {
+        KeySequenceOutcome::Passed(presses) => {
             root.typing_state.jk_timer = None;
-            replay
-                .into_iter()
-                .map(|p| emit(p.key, p.press, ModifierFlags::empty()))
-                .chain(std::iter::once(emit(ev.key, ev.press, ev.flags)))
-                .collect()
+            let mut out = replay(presses);
+            out.push(emit(ev.key, ev.press, ev.flags));
+            out
         }
         KeySequenceOutcome::Completed => {
             root.typing_state.jk_timer = None;
@@ -140,19 +141,43 @@ pub(crate) fn jk_timeout(_ev: &JkTimeout, node: Node<&mut Mercury, ()>) -> Vec<M
 
 `crates/mercury/tests/transitions.rs`. The cases that landed with `jk` hold, except that the key which opens the run now also returns the `Timer` effect; rebuild the expected `Timer` to assert it (its `testing` equality is the delay and the fire event).
 
+`emit(key, press)` is the existing helper and stamps no flags; `typing()` is the one that starts in the passthrough layer.
+
 ```rust
-let (_guard, effect) =
-    freddie::timer_effect_and_guard(JK_TIMEOUT, MercuryEvent::JkTimeout(JkTimeout));
-assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![MercuryEffect::Timer(effect)]));
+// The armed timer, rebuilt to assert against.
+fn jk_timer() -> MercuryEffect {
+    let (_guard, effect) =
+        freddie::timer_effect_and_guard(JK_TIMEOUT, MercuryEvent::JkTimeout(JkTimeout));
+    MercuryEffect::Timer(effect)
+}
 
-// The window elapses with j still down: its down types itself.
-assert_eq!(
-    m.handle(&MercuryEvent::JkTimeout(JkTimeout)),
-    Some(vec![emit(Key::KeyJ, PressType::Down, ModifierFlags::empty())]),
-);
-assert!(m.typing_state.jk.is_idle());
+#[test]
+fn a_half_typed_run_types_itself_when_the_window_elapses() {
+    let mut m = typing();
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
+    assert_eq!(
+        m.handle(&MercuryEvent::JkTimeout(JkTimeout)),
+        Some(vec![emit(Key::KeyJ, PressType::Down)]),
+    );
+    assert!(m.typing_state.jk.is_idle());
+    // The k that follows is an ordinary k, not the second half of anything.
+    assert_eq!(m.handle(&key(Key::KeyK)), Some(passed(Key::KeyK)));
+    assert!(matches!(m.layer(), Layer::Typing(_)));
+}
 
-// A JkTimeout with no run in progress emits nothing.
-let mut m = Mercury::default();
-assert_eq!(m.handle(&MercuryEvent::JkTimeout(JkTimeout)), Some(vec![]));
+#[test]
+fn a_timeout_with_no_run_in_progress_emits_nothing() {
+    let mut m = typing();
+    assert_eq!(m.handle(&MercuryEvent::JkTimeout(JkTimeout)), Some(vec![]));
+}
+
+#[test]
+fn the_window_runs_from_the_first_key_not_the_last() {
+    // The j up advances the run without re-arming, so only the j down returns a timer.
+    let mut m = typing();
+    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
+    assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
+}
 ```
+
+Every case that landed with `jk` and opens a run needs its expected effects to gain `jk_timer()`, since the opening key now returns it.
