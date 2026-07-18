@@ -131,7 +131,7 @@ fn main() {
                 .enable_all()
                 .build()
                 .expect("a current-thread runtime with no reactor cannot fail to build");
-            runtime.block_on(run(event_tx, event_rx, title_tx, args.port));
+            runtime.block_on(run(event_tx, event_rx, title_tx));
         })
         .expect("spawning the runtime thread");
 
@@ -161,19 +161,8 @@ async fn run(
     event_tx: UnboundedSender<MercuryEvent>,
     event_rx: UnboundedReceiver<MercuryEvent>,
     title_tx: std::sync::mpsc::Sender<&'static str>,
-    port: u16,
 ) {
     let (effect_tx, effect_rx) = unbounded_channel::<MercuryEffect>();
-
-    // The external event source, held for the length of `run` like `_watcher`: dropping it closes
-    // the port. Above the keyboard grab, so a refused start has not taken the keyboard yet.
-    //
-    // A busy port panics. The single-instance lock already means the squatter is some other
-    // program, and a mercury that came up deaf would present as "the extension broke" while
-    // looking perfectly healthy.
-    let _socket = freddie_event_socket::listen(port, mercury::on_message).unwrap_or_else(|e| {
-        panic!("could not bind 127.0.0.1:{port}: {e}; find it with `lsof -i :{port}`")
-    });
 
     // Grab the keyboard: swallow every key and forward it to the model, which
     // decides what to emit (the effect loop performs it).
