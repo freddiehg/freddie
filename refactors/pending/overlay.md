@@ -714,4 +714,4 @@ The panel builds on the first `show` on the main thread and reuses thereafter; `
 ## open questions
 
 - The panel styling (size, font, position, a background card) is a first pass, not tuned.
-- The in-app overlay can go stale while it is up. Its content comes from `foreground.app()`, and `record_front_app` changes that without a transition, so switching apps leaves the old app's keymap on screen: only `set_layer` hides the overlay, and none happened. Hide it on a foreground change, re-show it with the new app's keymap, or leave it to the dwell.
+- The in-app overlay can go stale while it is up. `refactors/pending/drop-emits-effects.md` is the general form of this: state whose visible counterpart has to be taken down when the state changes. Its content comes from `foreground.app()`, and `record_front_app` changes that without a transition, so switching apps leaves the old app's keymap on screen: only `set_layer` hides the overlay, and none happened. Hide it on a foreground change, re-show it with the new app's keymap, or leave it to the dwell.
