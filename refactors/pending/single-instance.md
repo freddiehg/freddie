@@ -25,6 +25,20 @@ The properties, verified on macOS 25.5.0 (Darwin) against a standalone binary:
 - A second `open` from the *same* process also fails, because the lock belongs to the open file description rather than the process. That is what lets the tests below run in one process.
 - The kernel releases the lock when the holder dies by any means, `SIGKILL` included, so there is no stale lock and nothing to clean up. The zero-byte lock file stays on disk between runs and is reused.
 
+## Why there is no orphaned lock
+
+The lock belongs to the open file description, so it dies when the last fd referencing it closes. Nothing persists that a later mercury would have to inspect, age out, or clear. Measured on this machine against a standalone binary:
+
+- The holder exits normally, or panics: the next `acquire` succeeds.
+- `SIGTERM`, `SIGKILL`: the next `acquire` succeeds.
+- `SIGSTOP`: the next `acquire` is refused, correctly, because that process still owns the event tap.
+- The holder spawns a child and then exits: the next `acquire` succeeds; the child does not hold the lock.
+- The machine crashes or loses power: the next `acquire` succeeds, the lock having been kernel memory.
+
+`SIGTERM` matters because mercury installs no signal handler, so its `Drop` impls do not run: today's log has a run with no `kill: exiting` line for exactly that reason. The kernel closes the fd during exit regardless, so `Instance::drop` is a nicety and correctness does not rest on it.
+
+The child case is the one that could break. `fork` shares the open file description and `exec` keeps it unless the fd is `FD_CLOEXEC`, and mercury spawns `open` through `std::process::Command` on every foreground (`freddie_app_nav::foreground`). Rust's std opens files `O_CLOEXEC`, and `OpenOptionsExt::custom_flags` only ORs flags in and cannot unset it, so the lock fd is dropped at `exec` in every child. Verified by spawning a 30-second child while holding the lock, exiting the parent without dropping the `File`, and re-acquiring successfully. A later change to a raw `libc::open`, or a `pre_exec` that preserves fds, would reintroduce the leak.
+
 ## Where the lock file lives
 
 `~/Library/Application Support/mercury/mercury.lock`, and the directory it sits in is a correctness constraint rather than a convention.
