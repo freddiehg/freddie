@@ -2,7 +2,7 @@
 
 A trigger is a value: `Key::KeyR`, `AnyKey`, `Quit`. Some bindings want one that depends on the node they are bound on — "this timer's firing, not another's", "this key, but only while something is armed" — and there is no way to write that.
 
-There nearly is, by accident. `bind_macro` parses a trigger as a `syn::Expr` and emits `let trigger = #trigger;` INSIDE the generated `dispatch`, where the node's path is in scope. So `#[bind(ArmedTimer(path.overlay_id()) => hide_overlay)]` compiles and dispatches correctly today — I ran it. But `path` is only what that function happens to call its parameter, a derived level's generated body calls it `node`, and neither is documented: a binding written that way captures a macro-internal name, and renaming that parameter would break it silently.
+There nearly is, by accident. `bind_macro` parses a trigger as a `syn::Expr` and emits `let trigger = #trigger;` INSIDE the generated `dispatch`, where the node's path is in scope. So `#[bind(ArmedTimer(path.overlay_id()) => hide_overlay)]` compiles and dispatches today. But `path` is only what that function happens to call its parameter, a derived level's generated body calls it `node`, and neither is documented: a binding written that way captures a macro-internal name, and renaming that parameter would break it silently.
 
 So the trigger may be written as a closure, and the macro calls it with the path rather than evaluating it.
 
@@ -161,7 +161,7 @@ after:
 
 `accumulate_impl` gains the same two lines. A derived level needs nothing: its `let node = self;` is already owned and rebindable.
 
-Watch for `unused_mut` on the way through: a node whose only reason for `mut` is a closure trigger does use it, through the `&mut path` the closure is called with, so the lint stays quiet. Verify that rather than assume it, since `-D unused` is on.
+A node whose only reason for `mut` is a closure trigger does use it, through the `&mut path` the closure is called with, so `unused_mut` stays quiet.
 
 ## change 3: the derive says so
 
@@ -178,8 +178,6 @@ Without this the feature is undiscoverable, which is the whole complaint about t
 - a node holding nothing: the trigger produces a value that matches no event.
 - a constant trigger beside a closure one on the same node, both dispatching correctly, so the two forms coexist.
 - a closure reading `parent()` on a deeper node, so the upward direction is exercised.
-
-I verified the first three against mercury as a scratch experiment (a root field `armed_id: Option<u64>` bound as `Armed(path.armed_id) => on_fired`, which is the accidental form this change replaces); they belong in `bind`'s own tests, written against a tree that exists for testing.
 
 One case has to run under the `check` feature, since two of the four emit sites are only compiled there: a node with a closure trigger, put through `accumulate`, asserting it collects the trigger the closure produced. Without it, the accumulate half of change 1 is untested and breaks silently for anyone who turns the feature on.
 
