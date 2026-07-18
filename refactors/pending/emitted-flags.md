@@ -89,32 +89,43 @@ After:
 ///
 /// The source is created here and dropped with the event, and is deliberately not stored
 /// anywhere. Posting through a source mutates it: an arrow key leaves `NumericPad` in its
-/// state, every event built from it afterwards is born carrying that bit, and `post` writes
-/// the bit back out, which reaffirms it. One arrow key would otherwise stop `cmd`-`space`
-/// from being the Spotlight hotkey for the rest of the run. A source with no history has
-/// nothing to leak, so the event is born with exactly the flags its own key carries and
-/// `untouched` keeps only those.
+/// state, every event built from it afterwards is born carrying that bit, and posting that
+/// event writes the bit back, which reaffirms it. One arrow key would otherwise stop
+/// `cmd`-`space` from being the Spotlight hotkey for the rest of the run. A source with no
+/// history has nothing to leak, so the event is born with exactly the flags its own key
+/// carries and `untouched` keeps only those.
 ///
 /// Not a `NULL` source, which means the shared session state rather than no state, and so
 /// inherits bits other processes have left there.
-fn keyboard_event(key: Key, down: bool, flags: ModifierFlags) -> Option<CGEvent> {
-    let code = to_code(key)?;
-    let source = CGEventSource::new(CGEventSourceStateID::Private).ok()?;
-    let event = CGEvent::new_keyboard_event(source, code, down).ok()?;
+///
+/// # Errors
+///
+/// Returns [`EmitError::Unmappable`] if the key has no code on this OS, and
+/// [`EmitError::Post`] if the OS refused to build the source or the event.
+fn keyboard_event(key: Key, press: PressType, flags: ModifierFlags) -> Result<CGEvent, EmitError> {
+    let code = to_code(key).ok_or(EmitError::Unmappable(key))?;
+    let source = CGEventSource::new(CGEventSourceStateID::Private).map_err(|_| EmitError::Post)?;
+    let event = CGEvent::new_keyboard_event(source, code, press == PressType::Down)
+        .map_err(|_| EmitError::Post)?;
     let untouched = event.get_flags() & !MODIFIERS;
     event.set_flags(untouched | to_cg(flags));
-    Some(event)
+    Ok(event)
 }
 ```
 
-Its caller in the tap callback loses the source argument:
+Its caller in the tap callback loses the source argument, and says so when it drops a key:
 
 ```rust
-                    Decision::Remap(out) => keyboard_event(out.key, out.press == PressType::Down, out.flags)
-                        .map_or(CallbackResult::Drop, CallbackResult::Replace),
+                    Decision::Remap(out) => match keyboard_event(out.key, out.press, out.flags) {
+                        Ok(event) => CallbackResult::Replace(event),
+                        Err(e) => {
+                            tracing::warn!(key = ?out.key, error = %e, "dropped a remapped key");
+                            CallbackResult::Drop
+                        }
+                    },
 ```
 
-And `intercept` no longer builds one for the tap thread:
+And `intercept` no longer builds a source for the tap thread:
 
 ```rust
     let thread = std::thread::spawn(move || {
@@ -159,16 +170,31 @@ impl EmitterState {
     ///
     /// The event states its own modifiers rather than trusting a source: whoever built it said
     /// what it carries, and we apply exactly that. See [`keyboard_event`].
-    fn post(&self, key: Key, down: bool, flags: ModifierFlags) -> Result<(), EmitError> {
-        if to_code(key).is_none() {
-            return Err(EmitError::Unmappable(key));
-        }
-        let event = keyboard_event(key, down, flags).ok_or(EmitError::Post)?;
+    fn post(&self, key: Key, press: PressType, flags: ModifierFlags) -> Result<(), EmitError> {
+        let event = keyboard_event(key, press, flags)?;
         event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, self.tag);
         event.post(CGEventTapLocation::Session);
         Ok(())
     }
 }
+```
+
+`Emitter::emit` hands the press through rather than flattening it to a bool:
+
+Before:
+
+```rust
+    pub fn emit(&self, key: Key, press: PressType, flags: ModifierFlags) -> Result<(), EmitError> {
+        self.0.post(key, press == PressType::Down, flags)
+    }
+```
+
+After:
+
+```rust
+    pub fn emit(&self, key: Key, press: PressType, flags: ModifierFlags) -> Result<(), EmitError> {
+        self.0.post(key, press, flags)
+    }
 ```
 
 The emitter is constructed without a source:
@@ -189,30 +215,49 @@ The contamination is only observable after a real post, so the unit tests cover 
 // history, which is what `keyboard_event` guarantees.
 #[test]
 fn a_keys_own_flags_survive_and_others_do_not_appear() {
-    let arrow = keyboard_event(Key::UpArrow, true, ModifierFlags::empty()).expect("an arrow");
-    let space = keyboard_event(Key::Space, true, ModifierFlags::empty()).expect("a space");
+    let arrow =
+        keyboard_event(Key::UpArrow, PressType::Down, ModifierFlags::empty()).expect("an arrow");
+    let space =
+        keyboard_event(Key::Space, PressType::Down, ModifierFlags::empty()).expect("a space");
     assert!(arrow.get_flags().contains(CGEventFlags::CGEventFlagNumericPad));
     assert!(!space.get_flags().contains(CGEventFlags::CGEventFlagNumericPad));
 }
 
-// What the bug produced: cmd-space posting as 0x00300000 rather than 0x00100000.
+// What the bug produced: `cmd`-`space` posting 0x00300000 rather than 0x00100000.
 #[test]
 fn a_chord_carries_its_modifier_and_nothing_else() {
-    let space = keyboard_event(Key::Space, true, ModifierFlags::COMMAND).expect("a space");
+    let space =
+        keyboard_event(Key::Space, PressType::Down, ModifierFlags::COMMAND).expect("a space");
     assert_eq!(space.get_flags() & MODIFIERS, CGEventFlags::CGEventFlagCommand);
     assert!(!space.get_flags().contains(CGEventFlags::CGEventFlagNumericPad));
 }
 
-// `encode` used to drop the flags it was handed; the remap path shares the constructor now.
+// `encode` dropped the flags it was handed; the remap path shares the constructor now.
 #[test]
 fn a_remapped_key_carries_the_flags_it_was_given() {
-    let event = keyboard_event(Key::KeyR, true, ModifierFlags::COMMAND).expect("a key");
+    let event =
+        keyboard_event(Key::KeyR, PressType::Down, ModifierFlags::COMMAND).expect("a key");
     assert!(event.get_flags().contains(CGEventFlags::CGEventFlagCommand));
 }
 
+// A modifier is a `FlagsChanged`, which the OS decides from the keycode; the emitter neither
+// asks for that nor needs to.
 #[test]
-fn a_key_with_no_code_has_no_event() {
-    assert!(keyboard_event(Key::F24, true, ModifierFlags::empty()).is_none());
+fn a_modifier_posts_as_a_flags_changed() {
+    let cmd =
+        keyboard_event(Key::MetaLeft, PressType::Down, ModifierFlags::COMMAND).expect("a cmd");
+    assert_eq!(cmd.get_type(), CGEventType::FlagsChanged);
+    let space =
+        keyboard_event(Key::Space, PressType::Down, ModifierFlags::empty()).expect("a space");
+    assert_eq!(space.get_type(), CGEventType::KeyDown);
+}
+
+#[test]
+fn a_key_with_no_code_is_unmappable() {
+    assert!(matches!(
+        keyboard_event(Key::F24, PressType::Down, ModifierFlags::empty()),
+        Err(EmitError::Unmappable(Key::F24))
+    ));
 }
 ```
 
