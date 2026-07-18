@@ -59,7 +59,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub struct TimerId(u64);
 
 impl TimerId {
-    /// The next id. Relaxed: the only requirement is that no two calls return the same value.
+    /// The next id.
+    ///
+    /// Atomic because a mutable static has to be `Sync`, not because anything arms timers off one
+    /// thread; `Relaxed` because the only requirement is that no two calls return the same value.
     fn mint() -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         Self(NEXT.fetch_add(1, Ordering::Relaxed))
