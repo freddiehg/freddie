@@ -23,8 +23,8 @@ The transport crate stays dumb and mercury owns the vocabulary, the same split `
 /// key injection and remote quit are unrepresentable rather than filtered.
 ///
 /// Empty, so every frame is refused with `unknown variant `IncomingEvent.Tab`, there are no
-/// variants`. This doc ships the transport, and an empty vocabulary is the honest statement of what
-/// mercury can be told once it exists. Variants arrive with the features that need them.
+/// variants`. This doc ships the transport, and until a feature needs to be told something there
+/// is nothing mercury can be told. Variants arrive with the features that want them.
 #[derive(serde::Deserialize, Debug)]
 #[serde(tag = "kind", content = "value")]
 pub enum IncomingEvent {}
@@ -94,23 +94,23 @@ Loopback only, never `0.0.0.0`: a wildcard bind would let anything on the networ
 
 A failed bind is fatal. A mercury that came up without its socket is a mercury whose per-site binds silently do nothing, and there is no way to tell that apart from a broken extension without reading the log; there should be no "running, but deaf" mercury to be in. The single-instance lock already means the squatter is some other program, so the message names the port and says how to find it.
 
-## No token, but web pages are refused
+## The origin check
 
-Anything that can reach this socket can tell mercury which URL is frontmost, and nothing else. The worst a hostile client achieves is a lie about the current tab, which makes a site-specific key send a chord to the wrong page, and only on the next press of that key. That is a nuisance, and it costs less than a shared secret the user has to paste in. `external-effects.md` is where this stops being true, and it is the doc that introduces the token.
+Mercury asks for no token here. A client that reaches this socket can report which URL is frontmost and nothing else, so a hostile one gets to lie about the current tab, and the lie buys it one wrong chord the next time you press a site-bound key. A secret the user has to paste into an options page costs more than that is worth. `external-effects.md` adds the token, once a connection is worth something.
 
-A web page is a different matter, and it is closed here rather than left to the token. WebSockets are exempt from the same-origin policy: the handshake is allowed to cross origins, the browser attaches an `Origin` header, and the server decides. So any page in any open tab can `new WebSocket("ws://127.0.0.1:8797")` and start talking. Chrome's Private Network Access work aims at this, but its WebSocket enforcement has been partial and has moved around, so nothing here depends on it.
+A web page can reach the socket, and that one gets closed. WebSockets are exempt from the same-origin policy: the handshake crosses origins freely, the browser attaches an `Origin` header, and the server decides what to do with it. Any page in any open tab can run `new WebSocket("ws://127.0.0.1:8797")` and start sending frames. Chrome's Private Network Access work aims at this case, but its WebSocket enforcement has been partial and has shifted between releases, so the check assumes nothing from it.
 
-The rule is a denylist, not an allowlist:
+Three origins arrive, and the first is refused with a 403 at the handshake:
 
-- An `Origin` of `http://` or `https://` is a web page. Refuse it.
-- No `Origin` at all is a native client (a CLI, `websocat`, the test harness). Allow it.
-- A `chrome-extension://` origin is the extension. Allow it.
+- `http://` or `https://`, which is a web page.
+- absent, which is a native client: a CLI, `websocat`, the test harness.
+- `chrome-extension://`, which is the extension.
 
-An allowlist that demanded `chrome-extension://` would lock out the CLI and the test harness, which are clients this doc exists to serve. The denylist costs those nothing and still removes every page on the web from the set of things that can reach mercury.
+Demanding `chrome-extension://` instead would lock out the CLI and the test harness, and this doc exists to serve those too. Refusing the web schemes leaves them alone and still puts every page on the web out of reach.
 
-The extension's id is not pinned. An unpacked development build's id depends on where it is loaded from and differs from a packed one, so pinning it would break the install path in `chrome-extension.md` for no gain: the remaining set is "other extensions the user chose to install," which is not the set the check is for.
+Any `chrome-extension://` origin is accepted, whatever the id. An unpacked development build's id follows from where it was loaded and a packed build's differs again, so matching one id would break the install path `chrome-extension.md` describes, and what it would exclude is other extensions the user installed deliberately.
 
-Confirm at implementation time that a Chrome MV3 service worker's `WebSocket` actually sends `Origin: chrome-extension://<id>`, and drop to "absent `Origin`" as the extension's case if it does not. The denylist works either way; only the third bullet depends on it.
+Confirm during implementation that a Chrome MV3 service worker's `WebSocket` sends `Origin: chrome-extension://<id>`. If it sends none, the extension arrives as the absent case and the check still holds.
 
 ## `freddie_event_socket`
 
@@ -132,9 +132,9 @@ where
 
 /// Whether a handshake carrying this `Origin` may connect.
 ///
-/// A browser attaches `Origin` to a WebSocket handshake and leaves the decision to the server,
-/// which is the whole of what stops a page in an open tab from driving the socket. Native clients
-/// send none, so absent is allowed; a page's `http`/`https` origin is not.
+/// A browser attaches `Origin` to a WebSocket handshake and leaves the decision to the server, so
+/// this is what keeps a page in an open tab off the socket. Native clients send no `Origin`, so
+/// absent connects; a page's `http`/`https` origin does not.
 fn origin_allowed(origin: Option<&str>) -> bool {
     match origin {
         None => true,
