@@ -133,7 +133,7 @@ pub enum PressType {
 /// The flags are authoritative: the source stamps them at creation (macOS from the hardware
 /// modifier state for a physical key, the posting app for an injected one). A passed-through key
 /// carries exactly these; a sync sweep or a chord builds its own.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct KeyEvent {
     pub key: Key,
     pub press: PressType,
@@ -147,8 +147,51 @@ pub struct KeyEvent {
 /// modifier posted microseconds earlier, so a chord posted back to back carries the wrong flags.
 /// Stating the flags on the event and applying exactly them makes the emitted stream say what it
 /// means, whatever the source thinks.
-#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub struct ModifierFlags(u8);
+
+impl std::fmt::Debug for KeyEvent {
+    /// `KeyEvent { key: KeyJ, press: Down }`, with `flags` only when some modifier is set.
+    ///
+    /// Every dispatched event goes in the log, and most keys carry no modifier, so the derive
+    /// spent a third of each line saying so.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "KeyEvent {{ key: {:?}, press: {:?}",
+            self.key, self.press
+        )?;
+        if !self.flags.is_empty() {
+            write!(f, ", flags: {:?}", self.flags)?;
+        }
+        f.write_str(" }")
+    }
+}
+
+impl std::fmt::Debug for ModifierFlags {
+    /// The modifiers set, by name: `ModifierFlags(COMMAND|SHIFT)`, or `ModifierFlags()` for none.
+    /// The derive printed the raw bits, which nothing can read at a glance.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ModifierFlags(")?;
+        let mut any = false;
+        for (name, flag) in [
+            ("CONTROL", Self::CONTROL),
+            ("COMMAND", Self::COMMAND),
+            ("ALT", Self::ALT),
+            ("SHIFT", Self::SHIFT),
+            ("FN", Self::FN),
+        ] {
+            if self.contains(flag) {
+                if any {
+                    f.write_str("|")?;
+                }
+                f.write_str(name)?;
+                any = true;
+            }
+        }
+        f.write_str(")")
+    }
+}
 
 impl ModifierFlags {
     pub const CONTROL: Self = Self(1 << 0);
@@ -267,6 +310,29 @@ mod tests {
         };
         assert!(Key::KeyR.is_matching(&event));
         assert!(!Key::KeyS.is_matching(&event));
+    }
+
+    #[test]
+    fn debug_leaves_out_flags_when_there_are_none() {
+        // Every dispatched event is logged, and most keys carry no modifier.
+        let bare = KeyEvent {
+            key: Key::KeyJ,
+            press: PressType::Down,
+            flags: ModifierFlags::empty(),
+        };
+        assert_eq!(format!("{bare:?}"), "KeyEvent { key: KeyJ, press: Down }");
+
+        let mut flags = ModifierFlags::COMMAND;
+        flags.set(ModifierFlags::SHIFT, true);
+        let chord = KeyEvent {
+            key: Key::KeyV,
+            press: PressType::Up,
+            flags,
+        };
+        assert_eq!(
+            format!("{chord:?}"),
+            "KeyEvent { key: KeyV, press: Up, flags: ModifierFlags(COMMAND|SHIFT) }"
+        );
     }
 
     #[test]
