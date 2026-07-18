@@ -54,10 +54,36 @@ So this takes a prefactor: a trigger may be written as a CLOSURE, and the macro 
 
 The binding names its own parameter, so nothing is captured invisibly, and a constant trigger is written exactly as it is today. It needs no new grammar either: `binds()` already parses each trigger as a `syn::Expr`, and a closure is one, so this is a `match` on `Expr::Closure` in the emit.
 
-What it is called with is "whatever struct this node is", which is one rule with two spellings, because the two kinds of node hold their state differently:
+What it is called with is a read-only view over the node it is bound on:
 
-- A place node passes `&Self`. The root's path IS `&mut Self`, so the emit is `(#closure)(&*path)`; a deeper node's path is a `PathMut`, whose only accessor is `get_mut`, so the emit is `(#closure)(&*path.get_mut())` and the binding forces the existing `needs_mut` to true.
-- A derived level passes `&Data`, its own struct: `(#closure)(&node.data)`.
+```rust
+/// What a trigger closure is handed: read access to the node it is bound on, and to its parent.
+///
+/// Not the path itself, because a trigger has no business mutating the tree, and not `&PathMut`,
+/// because reading the node needs the unique borrow its projection re-derives it through.
+pub struct PathView<'a, N, P>(&'a mut PathMut<N, P>);
+
+impl<N, P> PathView<'_, N, P> {
+    /// The node this trigger is bound on. Takes `&mut self` because the projection does, not
+    /// because it writes anything.
+    pub fn node(&mut self) -> &N {
+        self.0.get_mut()
+    }
+
+    /// The level above, for a trigger whose answer lives further up.
+    pub const fn parent(&self) -> &P {
+        self.0.parent()
+    }
+}
+```
+
+```rust
+#[bind(|nav| ArmedTimer(nav.node().return_home_id()) => to_home)]
+```
+
+`node()` and `parent()` cannot be held at once, because `PathMut`'s projection re-derives the node FROM the parent, so borrowing one borrows the path. Sequentially is fine, and a trigger computing a value never needs both live.
+
+The root needs none of it: its path is `&mut Mercury` already, so the emit is `(#closure)(&*path)` and the closure reads fields directly. A deeper place node gets `(#closure)(PathView(&mut path))`, and a derived level gets `(#closure)(&node.data)`, its own struct, since it has no path to view.
 
 The reborrow ends before `path` or `node` moves into the handler, so the closure form composes with what dispatch already does.
 
