@@ -17,7 +17,7 @@ Both fall out of one change: a firing carries the identity of the arming it came
 pub struct TimerFired(pub TimerId);
 
 // the binding names the guard whose firing it wants
-#[bind(|nav| ArmedTimer::from_guard(nav.get().timeout()) => to_home)]
+#[bind(|nav| nav.get().timeout().armed() => to_home)]
 ```
 
 The identity does the work the per-timer types were doing, so the types go. The match does the work a stale-check in each handler would have done, so a stale firing matches no binding at all: dispatch returns `None`, the handler never runs, and no handler contains an `if` about it.
@@ -154,7 +154,9 @@ pub fn timer_effect_and_guard<E>(
 
 ## change 3: one event and one trigger, replacing three types
 
-`crates/mercury/src/sources.rs`, which gains `use freddie::TimerId`. `LayerTimeout` and `JkTimeout` are deleted, and this replaces both:
+They live in `freddie`, beside the guard and the id they are about, the way `KeySequence` does and the way `freddie_keys` owns `Key` and `KeyEvent`. That is what lets a guard hand back its own trigger, so a binding never names a type at all. `freddie` takes a direct dependency on `bind` for `EventTrigger`; it already has one transitively through `freddie_keys`, and there is no cycle, since `bind` depends on `laserbeam` alone.
+
+`crates/freddie/src/timer.rs`:
 
 ```rust
 /// A timer fired, carrying the arming it came from.
@@ -179,25 +181,26 @@ impl EventTrigger for ArmedTimer {
     }
 }
 
-impl ArmedTimer {
+/// A guard hands back the trigger matching its own firing, so a binding names the guard and
+/// nothing else.
+impl DropGuard {
     /// Matches the firing this guard is waiting on.
-    ///
-    /// A binding names the guard, not the id inside it: the guard is what the state holds, and the
-    /// id is `freddie`'s business.
     #[must_use]
-    pub fn from_guard(guard: &DropGuard) -> Self {
-        Self(Some(guard.id()))
+    pub const fn armed(&self) -> ArmedTimer {
+        ArmedTimer(Some(self.id))
     }
+}
 
-    /// The same, for a state that may hold no guard at all, which matches no firing.
+impl ArmedTimer {
+    /// Matches the firing of the guard held here, or nothing when there is none.
     #[must_use]
-    pub fn from_optional(guard: Option<&DropGuard>) -> Self {
+    pub fn maybe(guard: Option<&DropGuard>) -> Self {
         Self(guard.map(DropGuard::id))
     }
 }
 ```
 
-`model.rs`, `MercuryTrigger` before:
+mercury wraps them: `model.rs`, `MercuryTrigger` before:
 
 ```rust
     LayerTimeout(LayerTimeout),
@@ -210,7 +213,7 @@ after:
     ArmedTimer(ArmedTimer),
 ```
 
-and `MercuryEvent` the same way, to `Timer(TimerFired)`. `lib.rs` re-exports `ArmedTimer` and `TimerFired` in place of the two.
+and `MercuryEvent` the same way, to `Timer(TimerFired)`, with `TimerFired`'s `testing` equality living in `freddie` (change 6). `sources.rs` loses both types rather than gaining any.
 
 ## change 4: each layer binds its own firing
 
@@ -231,7 +234,7 @@ after:
 ```rust
 #[bind(
     // Only this layer's own arming: a firing from a nav already left matches nothing.
-    |nav| ArmedTimer::from_guard(nav.get().timeout()) => to_home,
+    |nav| nav.get().timeout().armed() => to_home,
     Key::Escape.down() => to_home,
     Key::KeyC.down() => open_chrome,
     ..
@@ -294,7 +297,7 @@ after:
     Quit => quit,
     // Only this run's window: a firing from a run that has since ended matches nothing, so the
     // handler never sees it.
-    |root| ArmedTimer::from_optional(root.typing_state.jk.window_guard()) => jk_timeout,
+    |root| ArmedTimer::maybe(root.typing_state.jk.window_guard()) => jk_timeout,
     AnyKey => maybe_pass_through,
 ```
 
