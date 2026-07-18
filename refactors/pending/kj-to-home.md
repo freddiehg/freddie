@@ -48,6 +48,7 @@ pub struct KeySequence {
 }
 
 /// What one key did to a [`KeySequence`].
+#[derive(Debug, PartialEq, Eq)]
 pub enum KeySequenceOutcome {
     /// The key belongs to the run: it was swallowed, and nothing is emitted.
     Advanced,
@@ -339,12 +340,13 @@ mod tests {
     fn no_layer_binds_a_trigger_twice() {
         let (nav, _) = NavLayer::new();
         let (resize, _) = ResizeLayer::new();
+        let (inapp, _) = AppLayer::new();
         for layer in [
             Layer::Home(HomeLayer::new()),
             Layer::Nav(nav),
             Layer::Resize(resize),
             Layer::Typing(TypingLayer::new()),
-            Layer::InApp(AppLayer::new()),
+            Layer::InApp(inapp),
         ] {
             let mut m = Mercury::with_layer(layer);
             assert!(
