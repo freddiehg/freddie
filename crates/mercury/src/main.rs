@@ -129,9 +129,11 @@ fn main() {
 
     // Pumps AppKit events until the worker drops the stopper, applying any pending title on each
     // wake. Only the last one is drawn: intermediate layers in one batch are not worth showing.
+    // The leading space is the gap between the glyph and the text, which the status item does not
+    // put there itself.
     main_loop.run(|| {
         if let Some(name) = title_rx.try_iter().last() {
-            menu_bar.set_title(Some(name));
+            menu_bar.set_title(Some(&format!(" {name}")));
         }
     });
     let _ = worker.join();
