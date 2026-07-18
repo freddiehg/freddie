@@ -2,7 +2,7 @@
 
 Not built. mercury needs Chrome's active-tab URL for per-site key remaps (`chrome-tab-url.md`), and later a way to drive Chrome directly (run page JavaScript, open and close tabs, read the selection). This extension is the bridge for both, over the loopback WebSocket mercury listens on.
 
-This doc owns the browser side only. `external-events.md` owns mercury's side: the port, `MERCURY_PORT`, the `freddie_event_socket` crate, the token, the `Upstream` / `Downstream` / `Command` / `CommandResult` types, and the mapping from a message to a `MercuryEvent`. Read it for the wire contract; this doc only builds the JSON it defines.
+This doc owns the browser side only. `external-events.md` owns mercury's side: the port, `MERCURY_PORT`, the `freddie_event_socket` crate, the token, the `Upstream` / `Downstream` / `Command` / `Result` types, and the mapping from a message to a `MercuryEvent`. Read it for the wire contract; this doc only builds the JSON it defines.
 
 Two phases share one connection. v0 streams the URL up; the command bus adds commands down and results up.
 
@@ -157,9 +157,9 @@ socket.addEventListener("message", async (ev) => {
   let result;
   try {
     const value = await HANDLERS[command.kind](command.value ?? {});
-    result = { kind: "CommandResult.Ok", value };
+    result = { kind: "Result.Ok", value };
   } catch (e) {
-    result = { kind: "CommandResult.Err", value: String(e) };
+    result = { kind: "Result.Err", value: String(e) };
   }
   socket.send(JSON.stringify({ kind: "Upstream.Reply", value: { id, result } }));
 });

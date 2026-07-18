@@ -39,7 +39,7 @@ pub struct TabMessage {
 #[derive(serde::Deserialize, Debug)]
 pub struct ReplyMessage {
     pub id: CommandId,
-    pub result: CommandResult,
+    pub result: Result,
 }
 
 /// A message mercury sends down to a connected client.
@@ -85,17 +85,20 @@ pub struct CloseTabs {
     pub url_glob: String,
 }
 
-/// What a command produced. Named `CommandResult` rather than `Result` so it neither shadows the
-/// prelude nor lies about its wire tag: the tag is the type name, so this is
-/// `CommandResult.Ok` / `CommandResult.Err`.
+/// What a command produced.
+///
+/// It shadows the prelude's `Result` in this module, which is the point: it is a result, with the
+/// same `Ok(value)` / `Err(message)` meaning, and the union convention makes the wire tag the type
+/// name, so shadowing is what gets `Result.Ok` / `Result.Err` on the wire. Anything in this module
+/// that wants the prelude's spells it `std::result::Result`.
 #[derive(serde::Deserialize, Debug)]
 #[serde(tag = "kind", content = "value")]
-pub enum CommandResult {
+pub enum Result {
     /// Whatever JSON the handler returned.
-    #[serde(rename = "CommandResult.Ok")]
+    #[serde(rename = "Result.Ok")]
     Ok(serde_json::Value),
     /// The message from a command that threw.
-    #[serde(rename = "CommandResult.Err")]
+    #[serde(rename = "Result.Err")]
     Err(String),
 }
 ```
@@ -105,8 +108,8 @@ Every message is the project's one discriminated-union form, `{ kind: "Type.Vari
 ```jsonc
 // client -> mercury
 { "kind": "Upstream.Tab", "value": { "url": "https://claude.ai/new" } }
-{ "kind": "Upstream.Reply", "value": { "id": 42, "result": { "kind": "CommandResult.Ok", "value": "hello" } } }
-{ "kind": "Upstream.Reply", "value": { "id": 42, "result": { "kind": "CommandResult.Err", "value": "no active tab" } } }
+{ "kind": "Upstream.Reply", "value": { "id": 42, "result": { "kind": "Result.Ok", "value": "hello" } } }
+{ "kind": "Upstream.Reply", "value": { "id": 42, "result": { "kind": "Result.Err", "value": "no active tab" } } }
 
 // mercury -> client
 { "kind": "Downstream.Command", "value": { "id": 42, "command": { "kind": "Command.RunJs", "value": { "code": "document.title" } } } }
@@ -122,8 +125,11 @@ Adjacent tagging (`tag = "kind", content = "value"`) over newtype variants produ
 ```rust
 // crates/mercury/src/external.rs
 
-/// The port mercury listens on when `MERCURY_PORT` says nothing. Picked from the IANA dynamic
-/// range and hardcoded in the extension too.
+/// The port mercury listens on when `MERCURY_PORT` says nothing. Hardcoded in the extension too.
+///
+/// Below 49152, which is where macOS starts handing out ephemeral ports
+/// (`net.inet.ip.portrange.first`): a listener up there can find its port already taken by some
+/// outbound socket that grabbed it first. Unassigned in `/etc/services`.
 pub const DEFAULT_PORT: u16 = 48291;
 
 const PORT_ENV: &str = "MERCURY_PORT";
@@ -312,7 +318,7 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 /// The in-flight commands, and where to send the next one.
 pub struct CommandBus {
     next_id: AtomicU64,
-    pending: Mutex<HashMap<CommandId, oneshot::Sender<CommandResult>>>,
+    pending: Mutex<HashMap<CommandId, oneshot::Sender<Result>>>,
     /// The client that spoke most recently. There is no separate connect callback: the extension
     /// pushes a tab URL as soon as it connects, so the newest speaker is the live browser, and a
     /// client that never speaks is one nothing can be asked of anyway.
@@ -332,7 +338,12 @@ pub enum CommandError {
 
 impl CommandBus {
     /// Send `command` and wait for its reply.
-    pub async fn run(&self, command: Command) -> Result<serde_json::Value, CommandError>;
+    /// `std::result::Result`, not this module's `Result`, which is the wire type a client sends
+    /// back and which `run` unwraps into `CommandError::Failed`.
+    pub async fn run(
+        &self,
+        command: Command,
+    ) -> std::result::Result<serde_json::Value, CommandError>;
 
     /// Record the client that just spoke as the command target.
     pub fn set_target(&self, client: &Client);
@@ -374,7 +385,7 @@ The event that carries a reply back into the model, and which handlers care abou
 
 Tests, over a fake client on a loopback port:
 
-- `run` returns the `CommandResult.Ok` payload for the id it sent.
+- `run` returns the `Result.Ok` payload for the id it sent.
 - Two commands in flight resolve to their own replies, replies arriving out of order.
 - A reply for an unknown id is dropped and leaves `pending` empty.
 - No client is `NoClient` immediately, without waiting out the timeout.
