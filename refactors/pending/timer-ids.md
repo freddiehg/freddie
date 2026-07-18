@@ -195,26 +195,33 @@ after:
 
 and `MercuryEvent` the same way, to `Timer(TimerFired)`. `lib.rs` re-exports `ArmedTimer` and `TimerFired` in place of the two.
 
-## change 4: the guards say their ids
+## change 4: each layer binds its own firing
 
-Each node that holds a timer exposes the arming it is waiting on, so its binding can name it.
+The `Layer` node binds the return-home timeout for every variant today, so it would need to ask which variant is active and what guard it holds. It does not have to: the layers that arm a timer are the ones that should bind its firing.
 
-`crates/mercury/src/state/mod.rs`, on `impl Layer`:
+`crates/mercury/src/state/nav.rs`, before:
 
 ```rust
-/// The return-home arming this layer is waiting on, or `None` for a layer that arms no timer.
-#[must_use]
-pub fn return_home_id(&self) -> Option<TimerId> {
-    match self {
-        Self::Nav(nav) => Some(nav.timeout_id()),
-        Self::Resize(resize) => Some(resize.timeout_id()),
-        Self::InApp(inapp) => Some(inapp.timeout_id()),
-        Self::Home(_) | Self::Typing(_) => None,
-    }
-}
+#[bind(
+    Key::Escape.down() => to_home,
+    Key::KeyC.down() => open_chrome,
+    ..
+)]
 ```
 
-with this on each of the three, in `nav.rs`, `resize.rs`, and `app.rs`:
+after:
+
+```rust
+#[bind(
+    // Only this layer's own arming: a firing from a nav already left matches nothing.
+    |nav| ArmedTimer(Some(nav.get_mut().timeout_id())) => to_home,
+    Key::Escape.down() => to_home,
+    Key::KeyC.down() => open_chrome,
+    ..
+)]
+```
+
+`resize.rs` and `app.rs` gain the same line, reading their own `timeout_id()`. Each of the three exposes it:
 
 ```rust
     /// The return-home arming this layer is waiting on, for the binding that matches only its own
@@ -225,33 +232,26 @@ with this on each of the three, in `nav.rs`, `resize.rs`, and `app.rs`:
     }
 ```
 
-Each takes `TimerId` into its `use freddie::{..}`, and each `timeout` field drops its `#[expect(dead_code)]`: it is read now, which is the small sign the design fits. The comment above it changes with it, from "held for its `Drop`" to being read for its id as well.
+Each takes `TimerId` into its `use freddie::{..}`, and each `timeout` field drops its `#[expect(dead_code)]`: it is read now. The comment above it changes with it, from "held for its `Drop`" to being read for its id as well.
 
-`crates/freddie/src/sequence.rs`, on `KeySequence`:
+`Home` and `Typing` arm nothing and bind nothing, so there is no `None` case anywhere: the absence is the absent binding.
 
-```rust
-/// The window arming this run is waiting on, or `None` when no run is live or it has no window.
-#[must_use]
-pub fn window_id(&self) -> Option<TimerId> {
-    self.window.as_ref()?.timer.as_ref().map(DropGuard::id)
-}
-```
-
-## change 5: the bindings name their guards
-
-`crates/mercury/src/state/mod.rs`. `Layer`, before:
+`crates/mercury/src/state/mod.rs`, the `Layer` node, before:
 
 ```rust
 #[bind(LayerTimeout => to_home)]
+pub enum Layer {
 ```
 
-after:
+after, binding nothing at all, since `escape` already moved down to the command layers:
 
 ```rust
-#[bind(|layer| ArmedTimer(layer.get_mut().return_home_id()) => to_home)]
+pub enum Layer {
 ```
 
-The root, before:
+## change 5: the root binds the jk window
+
+`crates/mercury/src/state/mod.rs`, `Mercury`'s `#[bind(..)]`, before:
 
 ```rust
     Quit => quit,
@@ -263,11 +263,13 @@ after:
 
 ```rust
     Quit => quit,
+    // Only this run's window: a firing from a run that has since ended matches nothing, so the
+    // handler never sees it.
     |root| ArmedTimer(root.typing_state.jk.window_id()) => jk_timeout,
     AnyKey => maybe_pass_through,
 ```
 
-The root's path is `&mut Mercury`, so its closure reads fields directly; `Layer`'s is a `PathMut`, so its closure reads through `get_mut`.
+The root's path is `&mut Mercury`, so its closure reads fields directly; a layer's is a `PathMut`, so its closure reads through `get_mut`.
 
 Both arm helpers take the closure form: `|id| MercuryEvent::Timer(TimerFired(id))`.
 
