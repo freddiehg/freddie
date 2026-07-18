@@ -24,10 +24,11 @@ use objc2_core_graphics::CGColor;
 use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 use tracing::debug;
 
-/// The monospaced type size the keymap is drawn at.
-const FONT_SIZE: f64 = 15.0;
+/// The monospaced type size the keymap is drawn at. Big enough to read across the room, since it
+/// is a glance, not a document.
+const FONT_SIZE: f64 = 36.0;
 /// Space between the text and the panel's edge.
-const PADDING: f64 = 20.0;
+const PADDING: f64 = 32.0;
 /// Space between the panel and the screen's right edge.
 const MARGIN: f64 = 20.0;
 /// How opaque the card behind the text is. It is a hint you read past, not a window: low enough to
