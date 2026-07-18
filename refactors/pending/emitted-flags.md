@@ -339,13 +339,29 @@ fn a_key_with_no_code_is_unmappable() {
 }
 ```
 
-## Change 3: the emitter is `Send`
+## Change 3: the emitter is `Send`, and is one struct
 
-With the `CGEventSource` gone, nothing in the emitter is thread-hostile: `CGEventSource` is `!Send` because it holds a `NonNull`, while `CFRunLoop` and `i64` are both `Send`, so `Interceptor` already is. The `Rc` is the only thing left manufacturing `!Send`, and it is not there for sharing: the emitter is moved into the effect loop once and borrowed after.
+With the `CGEventSource` gone, nothing in the emitter is thread-hostile: `CGEventSource` is `!Send` because it holds a `NonNull`, while `CFRunLoop` and `i64` are both `Send`, so `Interceptor` already is. The `Rc` is the only thing left manufacturing `!Send`, and it is not there for sharing: the emitter is moved into the effect loop once and borrowed after, and never cloned.
+
+Nothing is put in its place. Thread affinity buys mercury two things, and neither comes from a type marker: the state has a single writer, so no `Mutex`, and effects are performed by one loop in dispatch order, so `MetaLeft` down always reaches the OS before the `Space` carrying its flag. Both follow from one channel with one consumer. `Send` also governs moving rather than sharing, so it was never the marker for either.
+
+`EmitterState` existed to be the thing inside the `Rc`, so it goes with it.
+
+### `crates/freddie_keyboard/src/sys/macos.rs`
 
 Before:
 
 ```rust
+struct EmitterState {
+    tag: Tag,
+}
+
+impl EmitterState {
+    fn post(&self, key: Key, press: PressType, flags: ModifierFlags) -> Result<(), EmitError> {
+        ...
+    }
+}
+
 /// Synthesizes keys through the interceptor's tag, so they are not re-handled.
 pub struct Emitter(Rc<EmitterState>);
 ```
@@ -354,14 +370,73 @@ After:
 
 ```rust
 /// Synthesizes keys through the interceptor's tag, so they are not re-handled.
-pub struct Emitter(EmitterState);
+pub struct Emitter {
+    tag: Tag,
+}
+
+impl Emitter {
+    /// Post `key` going down or coming up, carrying exactly `flags`.
+    ///
+    /// The event states its own modifiers rather than trusting a source: whoever built it said
+    /// what it carries, and we apply exactly that. See [`keyboard_event`].
+    fn post(&self, key: Key, press: PressType, flags: ModifierFlags) -> Result<(), EmitError> {
+        let event = keyboard_event(key, press, flags)?;
+        self.tag.stamp(&event);
+        event.post(CGEventTapLocation::Session);
+        Ok(())
+    }
+}
 ```
 
-`use std::rc::Rc;` goes, and `intercept` ends with `let emitter = Emitter(EmitterState { tag });`.
+`use std::rc::Rc;` goes, `intercept` ends with `let emitter = Emitter { tag };`, and the existing `emit` and `tap` methods join the same `impl` block, calling `self.post(..)` rather than `self.0.post(..)`.
 
 ### `crates/mercury/src/main.rs`
 
-The effect loop's future is `Send` once the emitter is, so the expectation stops being met. Remove it and the reasoning that named the emitter:
+Three comments credit the emitter for guarantees it was not providing.
+
+Before:
+
+```rust
+//! The worker thread runs the tokio runtime, owns the state and the `!Send`
+//! `Emitter`, and runs both the event and effect loops. It is the only place
+//! state is mutated, so there is no shared mutable state and no `Mutex`.
+```
+
+After:
+
+```rust
+//! The worker thread runs the tokio runtime, owns the state and the `Emitter`, and runs both
+//! the event and effect loops. It is the only place state is mutated, so there is no shared
+//! mutable state and no `Mutex`, and effects are performed in dispatch order by one consumer,
+//! so a modifier always reaches the OS before the key carrying its flag.
+```
+
+Before:
+
+```rust
+/// `intercept` has to be called from here rather than from `main`, because it
+/// returns the `Emitter`, the `Emitter` is `!Send` (it holds an `Rc`), and the
+/// effect loop uses it. It has to be born on the thread it will live on.
+///
+/// Which is exactly why this future is `!Send`, and why that is fine: it is
+/// `block_on`ed by the worker's current-thread runtime and never crosses a
+/// thread.
+#[expect(clippy::future_not_send)]
+async fn run(
+```
+
+After:
+
+```rust
+/// `intercept` is called from here rather than from `main` because the tap and the effect loop
+/// belong with the state they drive, not because anything it returns is pinned to a thread.
+///
+/// This future is `!Send` because it holds the `Watcher` from `freddie_app_nav::watch`, and
+/// that is fine: it is `block_on`ed by the worker's current-thread runtime and never crosses
+/// a thread.
+#[expect(clippy::future_not_send)]
+async fn run(
+```
 
 Before:
 
@@ -375,29 +450,12 @@ async fn run_effect_loop(
 After:
 
 ```rust
-/// Runs on the worker thread, which owns the state the effects act on.
+/// Runs on the worker thread, the one consumer of the effect channel, so effects are performed
+/// in the order dispatch produced them.
 async fn run_effect_loop(
 ```
 
-`run` keeps its own `#[expect(clippy::future_not_send)]`, and only that one. It holds the `Watcher` from `freddie_app_nav::watch` across await points, and `Watcher` is `!Send` three ways: the `NonNull` inside its `RcBlock`, and the `dyn NSObjectProtocol` token being neither `Send` nor `Sync`. `run_effect_loop` holds no such thing once the emitter is `Send`, which is why its expectation is the one that goes.
-
-The comment on `run` that explains why `intercept` is called there also stops being true and becomes:
-
-Before:
-
-```rust
-/// `intercept` has to be called from here rather than from `main`, because it
-/// returns the `Emitter`, the `Emitter` is `!Send` (it holds an `Rc`), and the
-/// effect loop uses it. It has to be born on the thread it will live on.
-```
-
-After:
-
-```rust
-/// `intercept` is called from here rather than from `main` because the tap and the effect
-/// loop belong to the same thread as the state they drive, not because anything it returns
-/// is pinned to one.
-```
+`run` keeps its expectation and only that one. It holds the `Watcher` across await points, and `Watcher` is `!Send` three ways: the `NonNull` inside its `RcBlock`, and the `dyn NSObjectProtocol` token being neither `Send` nor `Sync`. `run_effect_loop` holds no such thing once the emitter is `Send`, which is why its expectation is the one that goes.
 
 ## Change 4: keep the emitter's log line
 
