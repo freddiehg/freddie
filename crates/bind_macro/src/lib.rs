@@ -243,9 +243,7 @@ fn derived_node_impl(
             }
         }
     });
-    let triggers = binds
-        .iter()
-        .map(|b| trigger_expr(&b.trigger, &quote!(node)));
+    let triggers = claimed_triggers(binds);
     Ok(quote! {
         #[automatically_derived]
         #[expect(clippy::useless_conversion)]
@@ -394,16 +392,12 @@ fn accumulate_impl(
     } else {
         quote!(where #(#children: ::bind::EventHandler<#marker>,)*)
     };
-    // A closure trigger is called with `&mut path`, so it needs the binding to be `mut` even on a
-    // node whose shape never reassigns it.
-    let binding = if needs_mut || any_closure_trigger(binds) {
+    let binding = if needs_mut {
         quote!(mut path)
     } else {
         quote!(path)
     };
-    let triggers = binds
-        .iter()
-        .map(|b| trigger_expr(&b.trigger, &quote!(path)));
+    let triggers = claimed_triggers(binds);
     Ok(quote! {
         ::bind::check_only! {
         #[automatically_derived]
@@ -523,9 +517,7 @@ fn dispatch_impl(
     } else {
         quote!(where #(#children: ::bind::Dispatch<#marker>,)*)
     };
-    // A closure trigger is called with `&mut path`, so it needs the binding to be `mut` even on a
-    // node whose shape never reassigns it.
-    let binding = if needs_mut || any_closure_trigger(binds) {
+    let binding = if needs_mut {
         quote!(mut path)
     } else {
         quote!(path)
@@ -689,10 +681,17 @@ fn trigger_expr(trigger: &Expr, state: &TokenStream2) -> TokenStream2 {
     }
 }
 
-/// Whether any of these bindings reads the node it is bound on, which is what makes the path
-/// binding need `mut`: the closure is called with a unique reference to it.
-fn any_closure_trigger(binds: &[Binding]) -> bool {
-    binds.iter().any(|b| matches!(b.trigger, Expr::Closure(_)))
+/// The triggers THE CHECK collects: the ones a node CLAIMS.
+///
+/// A closure trigger is skipped. Its value is read from state at dispatch, so it is not a static
+/// claim, and two nodes whose state holds nothing would produce the same value and read as a
+/// clobber while neither could fire at all. It is also what lets a trigger be an `Option`:
+/// `insert_or_error` takes a value, `None` has none to give, and the conversion is never reached.
+fn claimed_triggers(binds: &[Binding]) -> impl Iterator<Item = &Expr> {
+    binds
+        .iter()
+        .filter(|b| !matches!(b.trigger, Expr::Closure(_)))
+        .map(|b| &b.trigger)
 }
 
 /// One `trigger => handler` pair. `accumulate` uses the trigger; `dispatch` uses

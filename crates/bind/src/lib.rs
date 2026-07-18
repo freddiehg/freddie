@@ -207,6 +207,23 @@ pub trait EventTrigger {
     fn is_matching(&self, event: &Self::Event) -> bool;
 }
 
+/// A trigger that may be absent, which matches nothing when it is.
+///
+/// A trigger read from state has to produce a value even when the state holds none, and this is
+/// that value: `None` answers no to every event, so a binding reads
+/// `some_state.timer().map(TimerGuard::trigger)` and nothing branches on absence.
+///
+/// One impl for one type constructor, so nothing overlaps. It does claim `Option` for every
+/// consumer: no crate can implement `EventTrigger` for an `Option` of its own trigger afterwards,
+/// since coherence will not reason about whether the inner type qualifies. The meaning imposed
+/// here is the only sensible one.
+impl<T: EventTrigger> EventTrigger for Option<T> {
+    type Event = T::Event;
+    fn is_matching(&self, event: &T::Event) -> bool {
+        self.as_ref().is_some_and(|t| t.is_matching(event))
+    }
+}
+
 /// Implements [`EventTrigger`] for a payload-less trigger that is its own event and always
 /// matches, for a bare signal that carries nothing and has nothing to discriminate.
 #[macro_export]

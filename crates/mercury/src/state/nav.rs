@@ -1,5 +1,5 @@
 use bind::Bind;
-use freddie::DropGuard;
+use freddie::TimerGuard;
 use freddie_keys::Key;
 
 #[allow(clippy::wildcard_imports)]
@@ -12,6 +12,8 @@ use super::{LayerPath, arm_return_home};
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
+    // Only this layer's own timer: a firing from a layer already left matches nothing.
+    |path| path.get().home_timeout.trigger() => to_home,
     Key::Escape.down() => to_home,
     Key::KeyC.down() => open_chrome,
     Key::KeyF.down() => open_finder,
@@ -19,9 +21,8 @@ use super::{LayerPath, arm_return_home};
     Key::KeyZ.down() => open_zed,
 )]
 pub struct NavLayer {
-    // Held for its `Drop`: dropping the guard cancels nav's return-home timer.
-    #[expect(dead_code)]
-    timeout: DropGuard,
+    // Read for the trigger matching its firing, and held for its `Drop`: dropping the guard cancels nav's return-home timer.
+    pub(crate) home_timeout: TimerGuard,
 }
 
 impl NavLayer {
@@ -30,6 +31,11 @@ impl NavLayer {
     #[must_use]
     pub(crate) fn new() -> (Self, MercuryEffect) {
         let (timeout, timer) = arm_return_home();
-        (Self { timeout }, timer)
+        (
+            Self {
+                home_timeout: timeout,
+            },
+            timer,
+        )
     }
 }

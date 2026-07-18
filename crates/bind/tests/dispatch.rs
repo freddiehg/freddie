@@ -249,3 +249,27 @@ fn a_closure_trigger_can_read_its_parent() {
         Some(102)
     );
 }
+
+// An `Option` trigger: the child binds one, so absence is a value rather than a special case.
+#[test]
+fn an_absent_option_trigger_matches_nothing() {
+    let mut armed = Armed {
+        waiting_for: None,
+        for_child: None,
+        child: ArmedChild { wants: None },
+    };
+    assert_eq!(bind::dispatch::<Demo, Armed>(&mut armed, &key("z")), None);
+}
+
+#[test]
+fn a_present_option_trigger_matches_its_key() {
+    let mut armed = Armed {
+        waiting_for: None,
+        for_child: None,
+        child: ArmedChild { wants: Some("z") },
+    };
+    assert_eq!(
+        bind::dispatch::<Demo, Armed>(&mut armed, &key("z")),
+        Some(1)
+    );
+}

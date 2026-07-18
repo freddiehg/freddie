@@ -312,7 +312,8 @@ pub struct Armed {
 #[node(parent = ArmedPath)]
 #[binds(Demo)]
 #[bind(
-    |armed_child_path| WaitingFor(armed_child_path.get().wants) => on_child_armed,
+    // An `Option` trigger: absent when the node holds nothing, and absent matches nothing.
+    |armed_child_path| armed_child_path.get().wants.map(Keyboard) => on_child_armed,
     |armed_child_path| Keyboard(armed_child_path.parent().for_child.unwrap_or("none")) => on_parents_key,
 )]
 pub struct ArmedChild {

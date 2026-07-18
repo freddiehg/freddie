@@ -7,7 +7,7 @@
 use std::time::Duration;
 
 use bind::Bind;
-use freddie::{DropGuard, KeySequence, timer_effect_and_guard};
+use freddie::{KeySequence, TimerFired, TimerGuard, timer_effect_and_guard};
 use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 use laserbeam::PathMut;
 
@@ -18,8 +18,7 @@ use crate::effect::emit;
 #[allow(clippy::wildcard_imports)]
 use crate::handlers::*;
 use crate::{
-    AnyKey, App, ForegroundEvent, Foregrounded, JkTimeout, LayerTimeout, MercuryEffect,
-    MercuryEvent, MercuryStruct, Quit,
+    AnyKey, App, ForegroundEvent, Foregrounded, MercuryEffect, MercuryEvent, MercuryStruct, Quit,
 };
 
 mod app;
@@ -38,13 +37,12 @@ pub use typing::TypingLayer;
 pub const RETURN_TO_HOME_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Arm the return-to-home timer a layer holds: the guard cancels it on drop, and the effect
-/// schedules it. It fires [`LayerTimeout`] after [`RETURN_TO_HOME_TIMEOUT`], which the `Layer`
-/// node binds home.
-fn arm_return_home() -> (DropGuard, MercuryEffect) {
-    let (guard, effect) = timer_effect_and_guard(
-        RETURN_TO_HOME_TIMEOUT,
-        MercuryEvent::LayerTimeout(LayerTimeout),
-    );
+/// schedules it. It fires after [`RETURN_TO_HOME_TIMEOUT`], and the layer that set it binds that
+/// firing home, matching on the guard it still holds.
+fn arm_return_home() -> (TimerGuard, MercuryEffect) {
+    let (guard, effect) = timer_effect_and_guard(RETURN_TO_HOME_TIMEOUT, |id| {
+        MercuryEvent::Timer(TimerFired(id))
+    });
     (guard, MercuryEffect::Timer(effect))
 }
 
@@ -59,8 +57,8 @@ pub const JK_TIMEOUT: Duration = Duration::from_millis(200);
 ///
 /// `pub(crate)` where `arm_return_home` is private, because the root's handlers call this one and
 /// they are not children of this module.
-pub(crate) fn arm_jk_timeout(window: Duration) -> (DropGuard, MercuryEffect) {
-    let (guard, effect) = timer_effect_and_guard(window, MercuryEvent::JkTimeout(JkTimeout));
+pub(crate) fn arm_jk_timeout(window: Duration) -> (TimerGuard, MercuryEffect) {
+    let (guard, effect) = timer_effect_and_guard(window, |id| MercuryEvent::Timer(TimerFired(id)));
     (guard, MercuryEffect::Timer(effect))
 }
 
@@ -70,7 +68,9 @@ pub(crate) fn arm_jk_timeout(window: Duration) -> (DropGuard, MercuryEffect) {
 #[bind(
     Foregrounded => record_front_app,
     Quit => quit,
-    JkTimeout => jk_timeout,
+    // Only this run's window: a firing from a run that has since ended matches nothing, so the
+    // handler never sees it.
+    |mercury_path| mercury_path.typing_state.jk.window_timer().map(TimerGuard::trigger) => jk_timeout,
     AnyKey => maybe_pass_through,
 )]
 pub struct Mercury {
@@ -139,7 +139,6 @@ impl Foreground {
 // `escape` leaves for home from every layer that binds keys as commands, but NOT from typing,
 // where it is a key the app is waiting for. It is bound per layer rather than here so that typing
 // can simply not have it. `LayerTimeout` stays: typing arms no timer, so it never fires there.
-#[bind(LayerTimeout => to_home)]
 pub enum Layer {
     Home(HomeLayer),
     Nav(NavLayer),

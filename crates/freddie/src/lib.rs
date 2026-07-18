@@ -8,4 +8,6 @@ pub mod timer;
 pub use always_equal::AlwaysEqual;
 pub use drop_guard::{DropGuard, drop_guard};
 pub use sequence::{KeySequence, KeySequenceOutcome};
-pub use timer::{TimerEffect, timer_effect_and_guard};
+pub use timer::{
+    TimerEffect, TimerFired, TimerGuard, TimerId, TimerTrigger, timer_effect_and_guard,
+};

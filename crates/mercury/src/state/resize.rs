@@ -1,5 +1,5 @@
 use bind::Bind;
-use freddie::DropGuard;
+use freddie::TimerGuard;
 use freddie_keys::Key;
 
 #[allow(clippy::wildcard_imports)]
@@ -14,15 +14,16 @@ use super::{LayerPath, arm_return_home};
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
+    // Only this layer's own timer: a firing from a layer already left matches nothing.
+    |path| path.get().home_timeout.trigger() => to_home,
     Key::Escape.down() => to_home,
     Key::UpArrow.down() => maximize,
     Key::LeftArrow.down() => left_half,
     Key::RightArrow.down() => right_half,
 )]
 pub struct ResizeLayer {
-    // Held for its `Drop`: dropping the guard cancels resize's return-home timer.
-    #[expect(dead_code)]
-    timeout: DropGuard,
+    // Read for the trigger matching its firing, and held for its `Drop`: dropping the guard cancels resize's return-home timer.
+    pub(crate) home_timeout: TimerGuard,
 }
 
 impl ResizeLayer {
@@ -31,6 +32,11 @@ impl ResizeLayer {
     #[must_use]
     pub(crate) fn new() -> (Self, MercuryEffect) {
         let (timeout, timer) = arm_return_home();
-        (Self { timeout }, timer)
+        (
+            Self {
+                home_timeout: timeout,
+            },
+            timer,
+        )
     }
 }

@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use freddie_keys::{Key, KeyEvent, KeyPress, PressType};
 
-use crate::DropGuard;
+use crate::TimerGuard;
 
 /// A run of keys that means something other than what it types: `jk`, say.
 ///
@@ -37,7 +37,7 @@ pub struct KeySequence {
 struct Window {
     duration: Duration,
     /// Armed while a run is live, dropped when it ends, which is what cancels the wait.
-    timer: Option<DropGuard>,
+    timer: Option<TimerGuard>,
 }
 
 /// What one key did to a [`KeySequence`].
@@ -95,6 +95,14 @@ impl KeySequence {
         }
     }
 
+    /// The guard for a live run's window timer, or `None` when no run is live or this sequence has
+    /// no window. What a binding matches against, so a firing from a run that has since ended
+    /// matches nothing.
+    #[must_use]
+    pub fn window_timer(&self) -> Option<&TimerGuard> {
+        self.window.as_ref()?.timer.as_ref()
+    }
+
     /// How long a run of this sequence waits for its next key, or `None` if it waits forever.
     #[must_use]
     pub fn window(&self) -> Option<Duration> {
@@ -108,7 +116,7 @@ impl KeySequence {
     ///
     /// If no run is in progress, since nothing would ever drop the guard, or if this sequence has
     /// no window, since then there was nothing to arm.
-    pub fn hold(&mut self, guard: DropGuard) {
+    pub fn hold(&mut self, guard: TimerGuard) {
         assert!(!self.is_idle(), "an idle run has no life to tie a guard to");
         let window = self
             .window

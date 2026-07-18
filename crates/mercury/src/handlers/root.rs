@@ -5,7 +5,7 @@ use bind::Node;
 use freddie::KeySequenceOutcome;
 use freddie_keys::KeyEvent;
 
-use crate::JkTimeout;
+use freddie::TimerFired;
 
 use crate::MercuryEffect;
 use crate::effect::{emit, replay};
@@ -56,7 +56,7 @@ pub(crate) fn maybe_pass_through(
 
 /// The window elapsed with no next key: what the run swallowed types itself, exactly as a key that
 /// broke the run would have made it.
-pub(crate) fn jk_timeout(_ev: &JkTimeout, node: Node<&mut Mercury, ()>) -> Vec<MercuryEffect> {
+pub(crate) fn jk_timeout(_ev: &TimerFired, node: Node<&mut Mercury, ()>) -> Vec<MercuryEffect> {
     let root = node.parent;
     replay(root.typing_state.jk.interrupt())
 }

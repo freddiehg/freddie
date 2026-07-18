@@ -5,20 +5,38 @@
 
 use bind::SimpleRunner;
 use mercury::{
-    App, HomeLayer, JK_TIMEOUT, JkTimeout, Key, KeyEvent, Layer, LayerTimeout, Mercury,
-    MercuryEffect, MercuryEvent, MercuryStruct, ModifierFlags, Placement, PressType,
-    RETURN_TO_HOME_TIMEOUT, foreground, key, quit_event,
+    App, HomeLayer, JK_TIMEOUT, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryEvent,
+    MercuryStruct, ModifierFlags, Placement, PressType, RETURN_TO_HOME_TIMEOUT, foreground, key,
+    quit_event,
 };
 
 // Entering nav, resize, or the in-app layer arms the return-to-home timer; this is the effect
 // that schedules it. Equality under `testing` compares the delay and fire event, so a rebuilt one
 // matches what a layer produced.
 fn return_home_timer() -> MercuryEffect {
-    let (_guard, effect) = freddie::timer_effect_and_guard(
-        RETURN_TO_HOME_TIMEOUT,
-        MercuryEvent::LayerTimeout(LayerTimeout),
-    );
+    let (_guard, effect) = freddie::timer_effect_and_guard(RETURN_TO_HOME_TIMEOUT, fired);
     MercuryEffect::Timer(effect)
+}
+
+// A firing of `id`. A test reads the id off the effect that set the timer: nothing else can know
+// it, because the timer mints it.
+const fn fired(id: freddie::TimerId) -> MercuryEvent {
+    MercuryEvent::Timer(freddie::TimerFired(id))
+}
+
+// The id a timer effect was set with.
+fn timer_id(effects: &[MercuryEffect]) -> freddie::TimerId {
+    let timer = effects
+        .iter()
+        .find_map(|e| match e {
+            MercuryEffect::Timer(timer) => Some(timer),
+            _ => None,
+        })
+        .expect("these effects set a timer");
+    match timer.event {
+        MercuryEvent::Timer(freddie::TimerFired(id)) => id,
+        ref other => panic!("not a timer firing: {other:?}"),
+    }
 }
 
 // A mercury in Home, the command layer. The default is Typing (passthrough), but most per-event
@@ -199,25 +217,44 @@ fn escape_goes_home_from_a_sublayer() {
 #[test]
 fn nav_times_out_home() {
     let mut m = home();
-    let _ = m.handle(&key(Key::KeyN));
+    let entered = m.handle(&key(Key::KeyN)).expect("n enters nav");
     assert!(matches!(m.layer(), Layer::Nav(_)));
-    // The armed timer fires: drive the LayerTimeout event it would send back.
+    // The timer nav set fires: its id came back on the effect that set it.
     assert_eq!(
-        m.handle(&MercuryEvent::LayerTimeout(LayerTimeout)),
+        m.handle(&fired(timer_id(&entered))),
         Some(vec![shows("Home")])
     );
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
 #[test]
-fn layer_timeout_returns_home_from_any_layer() {
-    // The Layer node binds it, so a timeout returns home whichever layer is active; in home it
-    // re-enters home, which is why a stale timeout (from a nav already left) is harmless.
+fn a_firing_from_a_layer_already_left_matches_nothing() {
+    // Enter nav, leave, and enter again: the first timer's firing arrives late, after a second
+    // nav replaced it. It must not send the live one home.
     let mut m = home();
+    let first = timer_id(&m.handle(&key(Key::KeyN)).expect("n enters nav"));
+    let _ = m.handle(&key(Key::Escape));
+    let second = timer_id(&m.handle(&key(Key::KeyN)).expect("n enters nav"));
+    assert_ne!(first, second, "each entry sets its own timer");
+
     assert_eq!(
-        m.handle(&MercuryEvent::LayerTimeout(LayerTimeout)),
-        Some(vec![shows("Home")])
+        m.handle(&fired(first)),
+        None,
+        "no binding matches a stale firing"
     );
+    assert!(matches!(m.layer(), Layer::Nav(_)), "still in nav");
+
+    assert_eq!(m.handle(&fired(second)), Some(vec![shows("Home")]));
+    assert!(matches!(m.layer(), Layer::Home(_)));
+}
+
+#[test]
+fn a_firing_in_a_layer_that_set_no_timer_matches_nothing() {
+    // Home sets none, so there is no binding for a firing to match, whatever id it carries.
+    let mut m = home();
+    let stale = timer_id(&m.handle(&key(Key::KeyN)).expect("n enters nav"));
+    let _ = m.handle(&key(Key::Escape));
+    assert_eq!(m.handle(&fired(stale)), None);
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
@@ -919,15 +956,10 @@ fn inapp_follows_the_front_app_across_a_switch() {
 
 // ---- jk: the sequence that leaves typing ----
 
-// The event the jk window fires when it elapses.
-const fn jk_window_fired() -> MercuryEvent {
-    MercuryEvent::JkTimeout(JkTimeout)
-}
-
 // Opening a run arms its window; this is the effect that schedules it. Equality under `testing`
 // compares the delay and the fire event, so a rebuilt one matches what the run produced.
 fn jk_timer() -> MercuryEffect {
-    let (_guard, effect) = freddie::timer_effect_and_guard(JK_TIMEOUT, jk_window_fired());
+    let (_guard, effect) = freddie::timer_effect_and_guard(JK_TIMEOUT, fired);
     MercuryEffect::Timer(effect)
 }
 
@@ -1094,9 +1126,10 @@ fn j_and_k_still_type_themselves_when_they_are_not_a_run() {
 #[test]
 fn a_half_typed_run_types_itself_when_the_window_elapses() {
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
+    let opened = m.handle(&key(Key::KeyJ)).expect("j opens the run");
+    assert_eq!(opened, vec![jk_timer()]);
     assert_eq!(
-        m.handle(&jk_window_fired()),
+        m.handle(&fired(timer_id(&opened))),
         Some(vec![emit(Key::KeyJ, PressType::Down)]),
     );
     assert!(m.typing_state.jk.is_idle());
@@ -1109,10 +1142,11 @@ fn a_half_typed_run_types_itself_when_the_window_elapses() {
 fn a_full_tap_types_itself_when_the_window_elapses() {
     // Both halves were swallowed, so both replay, in the order they arrived.
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
+    let opened = m.handle(&key(Key::KeyJ)).expect("j opens the run");
+    assert_eq!(opened, vec![jk_timer()]);
     assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
     assert_eq!(
-        m.handle(&jk_window_fired()),
+        m.handle(&fired(timer_id(&opened))),
         Some(vec![
             emit(Key::KeyJ, PressType::Down),
             emit(Key::KeyJ, PressType::Up),
@@ -1121,11 +1155,34 @@ fn a_full_tap_types_itself_when_the_window_elapses() {
 }
 
 #[test]
-fn a_timeout_with_no_run_in_progress_emits_nothing() {
-    // The guard is dropped when a run ends, so this never arrives in practice; one that raced in
-    // finds an idle run and does nothing.
+fn a_firing_from_a_run_that_ended_matches_nothing() {
+    // Open a run, break it, open another: the first window's firing arrives late. It must not
+    // interrupt the run that replaced it.
     let mut m = typing();
-    assert_eq!(m.handle(&jk_window_fired()), Some(vec![]));
+    let first = timer_id(&m.handle(&key(Key::KeyJ)).expect("j opens the run"));
+    let _ = m.handle(&key(Key::KeyA)); // breaks it
+    let second = timer_id(&m.handle(&key(Key::KeyJ)).expect("j opens another"));
+    assert_ne!(first, second, "each run sets its own window");
+
+    assert_eq!(
+        m.handle(&fired(first)),
+        None,
+        "no binding matches a stale firing"
+    );
+    assert!(!m.typing_state.jk.is_idle(), "the live run is untouched");
+
+    assert_eq!(
+        m.handle(&fired(second)),
+        Some(vec![emit(Key::KeyJ, PressType::Down)]),
+    );
+}
+
+#[test]
+fn a_firing_with_no_run_in_progress_matches_nothing() {
+    let mut m = typing();
+    let stale = timer_id(&m.handle(&key(Key::KeyJ)).expect("j opens the run"));
+    let _ = m.handle(&key(Key::KeyA)); // breaks it, so nothing is live
+    assert_eq!(m.handle(&fired(stale)), None);
 }
 
 #[test]

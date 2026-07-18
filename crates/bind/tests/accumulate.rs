@@ -7,7 +7,6 @@ use std::collections::HashSet;
 
 use common::{
     App, Armed, ArmedChild, Clash, ClashChild, Deep, Demo, Empty, Layer, Nav, Typing, fg, kb,
-    waiting,
 };
 
 // Through the Layer enum and the non-boxed `#[resolve_into]` App -> Layer.
@@ -60,38 +59,30 @@ fn no_binds_is_empty() {
     assert!(set.is_empty());
 }
 
-// THE CHECK evaluates a trigger too, so a closure one has to be called there as well. This is the
-// only test of that half: without it the accumulate emit breaks silently for anyone enabling the
-// feature.
+// THE CHECK collects what a node CLAIMS, and a closure trigger's value is read from state at
+// dispatch, so it is not one. Skipping them is also what lets such a trigger be an `Option`: there
+// is no value to insert for an absent one.
 #[test]
-fn a_closure_trigger_is_collected_as_the_value_it_produced() {
+fn a_closure_trigger_is_not_collected() {
     let mut armed = Armed {
         waiting_for: Some("g"),
-        for_child: None,
+        for_child: Some("up"),
         child: ArmedChild { wants: Some("z") },
     };
     let set = bind::accumulate::<Demo, Armed>(&mut armed).unwrap();
-    assert_eq!(
-        set,
-        HashSet::from([
-            waiting(Some("g")),
-            waiting(Some("z")),
-            kb("esc"),
-            // The child's other binding reads its PARENT, so the trigger it contributes comes from
-            // the root: nothing set, so the stand-in.
-            kb("none"),
-        ])
-    );
+    // Only the constant trigger on the root; the three closure ones contribute nothing, whatever
+    // their state says.
+    assert_eq!(set, HashSet::from([kb("esc")]));
 }
 
-// A node waiting for nothing still contributes a trigger; it is one that matches no event.
+// Two nodes holding nothing would produce the same trigger value, which the set would have read as
+// one node clobbering the other. Skipped, they cannot.
 #[test]
-fn an_unarmed_closure_trigger_is_collected_as_none() {
+fn two_nodes_with_nothing_to_match_are_not_a_duplicate() {
     let mut armed = Armed {
         waiting_for: None,
         for_child: None,
-        child: ArmedChild { wants: Some("z") },
+        child: ArmedChild { wants: None },
     };
-    let set = bind::accumulate::<Demo, Armed>(&mut armed).unwrap();
-    assert!(set.contains(&waiting(None)));
+    assert!(bind::accumulate::<Demo, Armed>(&mut armed).is_ok());
 }

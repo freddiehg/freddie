@@ -1,5 +1,5 @@
 use bind::Bind;
-use freddie::DropGuard;
+use freddie::TimerGuard;
 use freddie_keys::Key;
 
 #[allow(clippy::wildcard_imports)]
@@ -16,13 +16,15 @@ use super::{AppLayerPath, LayerPath, arm_return_home};
 #[binds(MercuryStruct)]
 #[derived_child(app_data)]
 #[bind(
+    // Only this layer's own timer: a firing from a layer already left matches nothing.
+    |path| path.get().home_timeout.trigger() => to_home,
     Key::Escape.down() => to_home,
     Key::KeyN.down() => to_nav,
     Key::KeyT.down() => to_typing,
 )]
 pub struct AppLayer {
-    // Held for its `Drop`: dropping the guard cancels the in-app layer's return-home timer.
-    timeout: DropGuard,
+    // Read for the trigger matching its firing, and held for its `Drop`: dropping the guard cancels the in-app layer's return-home timer.
+    pub(crate) home_timeout: TimerGuard,
 }
 
 impl AppLayer {
@@ -31,7 +33,12 @@ impl AppLayer {
     #[must_use]
     pub(crate) fn new() -> (Self, MercuryEffect) {
         let (timeout, timer) = arm_return_home();
-        (Self { timeout }, timer)
+        (
+            Self {
+                home_timeout: timeout,
+            },
+            timer,
+        )
     }
 
     /// Reset the return-home timer on in-app activity: drop the old guard (cancelling it) and arm a
@@ -39,7 +46,7 @@ impl AppLayer {
     #[must_use]
     pub(crate) fn rearm(&mut self) -> MercuryEffect {
         let (timeout, timer) = arm_return_home();
-        self.timeout = timeout;
+        self.home_timeout = timeout;
         timer
     }
 }

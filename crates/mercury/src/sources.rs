@@ -44,19 +44,6 @@ pub struct Quit;
 
 bind::self_trigger!(Quit);
 
-/// A layer's idle-timeout. It carries nothing, so one type is both the trigger and the event it
-/// fires.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct LayerTimeout;
-
-bind::self_trigger!(LayerTimeout);
-
-/// The `jk` run's timeout. It carries nothing, so one type is both the trigger and the event.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
-pub struct JkTimeout;
-
-bind::self_trigger!(JkTimeout);
-
 /// The apps Mercury knows about. `Other` is anything it has no bindings for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum App {
