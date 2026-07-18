@@ -1,6 +1,6 @@
 # one timer event, matched by the guard that armed it
 
-Two problems, one shape.
+Two problems, one shape. Verified against the tree: the mechanism it rests on works today (see below).
 
 Every timer mints its own type. `LayerTimeout` is a struct, a `MercuryTrigger` variant, a `MercuryEvent` variant, and a `self_trigger!`, all to say "the layer's idle timer went off"; `JkTimeout` is the same again, and the overlay's dwell would be a third. Nothing about any of it is per-timer except which timer fired.
 
@@ -39,7 +39,7 @@ and a binding pays an expression naming its own guard. There is no counter to ke
 
 A trigger is not a constant. `bind_macro` parses it as a `syn::Expr` and emits `let trigger = #trigger;` INSIDE the dispatch body, where `path` is in scope and has not yet been moved into the handler. So a trigger can read the node it is bound on.
 
-That has not been compiled. The codegen says it works and one attempt died on an unrelated mistake in the harness. Demonstrate it before writing anything else here: a trigger reading `path`, dispatching correctly, in a test.
+Verified, not assumed. A trigger bound as `Armed(path.armed_id) => on_fired`, against a root field `armed_id: Option<u64>`, compiles and dispatches: an unarmed node matched no firing, a stale id matched no firing, and its own id ran the handler. So the whole design rests on something the tree does today, not on a plan for `bind`.
 
 ## the trigger set becomes state-dependent, and that is fine
 
@@ -215,9 +215,32 @@ which needs `KeySequence` to expose the id of the guard a live run holds.
 
 Both arm sites take the closure form: `|id| MercuryEvent::Timer(TimerFired(id))`.
 
-## change 5: the tests
+## change 5: the tests, and what a timer effect compares as
 
-The rebuilt timer effects in `crates/mercury/tests/transitions.rs` (`return_home_timer`, `jk_timer`) carry an id now, and a test cannot predict it: the timer mints it. So a test reads it off the effect the transition produced, and drives the firing with that id. Cases worth having beyond the existing ones:
+26 assertions in `crates/mercury/tests/transitions.rs` rebuild a timer effect (`return_home_timer()`, `jk_timer()`) and compare it to what a transition produced. A minted id would break every one of them, and rebuilding cannot fix it: the id is unpredictable by construction.
 
-- a stale firing matches nothing: arm, supersede, then fire the first arming's id and assert no effects.
+So `TimerFired` compares equal to any other under `testing`, the way `AlwaysEqual` does:
+
+```rust
+/// Two firings compare equal under `testing` whatever their ids.
+///
+/// The id exists to tell one ARMING from another at dispatch; a test that rebuilds an expected
+/// effect cannot know it, and asserting it would only assert that the counter ran. With one event
+/// type for every timer, the delay is what distinguishes an effect anyway.
+#[cfg(feature = "testing")]
+impl PartialEq for TimerFired {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "testing")]
+impl Eq for TimerFired {}
+```
+
+The 26 assertions then stand unchanged, and the id is asserted where it means something: read off the effect a transition produced, and driven back in as a firing.
+
+Cases worth having beyond the existing ones:
+
+- a stale firing matches nothing: arm, supersede, then fire the first arming's id and assert `handle` returns `None`, since no binding matched.
 - a live firing still fires: fire the id the current guard holds and assert the timeout's effects.
