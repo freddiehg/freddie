@@ -62,7 +62,7 @@ use crate::logging;
 /// the runtime drops before the `Stopper`.
 pub(crate) fn run(args: &DaemonArgs) {
     let log_path = logging::init(&args.log_level);
-    println!("mercury: logging to {}", log_path.display());
+    info!(path = %log_path.display(), "logging");
 
     // Before anything that touches the machine. Two mercuries swallow and re-emit each
     // other's keys forever, at tens of thousands of events a second, which wedges the
@@ -71,8 +71,7 @@ pub(crate) fn run(args: &DaemonArgs) {
     let _instance = match freddie_single_instance::acquire(crate::client::APP) {
         Ok(instance) => instance,
         Err(e) => {
-            eprintln!("mercury: {e}; quit the running one from its menu-bar icon");
-            error!(error = %e, "another mercury holds the lock; not starting");
+            error!(error = %e, "another mercury holds the lock; `mercury stop` ends it");
             return;
         }
     };
@@ -80,7 +79,6 @@ pub(crate) fn run(args: &DaemonArgs) {
     // `freddie_windows` reads the screen's visible frame, which is AppKit and so
     // main-thread-bound. Do it here, while we still are one, and cache it.
     if let Err(e) = freddie_windows::init() {
-        eprintln!("windows: {e}");
         error!(error = %e, "window placement unavailable");
     }
 
@@ -116,7 +114,6 @@ pub(crate) fn run(args: &DaemonArgs) {
     let menu_bar = match menu_bar {
         Ok(bar) => bar,
         Err(e) => {
-            eprintln!("menu bar: {e}");
             error!(error = %e, "could not create the menu bar");
             return;
         }
@@ -195,9 +192,7 @@ async fn serve(
     let (interceptor, emitter) = match grabbed {
         Ok(pair) => pair,
         Err(e) => {
-            // Usually Accessibility is not granted. Say so on the terminal too: the
-            // user is looking there, not at the log file.
-            eprintln!("keyboard: {e}");
+            // Usually Accessibility is not granted.
             error!(error = %e, "could not intercept the keyboard");
             return;
         }
