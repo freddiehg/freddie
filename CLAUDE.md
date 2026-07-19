@@ -32,9 +32,14 @@ The standard for the model is exhaustive: every key in every reachable state, as
 
 Mercury is the live keyboard remapper on this machine: while it is stopped, the keyboard behaves the way macOS would. There is exactly one at a time (`refactors/past/single-instance.md`), so a second cannot run alongside it.
 
-Stopping and restarting it is what the verbs are for, and they work. `mercury status` reports the running one and its pid, `mercury stop` ends it through the model so the modifiers a command layer swallowed are reopened, and `mercury logs` follows it without touching it at all. Say what you are doing to it, and leave one running when you are done.
+Stopping and restarting it is what the verbs are for, and they work. Say what you are doing to it, and leave one running when you are done.
 
-Until `mercury start` lands (`refactors/pending/mercury-start.md`), putting one back is `mercury daemon` detached by hand.
+- `mercury` starts one detached and says its pid, or says which one is already running. `mercury start` is the same thing spelled out.
+- `mercury restart` replaces the running one, which is what a rebuild wants. `--force` destroys the old one rather than asking it to quit.
+- `mercury stop` ends it through the model, so the modifiers a command layer swallowed are reopened.
+- `mercury status` reports the running one and its pid; `mercury logs` follows the log. Neither touches the process.
+
+`bacon restart` does the rebuild and the replacement together, so an edited binding goes live without touching a window.
 
 The event socket reaches a running daemon without touching the process: connect to `127.0.0.1:3883` and send a frame, then read the dispatch record it produced out of the log.
 
