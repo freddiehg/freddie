@@ -35,20 +35,18 @@ The app's, and staying in mercury:
 /// drops it on the way out, so releasing those is a `Drop` impl rather than a shutdown step.
 pub trait Daemon: Sized {
     /// What its sources produce and its model dispatches.
-    type Event: fmt::Debug + Send + 'static;
+    ///
+    /// `From<Stop>` because the runtime has to ask this model to quit without knowing anything
+    /// else about its vocabulary. The bound sits on the event rather than on the daemon: it is the
+    /// event type that has to be able to say it, and the runtime needs one built before any daemon
+    /// value exists, for the menu bar's Quit closure.
+    type Event: fmt::Debug + Send + From<Stop> + 'static;
 
     /// What dispatch produces and [`perform`](Self::perform) carries out.
     type Effect: fmt::Debug + Send + 'static;
 
     /// The menu-bar glyph: a black shape on transparency, rendered as a template.
     const ICON_PNG: &'static [u8];
-
-    /// The event that asks the model to quit.
-    ///
-    /// The menu bar's Quit sends it, and so does SIGTERM. It goes through the model rather than
-    /// ending the process, so whatever has to be undone first — a held modifier reopened, a grab
-    /// released — is the model's own business and happens the same way however the ask arrived.
-    fn stop_event() -> Self::Event;
 
     /// Anything that must happen on the main thread before the worker starts.
     ///
@@ -70,6 +68,17 @@ pub trait Daemon: Sized {
     /// Perform one effect. `Break` ends the daemon and returns through `run`.
     fn perform(&mut self, effect: Self::Effect) -> ControlFlow<()>;
 }
+```
+
+`Stop` is the one thing the runtime says to a model it otherwise knows nothing about:
+
+```rust
+/// The ask to quit, which the menu bar's Quit and SIGTERM both deliver.
+///
+/// It goes through the model rather than ending the process, so whatever has to be undone first —
+/// a held modifier reopened, a grab released — is the model's own business, and happens the same
+/// way however the ask arrived.
+pub struct Stop;
 ```
 
 `MenuBar` is the handle the effect loop writes titles through:
@@ -120,7 +129,7 @@ pub fn run<D: Daemon>() -> i32 {
     let menu_bar = match freddie_menu_bar::show(D::NAME, D::ICON_PNG, {
         let event_tx = event_tx.clone();
         move || {
-            let _ = event_tx.send(D::stop_event());
+            let _ = event_tx.send(Stop.into());
         }
     }) {
         Ok(bar) => bar,
@@ -234,7 +243,7 @@ The dispatch record loses the state it carries today, because the runtime cannot
 ## SIGTERM
 
 ```rust
-/// Send `D::stop_event()` when the process is asked to terminate.
+/// Send [`Stop`] into the model when the process is asked to terminate.
 ///
 /// `launchctl bootout` and `<app> stop` both send SIGTERM. It goes through the model like every
 /// other ask to quit, so a terminated process leaves the way it would have on its own.
@@ -248,7 +257,7 @@ fn on_terminate<D: Daemon>(event_tx: &UnboundedSender<D::Event>) {
             tokio::spawn(async move {
                 if term.recv().await.is_some() {
                     info!("SIGTERM: stopping");
-                    let _ = event_tx.send(D::stop_event());
+                    let _ = event_tx.send(Stop.into());
                 }
             });
         }
@@ -259,7 +268,7 @@ fn on_terminate<D: Daemon>(event_tx: &UnboundedSender<D::Event>) {
 }
 ```
 
-`mercury-stop.md`'s change 1 is this, and `freddie-cli.md`'s `on_stop` helper is replaced by it: an app that declares `stop_event` never installs a handler itself.
+This absorbs `mercury-stop.md`'s change 1, which ships in mercury first: when this lands, mercury's handler is deleted and its `From<Stop>` impl is what remains. `freddie-cli.md`'s `on_stop` helper is replaced by this, so no app installs a handler of its own.
 
 Installing the handler replaces SIGTERM's default disposition, which the kernel honours unconditionally, with one that depends on the runtime being scheduled. A worker blocked inside a synchronous `perform` never completes `term.recv().await`, so such a process survives the `kill` it dies to today. `mercury-stop.md` records the measurement and ships `--force` as the answer.
 
@@ -288,10 +297,6 @@ impl Daemon for MercuryDaemon {
 
     const ICON_PNG: &'static [u8] = include_bytes!("../assets/mercury.png");
 
-    fn stop_event() -> MercuryEvent {
-        mercury::quit_event()
-    }
-
     fn init_main_thread() {
         // `freddie_windows` reads the screen's visible frame, which is AppKit and so
         // main-thread-bound. Do it while we are one, and cache it.
@@ -310,6 +315,16 @@ impl Daemon for MercuryDaemon {
     }
 
     fn perform(&mut self, effect: MercuryEffect) -> ControlFlow<()> { .. }
+}
+```
+
+mercury spells the ask in its own vocabulary, which it already has a variant for:
+
+```rust
+impl From<Stop> for MercuryEvent {
+    fn from(_: Stop) -> Self {
+        Self::Quit(Quit)
+    }
 }
 ```
 
