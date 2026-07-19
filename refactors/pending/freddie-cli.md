@@ -6,6 +6,8 @@ Every freddie app is one process that owns the keyboard, plus a handful of verbs
 
 The name of the binary is the fork's, not mercury's. Nothing in `freddie_cli` spells "mercury", and nothing in an app spells the verbs.
 
+A new crate rather than a dependency, and that is settled rather than assumed: `refactors/past/reuse-existing-crates.md` audited `single-instance`, `service-manager`, and `daemonize` against what these verbs need and none of them fit. `single-instance` cannot probe without acquiring or report a pid, so `status` and `stop` have nothing to build on; `service-manager` cannot express `SuccessfulExit=false`, which is the key the daemon's exit code is tuned to. Whoever forks this gets the lifecycle from here or writes it again themselves.
+
 ## What belongs where
 
 `freddie_cli` owns:
@@ -257,7 +259,9 @@ fn main() -> ! {
 
 1. **`freddie_cli` with the daemon verb only.** The trait, the generic `Args`/`Verb`/`DaemonArgs`, `parse`, `main`, `dispatch`, `daemon::run`, and `logging` moved across and keyed to `A::NAME`. mercury shrinks to the `main.rs` above. No verb is added and no behaviour changes: `mercury`, `mercury daemon`, and `mercury daemon --log-level` do exactly what they do now, and `mercury --help` prints the same thing.
 2. **`on_stop`.** The signal helper, and mercury calling it. This is `mercury-stop.md`'s change 1, landing in the shared crate.
-3. **The client verbs.** `stop`, `status`, `logs`, `start`, `restart`, each added to `Verb` and to `dispatch`, in `freddie_cli`'s own `client` module, keyed to `A::NAME` rather than to a `const APP` of mercury's.
+3. **The client verbs.** `start`, `restart`, `status`, `logs`, `stop`, `install`, and `uninstall`, moved into `freddie_cli`'s own `client` module and keyed to `A::NAME` rather than to a `const APP` of mercury's.
+
+   `install` and `uninstall` generalize without a decision to make: the launchd label is already `format!("hg.freddie.{APP}")`, the plist path is derived from it, and the `Agent` struct's program comes from `current_exe`. Only the `hg.freddie.` prefix is a constant worth a second look, since a fork that is not freddie-derived may want its own.
 
 ## The verbs mercury already has by then
 
