@@ -18,13 +18,13 @@ So the hazard at login is typing a literal `jk` fast enough, which lands you in 
 
 ## The plist
 
-Checked in at `crates/mercury/assets/hg.freddie.mercury.plist`, so it is reviewed and versioned rather than typed once into `~/Library/LaunchAgents` and forgotten. Each key carries its reason as an XML comment; `plutil -lint` passes and `plutil -p` reads back the six keys.
+Checked in at `crates/mercury/assets/hg.freddie.mercury.plist`, so it is reviewed and versioned rather than typed once into `~/Library/LaunchAgents` and forgotten. Each key carries its reason as an XML comment, and `plutil -lint` passes over it.
 
-Installing it is a copy and a bootstrap:
+It is a template rather than a finished plist, because neither of the two things that identify a job can be a literal here. `mercury install` below fills both in.
+
+`launchctl` by hand still works against an installed agent:
 
 ```
-cp crates/mercury/assets/hg.freddie.mercury.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/hg.freddie.mercury.plist
 launchctl kickstart -k gui/$(id -u)/hg.freddie.mercury   # restart after a rebuild
 launchctl bootout   gui/$(id -u)/hg.freddie.mercury      # stop it (the escape hatch)
 ```
@@ -40,6 +40,287 @@ It is worth stating because it currently happens by omission rather than by inte
 `ThrottleInterval` stops a crash loop from respawning a keyboard-eater ten times a second. No `StandardOutPath` and no `LOG_LEVEL`: mercury writes its own log, and `--log-level` governs a terminal a launchd job does not have. `HOME` is set for agents, which `logging::log_dir` needs; `PATH` is minimal but `/bin/kill` and `open`, the only subprocesses, are at absolute paths.
 
 `launchctl kickstart -k` rather than `mercury restart` under the agent. `restart` stops the daemon and spawns a replacement of its own, which launchd did not start and will not keep alive; the old job then looks like a clean exit and stays down. `kickstart` replaces the process launchd is managing, which is the one you want. `mercury stop` and `mercury status` are unaffected, since they only signal and read.
+
+## Installing it
+
+`mercury install` registers the binary that ran it as the agent; `mercury uninstall` takes it back out. Neither copies a binary anywhere. Someone who checked out this repo, changed a binding, and wants their mercury at login runs two commands:
+
+```
+cargo install --path crates/mercury    # the binary, into ~/.cargo/bin
+mercury install                        # the agent, pointing at it
+```
+
+### Why the binary is cargo's problem and not ours
+
+`cargo install --path crates/mercury` builds release, puts `mercury` in `~/.cargo/bin`, and replaces it on the next run. Anyone forking this repo has a toolchain by definition, and `~/.cargo/bin` is already on their PATH. Verified: a release build and install of this workspace takes 25 seconds and produces one executable.
+
+So `install` does not copy, and `/usr/local/bin` stops being mentioned anywhere. That path needs `sudo`, is root-owned, and is system-wide, while a LaunchAgent is per-user by construction — `~/Library/LaunchAgents`, `LimitLoadToSessionType = Aqua`, one per login session. A per-user agent pointing into a system-wide directory is a mismatch that buys nothing.
+
+### The path comes from the running binary
+
+The plist cannot hold a literal program path, because the one that matters lives under a home directory. `install` writes `std::env::current_exe()` instead, which makes the agent point at whichever binary registered it: `~/.cargo/bin/mercury` after a `cargo install`, or `target/release/mercury` if that is what you ran.
+
+That last case is worth a word rather than a refusal. Registering a binary under `target/` is exactly right while iterating on the agent itself, and exactly wrong afterwards, because `cargo clean` deletes it and launchd then has a job pointing at nothing.
+
+```rust
+/// Where a binary under this lives is not somewhere an agent should point for long.
+const TRANSIENT: &str = "/target/";
+```
+
+### The plist becomes a template
+
+`crates/mercury/assets/hg.freddie.mercury.plist` gains two placeholders and stops being installable by hand, which is the trade for it being installable at all on a machine whose home directory this repo cannot know.
+
+Before:
+
+```xml
+    <key>Label</key>
+    <string>hg.freddie.mercury</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/mercury</string>
+        <string>daemon</string>
+    </array>
+```
+
+After:
+
+```xml
+    <key>Label</key>
+    <string>__MERCURY_LABEL__</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__MERCURY_PROGRAM__</string>
+        <string>daemon</string>
+    </array>
+```
+
+`plutil -lint` still passes: a placeholder is a valid string value, so the checked-in file stays a well-formed plist that can be read and diffed.
+
+The label is substituted rather than fixed because a fork renames the app. `APP` is already the one name the lock and the log directory are keyed to, so the label is keyed to it too and two forks installed side by side do not collide over one launchd job.
+
+```rust
+/// The launchd job's name, keyed to the same `APP` as the lock and the log directory.
+fn label() -> String {
+    format!("hg.freddie.{APP}")
+}
+
+/// Where the agent's plist goes. launchd reads this directory per user.
+fn plist_path() -> Option<PathBuf> {
+    Some(
+        PathBuf::from(std::env::var_os("HOME")?)
+            .join("Library/LaunchAgents")
+            .join(format!("{}.plist", label())),
+    )
+}
+```
+
+### The verb
+
+In `client.rs`.
+
+```rust
+/// Where `launchctl` lives. Absolute, so `PATH` cannot point this at something else.
+const LAUNCHCTL: &str = "/bin/launchctl";
+
+/// The plist as checked in, with its placeholders still in it.
+const PLIST_TEMPLATE: &str = include_str!("../assets/hg.freddie.mercury.plist");
+
+/// Why an install did not happen.
+enum NotInstalled {
+    /// The environment names no home directory to put the agent in.
+    NoHome,
+    /// This binary's own path could not be read.
+    NoExe(io::Error),
+    /// The plist could not be written.
+    Unwritable(io::Error),
+    /// `launchctl` could not be run, or refused.
+    Launchctl(io::Error),
+}
+
+impl fmt::Display for NotInstalled {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoHome => f.write_str("no home directory to install the agent into; is HOME set?"),
+            Self::NoExe(e) => write!(f, "could not read this binary's path: {e}"),
+            Self::Unwritable(e) => write!(f, "could not write the agent: {e}"),
+            Self::Launchctl(e) => write!(f, "{LAUNCHCTL}: {e}"),
+        }
+    }
+}
+
+/// `mercury install`: register this binary as a login agent.
+///
+/// Idempotent. A previously loaded job is booted out before the new one is bootstrapped, so
+/// re-running this after `cargo install` is how you point the agent at a rebuilt binary.
+pub(crate) fn install() -> i32 {
+    logging::init(&Terminal::Client);
+    match install_agent() {
+        Ok(program) => {
+            info!("mercury installed ({})", program.display());
+            if program.to_string_lossy().contains(TRANSIENT) {
+                warn!(
+                    "mercury: that binary is under target/, which `cargo clean` deletes; \
+                     `cargo install --path crates/mercury` then `mercury install` again"
+                );
+            }
+            0
+        }
+        Err(failure) => {
+            warn!("mercury: {failure}");
+            1
+        }
+    }
+}
+
+/// Write the plist and hand it to launchd.
+fn install_agent() -> Result<PathBuf, NotInstalled> {
+    let program = std::env::current_exe().map_err(NotInstalled::NoExe)?;
+    let path = plist_path().ok_or(NotInstalled::NoHome)?;
+    let plist = PLIST_TEMPLATE
+        .replace("__MERCURY_LABEL__", &label())
+        .replace("__MERCURY_PROGRAM__", &program.to_string_lossy());
+
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(NotInstalled::Unwritable)?;
+    }
+    std::fs::write(&path, plist).map_err(NotInstalled::Unwritable)?;
+    debug!(plist = %path.display(), program = %program.display(), "wrote the agent");
+
+    // Ignored: it fails when nothing was loaded, which is the normal first install.
+    let _ = bootout();
+    launchctl(&["bootstrap", &domain(), &path.to_string_lossy()])?;
+    Ok(program)
+}
+
+/// `mercury uninstall`: take the agent back out.
+///
+/// Exits 0 when nothing was installed, so a teardown script that does not know the state is not
+/// wrong to call it.
+pub(crate) fn uninstall() -> i32 {
+    logging::init(&Terminal::Client);
+    match uninstall_agent() {
+        Ok(()) => {
+            info!("mercury uninstalled");
+            0
+        }
+        Err(failure) => {
+            warn!("mercury: {failure}");
+            1
+        }
+    }
+}
+
+fn uninstall_agent() -> Result<(), NotInstalled> {
+    let path = plist_path().ok_or(NotInstalled::NoHome)?;
+    // Before the file goes: launchd is told to forget the job, then the job's description is
+    // removed. The other order leaves launchd holding a job whose plist is gone.
+    let _ = bootout();
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        // Nothing installed is not a failure to uninstall.
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(NotInstalled::Unwritable(e)),
+    }
+}
+
+/// The user's GUI domain, which is where a LaunchAgent lives.
+fn domain() -> String {
+    // `id -u` is what the documented invocation uses; this is the same number without a subprocess.
+    format!("gui/{}", users_uid())
+}
+
+fn bootout() -> Result<(), NotInstalled> {
+    launchctl(&["bootout", &format!("{}/{}", domain(), label())])
+}
+
+/// Run `launchctl` with `args`, reporting a refusal as a failure.
+fn launchctl(args: &[&str]) -> Result<(), NotInstalled> {
+    let status = Command::new(LAUNCHCTL)
+        .args(args)
+        .status()
+        .map_err(NotInstalled::Launchctl)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(NotInstalled::Launchctl(io::Error::other(format!(
+            "{args:?} exited with {status}"
+        ))))
+    }
+}
+```
+
+`users_uid` is the one piece with no safe std route: `std::os::unix` exposes no `getuid`. `launchctl print gui/$UID` cannot be asked for it either, since the answer is the question. `$UID` is not exported by every shell, so read `id -u` once:
+
+```rust
+/// This user's numeric id, which names the launchd domain their agents live in.
+///
+/// A subprocess rather than `getuid(2)`, because the workspace forbids `unsafe` and every binding
+/// for it is an unsafe extern call. The same trade `signal_pid` makes with `/bin/kill`.
+fn users_uid() -> Result<u32, NotInstalled> {
+    let out = Command::new("/usr/bin/id")
+        .arg("-u")
+        .output()
+        .map_err(NotInstalled::Launchctl)?;
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .map_err(|_| NotInstalled::Launchctl(io::Error::other("id -u did not print a number")))
+}
+```
+
+### Wiring
+
+`Verb` gains two, after the lifecycle verbs and before the hidden `daemon`:
+
+```rust
+    /// Register this binary as a login agent, so mercury starts with the session.
+    Install,
+    /// Take the login agent back out.
+    Uninstall,
+```
+
+with `main.rs` arms calling `client::install()` and `client::uninstall()`.
+
+### Tests
+
+The parts that are not launchd:
+
+```rust
+#[test]
+fn the_label_is_keyed_to_the_app() {
+    assert_eq!(label(), "hg.freddie.mercury");
+}
+
+// A fork renaming APP must get its own job rather than fighting over mercury's.
+#[test]
+fn the_plist_carries_no_hardcoded_label_or_program() {
+    assert!(!PLIST_TEMPLATE.contains("/usr/local/bin"));
+    assert!(PLIST_TEMPLATE.contains("__MERCURY_LABEL__"));
+    assert!(PLIST_TEMPLATE.contains("__MERCURY_PROGRAM__"));
+}
+
+// Substitution has to leave a plist, not a plist-shaped string.
+#[test]
+fn a_substituted_template_is_still_a_plist() {
+    let plist = PLIST_TEMPLATE
+        .replace("__MERCURY_LABEL__", "hg.freddie.mercury")
+        .replace("__MERCURY_PROGRAM__", "/Users/somebody/.cargo/bin/mercury");
+    assert!(!plist.contains("__MERCURY"));
+    assert!(plist.contains("<string>/Users/somebody/.cargo/bin/mercury</string>"));
+}
+```
+
+`plutil -lint` over the checked-in template is a pre-commit concern rather than a test, since it needs a binary the test harness should not require.
+
+### Verifying the install
+
+- `cargo install --path crates/mercury`, then `mercury install`, says where it installed from and `launchctl print gui/$(id -u)/hg.freddie.mercury` describes the job.
+- Logging out and back in leaves a mercury running, by `mercury status`.
+- `mercury install` again replaces the job rather than failing, and `mercury status` reports a pid either way.
+- `./target/debug/mercury install` says the binary is under `target/` and installs anyway.
+- `mercury uninstall` removes the job and the plist; running it twice exits 0 both times.
+- After `mercury uninstall`, logging out and back in leaves no mercury running.
 
 ## Permissions
 
