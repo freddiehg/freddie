@@ -21,6 +21,8 @@ fn run(verb: Option<Verb>) -> i32 {
         Some(Verb::Status) => client::status(),
         Some(Verb::Logs(args)) => client::logs(&args),
         Some(Verb::Stop(args)) => client::stop(&args),
+        Some(Verb::Install) => client::install(),
+        Some(Verb::Uninstall) => client::uninstall(),
         Some(Verb::Daemon(args)) => {
             daemon::run(&args);
             0

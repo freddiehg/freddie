@@ -33,6 +33,10 @@ pub enum Verb {
     Logs(LogsArgs),
     /// Ask the running daemon to quit.
     Stop(StopArgs),
+    /// Register this binary as a login agent, so mercury starts with the session.
+    Install,
+    /// Take the login agent back out.
+    Uninstall,
     /// Run the daemon in this process. Not for typing: `mercury start` spawns it.
     #[command(hide = true)]
     Daemon(DaemonArgs),
@@ -219,6 +223,12 @@ mod tests {
     #[test]
     fn logs_takes_a_level() {
         assert_eq!(logs_args(&["logs", "--level", "debug"]).level, Level::DEBUG);
+    }
+
+    #[test]
+    fn the_agent_verbs_parse() {
+        assert!(matches!(parse(&["install"]).verb, Some(Verb::Install)));
+        assert!(matches!(parse(&["uninstall"]).verb, Some(Verb::Uninstall)));
     }
 
     #[test]
