@@ -25,7 +25,13 @@ pub enum ForegroundedApp {
 }
 
 pub struct ForegroundedChrome {
-    /// `None` until the tab source reports; a site level resolves only once it is `Some`.
+    /// The raw URL, as the extension sent it. `None` until the tab source reports, and a site
+    /// level resolves only once it is `Some`.
+    ///
+    /// A `String` rather than a parsed `Url`: matching a host is a scan of a short string even
+    /// though `site_data` runs on every dispatch, and the `url` crate pulls the ICU4X idna tree for
+    /// a comparison `starts_with` covers. Keeping it raw is also what leaves copy-url and
+    /// open-in-editor something to use later.
     pub url: Option<String>,
 }
 ```
@@ -95,6 +101,5 @@ Actions that no keystroke expresses (open the URL in Zed, run page JavaScript, c
 ## Open questions
 
 - One enum or two for the foregrounded app: a single `ForegroundedApp` used by events and effects too (which loses `Copy`), or a `Copy` identity plus the stateful `ForegroundedApp` at the root. The two-type split is the starting recommendation.
-- The URL's type on `ForegroundedChrome`: raw `String`, a parsed `Url` for structured host/path matching, or a resolved `Site` (smallest, but discards the URL that copy-url and friends want).
 - How `Site::from_url` matches: exact host, host suffix, or path too (some sites want per-path binds).
 - Whether this generalizes across browsers behind one `TabEvent`, the way `App::from_bundle_id` collapses apps behind one enum.
