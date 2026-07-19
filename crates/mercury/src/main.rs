@@ -42,7 +42,9 @@ use std::ops::ControlFlow;
 use clap::Parser;
 use freddie::{AlwaysEqual, TimerEffect};
 use freddie_keyboard::Emitter;
-use mercury::{App, Mercury, MercuryEffect, MercuryEvent, Placement, foreground, quit_event};
+use mercury::{
+    App, Chord, Mercury, MercuryEffect, MercuryEvent, Placement, foreground, quit_event,
+};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot::error::TryRecvError;
 use tracing::{debug, error, info, warn};
@@ -296,7 +298,7 @@ fn perform_effect(
 ) -> ControlFlow<()> {
     match effect {
         MercuryEffect::Foreground(app) => foreground_app(app),
-        MercuryEffect::Tap { key, flags } => match emitter.tap(key, flags) {
+        MercuryEffect::Tap(Chord { key, flags }) => match emitter.tap(key, flags) {
             Ok(()) => debug!(?key, ?flags, "tapped"),
             Err(e) => warn!(?key, ?flags, error = %e, "tap failed"),
         },

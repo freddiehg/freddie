@@ -50,7 +50,7 @@ mod model;
 mod sources;
 mod state;
 
-pub use effect::{MercuryEffect, Placement};
+pub use effect::{Chord, MercuryEffect, Placement};
 pub use external::{DEFAULT_PORT, on_message};
 pub use model::{MercuryEvent, MercuryStruct, MercuryTrigger};
 pub use sources::{AnyKey, App, ForegroundEvent, Foregrounded, Quit};

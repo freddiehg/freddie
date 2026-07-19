@@ -14,6 +14,18 @@ pub enum Placement {
     RightHalf,
 }
 
+/// One key carrying its modifiers as flags, which is how Mercury spells a chord.
+///
+/// `cmd`-`r` is `Chord { key: KeyR, flags: COMMAND }`: one key event with the modifier as a flag,
+/// not a synthetic `cmd` down and up around it. A synthetic modifier event would strand the
+/// modifier the user is really holding, because the app counts the extra up and thinks it released.
+#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
+#[derive(Clone, Copy, Debug)]
+pub struct Chord {
+    pub key: Key,
+    pub flags: ModifierFlags,
+}
+
 /// What a handler asks the consumer to do. Inert data; performing it is the consumer's job,
 /// and it never mutates Mercury's state directly.
 // Effect equality is only ever asked for by the tests (dispatch never compares effects), so the
@@ -22,15 +34,8 @@ pub enum Placement {
 #[derive(Debug)]
 pub enum MercuryEffect {
     Foreground(super::App),
-    /// Tap `key` with `flags` baked into both halves. The chord.
-    ///
-    /// `cmd`-`r` is `Tap { key: KeyR, flags: COMMAND }`: one key carrying the modifier as a flag,
-    /// not a synthetic `cmd` down and up around it. A synthetic modifier event would strand the
-    /// modifier the user is really holding (the app counts the extra up and thinks it released).
-    Tap {
-        key: Key,
-        flags: ModifierFlags,
-    },
+    /// Tap one key with modifiers baked into both halves.
+    Tap(Chord),
     /// Emit one raw key event, a press or a release on its own.
     ///
     /// The escape hatch, for the one case that is genuinely a lone half of a keypress: passing
@@ -54,7 +59,7 @@ pub enum MercuryEffect {
 }
 
 pub(crate) const fn tap(key: Key, flags: ModifierFlags) -> MercuryEffect {
-    MercuryEffect::Tap { key, flags }
+    MercuryEffect::Tap(Chord { key, flags })
 }
 
 /// Emit one key event carrying `flags`. The building block for passing a key through and for the

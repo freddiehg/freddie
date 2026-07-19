@@ -5,7 +5,7 @@
 
 use bind::SimpleRunner;
 use mercury::{
-    App, HomeLayer, JK_TIMEOUT, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryEvent,
+    App, Chord, HomeLayer, JK_TIMEOUT, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryEvent,
     MercuryStruct, ModifierFlags, OVERLAY_DWELL, Placement, PressType, RETURN_TO_HOME_TIMEOUT,
     foreground, key, quit_event,
 };
@@ -77,7 +77,7 @@ const fn key_with(key: Key, flags: ModifierFlags) -> MercuryEvent {
 }
 
 const fn tap(key: Key, flags: ModifierFlags) -> MercuryEffect {
-    MercuryEffect::Tap { key, flags }
+    MercuryEffect::Tap(Chord { key, flags })
 }
 
 // cmd-r, one chord.
