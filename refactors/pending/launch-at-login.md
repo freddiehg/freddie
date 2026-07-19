@@ -316,7 +316,9 @@ A launchd agent needs its own grant, and gets one. It has no terminal in its anc
 
 No wrapper and no signing are involved. A `.sh` launcher would have been a way to give TCC something stable to attribute to, and nothing needs attributing.
 
-Reset grants while testing, since the failure is silent: `tccutil reset Accessibility` and `tccutil reset ListenEvent`.
+Accessibility is the only permission involved, and that is structural rather than lucky. `freddie_keyboard` creates its tap with `CGEventTapOptions::Default` at `CGEventTapLocation::Session`, which is an active tap: it can consume and modify events, which is what swallowing a key and re-emitting it means. Input Monitoring gates `ListenOnly` taps, which only observe, so mercury cannot need it while it remaps anything.
+
+Reset the grant while testing, since the failure is silent: `tccutil reset Accessibility`.
 
 ## Getting the keyboard back
 
@@ -358,6 +360,5 @@ Karabiner needing a whole second bundle just to hold agent plists is the cost si
 
 ## Open
 
-- Which TCC permission the tap needs: Accessibility alone was granted and is sufficient; whether Input Monitoring is ever also required is untested.
 - Whether `launchctl bootout` gives the daemon long enough to finish its quit before SIGKILL follows, since that path now has destructors to run.
 - Whether the launch build also needs Home to pass unbound keys through, or booting into typing plus the recovery paths is enough given that reaching Home takes a deliberate `jk`.
