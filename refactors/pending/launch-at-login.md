@@ -339,15 +339,29 @@ Nothing extra is needed for a hand-started mercury meeting the agent's. `mercury
 
 ## Bundle vs bare binary
 
-Everything above ships a bare binary: `mercury` at `/usr/local/bin`, a plist written by hand into `~/Library/LaunchAgents`, and `launchctl bootstrap` run once. That works and is what this doc plans.
+Everything above ships a bare binary, with `mercury install` writing the plist into `~/Library/LaunchAgents` and bootstrapping it. That is what this doc plans.
 
-The alternative is an app bundle. `Mercury.app` holds the binary at `Contents/MacOS/mercury`, an `Info.plist`, and its agent plist at `Contents/Library/LaunchAgents/`; the app calls `SMAppService.agent(plistName:).register()` (macOS 13+) and macOS installs the agent itself. Three things follow from that, and none of them are available to a bare binary:
+The alternative is an app bundle, and it is what the reference implementation of this exact problem does. Karabiner-Elements, installed on this machine, has no plist in `~/Library/LaunchAgents` or `/Library/LaunchAgents`; its five agents are registered from plists embedded in a helper bundle at `/Library/Application Support/org.pqrs/Karabiner-Elements/Karabiner-Elements Non-Privileged Agents v2.app/Contents/Library/LaunchAgents/`, and `launchctl print` reports their origin as `(submitted by smd.NNN)` — the ServiceManagement daemon, which is `SMAppService`.
+
+Its agent plist is three keys:
+
+```
+KeepAlive => true
+Label => org.pqrs.service.agent.karabiner_console_user_server
+ProgramArguments => [ .../bin/karabiner_console_user_server ]
+```
+
+Two things to take from that. `LimitLoadToSessionType` and `RunAtLoad` are absent because `SMAppService` agents are per-user GUI agents by construction and `KeepAlive` implies loading at start; a hand-installed plist needs both. And its `KeepAlive` is unconditional where ours is `SuccessfulExit=false`, because Karabiner has no deliberate quit for a user to reach — mercury has three, and each must leave it down.
+
+What this does not settle is the tap. Karabiner does not use a `CGEventTap`: alongside those agents it installs `Karabiner-DriverKit-VirtualHIDDevice`, so it owns a virtual keyboard at the driver level and needs a different grant entirely. Its bundle proves the launchd shape works, not that a `CGEventTap` in a launchd agent gets its TCC.
+
+`Mercury.app` would hold the binary at `Contents/MacOS/mercury`, an `Info.plist`, and its agent plist at `Contents/Library/LaunchAgents/`; the app calls `SMAppService.agent(plistName:).register()` (macOS 13+) and macOS installs the agent itself. Three things follow from that, and none of them are available to a bare binary:
 
 - the job appears in System Settings under Login Items, with a toggle, instead of existing only as a file the user has to know about
 - `LSUIElement` in `Info.plist` makes it an accessory app, replacing the `freddie_main_loop::init_menu_bar_app()` call
 - a bundle identifier and one signature over the whole bundle give TCC a stable identity to key a grant to
 
-The third is the reason to decide this after the launchd experiment rather than before it. If an agent gets a tap, the bare binary is enough and the bundle buys only tidiness. If it does not, a signed bundle is the most likely thing that fixes it, and the work belongs there rather than in a wrapper.
+Karabiner needing a whole second bundle just to hold agent plists is the cost side. The third point is the reason to decide this after the launchd experiment rather than before it. If an agent gets a tap, the bare binary is enough and the bundle buys only tidiness. If it does not, a signed bundle is the most likely thing that fixes it, and the work belongs there rather than in a wrapper.
 
 ## Open
 
