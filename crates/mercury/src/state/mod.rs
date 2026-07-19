@@ -97,14 +97,73 @@ pub struct Mercury {
     layer: Layer,
 }
 
+/// What mercury knows about the frontmost Chrome.
+///
+/// It exists only inside [`ForegroundedApp::Chrome`], so there is no tab URL to be meaningless
+/// while Finder is up, and nothing to clear when Chrome goes away: the value goes with it.
+#[derive(Debug, Default)]
+pub struct ForegroundedChrome {
+    /// The front tab's URL, raw, as the tab source sent it.
+    ///
+    /// `None` until that source reports, which is also the state right after Chrome comes up: the
+    /// active tab is Chrome's to know, and no app-activation event carries it. A site level
+    /// resolves only once this is `Some`, so a key pressed in the gap is unbound rather than aimed
+    /// at whatever site was there before.
+    ///
+    /// A `String` rather than a parsed URL: [`Site::from_url`] matches a host, which is a scan of a
+    /// short string, and keeping it raw leaves the whole URL for handlers that want it.
+    pub url: Option<String>,
+}
+
+/// The frontmost app, and whatever mercury knows about it.
+///
+/// [`App`] stays the identity that events and effects speak, because neither the watcher reporting
+/// an activation nor an effect asking for one knows anything about a tab. This is the same set of
+/// apps with the state hung off the one that has any.
+#[derive(Debug, Default)]
+pub enum ForegroundedApp {
+    Chrome(ForegroundedChrome),
+    Finder,
+    Ghostty,
+    Zed,
+    #[default]
+    Other,
+}
+
+impl ForegroundedApp {
+    /// Which app this is, dropping whatever it carries.
+    #[must_use]
+    pub const fn identity(&self) -> App {
+        match self {
+            Self::Chrome(_) => App::Chrome,
+            Self::Finder => App::Finder,
+            Self::Ghostty => App::Ghostty,
+            Self::Zed => App::Zed,
+            Self::Other => App::Other,
+        }
+    }
+
+    /// The state to hold for a newly foregrounded `app`, knowing only its identity.
+    #[must_use]
+    pub const fn from_identity(app: App) -> Self {
+        match app {
+            App::Chrome => Self::Chrome(ForegroundedChrome { url: None }),
+            App::Finder => Self::Finder,
+            App::Ghostty => Self::Ghostty,
+            App::Zed => Self::Zed,
+            App::Other => Self::Other,
+        }
+    }
+}
+
 /// The frontmost app, and whether a navigation is in flight.
 ///
 /// While `navigating`, `app` is the PREVIOUS app: a nav choice foregrounded a new one, but the
 /// watcher has not reported it yet, so the in-app level binds nothing until it does (see
 /// [`app_data`]). The fields are private; the handlers drive it through the methods below.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default)]
 pub struct Foreground {
-    app: App,
+    app: ForegroundedApp,
     navigating: bool,
 }
 
@@ -117,9 +176,30 @@ impl Foreground {
 
     /// The watcher reported the front app: record it and end any pending navigation. From
     /// [`record_front_app`](crate::handlers).
-    pub const fn set_front_app(&mut self, app: App) {
-        self.app = app;
+    pub fn set_front_app(&mut self, app: App) {
+        self.app = ForegroundedApp::from_identity(app);
         self.navigating = false;
+    }
+
+    /// The tab source reported the front tab's URL. Kept only while Chrome is the confirmed front
+    /// app: a URL arriving while anything else is up describes a window nobody is looking at, and
+    /// one arriving mid-navigation belongs to the app being left.
+    pub fn set_tab_url(&mut self, url: String) {
+        if self.navigating {
+            return;
+        }
+        if let ForegroundedApp::Chrome(chrome) = &mut self.app {
+            chrome.url = Some(url);
+        }
+    }
+
+    /// The confirmed front Chrome, or `None` whenever anything else is up or a nav is in flight.
+    #[must_use]
+    pub const fn confirmed_chrome(&self) -> Option<&ForegroundedChrome> {
+        match (&self.app, self.navigating) {
+            (ForegroundedApp::Chrome(chrome), false) => Some(chrome),
+            _ => None,
+        }
     }
 
     /// The confirmed front app, or `None` while a navigation is in flight, so a key pressed in the
@@ -129,14 +209,14 @@ impl Foreground {
         if self.navigating {
             None
         } else {
-            Some(self.app)
+            Some(self.app.identity())
         }
     }
 
     /// The app the model believes is frontmost. Stale while [`navigating`](Self::navigating).
     #[must_use]
     pub const fn app(&self) -> App {
-        self.app
+        self.app.identity()
     }
 
     /// Whether a nav choice is still awaiting the watcher's confirmation.
