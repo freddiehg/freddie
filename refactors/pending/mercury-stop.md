@@ -1,83 +1,14 @@
 # stopping a mercury you cannot see
 
-`mercury stop` ends a running daemon from another terminal, and it ends it the way the menu bar's Quit does rather than by destroying it where it stands. `mercury stop --force` is the second out, for a daemon that no longer answers. Three pieces: the lock crate learns to wait for a release, the daemon learns to treat SIGTERM as a quit, and a client verb finds the daemon's pid and signals it.
+`mercury stop` ends a running daemon from another terminal, and it ends it the way the menu bar's Quit does rather than by destroying it where it stands. `mercury stop --force` is the second out, for a daemon that no longer answers. Two pieces: the daemon learns to treat SIGTERM as a quit, and a client verb finds the daemon's pid and signals it.
 
-Follows `refactors/past/single-instance-holder.md`, for the pid, and `refactors/past/mercury-daemon-verb.md`, for the verb dispatch. Independent of `mercury-status-and-logs.md`. `mercury-start.md` builds `restart` on the stopping half of this.
+Follows `refactors/past/single-instance-holder.md`, for the pid, `single-instance-await-free.md`, for the wait, and `refactors/past/mercury-daemon-verb.md`, for the verb dispatch. Independent of `mercury-status-and-logs.md`. `mercury-start.md` builds `restart` on the stopping half of this.
 
 ## Why a signal and not a socket message
 
 `external-events.md` defines the loopback socket mercury listens on, and states that `IncomingEvent` names exactly what an outside sender may say so that "remote key injection and remote quit are unrepresentable rather than filtered". A quit frame is the thing that vocabulary exists to exclude, so `stop` does not go over the socket and the socket does not grow a variant for it.
 
-## Change 1: waiting for a lock to come free
-
-`stop` has to know when the daemon is gone, and the lock is what it waits on rather than the process disappearing: the daemon releases it as it exits, and a released lock is exactly the condition under which the next start succeeds.
-
-flock already reports that. A blocking `lock_shared` is granted the instant the exclusive holder lets go, so the wait is edge-triggered and needs no polling interval. Verified on the pinned 1.96.0: 48µs against a holder released after 300ms, where a 50ms poll would have averaged 25ms.
-
-In `freddie_single_instance`, beside `holder` and `holder_at`:
-
-```rust
-/// Wait until nothing holds `app`'s lock.
-///
-/// # Errors
-///
-/// Returns [`LockError::NoStateDir`] when the environment names no per-user directory, and
-/// otherwise whatever [`await_free_at`] returns.
-pub fn await_free(app: &str) -> Result<(), LockError> {
-    await_free_at(&lock_path(app).ok_or(LockError::NoStateDir)?)
-}
-
-/// Wait until nothing holds `path`'s lock, returning as it is released.
-///
-/// Blocks in flock, which grants the shared lock the moment the exclusive holder lets go. The
-/// shared lock is dropped before this returns, so it leaves the path as it found it. Whether the
-/// path is still free once the caller acts on the answer is not something this can promise, for
-/// the reason [`holder_at`] gives.
-///
-/// There is no timeout, because flock has none to offer. A caller that needs one runs this on a
-/// thread and stops listening to it.
-///
-/// # Errors
-///
-/// Returns [`LockError::Unavailable`] when the file cannot be created, opened, or locked.
-pub fn await_free_at(path: &Path) -> Result<(), LockError> {
-    let file = open(path)?;
-    file.lock_shared().map_err(LockError::Unavailable)
-}
-```
-
-Shared rather than exclusive for the same reason `holder_at` takes a shared lock: two clients waiting on the same daemon must not block each other, and an exclusive waiter would hold the path shut against the next daemon for as long as it took the caller to drop it.
-
-Tests, beside the holder ones:
-
-```rust
-#[test]
-fn waiting_blocks_until_the_holder_releases() {
-    let path = temp_lock("await-release");
-    let held = acquire_at(&path).expect("the path is free");
-    let waiter = {
-        let path = path.clone();
-        std::thread::spawn(move || await_free_at(&path))
-    };
-    std::thread::sleep(std::time::Duration::from_millis(50));
-    assert!(!waiter.is_finished(), "the lock is still held");
-    drop(held);
-    waiter
-        .join()
-        .expect("the waiting thread")
-        .expect("the lock came free");
-}
-
-#[test]
-fn waiting_on_a_free_path_returns_at_once() {
-    let path = temp_lock("await-free");
-    await_free_at(&path).expect("nothing holds it");
-}
-```
-
-This ships on its own, ahead of anything in mercury.
-
-## Change 2: the daemon quits on SIGTERM
+## Change 1: the daemon quits on SIGTERM
 
 mercury installs no signal handler today, so a terminated process dies without running its `Drop` impls. `refactors/past/single-instance.md` records the observed consequence: "the log has a run with no `kill: exiting` line for exactly that reason." The keyboard is released by the kernel tearing the process down, but the modifiers a command layer swallowed are never re-opened, so the app on the other side is left believing a physically-held modifier is still down.
 
@@ -130,13 +61,32 @@ healthy worker:  READY -> HANDLER RAN -> GRACEFUL EXIT -> exited on SIGTERM
 blocked worker:  READY -> SURVIVED SIGTERM (handler never ran) -> died on SIGKILL
 ```
 
-So a daemon blocked in an effect dies to `kill` before this change and survives it afterwards. That is what `--force` in change 3 is for, and why the escape hatch ships in the same doc as the thing that closes the old one.
+So a daemon blocked in an effect dies to `kill` before this change and survives it afterwards. That is what `--force` in change 2 is for, and why the escape hatch ships in the same doc as the thing that closes the old one.
 
 Verifying: `cargo run -p mercury -- daemon`, then `kill <pid>` from another pane. The log gets `SIGTERM: quitting` followed by `kill: exiting`, and the keyboard is normal afterwards.
 
-## Change 3: `mercury stop`
+## Change 2: `mercury stop`
 
 In `client.rs`, alongside what `mercury-status-and-logs.md` put there.
+
+### What is printed and what is traced
+
+Both, for different readers. The result line is the verb's output: a script reads it, and no `LOG_LEVEL` may suppress it, so it goes to stdout through `println!` unadorned. Everything about how the stop went is a tracing event, so the file under `~/Library/Logs/mercury` carries the client's side of the story next to the daemon's `SIGTERM: quitting` and `kill: exiting`. Failures do both: `eprintln!` because the user is looking at the terminal, and `warn!` because the next person is looking at the log.
+
+`stop` therefore initializes logging, which only `daemon::run` did before:
+
+```rust
+/// What a client verb shows on the terminal through tracing: nothing but errors.
+///
+/// The file layer records `debug` regardless, so the run is in the log either way. A client's
+/// terminal output is its printed result, and a timestamped `INFO` line above it would be noise in
+/// front of the thing the user actually asked for.
+const CLIENT_LOG_LEVEL: &str = "error";
+```
+
+with `logging::init(CLIENT_LOG_LEVEL);` as the first line of `stop`.
+
+Two processes append to that file whenever a client runs against a live daemon. `tracing_appender` opens it with `O_APPEND` and writes a record per `write` call, so records land whole and in arrival order.
 
 ```rust
 use std::io;
@@ -144,7 +94,11 @@ use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use tracing::{info, warn};
+
 use freddie_single_instance::{Held, LockError, Pid};
+
+use crate::logging;
 
 /// How often [`find_daemon`] re-probes a lock whose holder has not named itself yet.
 const POLL: Duration = Duration::from_millis(10);
@@ -173,7 +127,7 @@ enum Target {
 }
 
 /// The signal `stop` sends, and what each one costs.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Signal {
     /// SIGTERM. The daemon routes it into the event channel and leaves the way the menu bar's Quit
     /// does, opening the modifiers it swallowed on the way out.
@@ -214,25 +168,31 @@ fn stop_daemon(signal: Signal) -> Stopped {
         Ok(Target::Running(pid)) => pid,
         Ok(Target::NotRunning) => return Stopped::NotRunning,
         Ok(Target::Anonymous) => {
+            warn!("the lock is held by a holder that recorded no pid");
             eprintln!(
                 "mercury: something holds the lock but recorded no pid; it is starting or shutting down"
             );
             return Stopped::Failed;
         }
         Err(e) => {
+            warn!(error = %e, "could not read the lock");
             eprintln!("mercury: {e}");
             return Stopped::Failed;
         }
     };
     // Before the signal, so the wait cannot miss a daemon that exits between the two.
     let freed = watch_for_free();
+    info!(%pid, ?signal, "signalling the daemon");
     if let Err(e) = signal_pid(pid, signal) {
+        warn!(%pid, error = %e, "could not signal the daemon");
         eprintln!("mercury: could not signal pid {pid}: {e}");
         return Stopped::Failed;
     }
     if matches!(freed.recv_timeout(STOP_TIMEOUT), Ok(Ok(()))) {
+        info!(%pid, "the daemon released the lock");
         Stopped::Was(pid)
     } else {
+        warn!(%pid, timeout = ?STOP_TIMEOUT, "the daemon still holds the lock");
         eprintln!("mercury: pid {pid} still holds the lock; `mercury stop --force` destroys it");
         Stopped::Failed
     }
@@ -243,6 +203,7 @@ fn stop_daemon(signal: Signal) -> Stopped {
 /// Exits 0 when there was nothing to stop, so calling this twice, or in a teardown script that
 /// does not know the state, is not an error.
 pub(crate) fn stop(args: &StopArgs) -> i32 {
+    logging::init(CLIENT_LOG_LEVEL);
     let signal = if args.force {
         Signal::Kill
     } else {
@@ -367,5 +328,5 @@ with parse tests beside the others:
 
 - `cargo run -p mercury -- daemon` in one pane; `mercury stop` in another prints "mercury stopped (pid N)", the daemon's pane returns to the shell, and its log ends with `SIGTERM: quitting` then `kill: exiting`.
 - `mercury stop` again prints "mercury is not running" and exits 0.
-- Holding a command layer's modifier as the stop lands leaves no modifier stuck down in the app underneath, which is what change 2 buys.
+- Holding a command layer's modifier as the stop lands leaves no modifier stuck down in the app underneath, which is what change 1 buys.
 - `mercury stop --force` against a running daemon ends it with no `kill: exiting` line, which is the cost stated on `Signal::Kill`.
