@@ -76,9 +76,13 @@ A derived level can itself have a derived child (the `derived.rs` test pins exac
 
 ```rust
 fn new_chat(_ev: &KeyEvent, _node: /* ClaudeAiSite node */) -> Vec<MercuryEffect> {
-    vec![MercuryEffect::Tap { modifiers: vec![Key::MetaLeft, Key::ShiftLeft], key: Key::KeyO }]
+    vec![tap(Key::KeyO, ModifierFlags::COMMAND | ModifierFlags::SHIFT)]
 }
 ```
+
+`tap` is `crates/mercury/src/effect.rs`'s helper, and it builds `MercuryEffect::Tap(Chord { key, flags })`. The modifiers ride as flags on the one key event rather than as synthetic `cmd` and `shift` presses around it, which is what keeps a modifier the user is physically holding from being stranded: an app that saw an extra modifier release would believe it.
+
+Because the flags are exactly what the handler asked for, and `held` feeds the sync sweeps rather than the stamping, this sends `cmd-shift-o` whatever the user happens to be holding when the bind fires. A bind whose output varies with a held modifier has to be a separate bind; nothing merges the two.
 
 The effect loop emits `cmd-shift-o`, Chrome's own new-chat shortcut fires, done. Nothing new in the effect layer: this is a remap, not an automation. Every site bind that maps to a keystroke the site already understands works this way, and it is why v0 needs only the URL stream from the extension, not the command bus.
 
