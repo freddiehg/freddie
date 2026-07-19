@@ -137,10 +137,13 @@ pub(crate) fn start_only() -> i32 {
 /// Starting from cold is a restart with an empty first half, rather than an error, so a script
 /// that restarts after a rebuild does not have to know whether anything was up.
 pub(crate) fn restart() -> i32 {
-    match stop_daemon() {
-        Stopped::Was(pid) => println!("mercury stopped (pid {pid})"),
-        Stopped::NotRunning => println!("mercury was not running"),
-        Stopped::Failed => return 1,
+    match stop_daemon(Signal::Terminate) {
+        Ok(Some(pid)) => println!("mercury stopped (pid {pid})"),
+        Ok(None) => println!("mercury was not running"),
+        Err(failure) => {
+            eprintln!("mercury: not restarting: {failure}");
+            return 1;
+        }
     }
     start_only()
 }

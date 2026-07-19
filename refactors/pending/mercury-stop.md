@@ -149,20 +149,6 @@ impl Signal {
     }
 }
 
-/// What [`stop_daemon`] found and did.
-///
-/// `stop` and `restart` both need the outcome and word it differently, so `stop_daemon` reports
-/// facts and prints nothing. It traces, because the log records where a thing happened rather than
-/// who is being spoken to, but the terminal line is the caller's.
-enum Stopped {
-    /// A daemon was signalled and let go of the lock.
-    Was(Pid),
-    /// There was nothing to stop.
-    NotRunning,
-    /// A daemon is there and is still there.
-    Failed(Failure),
-}
-
 /// Why a stop did not happen.
 ///
 /// Separate variants because the remedies differ: `--force` answers [`Failure::Ignored`] and
@@ -204,17 +190,24 @@ impl fmt::Display for Failure {
 }
 
 /// Ask the running daemon to go, and wait for it to let go of the lock.
-fn stop_daemon(signal: Signal) -> Stopped {
+///
+/// `Ok(None)` is the daemon that was not there: nothing to stop is not a failure, so a teardown
+/// script that does not know the state is not wrong to call this.
+///
+/// `stop` and `restart` both need the outcome and word it differently, so this reports facts and
+/// prints nothing. It traces, because the log records where a thing happened rather than who is
+/// being spoken to, but the terminal line is the caller's.
+fn stop_daemon(signal: Signal) -> Result<Option<Pid>, Failure> {
     let pid = match find_daemon() {
         Ok(Target::Running(pid)) => pid,
-        Ok(Target::NotRunning) => return Stopped::NotRunning,
+        Ok(Target::NotRunning) => return Ok(None),
         Ok(Target::Anonymous) => {
             warn!("the lock is held by a holder that recorded no pid");
-            return Stopped::Failed(Failure::Anonymous);
+            return Err(Failure::Anonymous);
         }
         Err(error) => {
             warn!(%error, "could not read the lock");
-            return Stopped::Failed(Failure::Unreadable(error));
+            return Err(Failure::Unreadable(error));
         }
     };
     // Before the signal, so the wait cannot miss a daemon that exits between the two.
@@ -222,14 +215,14 @@ fn stop_daemon(signal: Signal) -> Stopped {
     info!(%pid, ?signal, "signalling the daemon");
     if let Err(error) = signal_pid(pid, signal) {
         warn!(%pid, %error, "could not signal the daemon");
-        return Stopped::Failed(Failure::Unsignalable(SignalFailure { pid, error }));
+        return Err(Failure::Unsignalable(SignalFailure { pid, error }));
     }
     if matches!(freed.recv_timeout(STOP_TIMEOUT), Ok(Ok(()))) {
         info!(%pid, "the daemon released the lock");
-        Stopped::Was(pid)
+        Ok(Some(pid))
     } else {
         warn!(%pid, timeout = ?STOP_TIMEOUT, "the daemon still holds the lock");
-        Stopped::Failed(Failure::Ignored(pid))
+        Err(Failure::Ignored(pid))
     }
 }
 
@@ -245,15 +238,15 @@ pub(crate) fn stop(args: &StopArgs) -> i32 {
         Signal::Terminate
     };
     match stop_daemon(signal) {
-        Stopped::Was(pid) => {
+        Ok(Some(pid)) => {
             println!("mercury stopped (pid {pid})");
             0
         }
-        Stopped::NotRunning => {
+        Ok(None) => {
             println!("mercury is not running");
             0
         }
-        Stopped::Failed(failure) => {
+        Err(failure) => {
             eprintln!("mercury: {failure}");
             1
         }
