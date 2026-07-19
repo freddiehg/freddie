@@ -76,8 +76,8 @@ impl fmt::Display for NotStarted {
 /// instant can both see [`Held::Free`] and both spawn, and the lock refuses one of the two daemons
 /// exactly as it refuses a second `mercury daemon`; nothing here has to be atomic.
 ///
-/// Reports facts and says nothing to the terminal, as `stop_daemon` does, because `start` and the
-/// bare `mercury` word the outcome differently.
+/// Reports facts and says nothing to the terminal, as `stop_daemon` does, because `start` and
+/// `restart` word the outcome differently.
 fn ensure_started() -> Result<Running, NotStarted> {
     match freddie_single_instance::holder(APP) {
         Ok(Held::By(pid)) => return Ok(Running::Adopted(pid)),
@@ -145,8 +145,7 @@ fn wait_until_held() -> bool {
 
 /// Say what `ensure_started` found, and report the exit code for it.
 ///
-/// Shared by `start`, `restart`, and the bare `mercury`, so one outcome reads the same however it
-/// was reached.
+/// Shared by `start` and `restart`, so a started daemon reads the same whichever verb produced it.
 fn report(running: Result<Running, NotStarted>) -> i32 {
     match running {
         Ok(Running::Started(pid)) => {
