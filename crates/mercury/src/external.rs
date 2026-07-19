@@ -29,6 +29,11 @@ pub const DEFAULT_PORT: u16 = 3883;
 /// types say.
 ///
 #[derive(serde::Deserialize, Debug)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(export, export_to = "../../../chrome-extension/src/wire/")
+)]
 #[serde(tag = "kind", content = "value")]
 pub enum IncomingEvent {
     /// The front browser tab's URL changed.
@@ -37,6 +42,11 @@ pub enum IncomingEvent {
 }
 
 #[derive(serde::Deserialize, Debug)]
+#[cfg_attr(feature = "typescript", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "typescript",
+    ts(export, export_to = "../../../chrome-extension/src/wire/")
+)]
 pub struct TabMessage {
     pub url: String,
 }

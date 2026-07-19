@@ -1,0 +1,22 @@
+{
+  "name": "mercury-bridge",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.9.0",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "devDependencies": {
+    "@eslint/js": "^9",
+    "@types/chrome": "^0.2.2",
+    "eslint": "^9",
+    "prettier": "^3",
+    "typescript": "^5",
+    "typescript-eslint": "^8"
+  }
+}

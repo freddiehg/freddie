@@ -40,11 +40,34 @@ jobs:
           toolchain: "1.96.0"
       - name: Run cargo test
         run: cargo test --all --all-features
+      # `--all-features` turns on mercury's `typescript` feature, so the line above regenerated the
+      # extension's wire types. If that changed anything, what is checked in was stale.
+      - name: Wire types are up to date
+        run: git diff --exit-code chrome-extension/src/wire/
+
+  extension:
+    name: extension
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: chrome-extension
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: chrome-extension/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm run lint
+      - run: pnpm run format:check
 
   all-checks-passed:
     name: All checks passed
     runs-on: ubuntu-latest
-    needs: [cargo-fmt, cargo-clippy, cargo-test]
+    needs: [cargo-fmt, cargo-clippy, cargo-test, extension]
     steps:
       - name: Do nothing
         run: echo "all checks passed"

@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "mercury bridge",
+  "version": "0.0.1",
+  "description": "Pushes Chrome's active tab URL to a running mercury.",
+  "background": { "service_worker": "dist/background.js", "type": "module" },
+  "permissions": ["tabs", "storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "options_page": "options.html"
+}
