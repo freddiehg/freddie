@@ -30,9 +30,13 @@ The standard for the model is exhaustive: every key in every reachable state, as
 
 ## Running mercury
 
-Never kill, quit, or restart a running mercury, and never start one that would take the single-instance lock from it. It is the live keyboard remapper on this machine, so stopping it changes how every keystroke behaves outside this session, and starting a replacement is not the same thing as leaving the one that was there alone. There is exactly one at a time (`refactors/past/single-instance.md`), so a second one cannot be started alongside it either.
+Mercury is the live keyboard remapper on this machine: while it is stopped, the keyboard behaves the way macOS would. There is exactly one at a time (`refactors/past/single-instance.md`), so a second cannot run alongside it.
 
-Verify against the mercury that is already running, or ask for a restart and let it happen. The event socket is reachable without touching the process at all: connect to `127.0.0.1:3883` and send a frame, then read the dispatch record it produced out of the log.
+Stopping and restarting it is what the verbs are for, and they work. `mercury status` reports the running one and its pid, `mercury stop` ends it through the model so the modifiers a command layer swallowed are reopened, and `mercury logs` follows it without touching it at all. Say what you are doing to it, and leave one running when you are done.
+
+Until `mercury start` lands (`refactors/pending/mercury-start.md`), putting one back is `mercury daemon` detached by hand.
+
+The event socket reaches a running daemon without touching the process: connect to `127.0.0.1:3883` and send a frame, then read the dispatch record it produced out of the log.
 
 ## Logs
 
