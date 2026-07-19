@@ -2,11 +2,11 @@
 
 Not built. The second site after `claude.ai`, and the one that tests whether the site layer generalizes or was shaped around a single case.
 
-x.com already has a keyboard interface, so the job is not to give it one. It is to put a vim-shaped one over the top: `h` `j` `k` `l` move and enter, and the actions sit under letters that mean the action rather than under whatever x.com picked.
+x.com already has a keyboard interface, and the first version of this used it: bind `f` to a tap of `l` and let x.com do the liking. That is a veneer, and it breaks when x.com renames a shortcut. What is here instead is a selection the extension owns, with mercury sending what to do to it, which is the shape that works on a site with no shortcuts at all.
 
 ## The keymap
 
-`j` and `k` are x.com's own, so they pass through as themselves. Everything else is a remap onto a key x.com already understands, which keeps this a remap rather than an automation, and keeps it working with nothing from `external-effects.md`.
+Every key here is a command to the extension, except `h`, which is the browser's back, and `t` and `esc`, which are the layer's own.
 
 ```
   X.COM
@@ -128,28 +128,100 @@ Performed with `NSPasteboard`, which is AppKit and so main-thread-bound, the sam
 
 Yanking a single post's URL, rather than the page's, is a different thing: it is per-post, x.com has no shortcut for it, and it needs the browser asked. That one is `external-effects.md` and is not in this doc.
 
-## Where the selection lives
+## The extension owns the selection
 
-x.com's timeline has a focused post, moved by `j` and `k`, and several things worth binding are about *that* post rather than the page. So something has to know which one it is.
+The binds above are a veneer over x.com's own shortcuts: `f` taps `l` and hopes x.com still means "like" by it. That works until x.com changes its shortcut set, and it can never work on a site that has no shortcuts at all. So the selection is the extension's, and mercury sends intent rather than keystrokes.
 
-It cannot be the level. `XSite` is a derived child, rebuilt from root state on every dispatch, and `refactors/past/derived-child-persistence.md` rejects giving one a longer life: persisting means storing, storing means it is in the tree, and in the tree it can disagree with what it was derived from. A `selected: usize` on `XSite` would be discarded between keystrokes.
+That is the difference between supporting x.com and supporting lists. The same content script shape, pointed at a different selector, gives `j` and `k` to any site with a list of things.
 
-It cannot be mercury counting either. Incrementing on `j` and decrementing on `k` is a shadow of x.com's focus, and it is wrong the moment you scroll, click a post, follow a link back, or x.com prepends new posts to the timeline. Nothing tells mercury any of that happened, so the shadow drifts and there is no event that reconciles it. That is the same class of bug the derived-child design exists to delete, rebuilt by hand at the root.
+### It lives in the content script
 
-x.com owns the selection. The question is only whether mercury ever needs a copy.
+Three places it could go, and two are ruled out by things already decided.
 
-For the whole keymap above, it does not. `f` taps `l` and x.com likes whatever *it* has focused; `l` taps `enter` and x.com opens whatever *it* has focused. The selection never crosses the wire, and that is why these binds work with nothing from `external-effects.md`.
+Not in the level. `XSite` is a derived child, rebuilt from root state every dispatch, and `refactors/past/derived-child-persistence.md` rejects giving one a longer life: persisting means storing, storing means it is in the tree, and in the tree it can disagree with what it was derived from.
 
-It is needed for one thing: acting on the focused post's identity, which is "yank this post's link", "open its author", "open it in a new tab". Those want a URL mercury does not have.
+Not in mercury at all. A `selected` at the root that mercury increments on `j` is a shadow of something in a page it cannot see, wrong the moment you scroll, click, or x.com prepends new posts, with no event that reconciles it.
 
-Two shapes for that, and the second is the one to build:
+Not in the service worker either, which is the part that matters for the extension as built: it is killed after roughly 30s idle, so anything it remembers is gone by the time you come back to the tab. A content script lives as long as the page does, which is exactly the lifetime the selection has.
 
-- The extension mirrors it. A content script on x.com watches the focused post and pushes an event on every change, so mercury holds a current copy. That is an event per `j`, a content script, a `MutationObserver` against markup x.com is free to change, and a copy that is only ever read at the instant you press one key.
-- mercury asks when it needs it. The bind produces a command, the extension reads the focused post at that moment and replies with its URL, and mercury never holds selection state at all.
+### Keyed by the post, not the index
 
-The second is a `Command.ReadFocusedPost` in `external-effects.md`, alongside `ReadSelection` and just as narrow: it returns one URL and nothing else, so it needs no `RunJs`. The producer changes constantly and the consumer is a single keypress, which is the shape that wants a pull rather than a push.
+The timeline mutates under you. x.com prepends new posts, infinite-scrolls more onto the end, and removes some as you go. An index into a list that grows at the front points at a different post every time that happens.
 
-The first becomes worth revisiting only if something needs the selection continuously rather than on demand, and the case for that would be the overlay showing what is focused, or binds that differ between "a post is focused" and "none is". Neither is in this doc.
+So the content script stores the focused post's own id, read out of its permalink, and resolves it to an element when it needs one:
+
+```ts
+type Selection = { statusId: string } | null;
+
+let selection: Selection = null;
+
+function items(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>('article[data-testid="tweet"]')];
+}
+
+function move(delta: number): void {
+  const list = items();
+  const current = list.findIndex((el) => statusIdOf(el) === selection?.statusId);
+  // No selection yet, or the selected post is gone from the DOM: start from the top.
+  const next = list[current === -1 ? 0 : Math.min(Math.max(current + delta, 0), list.length - 1)];
+  if (next === undefined) return;
+  selection = { statusId: statusIdOf(next) ?? "" };
+  highlight(next);
+  next.scrollIntoView({ block: "nearest" });
+}
+```
+
+A selected post scrolled out of the DOM entirely is the case that has to be handled rather than crashed on, and starting from the top is the honest answer: the thing being pointed at is gone.
+
+The highlight is the extension's too, an outline on the selected element. Without it the selection is invisible and `j` looks broken, which is not a thing x.com's own focus ring can be relied on to do once mercury stops using x.com's own navigation.
+
+### What mercury sends
+
+The binds stop being taps and become commands, which makes this doc depend on `external-effects.md` landing rather than on nothing:
+
+```rust
+pub enum Command {
+    // …
+    /// Move the selection in the page's list, by one or by a screen.
+    #[serde(rename = "Command.SelectMove")]
+    SelectMove(SelectMove),
+    /// Do something to the selected item. The extension decides what that means for its site.
+    #[serde(rename = "Command.SelectAct")]
+    SelectAct(SelectAct),
+    /// The selected item's canonical URL, for yanking or opening.
+    #[serde(rename = "Command.SelectUrl")]
+    SelectUrl,
+}
+
+pub struct SelectMove {
+    pub delta: i32,
+}
+
+pub struct SelectAct {
+    pub action: SelectAction,
+}
+
+/// What the extension is being asked to do to the selected item. Named actions rather than a
+/// selector or a script, for the reason `RunJs` is opt-in: each one is a thing with a meaning, and
+/// a site that cannot do one says so.
+pub enum SelectAction {
+    Open,
+    Like,
+    Reply,
+    Repost,
+    Bookmark,
+}
+```
+
+`SelectAction` is the vocabulary, and each site's content script maps it onto that site's buttons. x.com's `Like` clicks `[data-testid="like"]` on the selected article. A site that has no such thing replies `Result.Err` and the bind does nothing, which is what a bind for a thing that is not there should do.
+
+`h`, going back, stays a plain `cmd-[` tap: it is the browser's, not the list's.
+
+### The service worker in the middle
+
+The content script has the state and the socket is the service worker's, so a command crosses `chrome.tabs.sendMessage` on the way in and its reply comes back the same way. The worker holds no selection and needs none, which is what keeps its 30s death irrelevant.
+
+A tab with no content script running, because the page loaded before the extension did, replies with nothing. That is an `Err` to mercury and a no-op for the bind, and reloading the tab is the fix.
 
 ## What is not decided
 
