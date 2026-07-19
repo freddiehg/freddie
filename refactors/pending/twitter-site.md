@@ -128,6 +128,29 @@ Performed with `NSPasteboard`, which is AppKit and so main-thread-bound, the sam
 
 Yanking a single post's URL, rather than the page's, is a different thing: it is per-post, x.com has no shortcut for it, and it needs the browser asked. That one is `external-effects.md` and is not in this doc.
 
+## Where the selection lives
+
+x.com's timeline has a focused post, moved by `j` and `k`, and several things worth binding are about *that* post rather than the page. So something has to know which one it is.
+
+It cannot be the level. `XSite` is a derived child, rebuilt from root state on every dispatch, and `refactors/past/derived-child-persistence.md` rejects giving one a longer life: persisting means storing, storing means it is in the tree, and in the tree it can disagree with what it was derived from. A `selected: usize` on `XSite` would be discarded between keystrokes.
+
+It cannot be mercury counting either. Incrementing on `j` and decrementing on `k` is a shadow of x.com's focus, and it is wrong the moment you scroll, click a post, follow a link back, or x.com prepends new posts to the timeline. Nothing tells mercury any of that happened, so the shadow drifts and there is no event that reconciles it. That is the same class of bug the derived-child design exists to delete, rebuilt by hand at the root.
+
+x.com owns the selection. The question is only whether mercury ever needs a copy.
+
+For the whole keymap above, it does not. `f` taps `l` and x.com likes whatever *it* has focused; `l` taps `enter` and x.com opens whatever *it* has focused. The selection never crosses the wire, and that is why these binds work with nothing from `external-effects.md`.
+
+It is needed for one thing: acting on the focused post's identity, which is "yank this post's link", "open its author", "open it in a new tab". Those want a URL mercury does not have.
+
+Two shapes for that, and the second is the one to build:
+
+- The extension mirrors it. A content script on x.com watches the focused post and pushes an event on every change, so mercury holds a current copy. That is an event per `j`, a content script, a `MutationObserver` against markup x.com is free to change, and a copy that is only ever read at the instant you press one key.
+- mercury asks when it needs it. The bind produces a command, the extension reads the focused post at that moment and replies with its URL, and mercury never holds selection state at all.
+
+The second is a `Command.ReadFocusedPost` in `external-effects.md`, alongside `ReadSelection` and just as narrow: it returns one URL and nothing else, so it needs no `RunJs`. The producer changes constantly and the consumer is a single keypress, which is the shape that wants a pull rather than a push.
+
+The first becomes worth revisiting only if something needs the selection continuously rather than on demand, and the case for that would be the overlay showing what is focused, or binds that differ between "a post is focused" and "none is". Neither is in this doc.
+
 ## What is not decided
 
 x.com is one host with several kinds of page, and the binds above are the ones that make sense on all of them. On a single post's page there is one post rather than a list, so `j` and `k` mean less and "open the quoted post" or "open the author" would mean something they cannot mean on a timeline.
