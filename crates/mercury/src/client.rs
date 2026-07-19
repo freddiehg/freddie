@@ -10,20 +10,13 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use freddie_single_instance::{Held, LockError, Pid};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::cli::StopArgs;
-use crate::logging;
+use crate::logging::{self, Terminal};
 
 /// The app name the lock is keyed to. The daemon acquires this; the clients probe it.
 pub(crate) const APP: &str = "mercury";
-
-/// What a client verb shows on the terminal through tracing: nothing but errors.
-///
-/// The file layer records `debug` regardless, so the run is in the log either way. A client's
-/// terminal output is its printed result, and a timestamped `INFO` line above it would be noise in
-/// front of the thing the user actually asked for.
-const CLIENT_LOG_LEVEL: &str = "error";
 
 /// How often [`find_daemon`] re-probes a lock whose holder has not named itself yet.
 const POLL: Duration = Duration::from_millis(10);
@@ -118,33 +111,35 @@ impl fmt::Display for Failure {
 /// script that does not know the state is not wrong to call this.
 ///
 /// `stop` and `restart` both need the outcome and word it differently, so this reports facts and
-/// prints nothing. It traces, because the log records where a thing happened rather than who is
-/// being spoken to, but the terminal line is the caller's.
+/// says nothing to the terminal. Its records are `debug!`, which is the rule for a client verb:
+/// `info!` is the answer and reaches stdout, `warn!` and above are the problem and reach stderr,
+/// and `debug!` is what it did along the way, which only the file keeps. Narrating here at `info!`
+/// would print three lines where the verb has one thing to say.
 fn stop_daemon(signal: Signal) -> Result<Option<Pid>, Failure> {
     let pid = match find_daemon() {
         Ok(Target::Running(pid)) => pid,
         Ok(Target::NotRunning) => return Ok(None),
         Ok(Target::Anonymous) => {
-            warn!("the lock is held by a holder that recorded no pid");
+            debug!("the lock is held by a holder that recorded no pid");
             return Err(Failure::Anonymous);
         }
         Err(error) => {
-            warn!(%error, "could not read the lock");
+            debug!(%error, "could not read the lock");
             return Err(Failure::Unreadable(error));
         }
     };
     // Before the signal, so the wait cannot miss a daemon that exits between the two.
     let freed = watch_for_free();
-    info!(daemon = %pid, ?signal, "signalling the daemon");
+    debug!(daemon = %pid, ?signal, "signalling the daemon");
     if let Err(error) = signal_pid(pid, signal) {
-        warn!(daemon = %pid, %error, "could not signal the daemon");
+        debug!(daemon = %pid, %error, "could not signal the daemon");
         return Err(Failure::Unsignalable(SignalFailure { pid, error }));
     }
     if matches!(freed.recv_timeout(STOP_TIMEOUT), Ok(Ok(()))) {
-        info!(daemon = %pid, "the daemon released the lock");
+        debug!(daemon = %pid, "the daemon released the lock");
         Ok(Some(pid))
     } else {
-        warn!(daemon = %pid, timeout = ?STOP_TIMEOUT, "the daemon still holds the lock");
+        debug!(daemon = %pid, timeout = ?STOP_TIMEOUT, "the daemon still holds the lock");
         Err(Failure::Ignored(pid))
     }
 }
@@ -154,7 +149,7 @@ fn stop_daemon(signal: Signal) -> Result<Option<Pid>, Failure> {
 /// Exits 0 when there was nothing to stop, so calling this twice, or in a teardown script that
 /// does not know the state, is not an error.
 pub(crate) fn stop(args: &StopArgs) -> i32 {
-    logging::init(CLIENT_LOG_LEVEL);
+    logging::init(&Terminal::Client);
     let signal = if args.force {
         Signal::Kill
     } else {
@@ -162,15 +157,15 @@ pub(crate) fn stop(args: &StopArgs) -> i32 {
     };
     match stop_daemon(signal) {
         Ok(Some(pid)) => {
-            println!("mercury stopped (pid {pid})");
+            info!("mercury stopped (pid {pid})");
             0
         }
         Ok(None) => {
-            println!("mercury is not running");
+            info!("mercury is not running");
             0
         }
         Err(failure) => {
-            eprintln!("mercury: {failure}");
+            warn!("mercury: {failure}");
             1
         }
     }

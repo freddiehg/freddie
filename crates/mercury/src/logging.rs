@@ -12,7 +12,10 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use tracing_subscriber::filter::LevelFilter;
+use tracing::{Level, warn};
+
+use crate::cli::DEFAULT_LOG_LEVEL;
+use tracing_subscriber::filter::{self, LevelFilter};
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -92,14 +95,16 @@ fn log_dir() -> PathBuf {
 
 /// Send tracing to the log file and the terminal, and return the file's path.
 ///
-/// `directives` is a `tracing_subscriber` filter string, so `info` and
-/// `mercury=debug,bind=warn` are both accepted. One that does not parse falls back
-/// to `info` and says so on the terminal, since the alternative is a run with no
-/// logging at all.
-pub fn init(directives: &str) -> PathBuf {
+/// A daemon's directives are a `tracing_subscriber` filter string, so `info` and
+/// `mercury=debug,bind=warn` are both accepted. One that does not parse falls back to
+/// [`DEFAULT_LOG_LEVEL`] and says so, since the alternative is a run with no logging.
+pub fn init(terminal: &Terminal<'_>) -> PathBuf {
     let dir = log_dir();
+    // Held rather than said: there is no subscriber yet to say them to, and a setup
+    // failure belongs in the file as much as anything else does.
+    let mut setup = Vec::new();
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        eprintln!("mercury: could not create {}: {e}", dir.display());
+        setup.push(format!("could not create {}: {e}", dir.display()));
     }
 
     let file = fmt::layer()
@@ -107,16 +112,71 @@ pub fn init(directives: &str) -> PathBuf {
         .with_ansi(false)
         .with_filter(FILE_LEVEL);
 
-    let terminal = fmt::layer().with_writer(std::io::stderr).with_filter(
-        EnvFilter::try_new(directives).unwrap_or_else(|e| {
-            eprintln!("mercury: {directives:?} is not a log filter ({e}); using info");
-            EnvFilter::new("info")
-        }),
-    );
+    let registry = tracing_subscriber::registry().with(file);
+    match terminal {
+        Terminal::Daemon(LogLevel(directives)) => {
+            let filter = EnvFilter::try_new(*directives).unwrap_or_else(|e| {
+                setup.push(format!(
+                    "{directives:?} is not a log filter ({e}); using {DEFAULT_LOG_LEVEL}"
+                ));
+                EnvFilter::new(DEFAULT_LOG_LEVEL)
+            });
+            registry
+                .with(fmt::layer().with_writer(io::stderr).with_filter(filter))
+                .init();
+        }
+        Terminal::Client => registry.with(client_terminal()).init(),
+    }
 
-    tracing_subscriber::registry()
-        .with(file)
-        .with(terminal)
-        .init();
+    // The subscriber exists now, so anything held above can finally be said.
+    for problem in setup {
+        warn!("mercury: {problem}");
+    }
     dir.join(LOG_FILE)
+}
+
+/// What the terminal shows, which is not the same for the process that is the daemon
+/// and the processes that talk to it.
+pub enum Terminal<'a> {
+    /// The daemon. Its terminal is a view of its log: every record in full, filtered by
+    /// what `--log-level` asked for.
+    Daemon(LogLevel<'a>),
+    /// A client verb. Its terminal is its output: `INFO` is the answer and goes to
+    /// stdout, `WARN` and above are problems and go to stderr, and both are shown as the
+    /// bare message.
+    Client,
+}
+
+/// A `tracing_subscriber` filter directive, such as `info` or `mercury=debug,bind=warn`.
+pub struct LogLevel<'a>(pub &'a str);
+
+/// The layers a client verb shows on its terminal.
+///
+/// `without_time`, `with_level(false)`, `with_target(false)`: a verb's output is the
+/// thing the user asked for, and a timestamp and a level in front of it would make
+/// `mercury status` unusable in a pipeline. The file layer keeps all of it, so nothing
+/// is lost by leaving it off here.
+///
+/// Two layers rather than one, because a result belongs on stdout and a problem on
+/// stderr, and a layer has one writer. `INFO` exactly, rather than `INFO` and above, so
+/// the split is total: no record reaches both.
+fn client_terminal<S>() -> impl Layer<S>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    let results = fmt::layer()
+        .without_time()
+        .with_level(false)
+        .with_target(false)
+        .with_ansi(false)
+        .with_writer(io::stdout)
+        .with_filter(filter::filter_fn(|meta| *meta.level() == Level::INFO));
+    let problems = fmt::layer()
+        .without_time()
+        .with_level(false)
+        .with_target(false)
+        .with_ansi(false)
+        .with_writer(io::stderr)
+        .with_filter(LevelFilter::WARN);
+    results.and_then(problems)
 }
