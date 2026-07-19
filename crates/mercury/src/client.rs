@@ -25,6 +25,9 @@ const POLL: Duration = Duration::from_millis(10);
 /// How long `stop` waits for the daemon to release the lock before reporting that it has not.
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long `start` waits for a spawned daemon to take the lock.
+const START_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// How long to wait out [`Held::Unnamed`], the window between a daemon locking the file and
 /// writing its pid into it.
 ///
@@ -192,6 +195,143 @@ pub(crate) fn stop(args: &StopArgs) -> i32 {
             1
         }
     }
+}
+
+/// A daemon that is up, and whether this call is why.
+enum Running {
+    /// Already running when this looked, and it had named itself.
+    Adopted(Pid),
+    /// Already running when this looked, mid-acquire and not yet named.
+    AdoptedUnnamed,
+    /// Spawned by this call.
+    Started(Pid),
+}
+
+/// Why no daemon is running.
+enum NotStarted {
+    /// The lock could not be read, so nothing is known about what holds it.
+    Unreadable(LockError),
+    /// The daemon could not be spawned.
+    Unspawnable(io::Error),
+    /// It was spawned and never took the lock. Its own account is in the log.
+    Silent(Pid),
+}
+
+/// The terminal wording for each, without the `mercury: ` a caller puts in front.
+impl fmt::Display for NotStarted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unreadable(e) => write!(f, "{e}"),
+            Self::Unspawnable(e) => write!(f, "could not start the daemon: {e}"),
+            Self::Silent(pid) => write!(
+                f,
+                "the daemon (pid {pid}) started and stopped without taking the lock"
+            ),
+        }
+    }
+}
+
+/// Make sure a daemon is running, starting one if none is.
+///
+/// The check before spawning is for the answer, not for mutual exclusion. Two `start`s at the same
+/// instant can both see [`Held::Free`] and both spawn, and the lock refuses one of the two daemons
+/// exactly as it refuses a second `mercury daemon`; nothing here has to be atomic.
+///
+/// Reports facts and says nothing to the terminal, as [`stop_daemon`] does, because `start` and
+/// `restart` word the outcome differently.
+fn ensure_started() -> Result<Running, NotStarted> {
+    match freddie_single_instance::holder(APP) {
+        Ok(Held::By(pid)) => return Ok(Running::Adopted(pid)),
+        Ok(Held::Unnamed) => return Ok(Running::AdoptedUnnamed),
+        Ok(Held::Free) => {}
+        Err(error) => {
+            debug!(%error, "could not read the lock");
+            return Err(NotStarted::Unreadable(error));
+        }
+    }
+    let pid = spawn_daemon().map_err(|error| {
+        debug!(%error, "could not spawn the daemon");
+        NotStarted::Unspawnable(error)
+    })?;
+    debug!(daemon = %pid, "spawned the daemon");
+    if wait_until_held() {
+        Ok(Running::Started(pid))
+    } else {
+        debug!(daemon = %pid, timeout = ?START_TIMEOUT, "the daemon never took the lock");
+        Err(NotStarted::Silent(pid))
+    }
+}
+
+/// Spawn this same binary as `mercury daemon`, detached from this terminal.
+///
+/// All three stdio streams go to /dev/null. The daemon's terminal tracing layer then has nowhere
+/// to write, which is why `--log-level` is not passed through: it governs a terminal this child
+/// does not have. The log file records `debug` regardless, and `mercury logs` reads that.
+fn spawn_daemon() -> io::Result<Pid> {
+    use std::os::unix::process::CommandExt;
+
+    let exe = std::env::current_exe()?;
+    let child = Command::new(exe)
+        .arg("daemon")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()?;
+    Ok(Pid(child.id()))
+}
+
+/// Poll until something holds the lock, up to [`START_TIMEOUT`]. `true` when one does.
+///
+/// Polled rather than waited on, unlike [`watch_for_free`]: flock reports a release, so waiting
+/// for a daemon to go is edge-triggered, and there is no way to wait on another process taking a
+/// lock. This is the one direction that has no edge.
+///
+/// Taking the lock is the readiness signal, and the daemon takes it first thing, before it
+/// measures the screens, shows an icon, or grabs the keyboard. So this returning `true` says the
+/// process is alive and is the one mercury, not that the keyboard is grabbed: a daemon refused
+/// Accessibility fails a moment later and says so in the log.
+fn wait_until_held() -> bool {
+    let deadline = Instant::now() + START_TIMEOUT;
+    loop {
+        if !matches!(freddie_single_instance::holder(APP), Ok(Held::Free)) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(POLL);
+    }
+}
+
+/// Say what [`ensure_started`] found, and report the exit code for it.
+///
+/// Shared by `start` and `restart`, so a started daemon reads the same whichever verb produced it.
+fn report(running: Result<Running, NotStarted>) -> i32 {
+    match running {
+        Ok(Running::Started(pid)) => {
+            info!("mercury started (pid {pid})");
+            0
+        }
+        Ok(Running::Adopted(pid)) => {
+            info!("mercury is already running (pid {pid})");
+            0
+        }
+        Ok(Running::AdoptedUnnamed) => {
+            info!("mercury is already running (it has not recorded its pid yet)");
+            0
+        }
+        Err(failure) => {
+            warn!("mercury: {failure}");
+            1
+        }
+    }
+}
+
+/// `mercury start`, and the bare `mercury`: make sure a daemon is up, and do not stay to watch.
+pub(crate) fn start() -> i32 {
+    logging::init(&Terminal::Client);
+    report(ensure_started())
 }
 
 /// Report whether the daemon is running, and which process it is.

@@ -23,6 +23,8 @@ pub struct Args {
 /// the verbs the way a hand-maintained usage string does. Declaration order is help order.
 #[derive(Subcommand, Debug)]
 pub enum Verb {
+    /// Start the daemon if it is not running, and exit.
+    Start,
     /// Report whether the daemon is running, and its pid.
     Status,
     /// Follow the log, starting nothing.
@@ -80,19 +82,6 @@ pub struct DaemonArgs {
     pub port: u16,
 }
 
-/// What the bare `mercury` runs on, having parsed no `DaemonArgs` to carry anything.
-///
-/// `the_bare_mercury_matches_the_daemon_verb` asserts this against what clap produces for
-/// `mercury daemon`, so the two spellings cannot drift into meaning different things.
-impl Default for DaemonArgs {
-    fn default() -> Self {
-        Self {
-            log_level: DEFAULT_LOG_LEVEL.to_owned(),
-            port: mercury::DEFAULT_PORT,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{Args, DaemonArgs, Verb};
@@ -112,15 +101,13 @@ mod tests {
     }
 
     #[test]
-    fn no_verb_runs_the_daemon() {
+    fn no_verb_starts_the_daemon() {
         assert!(parse(&[]).verb.is_none());
     }
 
-    // The bare `mercury` builds its `DaemonArgs` by hand rather than through clap, so nothing but
-    // this test keeps the two sets of defaults in step.
     #[test]
-    fn the_bare_mercury_matches_the_daemon_verb() {
-        assert_eq!(daemon_args(&["daemon"]), DaemonArgs::default());
+    fn the_lifecycle_verbs_parse() {
+        assert!(matches!(parse(&["start"]).verb, Some(Verb::Start)));
     }
 
     #[test]

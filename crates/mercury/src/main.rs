@@ -5,7 +5,7 @@
 
 use clap::Parser;
 
-use cli::{Args, DaemonArgs, Verb};
+use cli::{Args, Verb};
 
 mod cli;
 mod client;
@@ -15,12 +15,8 @@ mod logging;
 /// Do what the command line asked, and report the exit code for it.
 fn run(verb: Option<Verb>) -> i32 {
     match verb {
-        // The bare `mercury`. `mercury-start.md` makes this start the daemon and follow its log;
-        // until then it is what running mercury has always been.
-        None => {
-            daemon::run(&DaemonArgs::default());
-            0
-        }
+        // The bare `mercury` is `mercury start`: one behaviour, not two that agree.
+        None | Some(Verb::Start) => client::start(),
         Some(Verb::Status) => client::status(),
         Some(Verb::Logs(args)) => client::logs(&args),
         Some(Verb::Stop(args)) => client::stop(&args),
