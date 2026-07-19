@@ -2,7 +2,51 @@
 
 Not built. `external-events.md` ships the socket and the direction where mercury is told things. This doc owns the other direction: mercury tells a connected client to do something.
 
-Effects are fire and forget. `state.handle` returns `Vec<MercuryEffect>` and the effect loop performs each one; no effect returns a value to the model, and nothing waits. A command is one more effect, performed by writing it to the socket. `IncomingEvent` stays what `external-events.md` defines: a tab URL, and whatever later features add as events of their own.
+Effects are fire and forget. `state.handle` returns `Vec<MercuryEffect>` and the effect loop performs each one; no effect returns a value to the model, and nothing waits. A command is one more effect, performed by writing it to the socket.
+
+Every command names the tab it is about. The extension reports a tab's id along with its URL, mercury holds both, and a handler that acts on the front tab builds a command carrying the id it was looking at. Delivery is `chrome.tabs.sendMessage` to that exact tab. Nothing asks which tab is front at delivery time and nothing guesses which connection is the browser, so a command computed for one tab cannot land on another.
+
+## Tabs are named
+
+`external-events.md`'s `TabMessage` gains the id, before:
+
+```rust
+#[derive(serde::Deserialize, Debug)]
+pub struct TabMessage {
+    pub url: String,
+}
+```
+
+after:
+
+```rust
+/// Chrome's own tab id, which is stable for the life of the tab and unique across windows.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
+pub struct TabId(pub i32);
+
+#[derive(serde::Deserialize, Debug)]
+pub struct TabMessage {
+    pub tab: TabId,
+    pub url: String,
+}
+```
+
+and `ForegroundedChrome` holds what it was told:
+
+```rust
+ pub struct ForegroundedChrome {
+-    pub url: Option<String>,
++    pub tab: Option<FrontTab>,
+ }
++
++#[derive(Debug)]
++pub struct FrontTab {
++    pub id: TabId,
++    pub url: String,
++}
+```
+
+The id and the URL arrive together and are meaningless apart, so they are one value. `Site::from_url` reads `tab.url`, and a handler that emits a command reads `tab.id`.
 
 ## The vocabulary
 
@@ -16,7 +60,14 @@ One enum per level of the state tree that emits commands. `ChromeApp`'s level bu
 #[serde(tag = "kind", content = "value")]
 pub enum OutgoingEffect {
     #[serde(rename = "OutgoingEffect.Command")]
-    Command(Command),
+    Command(CommandMessage),
+}
+
+/// A command and the tab it is about.
+#[derive(serde::Serialize, Debug)]
+pub struct CommandMessage {
+    pub tab: TabId,
+    pub command: Command,
 }
 
 #[derive(serde::Serialize, Debug)]
@@ -89,8 +140,8 @@ A level that splits splits its enum with it. When the extension reports which x.
 
 ```jsonc
 // mercury -> client
-{ "kind": "OutgoingEffect.Command", "value": { "kind": "Command.X", "value": { "kind": "XCommand.SelectMove", "value": { "delta": 1 } } } }
-{ "kind": "OutgoingEffect.Command", "value": { "kind": "Command.Tab", "value": { "kind": "TabCommand.Open", "value": { "url": "https://x.com/home" } } } }
+{ "kind": "OutgoingEffect.Command", "value": { "tab": 42, "command": { "kind": "Command.X", "value": { "kind": "XCommand.SelectMove", "value": { "delta": 1 } } } } }
+{ "kind": "OutgoingEffect.Command", "value": { "tab": 42, "command": { "kind": "Command.Tab", "value": { "kind": "TabCommand.Open", "value": { "url": "https://x.com/home" } } } } }
 ```
 
 Serialize only, so nothing here can arrive from outside.
@@ -102,20 +153,27 @@ Serialize only, so nothing here can arrive from outside.
      Foreground(App),
      Tap(Chord),
      // …
-+    /// Tell the connected browser to do something.
-+    Browser(Command),
++    /// Tell the connected browser to do something to a named tab.
++    Browser(CommandMessage),
  }
 ```
 
-x.com's `j`:
+x.com's `j`, reading the tab it is on out of the state it resolved from:
 
 ```rust
-pub(crate) fn next_post<E, N>(_ev: &E, _node: N) -> Vec<MercuryEffect> {
-    vec![MercuryEffect::Browser(Command::X(XCommand::SelectMove(
-        SelectMove { delta: 1 },
-    )))]
+pub(crate) fn next_post(_ev: &KeyEvent, node: /* XSite node */) -> Vec<MercuryEffect> {
+    let Some(tab) = /* ascend to root */.foreground.confirmed_chrome().and_then(|c| c.tab.as_ref())
+    else {
+        return Vec::new();
+    };
+    vec![MercuryEffect::Browser(CommandMessage {
+        tab: tab.id,
+        command: Command::X(XCommand::SelectMove(SelectMove { delta: 1 })),
+    })]
 }
 ```
+
+The level only resolved because that tab's URL matched, so the id it names is the tab the bind was about.
 
 ## Performing it
 
@@ -143,21 +201,24 @@ where
     F: Fn(&Client, &str) + Send + Sync + 'static;
 ```
 
-mercury writes to the client that spoke most recently. The extension pushes a tab URL as soon as it connects, so that is the browser.
+A command names a tab, and the connection to write it to is the one that reported that tab:
 
 ```rust
 // crates/mercury/src/external.rs
 
-/// Where commands go: the client that spoke most recently.
+/// Which connection reported which tab. A command goes to the client that told mercury the tab
+/// exists, so there is nothing to guess about which of several connections is the browser.
 pub struct Browser {
-    client: Mutex<Option<Client>>,
+    by_tab: Mutex<HashMap<TabId, Client>>,
 }
 
 impl Browser {
-    pub fn set(&self, client: &Client);
+    /// Record that `client` reported `tab`.
+    pub fn saw(&self, tab: TabId, client: &Client);
 
-    /// Serialize `command` and write it. A failure is logged and dropped.
-    pub fn send(&self, command: Command);
+    /// Write `message` to whoever reported its tab. Logged and dropped if that client is gone,
+    /// which is what a command for a closed tab is.
+    pub fn send(&self, message: CommandMessage);
 }
 ```
 
@@ -185,10 +246,10 @@ pub fn on_message(
     browser: &Browser,
 ) {
     match serde_json::from_str::<IncomingEvent>(text) {
-        Ok(IncomingEvent::Tab(TabMessage { url })) => {
-            debug!(%url, "tab");
-            browser.set(client);
-            let _ = event_tx.send(tab(url));
+        Ok(IncomingEvent::Tab(TabMessage { tab, url })) => {
+            debug!(?tab, %url, "tab");
+            browser.saw(tab, client);
+            let _ = event_tx.send(tab_event(tab, url));
         }
         Err(e) => warn!(error = %e, frame = text, "undeserializable frame"),
     }
@@ -198,7 +259,7 @@ pub fn on_message(
 `perform_effect` gains an arm:
 
 ```rust
-+        MercuryEffect::Browser(command) => browser.send(command),
++        MercuryEffect::Browser(message) => browser.send(message),
 ```
 
 ## The token
@@ -268,17 +329,14 @@ socket.addEventListener("message", (ev: MessageEvent<string>) => {
   void deliver(parsed.data.value);
 });
 
-// `Command.Tab` is the worker's own; a site's command goes to that site's content script.
-async function deliver(command: OutgoingEffect["value"]): Promise<void> {
+// `Command.Tab` is the worker's own; a site's command goes to the content script in the tab the
+// command names. Which tab is front now does not come into it.
+async function deliver({ tab, command }: CommandMessage): Promise<void> {
   if (command.kind === "Command.Tab") {
-    await runTabCommand(command.value);
+    await runTabCommand(tab, command.value);
     return;
   }
-  const [tab] = await chrome.tabs.query({
-    active: true,
-    lastFocusedWindow: true,
-  });
-  if (tab?.id !== undefined) await chrome.tabs.sendMessage(tab.id, command);
+  await chrome.tabs.sendMessage(tab, command);
 }
 ```
 
@@ -296,7 +354,7 @@ zod becomes the extension's first runtime dependency.
 Tests, over a fake client on a loopback port:
 
 - Each command variant serializes to the nested form above.
-- `Browser::send` with no client attached logs and returns.
-- Of two clients that connect in turn, the one that spoke most recently is written to.
-- A disconnected client's `send` is an error rather than a panic.
+- A command for a tab nobody reported logs and returns.
+- Two clients reporting different tabs each receive only the commands for their own.
+- A command for a tab whose client has disconnected logs and returns rather than panicking.
 - A wrong `?token=` is refused at the handshake, and a handshake response without the token makes a client disconnect.
