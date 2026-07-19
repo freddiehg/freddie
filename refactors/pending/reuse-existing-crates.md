@@ -1,8 +1,10 @@
-# take the crate instead, where the crate does what we need
+# the crates that would have replaced this, and why none of them do
 
-Several pieces of the daemon lifecycle were written by hand because they were small and because the properties they need were discovered while writing them. Some of those properties are unusual, and a crate that does not have them cannot replace ours. This is the audit: for each piece, what would have to be true of a dependency for it to win.
+Several pieces of the daemon lifecycle were written by hand because they were small and because the properties they need were discovered while writing them. This is the audit of whether an existing crate should own each one instead.
 
-Two of the four are decided against, from reading the crates' APIs. Knowing a dependency does not fit is worth as much as taking one: it is the difference between code written because nothing else does this and code written because nobody looked.
+**The answer is no, for all of them, and nothing here is to be built.** It is kept as the record of why, so the question is answered once rather than reopened by whoever next notices that `single-instance` exists.
+
+The gap is the same in every case: the crates model "is one running" and "install a service", while mercury needs "who is running, without becoming it" and "install *this* service with the exit-code policy it depends on". The hand-rolled code is here because the alternatives do not fit, not because nobody looked.
 
 `plist` is already the outcome of this exercise done once: `mercury install` serializes a struct rather than substituting into XML, because the crate escapes what hand-written substitution does not.
 
@@ -24,7 +26,7 @@ The candidate is `daemonize`, and the bar is low, because what we do is small: `
 
 The question is whether the crate double-forks. Classic daemonization detaches from the controlling terminal and becomes a session leader, which is more than a launchd agent or a `mercury start` needs, and `setsid` is an unsafe call this workspace forbids. If the crate is unsafe internally that is fine — the workspace forbids `unsafe` in our crates, not in dependencies — but a session leader is a different process shape from the one `mercury logs` and Ctrl-C were designed around.
 
-Still open, and the cheapest of the four to settle: `daemonize` v0.5.0's rustdoc does not say whether `setsid` is mandatory, so this needs a look at its source. Low stakes either way — our detach is four lines and has no `unsafe`.
+**Not pursued.** `daemonize` v0.5.0's rustdoc does not say whether `setsid` is mandatory, and settling it would mean reading its source to decide whether to delete four lines that work. If a session leader is ever wanted, this is where to look first.
 
 ## Installing the launch agent
 
@@ -44,15 +46,11 @@ That is worth taking the day freddie targets anything but macOS, and not before:
 
 The reason to consider it at all is that shelling out costs a process and inherits its stdio, which is what leaked `Boot-out failed` in `mercury install` before that was captured. `logs` already pipes tail's stdout for filtering, so only stderr is still inherited.
 
-Low priority: the subprocess works, and the failure modes of a hand-rolled follower are worse than the cost of a `tail`.
+**Not pursued.** The subprocess works, and the failure modes of a hand-rolled follower — a file that does not exist yet, a replaced file, a truncated one — are worse than the cost of a `tail`.
 
 ## What is already reused
 
 `tokio::signal` for SIGTERM, `clap` for the command line, `tracing` and `tracing-subscriber` for everything said, `tracing-appender` for the log file, `plist` for the agent. The hand-rolled set is smaller than it looks.
-
-## The finding
-
-Two of the three obvious candidates do less than their names suggest, and the gap is the same in both cases: they model "is one running" and "install a service", while mercury needs "who is running, without becoming it" and "install *this* service with the exit-code policy it depends on". That is worth knowing in itself — the hand-rolled code is here because the alternatives do not fit, not because nobody checked.
 
 ## What cannot be a dependency
 
