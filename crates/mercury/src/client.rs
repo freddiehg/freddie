@@ -135,16 +135,16 @@ fn stop_daemon(signal: Signal) -> Result<Option<Pid>, Failure> {
     };
     // Before the signal, so the wait cannot miss a daemon that exits between the two.
     let freed = watch_for_free();
-    info!(%pid, ?signal, "signalling the daemon");
+    info!(daemon = %pid, ?signal, "signalling the daemon");
     if let Err(error) = signal_pid(pid, signal) {
-        warn!(%pid, %error, "could not signal the daemon");
+        warn!(daemon = %pid, %error, "could not signal the daemon");
         return Err(Failure::Unsignalable(SignalFailure { pid, error }));
     }
     if matches!(freed.recv_timeout(STOP_TIMEOUT), Ok(Ok(()))) {
-        info!(%pid, "the daemon released the lock");
+        info!(daemon = %pid, "the daemon released the lock");
         Ok(Some(pid))
     } else {
-        warn!(%pid, timeout = ?STOP_TIMEOUT, "the daemon still holds the lock");
+        warn!(daemon = %pid, timeout = ?STOP_TIMEOUT, "the daemon still holds the lock");
         Err(Failure::Ignored(pid))
     }
 }
