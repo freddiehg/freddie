@@ -160,9 +160,21 @@ The daemon does not wait for it. The client SIGTERMs this process, waits for the
 
 ## What launchd changes
 
-Under `launch-at-login.md`'s agent, Restart is the wrong thing to click. The spawned `mercury restart` starts a daemon launchd did not start and will not keep alive, and the agent itself looks like a clean exit and stays down. `launchctl kickstart -k` is the way to replace a managed daemon, and that doc says so.
+The agent from `launch-at-login.md` exists and works, so this is not deferrable: on a machine where mercury runs at login, the menu's Restart as described above is wrong. The spawned `mercury restart` would stop launchd's daemon and start one launchd did not start and will not keep alive, leaving the job down until the next login.
 
-Deciding whether the menu should detect a launchd-managed daemon and do something else needs the agent to exist first. Until then the menu's Restart is for a hand-started mercury, which is every mercury today.
+The fix belongs in `mercury restart` rather than in the menu, so the menu, `bacon restart`, and a hand-typed restart all behave the same. `restart` asks whether the agent names the daemon it is about to replace, and hands the job back to launchd when it does:
+
+```rust
+/// Whether the running daemon is one launchd is managing on our behalf.
+///
+/// The plist exists and its program is the binary this daemon is running. `PPID` cannot answer it:
+/// `mercury start` also reparents to 1, so a hand-started daemon looks identical.
+fn managed_by_launchd(daemon: &Path) -> bool { .. }
+```
+
+When it is, `restart` runs `launchctl kickstart -k gui/<uid>/<label>` instead of stopping and spawning, which replaces the process launchd is managing and leaves the job loaded. When it is not, it does what it does today.
+
+That is a change to `client.rs`, not to `freddie_menu_bar`, and it wants its own doc: it needs the label and plist path this doc does not otherwise touch, and it changes a verb that has already shipped.
 
 ## Tests
 

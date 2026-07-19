@@ -1,8 +1,8 @@
 # the command line is freddie's, the daemon is the app's
 
-Every freddie app is one process that owns the keyboard, plus a handful of verbs for finding it, starting it, and stopping it. Those verbs are the same whatever the app does, and today they are being written into mercury, where a second app cannot reach them.
+Every freddie app is one process that owns the keyboard, plus a handful of verbs for finding it, starting it, and stopping it. Those verbs are the same whatever the app does, and all of them now live in mercury, where a second app cannot reach them.
 
-`freddie_cli` is a new crate holding the whole command surface. An app supplies its name, its daemon body, and whatever extra flags that body takes; it gets `daemon`, `start`, `stop`, `status`, `logs`, and `restart` for free, keyed to its own name and writing to its own log file. mercury becomes an implementation of one trait and a `main` that is a single call.
+`freddie_cli` is a new crate holding the whole command surface. An app supplies its name, its daemon body, and whatever extra flags that body takes; it gets `start`, `restart`, `status`, `logs`, `stop`, `install`, `uninstall`, and the hidden `daemon` for free, keyed to its own name and writing to its own log file. mercury becomes an implementation of one trait and a `main` that is a single call.
 
 The name of the binary is the fork's, not mercury's. Nothing in `freddie_cli` spells "mercury", and nothing in an app spells the verbs.
 
@@ -168,6 +168,8 @@ pub(crate) fn run<A: App>(args: &DaemonArgs<A::Args>) -> i32 {
 `logging::init` gains the app name and derives `~/Library/Logs/<name>/<name>.log` from it, replacing the two `mercury` literals in `crates/mercury/src/logging.rs`. Everything else in that module moves across unchanged.
 
 ## Stopping stays the app's
+
+Superseded by `freddie-daemon-runtime.md`, which makes the stop request a `From<Stop>` bound on the app's event type and installs the handler itself. The `on_stop` helper below is what this doc proposed before that existed; it is kept because the reasoning for why stopping cannot be the shared crate's is unchanged.
 
 `freddie_cli` delivers the request; the app decides what it means. mercury's answer is the event it already has: `quit_event()` opens the modifiers a command layer swallowed and pushes `Kill`, and no shared crate can know that has to happen.
 

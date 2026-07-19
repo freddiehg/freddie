@@ -328,7 +328,7 @@ impl From<Stop> for MercuryEvent {
 }
 ```
 
-`start` is today's `serve` up to the `select!`: bind the socket, grab the keyboard, seed the frontmost app, install the watcher, build `Mercury::default()` with the front app set, and send the boot layer's name to the menu bar. Its failure arms return `None` after the `eprintln!` and `error!` they already write.
+`start` is today's `serve` up to the `select!`: bind the socket, grab the keyboard, seed the frontmost app, install the watcher, build `Mercury::default()` with the front app set, and send the boot layer's name to the menu bar. Its failure arms return `None` after the `error!` they already write; nothing is printed, per `refactors/past/one-log-many-writers.md`.
 
 `perform` is today's `perform_effect` with the free functions it calls — `schedule_timer`, `place_window`, `foreground_app` — moving with it, and `title_tx.send(name)` becoming `self.menu_bar.set_title(name)`.
 
