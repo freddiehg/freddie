@@ -257,8 +257,10 @@ fn main() -> ! {
 2. **`on_stop`.** The signal helper, and mercury calling it. This is `mercury-stop.md`'s change 1, landing in the shared crate.
 3. **The client verbs.** `stop`, `status`, `logs`, `start`, `restart`, each added to `Verb` and to `dispatch`, in `freddie_cli`'s own `client` module, keyed to `A::NAME` rather than to a `const APP` of mercury's.
 
-## The pending verb docs land here
+## The verbs mercury already has by then
 
-`mercury-stop.md`, `mercury-status-and-logs.md`, and `mercury-start.md` describe their code as living in `crates/mercury/src/client.rs`. It lives in `freddie_cli` instead, and `APP` becomes `A::NAME` throughout. Nothing else in those docs changes: the verbs, the failure cases, the waiting, and the wording are all the same.
+`mercury-stop.md`, `mercury-status-and-logs.md`, and `mercury-start.md` ship first, into `crates/mercury/src/client.rs` as they are written. This doc moves that file across.
 
-So change 1 above ships before any of them. Doing it first means the generic seam is designed against one verb rather than five, and it means those three docs are written once rather than written into mercury and moved.
+The move is mechanical, and it is the reason those docs put every verb in one module and keyed all of them to a single `APP` constant. `client.rs` becomes `freddie_cli`'s client module, `const APP: &str = "mercury"` becomes `A::NAME` at each of its use sites, and each verb's function gains the `<A: App>` its name lookup now needs. No verb changes what it does, what it prints, or what it exits with.
+
+What does change is the `Verb` enum those docs each add a variant to: the variants move onto the generic `Verb<A>` here, and `dispatch` gains their arms. The parse tests move with them.
