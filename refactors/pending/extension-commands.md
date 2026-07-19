@@ -15,7 +15,9 @@ export type SettingsSection = { kind: "SettingsSection.General"; value: null };
 
 ## The build bundles
 
-A frame off a socket that any local process can reach is parsed, not cast: `JSON.parse` returns `any`, and the worker acts on what comes back. zod does the parsing, and a runtime dependency needs a bundler, because `tsc` emits the import as it was written and a service worker cannot resolve a bare specifier at load time.
+A frame off a socket that any local process can reach is parsed, not cast: `JSON.parse` returns `any`, and the worker acts on what comes back. zod does the parsing, and each schema is annotated with the type ts-rs generated, so a variant that changes in Rust and a schema that does not follow it fail `tsc`. That is the property `src/wire/` already gives the rest of the extension, extended to the one place a value arrives at runtime.
+
+zod is the first runtime dependency and will not be the last, so the build gains a bundler here rather than one library at a time. `tsc` emits an import as it was written, and a module service worker cannot resolve a bare specifier: import maps are how a page resolves them, and they need a document. esbuild resolves imports at build time, so what the manifest loads is one file whatever `src/` imports.
 
 `package.json`, before:
 
