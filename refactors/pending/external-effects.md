@@ -115,7 +115,7 @@ A unit variant like `Command.ReadSelection` carries no `value` at all.
 `external-events.md` ships no auth, and says why: a client that can only report a tab URL is a client whose worst move is a lie about the current tab. This doc breaks that. A `Command.RunJs` runs arbitrary JavaScript in a logged-in browser session, so both ends have to know who they are talking to.
 
 - mercury has to know the client is the extension. Otherwise a local process connects, sends one tab message to become the command target, and receives the commands mercury meant for the browser. `external-events.md`'s origin check does not cover this: it rules out web pages, and a local process sends whatever `Origin` it likes, or none.
-- The extension has to know the server is mercury. A local process that binds 3883 before mercury starts is a server the extension will connect to and take commands from, and those commands run in your tabs. A client-presents-a-secret scheme does nothing about it, because the impostor can accept any secret it is handed.
+- The extension has to know the server is mercury. A local process that binds 8797 before mercury starts is a server the extension will connect to and take commands from, and those commands run in your tabs. A client-presents-a-secret scheme does nothing about it, because the impostor can accept any secret it is handed.
 
 One shared secret, checked in both directions, covers both. The user pastes it once.
 

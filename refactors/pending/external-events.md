@@ -60,7 +60,7 @@ Every message is the project's one discriminated-union form, `{ kind: "Type.Vari
 
 ## The endpoint
 
-`127.0.0.1:3883`, overridable by flag or environment variable, flag first:
+`127.0.0.1:8797`, overridable by flag or environment variable, flag first:
 
 ```
 cargo run -p mercury -- --port 9000
@@ -78,15 +78,11 @@ What stays here is the number and why it is that number:
 
 /// The port mercury listens on when nothing overrides it. Hardcoded in the extension too.
 ///
-/// Mercury's melting point, -38.83 °C: the one fact about the element, which is the metal that is
-/// liquid at room temperature. Below 49152, which is where macOS starts handing out ephemeral ports
-/// (`net.inet.ip.portrange.first`): a listener up there can find its port already taken by some
-/// outbound socket that grabbed it first.
-///
-/// IANA has it registered to VRPN (VR Peripheral Network), which nothing here runs. Registration is
-/// advisory, and a collision would show up as the bind failing at startup, which is fatal and says
-/// so.
-pub const DEFAULT_PORT: u16 = 3883;
+/// Mercury's orbital period, 87.969 days, truncated to fit a `u16`. Below 49152, which is where
+/// macOS starts handing out ephemeral ports (`net.inet.ip.portrange.first`): a listener up there
+/// can find its port already taken by some outbound socket that grabbed it first. Unassigned in
+/// `/etc/services`.
+pub const DEFAULT_PORT: u16 = 8797;
 ```
 
 Overriding it means editing `MERCURY_URL` in the extension's `background.js` to match, since the extension hardcodes the same number.
@@ -99,7 +95,7 @@ A failed bind is fatal. A mercury that came up without its socket is a mercury w
 
 Mercury asks for no token here. A client that reaches this socket can report which URL is frontmost and nothing else, so a hostile one gets to lie about the current tab, and the lie buys it one wrong chord the next time you press a site-bound key. A secret the user has to paste into an options page costs more than that is worth. `external-effects.md` adds the token, once a connection is worth something.
 
-A web page can reach the socket, and that one gets closed. WebSockets are exempt from the same-origin policy: the handshake crosses origins freely, the browser attaches an `Origin` header, and the server decides what to do with it. Any page in any open tab can run `new WebSocket("ws://127.0.0.1:3883")` and start sending frames. Chrome's Private Network Access work aims at this case, but its WebSocket enforcement has been partial and has shifted between releases, so the check assumes nothing from it.
+A web page can reach the socket, and that one gets closed. WebSockets are exempt from the same-origin policy: the handshake crosses origins freely, the browser attaches an `Origin` header, and the server decides what to do with it. Any page in any open tab can run `new WebSocket("ws://127.0.0.1:8797")` and start sending frames. Chrome's Private Network Access work aims at this case, but its WebSocket enforcement has been partial and has shifted between releases, so the check assumes nothing from it.
 
 Three origins arrive, and the first is refused with a 403 at the handshake:
 
@@ -544,15 +540,15 @@ async fn run(
 Verify by hand. `cargo run -p mercury`, then from another pane:
 
 ```
-websocat ws://127.0.0.1:3883
+websocat ws://127.0.0.1:8797
 {"kind":"IncomingEvent.Tab","value":{"url":"https://claude.ai/new"}}
 ```
 
 `~/Library/Logs/mercury/mercury.log` records the refusal naming the unknown variant, and the connection stays open. Then check the gate and the overrides:
 
-- `websocat -H='Origin: https://evil.com' ws://127.0.0.1:3883` is refused with 403.
+- `websocat -H='Origin: https://evil.com' ws://127.0.0.1:8797` is refused with 403.
 - `cargo run -p mercury -- --port 9000` and `MERCURY_PORT=9000 cargo run -p mercury` both listen on 9000, and `--port 9000` wins over `MERCURY_PORT=9001`.
 - `cargo run -p mercury -- --port abc` and `--prot 9000` both exit with clap's message before the menu-bar icon appears.
-- A second `cargo run -p mercury` on the same port is refused by the single-instance lock, and one started with `--port 9000` while another holds 3883 is refused by the lock too.
+- A second `cargo run -p mercury` on the same port is refused by the single-instance lock, and one started with `--port 9000` while another holds 8797 is refused by the lock too.
 
 Once `chrome-tab-url.md` has added `IncomingEvent::Tab`, the same frame produces a dispatch record instead of a refusal.
