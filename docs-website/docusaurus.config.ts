@@ -6,8 +6,8 @@ const config: Config = {
   title: 'freddie',
   favicon: 'img/mercury.png',
 
-  url: 'https://freddiehg.github.io',
-  baseUrl: '/freddie/',
+  url: 'https://www.freddie.rs',
+  baseUrl: '/',
   trailingSlash: true,
 
   organizationName: 'freddiehg',
