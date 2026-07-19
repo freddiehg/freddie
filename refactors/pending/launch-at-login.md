@@ -54,21 +54,30 @@ launchctl bootout   gui/$(id -u)/hg.freddie.mercury      # stop it (the escape h
 
 `launchctl kickstart -k` rather than `mercury restart` under the agent. `restart` stops the daemon and spawns a replacement of its own, which launchd did not start and will not keep alive; the old job then looks like a clean exit and stays down. `kickstart` replaces the process launchd is managing, which is the one you want. `mercury stop` and `mercury status` are unaffected, since they only signal and read.
 
-## Permissions: a stable signed binary
+## Permissions
 
-mercury needs Accessibility (confirm whether the tap also needs Input Monitoring). TCC keys the grant to the binary's code identity, not its path, so every `cargo build` produces bits the grant does not follow. Ship one stable, signed binary at a fixed path, granted once: build release, copy to `/usr/local/bin/mercury`, sign with a stable self-signed cert in the keychain. Ad-hoc `--sign -` still rehashes every build, so it does not count as stable.
+Nothing is granted by hand today and nothing needs to be. Rebuilding mercury and starting a fresh daemon keeps the tap: observed against a daemon at `target/debug/mercury` with PPID 1, started by `mercury start` from a terminal, which went on to dispatch 1678 events. So the grant is not keyed to the rebuilt binary's bits, and no stable signed binary is required for the way mercury is run now.
 
-No wrapper that `exec`s or spawns `cargo run` fixes this: TCC evaluates whoever actually calls the tap (the rebuilt child), not the wrapper, and `cargo run` rehashes `target/debug` on every build. The only wrapper that works is a process split, a stable signed binary owning the tap over IPC to a frequently-rebuilt model child, which is a real architecture change and not worth it against signing mercury once.
+What it is keyed to is the open question, and it decides whether the agent works. macOS attributes an access request to a *responsible* process rather than always to the immediate caller, which is why a script run from a terminal raises a prompt naming the terminal. If that is what is happening, every mercury started from a shell inherits that grant however often it is rebuilt — and a launchd agent, which has no terminal anywhere in its ancestry, inherits nothing.
 
-Reset grants while testing (the failure is silent): `tccutil reset Accessibility` and `tccutil reset ListenEvent`.
+So the thing to find out is not how to keep a grant stable across rebuilds. It is whether a launchd-started mercury gets a tap at all:
+
+```
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/hg.freddie.mercury.plist
+mercury logs --level warn
+```
+
+The daemon takes the lock either way, so `mercury status` proves nothing here. `could not intercept the keyboard` in the log is the answer, and its absence plus dispatch records is the other one.
+
+Only if that fails does any of the signing work matter, and a wrapper is worth considering then rather than now. A shell script needs no compiling and never changes, but what launchd executes is `/bin/sh`, and whether responsibility lands on the shell, on mercury after it `exec`s, or on neither is exactly the thing the experiment above settles. Design it against an answer, not ahead of one.
+
+Reset grants while testing, since the failure is silent: `tccutil reset Accessibility` and `tccutil reset ListenEvent`.
 
 ## Getting the keyboard back
 
-The failure mode is that you cannot type, reproduced on every login. Three ways out, cheapest first:
+The failure mode is that you cannot type, reproduced on every login. Safe Mode is the answer and no code is needed for it: holding Shift at boot loads no third-party agents, so the machine comes up with a working keyboard and the plist can be `bootout`ed from there.
 
-- Safe Mode (hold Shift at boot) does not load third-party agents, so it comes up with a working keyboard; `bootout` the plist from there. Free, no code.
-- A modifier held at launch makes mercury skip the grab entirely (native keyboard). Same shape as the frontmost-app seed: read modifier state in `daemon.rs`'s `serve` before `intercept`, and don't install the tap if a chord is held.
-- ssh from another machine and `launchctl bootout gui/$(id -u)/hg.freddie.mercury`.
+Two others exist if Safe Mode ever proves not to be enough. ssh from another machine and `launchctl bootout gui/$(id -u)/hg.freddie.mercury`. Or a modifier held at launch making mercury skip the grab entirely, the same shape as the frontmost-app seed: read modifier state in `daemon.rs`'s `serve` before `intercept`, and do not install the tap if a chord is held.
 
 ## Single instance
 
@@ -82,7 +91,8 @@ A bare binary at `/usr/local/bin/mercury` is enough for a headless remapper. Onc
 
 ## Open
 
+- Whether a launchd-started mercury gets a tap at all, which is the one that decides this doc.
 - Which TCC permission the tap needs: Accessibility, Input Monitoring, or both.
 - Whether `launchctl bootout` gives the daemon long enough to finish its quit before SIGKILL follows, since that path now has destructors to run.
-- Whether a grant survives re-signing the same cert over new bits, and whether a launchd agent can raise a usable TCC prompt or the first grant must come from a terminal launch.
+- Whether a launchd agent can raise a usable TCC prompt, or a first grant must come from a terminal launch.
 - The `escape`-out-of-typing-into-Home hole: whether the launch build also needs Home to pass unbound keys through, or boot-into-typing plus the recovery paths is enough.
