@@ -1,6 +1,6 @@
 # launching mercury at login
 
-Run mercury as a per-user LaunchAgent that starts with the session and restarts on a crash, without ever leaving the keyboard dead. The plist is easy; the model's boot state and the TCC grant are the work.
+Run mercury as a per-user LaunchAgent that starts with the session and restarts on a crash, without ever leaving the keyboard dead. The plist is easy and the boot state is already right; whether a launchd agent can take the keyboard at all is the one thing this doc turns on.
 
 ## Boot into typing
 
@@ -103,4 +103,4 @@ The third is the reason to decide this after the launchd experiment rather than 
 - Which TCC permission the tap needs: Accessibility, Input Monitoring, or both.
 - Whether `launchctl bootout` gives the daemon long enough to finish its quit before SIGKILL follows, since that path now has destructors to run.
 - Whether a launchd agent can raise a usable TCC prompt, or a first grant must come from a terminal launch.
-- The `escape`-out-of-typing-into-Home hole: whether the launch build also needs Home to pass unbound keys through, or boot-into-typing plus the recovery paths is enough.
+- Whether the launch build also needs Home to pass unbound keys through, or booting into typing plus the recovery paths is enough given that reaching Home takes a deliberate `jk`.
