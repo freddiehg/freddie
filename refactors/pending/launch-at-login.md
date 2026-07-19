@@ -1,6 +1,8 @@
 # launching mercury at login
 
-Run mercury as a per-user LaunchAgent that starts with the session and restarts on a crash, without ever leaving the keyboard dead. The plist is easy and the boot state is already right; whether a launchd agent can take the keyboard at all is the one thing this doc turns on.
+Run mercury as a per-user LaunchAgent that starts with the session and restarts on a crash, without ever leaving the keyboard dead.
+
+A launchd agent does get a `CGEventTap`, which is what this doc used to turn on. Observed: `~/.cargo/bin/mercury` installed with `mercury install`, refused once with `could not intercept the keyboard`, granted Accessibility, and its next run under launchd dispatched 233 events and emitted keys. So the bare binary is enough, one grant is needed the first time, and nothing has to be signed or bundled for this to work.
 
 ## Boot into typing
 
@@ -310,18 +312,9 @@ What no test covers is launchd accepting the result, which needs a `bootstrap` a
 
 Nothing is granted by hand today and nothing needs to be. Rebuilding mercury and starting a fresh daemon keeps the tap: observed against a daemon at `target/debug/mercury` with PPID 1, started by `mercury start` from a terminal, which went on to dispatch 1678 events. So the grant is not keyed to the rebuilt binary's bits, and no stable signed binary is required for the way mercury is run now.
 
-What it is keyed to is the open question, and it decides whether the agent works. macOS attributes an access request to a *responsible* process rather than always to the immediate caller, which is why a script run from a terminal raises a prompt naming the terminal. If that is what is happening, every mercury started from a shell inherits that grant however often it is rebuilt — and a launchd agent, which has no terminal anywhere in its ancestry, inherits nothing.
+A launchd agent needs its own grant, and gets one. It has no terminal in its ancestry to inherit responsibility from, so the first run under launchd is refused and logs `could not intercept the keyboard`; granting Accessibility to the installed binary is enough, and every run after that has a tap. That grant is per-installed-path, so `cargo install --path` over the same path keeps it, and it is asked for once rather than on every rebuild.
 
-So the thing to find out is not how to keep a grant stable across rebuilds. It is whether a launchd-started mercury gets a tap at all:
-
-```
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/hg.freddie.mercury.plist
-mercury logs --level warn
-```
-
-The daemon takes the lock either way, so `mercury status` proves nothing here. `could not intercept the keyboard` in the log is the answer, and its absence plus dispatch records is the other one.
-
-Only if that fails does any of the signing work matter, and a wrapper is worth considering then rather than now. A shell script needs no compiling and never changes, but what launchd executes is `/bin/sh`, and whether responsibility lands on the shell, on mercury after it `exec`s, or on neither is exactly the thing the experiment above settles. Design it against an answer, not ahead of one.
+No wrapper and no signing are involved. A `.sh` launcher would have been a way to give TCC something stable to attribute to, and nothing needs attributing.
 
 Reset grants while testing, since the failure is silent: `tccutil reset Accessibility` and `tccutil reset ListenEvent`.
 
@@ -365,8 +358,6 @@ Karabiner needing a whole second bundle just to hold agent plists is the cost si
 
 ## Open
 
-- Whether a launchd-started mercury gets a tap at all, which is the one that decides this doc.
-- Which TCC permission the tap needs: Accessibility, Input Monitoring, or both.
+- Which TCC permission the tap needs: Accessibility alone was granted and is sufficient; whether Input Monitoring is ever also required is untested.
 - Whether `launchctl bootout` gives the daemon long enough to finish its quit before SIGKILL follows, since that path now has destructors to run.
-- Whether a launchd agent can raise a usable TCC prompt, or a first grant must come from a terminal launch.
 - Whether the launch build also needs Home to pass unbound keys through, or booting into typing plus the recovery paths is enough given that reaching Home takes a deliberate `jk`.
