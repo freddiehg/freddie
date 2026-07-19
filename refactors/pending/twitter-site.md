@@ -144,6 +144,16 @@ Not in mercury at all. A `selected` at the root that mercury increments on `j` i
 
 Not in the service worker either, which is the part that matters for the extension as built: it is killed after roughly 30s idle, so anything it remembers is gone by the time you come back to the tab. A content script lives as long as the page does, which is exactly the lifetime the selection has.
 
+### mercury binds it unconditionally
+
+`j` and `k` are bound whenever the URL matches, with no condition beyond that. mercury does not know whether anything is selected, whether it is the first item or the last, or how long the list is, and it never asks.
+
+The extension resolves the intent against the only state that could answer: clamp at the top, clamp at the bottom, start from the first item when nothing is selected yet, and do nothing at all when the list is empty. A `j` at the end of the list is a command that produces no change, and that is a normal outcome rather than an error.
+
+This is what keeps mercury out of it. A bind that were conditional on position would need the position at the root, which is the shadow copy ruled out above; instead the bind is always live and the answer is always computed where the list is. The reply says what happened, mercury logs it, and nothing is stored.
+
+The bottom of an infinite timeline is the one place a boundary is not a boundary: more posts load as you approach it, so `j` at the last loaded item should scroll rather than stop, and let x.com append. Whether that is worth doing beyond a plain `scrollIntoView` is for the site's content script to decide, which is the point of the split.
+
 ### Keyed by the post, not the index
 
 The timeline mutates under you. x.com prepends new posts, infinite-scrolls more onto the end, and removes some as you go. An index into a list that grows at the front points at a different post every time that happens.
