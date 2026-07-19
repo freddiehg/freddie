@@ -18,9 +18,9 @@ So the hazard at login is typing a literal `jk` fast enough, which lands you in 
 
 ## The plist
 
-Checked in at `crates/mercury/assets/hg.freddie.mercury.plist`, so it is reviewed and versioned rather than typed once into `~/Library/LaunchAgents` and forgotten. Each key carries its reason as an XML comment, and `plutil -lint` passes over it.
+Written by `mercury install` from a serialized struct, not checked in. Neither of the two things that identify a job can be a literal in a checked-out repo — the program path lives under someone's home directory, and the label is keyed to `APP` so a fork gets its own job — and the struct is the reviewable artifact, carrying each key's reason as a doc comment.
 
-It is a template rather than a finished plist, because neither of the two things that identify a job can be a literal here. `mercury install` below fills both in.
+Serialized rather than substituted into a template, because a home directory holds whatever a home directory holds. `/Users/a&b/…` written into XML by hand is a plist launchd will not read; `plist::to_file_xml` emits `&amp;` and cannot produce malformed output at all.
 
 `launchctl` by hand still works against an installed agent:
 
@@ -67,53 +67,35 @@ That last case is worth a word rather than a refusal. Registering a binary under
 const TRANSIENT: &str = "/target/";
 ```
 
-### The plist becomes a template
-
-`crates/mercury/assets/hg.freddie.mercury.plist` gains two placeholders and stops being installable by hand, which is the trade for it being installable at all on a machine whose home directory this repo cannot know.
-
-Before:
-
-```xml
-    <key>Label</key>
-    <string>hg.freddie.mercury</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/mercury</string>
-        <string>daemon</string>
-    </array>
-```
-
-After:
-
-```xml
-    <key>Label</key>
-    <string>__MERCURY_LABEL__</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>__MERCURY_PROGRAM__</string>
-        <string>daemon</string>
-    </array>
-```
-
-`plutil -lint` still passes: a placeholder is a valid string value, so the checked-in file stays a well-formed plist that can be read and diffed.
-
-The label is substituted rather than fixed because a fork renames the app. `APP` is already the one name the lock and the log directory are keyed to, so the label is keyed to it too and two forks installed side by side do not collide over one launchd job.
+### The agent is a struct
 
 ```rust
-/// The launchd job's name, keyed to the same `APP` as the lock and the log directory.
-fn label() -> String {
-    format!("hg.freddie.{APP}")
+/// The launch agent this app installs, as launchd reads it.
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct Agent {
+    /// The job's name, keyed to the same `APP` as the lock and the log directory.
+    label: String,
+    /// `daemon`, never the bare binary, which spawns a detached daemon and exits.
+    program_arguments: Vec<String>,
+    run_at_load: bool,
+    /// `Aqua`: the session `CGEventTap` needs a window server, `NSWorkspace`, and per-user TCC.
+    limit_load_to_session_type: String,
+    keep_alive: KeepAlive,
+    /// Seconds. A crash loop must not respawn a keyboard-eater ten times a second.
+    throttle_interval: u32,
 }
 
-/// Where the agent's plist goes. launchd reads this directory per user.
-fn plist_path() -> Option<PathBuf> {
-    Some(
-        PathBuf::from(std::env::var_os("HOME")?)
-            .join("Library/LaunchAgents")
-            .join(format!("{}.plist", label())),
-    )
+/// When launchd should bring the job back.
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct KeepAlive {
+    /// `false`: revive a mercury that died unexpectedly, leave one down that declined to run.
+    successful_exit: bool,
 }
 ```
+
+`plist = "1.10"` in `crates/mercury/Cargo.toml`; mercury already depends on `serde`.
 
 ### The verb
 
@@ -292,26 +274,31 @@ fn the_label_is_keyed_to_the_app() {
     assert_eq!(label(), "hg.freddie.mercury");
 }
 
-// A fork renaming APP must get its own job rather than fighting over mercury's.
 #[test]
-fn the_plist_carries_no_hardcoded_label_or_program() {
-    assert!(!PLIST_TEMPLATE.contains("/usr/local/bin"));
-    assert!(PLIST_TEMPLATE.contains("__MERCURY_LABEL__"));
-    assert!(PLIST_TEMPLATE.contains("__MERCURY_PROGRAM__"));
+fn the_agent_runs_the_daemon_verb() {
+    let xml = agent_xml("/Users/somebody/.cargo/bin/mercury");
+    assert!(xml.contains("<string>/Users/somebody/.cargo/bin/mercury</string>"));
+    assert!(xml.contains("<string>daemon</string>"));
 }
 
-// Substitution has to leave a plist, not a plist-shaped string.
+// The reason this is serialized rather than substituted: a home directory can hold an `&`, and
+// writing one into XML unescaped makes a plist launchd will not read.
 #[test]
-fn a_substituted_template_is_still_a_plist() {
-    let plist = PLIST_TEMPLATE
-        .replace("__MERCURY_LABEL__", "hg.freddie.mercury")
-        .replace("__MERCURY_PROGRAM__", "/Users/somebody/.cargo/bin/mercury");
-    assert!(!plist.contains("__MERCURY"));
-    assert!(plist.contains("<string>/Users/somebody/.cargo/bin/mercury</string>"));
+fn a_program_path_is_escaped() {
+    let xml = agent_xml("/Users/a&b/.cargo/bin/mercury");
+    assert!(xml.contains("/Users/a&amp;b/.cargo/bin/mercury"));
+    assert!(!xml.contains("/Users/a&b/"));
+}
+
+#[test]
+fn the_agent_only_revives_an_unclean_exit() {
+    let xml = agent_xml("/usr/bin/true");
+    assert!(xml.contains("<key>SuccessfulExit</key>"));
+    assert!(xml.contains("<false/>"));
 }
 ```
 
-`plutil -lint` over the checked-in template is a pre-commit concern rather than a test, since it needs a binary the test harness should not require.
+What no test covers is launchd accepting the result, which needs a `bootstrap` and a login.
 
 ### Verifying the install
 
@@ -319,6 +306,7 @@ fn a_substituted_template_is_still_a_plist() {
 - Logging out and back in leaves a mercury running, by `mercury status`.
 - `mercury install` again replaces the job rather than failing, and `mercury status` reports a pid either way.
 - `./target/debug/mercury install` says the binary is under `target/` and installs anyway.
+- The written `~/Library/LaunchAgents/hg.freddie.mercury.plist` passes `plutil -lint`.
 - `mercury uninstall` removes the job and the plist; running it twice exits 0 both times.
 - After `mercury uninstall`, logging out and back in leaves no mercury running.
 
