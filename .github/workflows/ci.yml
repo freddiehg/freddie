@@ -53,7 +53,11 @@ jobs:
         working-directory: chrome-extension
     steps:
       - uses: actions/checkout@v4
+      # `defaults.run.working-directory` does not reach an action's own steps, so this
+      # one is told where the package.json naming the pnpm version lives.
       - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: chrome-extension/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22
