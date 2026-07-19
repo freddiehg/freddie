@@ -3,4 +3,5 @@
   ↑    maximize
   ←    left half
   →    right half
+  t    typing
   esc  home

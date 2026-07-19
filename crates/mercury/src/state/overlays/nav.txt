@@ -4,4 +4,5 @@
   f    finder
   g    ghostty
   z    zed
+  t    typing
   esc  home

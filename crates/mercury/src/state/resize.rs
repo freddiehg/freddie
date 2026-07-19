@@ -22,6 +22,7 @@ pub(crate) const OVERLAY: &str = include_str!("overlays/resize.txt");
     |path| path.get().home_timeout.trigger() => to_home,
     Key::Escape.down() => to_home,
     Key::KeyO.down() => toggle_overlay,
+    Key::KeyT.down() => to_typing,
     Key::UpArrow.down() => maximize,
     Key::LeftArrow.down() => left_half,
     Key::RightArrow.down() => right_half,

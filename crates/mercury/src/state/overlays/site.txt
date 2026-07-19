@@ -1,4 +1,5 @@
   SITE
   ────────────────────
   o    overlay
+  t    typing
   esc  home

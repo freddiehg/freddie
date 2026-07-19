@@ -2,4 +2,5 @@
   ────────────────────
   n    new chat
   o    overlay
+  t    typing
   esc  home
