@@ -17,14 +17,16 @@ Everything in `main.rs` today except `fn main` moves verbatim into `daemon.rs`: 
 
 Two renames, because the file gains a second entry point and cannot have two `run`s:
 
-- today's `fn main` body becomes `pub(crate) fn run(log_level: &str)`
-- today's `async fn run` becomes `async fn serve`, with its `run(event_tx, event_rx, title_tx)` call site becoming `serve(...)`
+- today's `fn main` body becomes `pub(crate) fn run(args: &DaemonArgs)`
+- today's `async fn run` becomes `async fn serve`, with its `run(event_tx, event_rx, title_tx, args.port)` call site becoming `serve(event_tx, event_rx, title_tx, port)`, reading `let port = args.port;` before the worker's `move` closure takes it
+
+`run` takes the whole `DaemonArgs` rather than a flag at a time, so a later flag is a field rather than another positional argument through `main`.
 
 `mod logging;` stays declared in `main.rs`, and `daemon.rs` reaches it as `crate::logging`.
 
-## `--log-level` moves onto the verb
+## `--log-level` and `--port` move onto the verb
 
-The flag governs the terminal subscriber and nothing else, the log file recording `debug` whatever it says. A daemon started in the background has no terminal, so the flag has nothing to do there. It belongs on the verb where it works.
+`--log-level` governs the terminal subscriber and nothing else, the log file recording `debug` whatever it says. A daemon started in the background has no terminal, so the flag has nothing to do there. `--port` names the socket the running daemon listens on. Both configure a daemon, so both belong on the verb rather than on the bare binary.
 
 `cli.rs`, before:
 
@@ -38,6 +40,10 @@ pub struct Args {
     /// accepted.
     #[arg(long, env = "LOG_LEVEL", default_value = "info")]
     pub log_level: String,
+
+    /// The loopback port the event socket listens on.
+    #[arg(long, env = "MERCURY_PORT", default_value_t = mercury::DEFAULT_PORT)]
+    pub port: u16,
 }
 ```
 
@@ -65,21 +71,27 @@ pub enum Verb {
 ///
 /// Its own struct rather than fields on the variant, because a variant carries a struct or carries
 /// nothing.
-#[derive(clap::Args, Debug)]
+///
+/// Every flag here configures the running daemon, so every one of them is on this verb rather than
+/// on `mercury` itself.
+#[derive(clap::Args, Debug, PartialEq, Eq)]
 pub struct DaemonArgs {
     /// What the terminal shows. The log file always records `debug`, whatever this says.
     ///
     /// A `tracing_subscriber` filter directive, so `info` and `mercury=debug,bind=warn` are both
-    /// accepted. Only the foreground daemon has a terminal to show anything on, which is why this
-    /// sits on this verb rather than on `mercury` itself.
-    #[arg(long, env = "LOG_LEVEL", default_value = "info")]
+    /// accepted. Only the foreground daemon has a terminal to show anything on.
+    #[arg(long, env = "LOG_LEVEL", default_value = DEFAULT_LOG_LEVEL)]
     pub log_level: String,
+
+    /// The loopback port the event socket listens on.
+    #[arg(long, env = "MERCURY_PORT", default_value_t = mercury::DEFAULT_PORT)]
+    pub port: u16,
 }
 ```
 
 `use clap::{Parser, Subcommand};` at the top, and the `Args` doc comment's reference to `main` stays accurate.
 
-`LOG_LEVEL` still works, so `LOG_LEVEL=mercury=debug mercury daemon` reaches the same place `--log-level` does. What stops working is `mercury --log-level debug`, which clap now refuses as an unknown top-level flag: the value goes after the verb.
+`LOG_LEVEL` and `MERCURY_PORT` still work, so `LOG_LEVEL=mercury=debug mercury daemon` reaches the same place `--log-level` does. What stops working is `mercury --log-level debug`, which clap now refuses as an unknown top-level flag: the value goes after the verb.
 
 Verified on the pinned 1.96.0 against clap 4.6.2: this derives clean under the workspace's `deny` on clippy `all`, `pedantic`, `nursery`, and `cargo`, `mercury daemon` defaults to `info`, `LOG_LEVEL=warn mercury daemon` reads `warn`, and a top-level `--log-level` exits 2.
 
@@ -93,7 +105,7 @@ Verified on the pinned 1.96.0 against clap 4.6.2: this derives clean under the w
 
 use clap::Parser;
 
-use cli::{Args, Verb};
+use cli::{Args, DaemonArgs, Verb};
 
 mod cli;
 mod daemon;
@@ -105,11 +117,11 @@ fn run(verb: Option<Verb>) -> i32 {
         // The bare `mercury`. `mercury-start.md` makes this start the daemon and follow its log;
         // until then it is what running mercury has always been.
         None => {
-            daemon::run(DEFAULT_LOG_LEVEL);
+            daemon::run(&DaemonArgs::default());
             0
         }
         Some(Verb::Daemon(args)) => {
-            daemon::run(&args.log_level);
+            daemon::run(&args);
             0
         }
     }
@@ -126,15 +138,28 @@ fn main() {
 }
 ```
 
-The bare `mercury` has no `DaemonArgs` to read a level from, so `cli.rs` names the one both spellings default to:
+The bare `mercury` parses no `DaemonArgs`, so `cli.rs` builds the one it runs on:
 
 ```rust
-/// What the terminal shows when nothing says otherwise. Shared by [`DaemonArgs`]'s default and by
-/// the bare `mercury`, which parses no `DaemonArgs` to carry one.
+/// What the terminal shows when nothing says otherwise. Shared by [`DaemonArgs`]'s clap default
+/// and its [`Default`], which is what the bare `mercury` runs on.
 pub const DEFAULT_LOG_LEVEL: &str = "info";
+
+/// What the bare `mercury` runs on, having parsed no `DaemonArgs` to carry anything.
+///
+/// `the_bare_mercury_matches_the_daemon_verb` asserts this against what clap produces for
+/// `mercury daemon`, so the two spellings cannot drift into meaning different things.
+impl Default for DaemonArgs {
+    fn default() -> Self {
+        Self {
+            log_level: DEFAULT_LOG_LEVEL.to_owned(),
+            port: mercury::DEFAULT_PORT,
+        }
+    }
+}
 ```
 
-with `#[arg(long, env = "LOG_LEVEL", default_value = DEFAULT_LOG_LEVEL)]`.
+Two sets of defaults, one written by clap and one by hand, so a test pins them together.
 
 ## Tests
 
@@ -143,7 +168,7 @@ In `cli.rs`, since that is where the types are.
 ```rust
 #[cfg(test)]
 mod tests {
-    use super::{Args, Verb};
+    use super::{Args, DaemonArgs, Verb};
     use clap::Parser;
 
     fn parse(args: &[&str]) -> Args {
@@ -156,26 +181,46 @@ mod tests {
         assert!(parse(&[]).verb.is_none());
     }
 
-    #[test]
-    fn the_daemon_verb_defaults_to_info() {
-        let Some(Verb::Daemon(args)) = parse(&["daemon"]).verb else {
+    fn daemon_args(args: &[&str]) -> DaemonArgs {
+        let Some(Verb::Daemon(args)) = parse(args).verb else {
             panic!("the daemon verb parses to Verb::Daemon");
         };
-        assert_eq!(args.log_level, super::DEFAULT_LOG_LEVEL);
+        args
+    }
+
+    // The bare `mercury` builds its `DaemonArgs` by hand rather than through clap, so nothing but
+    // this test keeps the two sets of defaults in step.
+    #[test]
+    fn the_bare_mercury_matches_the_daemon_verb() {
+        assert_eq!(daemon_args(&["daemon"]), DaemonArgs::default());
+    }
+
+    #[test]
+    fn the_daemon_verb_defaults_to_info() {
+        assert_eq!(daemon_args(&["daemon"]).log_level, super::DEFAULT_LOG_LEVEL);
     }
 
     #[test]
     fn the_daemon_verb_takes_a_filter_directive() {
-        let Some(Verb::Daemon(args)) = parse(&["daemon", "--log-level", "mercury=debug"]).verb
-        else {
-            panic!("the daemon verb parses to Verb::Daemon");
-        };
-        assert_eq!(args.log_level, "mercury=debug");
+        assert_eq!(
+            daemon_args(&["daemon", "--log-level", "mercury=debug"]).log_level,
+            "mercury=debug"
+        );
+    }
+
+    #[test]
+    fn the_daemon_verb_takes_a_port() {
+        assert_eq!(daemon_args(&["daemon", "--port", "4001"]).port, 4001);
     }
 
     #[test]
     fn the_log_level_is_not_a_top_level_flag() {
         assert!(Args::try_parse_from(["mercury", "--log-level", "debug"]).is_err());
+    }
+
+    #[test]
+    fn the_port_is_not_a_top_level_flag() {
+        assert!(Args::try_parse_from(["mercury", "--port", "4001"]).is_err());
     }
 
     #[test]
