@@ -357,11 +357,11 @@ What this does not settle is the tap. Karabiner does not use a `CGEventTap`: alo
 
 `Mercury.app` would hold the binary at `Contents/MacOS/mercury`, an `Info.plist`, and its agent plist at `Contents/Library/LaunchAgents/`; the app calls `SMAppService.agent(plistName:).register()` (macOS 13+) and macOS installs the agent itself. Three things follow from that, and none of them are available to a bare binary:
 
-- the job appears in System Settings under Login Items, with a toggle, instead of existing only as a file the user has to know about
+- the job appears in System Settings under Login Items, with a toggle, instead of existing only as a file the user has to know about — and appears with an icon, which a bare binary cannot have, since icons come from `CFBundleIconFile` and `Contents/Resources`. Installed as a bare binary it shows up as a generic executable. `crates/mercury/assets/mercury.png` is the artwork, already there for the menu bar
 - `LSUIElement` in `Info.plist` makes it an accessory app, replacing the `freddie_main_loop::init_menu_bar_app()` call
 - a bundle identifier and one signature over the whole bundle give TCC a stable identity to key a grant to
 
-Karabiner needing a whole second bundle just to hold agent plists is the cost side. The third point is the reason to decide this after the launchd experiment rather than before it. If an agent gets a tap, the bare binary is enough and the bundle buys only tidiness. If it does not, a signed bundle is the most likely thing that fixes it, and the work belongs there rather than in a wrapper.
+Karabiner needing a whole second bundle just to hold agent plists is the cost side. The generic icon is the standing cost of not doing it, and unlike the rest of this section it does not wait on any experiment. The third point is the reason to decide this after the launchd experiment rather than before it. If an agent gets a tap, the bare binary is enough and the bundle buys only tidiness. If it does not, a signed bundle is the most likely thing that fixes it, and the work belongs there rather than in a wrapper.
 
 ## Open
 
