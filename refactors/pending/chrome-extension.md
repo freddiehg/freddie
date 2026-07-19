@@ -2,320 +2,21 @@
 
 Not built. mercury needs Chrome's active-tab URL for per-site key remaps (`chrome-tab-url.md`), and only the browser knows it. This extension is the bridge, over the loopback WebSocket mercury listens on.
 
-It is Rust compiled to wasm, so the wire types are mercury's own types rather than a copy of them. Nothing is generated, nothing is hand-translated, and a frame the extension sends is built by the same `serde` impl mercury parses it with. A field renamed on one side stops compiling on the other.
+This doc owns the browser side of one direction: the extension pushing the frontmost tab's URL up. `external-events.md` owns mercury's side of it, and is where the port, `MERCURY_PORT`, the `freddie_event_socket` crate, and the `IncomingEvent` vocabulary are defined; read it for the wire contract, because this doc only builds the JSON it defines.
 
-This doc owns the browser side of one direction: pushing the frontmost tab's URL up. `external-events.md` owns mercury's side. Commands going the other way, and the token they need, are `external-effects.md`; nothing here anticipates them.
+Commands going the other way, the token they need, and the extension code that runs them are `external-effects.md`. They share this connection but nothing here anticipates them.
 
-## What wasm costs
+The extension pushes; it never answers a timer. There is no keepalive and no poll loop. When there is nothing to report the connection may lapse, and the next tab event reopens it.
 
-A `wasm32-unknown-unknown` toolchain, `wasm-bindgen-cli`, a build step before the extension can be loaded, a few hundred kilobytes of binary for what would be forty lines of JavaScript, and a CSP relaxation (`wasm-unsafe-eval`, below). What it buys is that `IncomingEvent` has exactly one definition in the repository. As the vocabulary grows past one variant with one string field, and especially once `external-effects.md` adds commands and replies in both directions, that stops being a rounding error.
+## The service-worker lifetime
 
-## The layout
+An MV3 background service worker is killed after roughly 30s idle, which closes the WebSocket. This is why there is no persistent connection to hold and no timer to keep one warm: the worker's registered `chrome.tabs` listeners revive it when a tab event fires, and the handler reopens the socket if it is closed before sending. A dead socket during idle is correct, and it costs one reconnect on the next real event. A keepalive ping would be both a timer and pointless traffic.
 
-`chrome-extension/` at the top level, beside `crates/`, and it is its own cargo workspace.
+## Stream the active tab's URL
 
-That last part is a build requirement, not a preference. A `cdylib` depending on `web-sys` only compiles for `wasm32-unknown-unknown`, and the root workspace's `cargo clippy --all-targets` and `cargo test --all` build every member for the host, which is macOS. Listing it as a member would break both, and the pre-commit hooks with them.
+`chrome-extension/` at the top level of the repository, beside `crates/`, not inside it. It is not a Rust crate and cargo has no business seeing it, and it is loaded unpacked from that path at `chrome://extensions`.
 
-```
-chrome-extension/
-  README.md            how to build, install, and check that it works
-  Cargo.toml           its own [workspace], not a member of the root one
-  src/lib.rs           the listeners, the socket, the reconnect, and the frame encoding
-  src/options.rs       the port setting
-  js/background.js     two lines: the service worker has to be JavaScript
-  js/options.js        two lines, for the same reason
-  manifest.json
-  options.html
-  pkg/                 wasm-bindgen output, gitignored
-```
-
-The root `Cargo.toml` gains nothing. `chrome-extension/Cargo.toml` opens with an empty `[workspace]` table, which is what tells cargo it is a workspace root rather than a member of the one above it.
-
-## Change 1: the wire types move to their own crate
-
-A prefactor, and the thing that makes the rest possible. `IncomingEvent` and its payloads live in `crates/mercury/src/external.rs` today, and mercury does not compile for wasm.
-
-New `crates/freddie_wire`, whose only dependency is `serde`:
-
-```toml
-[package]
-name = "freddie_wire"
-description = "The vocabulary mercury and its clients speak over the event socket."
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
-
-[dependencies]
-serde = { version = "1", features = ["derive"] }
-
-[lints]
-workspace = true
-```
-
-`crates/freddie_wire/src/lib.rs` takes what `external.rs` has now, verbatim:
-
-```rust
-//! The vocabulary mercury and its clients speak over the event socket.
-//!
-//! Its own crate because both ends depend on it and they do not share a target: mercury is a macOS
-//! binary, and the Chrome extension is `wasm32-unknown-unknown`. Nothing here may pull in anything
-//! that will not build for both, which in practice means `serde` and nothing else.
-
-/// Everything an outside process may say to mercury. A sender cannot say anything else, so remote
-/// key injection and remote quit are unrepresentable rather than filtered.
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
-#[serde(tag = "kind", content = "value")]
-pub enum IncomingEvent {
-    /// The front browser tab's URL changed.
-    #[serde(rename = "IncomingEvent.Tab")]
-    Tab(TabMessage),
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
-pub struct TabMessage {
-    pub url: String,
-}
-```
-
-`Serialize` is new. mercury only ever deserializes these, but the extension only ever serializes them, and one derive pair on one type is the whole point of the crate.
-
-`crates/mercury/Cargo.toml` gains `freddie_wire`, and `external.rs` keeps `DEFAULT_PORT`, `on_message`, and its tests, re-exporting the vocabulary rather than defining it:
-
-```rust
-pub use freddie_wire::{IncomingEvent, TabMessage};
-```
-
-Nothing else in mercury changes, and its tests pin the same behavior as before.
-
-## Change 2: the extension
-
-`chrome-extension/Cargo.toml`:
-
-```toml
-[workspace]
-
-[package]
-name = "mercury_extension"
-description = "The mercury bridge: pushes Chrome's active tab URL to mercury."
-version = "0.0.1"
-edition = "2024"
-license = "MIT"
-
-[lib]
-crate-type = ["cdylib"]
-
-[dependencies]
-freddie_wire = { path = "../crates/freddie_wire" }
-wasm-bindgen = "0.2"
-wasm-bindgen-futures = "0.4"
-js-sys = "0.3"
-serde_json = "1"
-
-[dependencies.web-sys]
-version = "0.3"
-features = ["WebSocket", "Event"]
-
-[profile.release]
-# The binary ships to a browser, so size is the thing to optimize.
-opt-level = "z"
-lto = true
-```
-
-`chrome-extension/src/lib.rs`:
-
-```rust
-//! The mercury bridge, all of it: the `chrome.*` listeners, the socket, and the frame encoding.
-//!
-//! The JavaScript is two lines calling [`start`], because an MV3 manifest's `service_worker` takes a
-//! `.js` path and will not take a `.wasm`. Nothing else lives there. `chrome.*` is reachable from
-//! here through `js_namespace`, so a listener registered in JavaScript would be a second place to
-//! look for the same logic and a second thing to keep in step with the wire format.
-
-use std::cell::RefCell;
-
-use freddie_wire::{IncomingEvent, TabMessage};
-use wasm_bindgen::prelude::*;
-use web_sys::WebSocket;
-
-/// mercury's default, from the other side of the contract. The options page overrides it, and it
-/// has to match whatever `--port` or `MERCURY_PORT` mercury was given.
-const DEFAULT_PORT: u16 = 3883;
-
-#[wasm_bindgen]
-extern "C" {
-    #[wasm_bindgen(js_namespace = ["chrome", "tabs", "onActivated"], js_name = addListener)]
-    fn on_tab_activated(callback: &JsValue);
-
-    #[wasm_bindgen(js_namespace = ["chrome", "tabs", "onUpdated"], js_name = addListener)]
-    fn on_tab_updated(callback: &JsValue);
-
-    #[wasm_bindgen(js_namespace = ["chrome", "windows", "onFocusChanged"], js_name = addListener)]
-    fn on_focus_changed(callback: &JsValue);
-
-    #[wasm_bindgen(js_namespace = ["chrome", "tabs"], js_name = query)]
-    fn tabs_query(info: &JsValue) -> js_sys::Promise;
-
-    #[wasm_bindgen(js_namespace = ["chrome", "storage", "local"], js_name = get)]
-    fn storage_get(defaults: &JsValue) -> js_sys::Promise;
-}
-
-/// Register every listener. Called once per service-worker lifetime, from the two lines of
-/// JavaScript that the manifest forces to exist.
-///
-/// The worker is killed after roughly 30s idle and revived by these same listeners, so this runs
-/// again on the next tab event and the first push after it reconnects.
-#[wasm_bindgen]
-pub fn start() {
-    // A tab was activated, so the URL is whatever that tab has.
-    let activated = Closure::<dyn FnMut(JsValue)>::new(|info: JsValue| {
-        spawn_push(active_tab_url_of_window(js_sys::Reflect::get(&info, &"windowId".into()).ok()));
-    });
-    on_tab_activated(activated.as_ref());
-    activated.forget();
-
-    // A tab changed. `onUpdated` fires per changed tab, so this filters to the active one and to
-    // changes that actually carried a URL.
-    let updated = Closure::<dyn FnMut(JsValue, JsValue, JsValue)>::new(
-        |_id: JsValue, change: JsValue, tab: JsValue| {
-            let changed_url = js_sys::Reflect::get(&change, &"url".into()).ok();
-            let active = js_sys::Reflect::get(&tab, &"active".into())
-                .ok()
-                .and_then(|a| a.as_bool())
-                .unwrap_or(false);
-            if active && let Some(url) = changed_url.and_then(|u| u.as_string()) {
-                spawn_push(Some(url));
-            }
-        },
-    );
-    on_tab_updated(updated.as_ref());
-    updated.forget();
-
-    // Returning from another app, and switching between two Chrome windows, both change which tab
-    // is front with no tab event at all. `WINDOW_ID_NONE` is -1 and means Chrome lost focus, so
-    // there is nothing to report.
-    let focused = Closure::<dyn FnMut(JsValue)>::new(|window_id: JsValue| {
-        if window_id.as_f64() != Some(-1.0) {
-            spawn_push(active_tab_url_of_window(Some(window_id)));
-        }
-    });
-    on_focus_changed(focused.as_ref());
-    focused.forget();
-}
-
-thread_local! {
-    /// The live socket, if there is one. A service worker is single-threaded, so a `thread_local`
-    /// `RefCell` is the whole of the synchronization needed.
-    static SOCKET: RefCell<Option<WebSocket>> = const { RefCell::new(None) };
-}
-
-/// Read the configured port, then push `url`, on the worker's own task.
-///
-/// Both the port and the window's active tab are promises, so every listener ends up here rather
-/// than pushing inline.
-fn spawn_push(url: Option<String>) {
-    wasm_bindgen_futures::spawn_local(async move {
-        let Some(url) = url else { return };
-        push_url(port().await, url);
-    });
-}
-
-/// The configured port, or [`DEFAULT_PORT`] if the options page has never been used.
-async fn port() -> u16 {
-    let defaults = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(&defaults, &"port".into(), &DEFAULT_PORT.into());
-    let stored = wasm_bindgen_futures::JsFuture::from(storage_get(&defaults)).await;
-    stored
-        .ok()
-        .and_then(|s| js_sys::Reflect::get(&s, &"port".into()).ok())
-        .and_then(|p| p.as_f64())
-        .map_or(DEFAULT_PORT, |p| p as u16)
-}
-
-/// The active tab's URL in `window_id`, or `None` if that window has no tab with one.
-async fn active_tab_url_of_window(window_id: Option<JsValue>) -> Option<String> {
-    let query = js_sys::Object::new();
-    let _ = js_sys::Reflect::set(&query, &"active".into(), &true.into());
-    if let Some(id) = window_id {
-        let _ = js_sys::Reflect::set(&query, &"windowId".into(), &id);
-    }
-    let tabs = wasm_bindgen_futures::JsFuture::from(tabs_query(&query)).await.ok()?;
-    let first = js_sys::Array::from(&tabs).get(0);
-    js_sys::Reflect::get(&first, &"url".into()).ok()?.as_string()
-}
-
-/// Push `url` to mercury, opening the socket if it is not already open.
-///
-/// Failures are dropped rather than reported. There is nothing useful to do with a URL that could
-/// not be sent: the next tab event supersedes it, and a retry queue would be a queue of stale
-/// answers to a question nobody asked yet.
-fn push_url(port: u16, url: String) {
-    let frame = match serde_json::to_string(&IncomingEvent::Tab(TabMessage { url })) {
-        Ok(frame) => frame,
-        Err(_) => return,
-    };
-    SOCKET.with(|socket| {
-        let mut socket = socket.borrow_mut();
-        if let Some(open) = socket.as_ref().filter(|ws| ws.ready_state() == WebSocket::OPEN) {
-            let _ = open.send_with_str(&frame);
-            return;
-        }
-        // Not open: connect, and send once it is. A socket still CONNECTING gets the same
-        // treatment, so a burst of tab events during a connect all go out on `open`.
-        let connecting = match socket.as_ref() {
-            Some(ws) if ws.ready_state() == WebSocket::CONNECTING => ws.clone(),
-            _ => match connect(port) {
-                Some(ws) => ws,
-                None => return,
-            },
-        };
-        let on_open = Closure::once_into_js({
-            let ws = connecting.clone();
-            move || {
-                let _ = ws.send_with_str(&frame);
-            }
-        });
-        connecting.add_event_listener_with_callback("open", on_open.unchecked_ref()).ok();
-        *socket = Some(connecting);
-    });
-}
-
-/// Open a socket to mercury, clearing [`SOCKET`] when it closes so the next push reconnects.
-///
-/// Each handler clears only its own socket. A connection that fails fires `error` and then `close`,
-/// and by then a later push may already have replaced it; clearing unconditionally would drop a
-/// live socket and strand whatever it was about to send.
-fn connect(port: u16) -> Option<WebSocket> {
-    let ws = WebSocket::new(&format!("ws://127.0.0.1:{port}")).ok()?;
-    for event in ["close", "error"] {
-        let forget = Closure::<dyn FnMut()>::new({
-            let ws = ws.clone();
-            move || {
-                SOCKET.with(|socket| {
-                    let mut socket = socket.borrow_mut();
-                    if socket.as_ref().is_some_and(|live| live == &ws) {
-                        *socket = None;
-                    }
-                });
-            }
-        });
-        ws.add_event_listener_with_callback(event, forget.as_ref().unchecked_ref()).ok()?;
-        forget.forget();
-    }
-    Some(ws)
-}
-```
-
-`chrome-extension/js/background.js`, in full:
-
-```js
-import init, { start } from "../pkg/mercury_extension.js";
-
-await init().then(start);
-```
-
-That is all the JavaScript there is, and it exists only because the manifest's `service_worker` takes
-a `.js` path. Top-level `await` is available because the worker is a module.
+Four files. It depends on `external-events.md`'s Change 2 being live on `127.0.0.1:3883` and on `chrome-tab-url.md`'s `TabEvent`; with both, this ships the URL stream end to end.
 
 `chrome-extension/manifest.json`:
 
@@ -324,99 +25,91 @@ a `.js` path. Top-level `await` is available because the worker is a module.
   "manifest_version": 3,
   "name": "mercury bridge",
   "version": "0.0.1",
-  "background": { "service_worker": "js/background.js", "type": "module" },
+  "background": { "service_worker": "background.js" },
   "permissions": ["tabs", "storage"],
   "host_permissions": ["http://127.0.0.1/*"],
-  "options_page": "options.html",
-  "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
-  }
+  "options_page": "options.html"
 }
 ```
 
-`"type": "module"` is what lets the shim `import` the wasm-bindgen glue. `wasm-unsafe-eval` is what lets the extension instantiate its own wasm at all; MV3 refuses `WebAssembly.instantiate` under the default policy, and this keyword is the sanctioned way to allow it without loosening anything about scripts.
+`tabs` grants the `url` field on a `Tab`. `host_permissions` for the loopback lets the worker open the WebSocket: Chrome checks a `ws://` connection against the matching `http://` host permission, and match patterns ignore the port, so `http://127.0.0.1/*` covers every port mercury might be on.
 
-`tabs` grants the `url` field on a `Tab`. `host_permissions` for the loopback lets the worker open the WebSocket: Chrome checks a `ws://` connection against the matching `http://` host permission, and match patterns carry no port, so `http://127.0.0.1/*` covers every port mercury might be on.
+`storage` and the options page are the port. mercury's port moves with `--port` or `MERCURY_PORT` (`external-events.md`), and an extension pinned to one number would connect to nothing the moment it does, with no symptom beyond per-site binds quietly not working. `DEFAULT_PORT` is the default on both sides, so the setting stays untouched unless you move mercury.
 
-`chrome-extension/options.html` is one number input, and `js/options.js` is the same two lines pointed at an `options` entry point in `src/options.rs`, which reads and writes `chrome.storage.local.port` through the same `storage_get` binding. It defaults to `DEFAULT_PORT`. mercury's port moves with `--port` or `MERCURY_PORT`, and an extension pinned to one number would connect to nothing the moment it did, with no symptom beyond per-site binds quietly not working. Storage is read on every push rather than cached, so a change takes effect on the next tab event.
+`chrome-extension/background.js`:
 
-## Change 3: the README
+```js
+// The mercury bridge service worker. Opens a loopback WebSocket to mercury and pushes the active
+// tab's URL on every tab switch and in-tab navigation. Event-driven: it reconnects on the next
+// event, with no keepalive timer and no poll.
 
-`chrome-extension/README.md`, because the build step means this cannot be loaded straight from a checkout:
+// mercury's default. Overridden from the options page, which has to match whatever `--port` or
+// `MERCURY_PORT` mercury was given.
+const DEFAULT_PORT = 3883;
 
-````markdown
-# mercury bridge
+let socket = null;
 
-Pushes Chrome's active tab URL to a running mercury, which is how per-site key remaps know what
-site you are on. Rust compiled to wasm, so the frames it sends are built by the same types mercury
-parses them with (`crates/freddie_wire`).
+async function mercuryUrl() {
+  const { port } = await chrome.storage.local.get({ port: DEFAULT_PORT });
+  return `ws://127.0.0.1:${port}`;
+}
 
-## Build
+// Returns the socket to send on, so nothing downstream re-reads the module variable and finds a
+// different socket than the one it asked for.
+async function connect() {
+  if (
+    socket &&
+    (socket.readyState === WebSocket.OPEN ||
+      socket.readyState === WebSocket.CONNECTING)
+  ) {
+    return socket;
+  }
+  const ws = new WebSocket(await mercuryUrl());
+  // Each handler clears only its own socket. A connection that fails fires `error` then `close`,
+  // and by the time `close` runs a later tab event may already have replaced `socket`; an
+  // unconditional `socket = null` would clobber the live one and strand its pending send.
+  ws.addEventListener("close", () => {
+    if (socket === ws) socket = null;
+  });
+  ws.addEventListener("error", () => {
+    if (socket === ws) socket = null;
+  });
+  socket = ws;
+  return ws;
+}
 
-Once:
+async function pushUrl(url) {
+  if (!url) return;
+  const ws = await connect();
+  const payload = JSON.stringify({ kind: "IncomingEvent.Tab", value: { url } });
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(payload);
+  } else {
+    ws.addEventListener("open", () => ws.send(payload), { once: true });
+  }
+}
 
+connect();
+
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  chrome.tabs.get(tabId, (tab) => pushUrl(tab.url));
+});
+
+chrome.tabs.onUpdated.addListener((_tabId, info, tab) => {
+  if (info.url && tab.active) pushUrl(tab.url);
+});
 ```
-rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli
-```
 
-Then, from this directory:
+`onActivated` reads the tab that was just activated by id; `onUpdated` fires per changed tab, so it filters to `tab.active` and to updates that actually carried a new `url`. Re-sending an identical URL is harmless: `record_tab_url` fills the same value and dispatch produces no change (`chrome-tab-url.md`).
 
-```
-cargo build --release --target wasm32-unknown-unknown
-wasm-bindgen --target web --out-dir pkg target/wasm32-unknown-unknown/release/mercury_extension.wasm
-```
+The frame shape is `{ kind: "IncomingEvent.Tab", value: { url } }`, which is `external-events.md`'s `IncomingEvent::Tab`. Confirmed against a running mercury: that exact frame produces a dispatch, and anything else is logged and dropped.
 
-`--target web` is the one that works in an MV3 service worker: it emits an ES module with an `init`
-you call yourself, and no bundler.
+`onUpdated` covers document loads. It is not the event for a same-document navigation, which is what an SPA does when it changes route through the History API or a fragment; `chrome.webNavigation.onHistoryStateUpdated` and `onReferenceFragmentUpdated` exist for those, and whether `onUpdated` happens to carry `info.url` for them varies by version. This costs nothing today, because `Site::from_url` matches on the host and a route change inside `claude.ai` leaves the host alone. It starts mattering the moment a bind keys on the path, and that is the change that has to add `webNavigation` rather than assume `onUpdated` grew to cover it.
 
-## Install
+`chrome-extension/options.html` and `chrome-extension/options.js` are one number input over `chrome.storage.local.port`, defaulting to `DEFAULT_PORT`. Changing it takes effect on the next connection, which is the next tab event, because the worker reads storage every time it opens a socket rather than caching the value.
 
-1. Build, above. `pkg/` has to exist before Chrome will load this.
-2. Open `chrome://extensions` and turn on Developer mode.
-3. Load unpacked, and choose this directory.
-4. If mercury is not on port 3883, open the extension's Details, then Extension options, and set
-   the port to match whatever `--port` or `MERCURY_PORT` it was given.
-
-Rebuilding does not reload the extension. Press the reload arrow on its card at `chrome://extensions`
-after every build.
-
-## Check that it works
-
-With mercury running:
-
-```
-tail -f ~/Library/Logs/mercury/mercury.log
-```
-
-Switch tabs. Each switch should log a dispatch whose state carries the new URL:
-
-```
-Foreground { app: Chrome(ForegroundedChrome { url: Some("https://claude.ai/new") }), ... }
-```
-
-Nothing at all means the socket never opened: check that mercury is running, that the port matches,
-and the service worker's own console, reachable from the extension's card at `chrome://extensions`.
-````
-
-## The service-worker lifetime
-
-An MV3 background service worker is killed after roughly 30s idle, which closes the WebSocket and
-drops the wasm instance with it. This is why there is no connection to hold and no timer to keep one
-warm: the worker's registered listeners revive it when a tab event fires, `init()` runs again, and
-the first push reconnects. A dead socket while idle is correct, and it costs one instantiation and
-one reconnect on the next real event.
+Install for development by loading `chrome-extension/` unpacked at `chrome://extensions`. A packed or store build is deferred; nothing in the code depends on which.
 
 ## Other browsers
 
 One extension serves the Chromium browsers that support MV3 with the same `chrome.*` APIs (Chrome, Brave, Arc). They differ only in bundle id, which is mercury's concern through `App::from_bundle_id`, not the extension's. Safari has no equivalent loopback-WebSocket path and is out of scope.
-
-## To confirm while building this
-
-Every one of these is cheap to settle once the extension loads, and none of them is settled now.
-
-- That `js_namespace = ["chrome", "tabs", "onActivated"]` resolves as written. A nested namespace path is supported, and this is the ordinary use of it, but the `chrome.*` objects are not the globals wasm-bindgen is usually pointed at.
-- That `wasm-bindgen --target web` output instantiates inside an MV3 service worker. The glue resolves the `.wasm` relative to `import.meta.url` and fetches it, which is same-origin under `chrome-extension://` and should be allowed, but "should" is doing work in that sentence.
-- That `wasm-unsafe-eval` in `extension_pages` covers the service worker, and not only extension pages proper.
-- That `chrome.windows.onFocusChanged` fires when focus returns from another application, rather than only between Chrome windows, and whether devtools taking focus produces a spurious push.
-- Whether `onUpdated` carries `info.url` for same-document navigations. It is the event for document loads; `chrome.webNavigation.onHistoryStateUpdated` and `onReferenceFragmentUpdated` exist for History API and fragment changes. This costs nothing while `Site::from_url` matches on the host, since an SPA route change inside `claude.ai` leaves the host alone, and it starts mattering the moment a bind keys on the path.
