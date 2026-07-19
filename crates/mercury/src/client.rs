@@ -150,6 +150,10 @@ fn stop_daemon(signal: Signal) -> Result<Option<Pid>, Failure> {
 /// does not know the state, is not an error.
 pub(crate) fn stop(args: &StopArgs) -> i32 {
     logging::init(&Terminal::Client);
+    // Before looking for anything, so a stop that found nothing running still leaves a record that
+    // somebody asked. `debug!` rather than `info!`: it is an action, not the verb's answer, and the
+    // answer should be the only thing the terminal shows.
+    debug!(force = args.force, "stop requested");
     let signal = if args.force {
         Signal::Kill
     } else {
