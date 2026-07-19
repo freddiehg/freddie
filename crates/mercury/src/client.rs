@@ -78,7 +78,16 @@ enum Failure {
     /// The signal could not be sent to the pid the lock named.
     Unsignalable(SignalFailure),
     /// The daemon was signalled and still holds the lock.
-    Ignored(Pid),
+    Ignored(SignalIgnored),
+}
+
+/// A daemon that outlasted the signal sent to it, and which signal that was.
+///
+/// The remedy differs: a daemon that outlasted SIGTERM can still be destroyed, and one that
+/// outlasted SIGKILL cannot be destroyed by anything.
+struct SignalIgnored {
+    pid: Pid,
+    signal: Signal,
 }
 
 /// A signal that could not be sent, and to whom.
@@ -100,7 +109,17 @@ impl fmt::Display for Failure {
             }
             // No verb named: `stop` and `restart` both reach this, and `--force` is on whichever
             // one was typed.
-            Self::Ignored(pid) => write!(f, "pid {pid} still holds the lock; --force destroys it"),
+            Self::Ignored(SignalIgnored { pid, signal }) => match signal {
+                Signal::Terminate => {
+                    write!(f, "pid {pid} still holds the lock; --force destroys it")
+                }
+                // SIGKILL cannot be caught, but its delivery waits for an uninterruptible system
+                // call to return. Nothing else to suggest: the process dies when that returns.
+                Signal::Kill => write!(
+                    f,
+                    "pid {pid} outlasted SIGKILL, so it is stuck in a system call and will go when that returns"
+                ),
+            },
         }
     }
 }
@@ -139,8 +158,8 @@ fn stop_daemon(signal: Signal) -> Result<Option<Pid>, Failure> {
         debug!(daemon = %pid, "the daemon released the lock");
         Ok(Some(pid))
     } else {
-        debug!(daemon = %pid, timeout = ?STOP_TIMEOUT, "the daemon still holds the lock");
-        Err(Failure::Ignored(pid))
+        debug!(daemon = %pid, ?signal, timeout = ?STOP_TIMEOUT, "the daemon still holds the lock");
+        Err(Failure::Ignored(SignalIgnored { pid, signal }))
     }
 }
 
