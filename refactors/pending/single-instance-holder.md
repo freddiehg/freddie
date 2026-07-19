@@ -12,6 +12,14 @@ That is what keeps this clear of the stale-pid-file failure `refactors/past/sing
 
 There is a window between taking the lock and writing the pid in which the file is empty. `Held::Unnamed` is that window, rather than something a caller has to infer from an empty string.
 
+The window cannot outlive the acquire that opened it. `acquire_at` returns an `Instance` only once the pid is recorded, and a failed `record_pid` fails the acquire and drops the file, which releases the lock. So a caller that sees `Unnamed` is watching a daemon mid-startup, and a caller that wants a pid retries briefly rather than indefinitely: the state resolves within two syscalls or the process it described is already gone.
+
+## The daemon locks exclusively and a probe locks shared
+
+A probe that took the exclusive lock would be refused by another probe, and would then read the pid the last real run left in the file and report a dead process as live. Nothing has to be running for that: two `mercury status` calls at once are enough, and it is the stale-pid failure this design exists to avoid, arriving by a different door.
+
+So the two callers take different locks. `acquire_at` takes the exclusive lock, which is the claim on being the only instance. `holder_at` takes a shared one, which asks whether an exclusive holder exists without competing with anyone else asking. Verified on the pinned 1.96.0: a shared lock is refused while the exclusive lock is held, and two shared locks coexist.
+
 ## The module doc
 
 Before:
@@ -64,33 +72,55 @@ pub enum Held {
 
 ## Locking and recording split apart
 
-`acquire_at`'s body becomes three pieces, so that a probe can take the lock without writing to the file.
+`acquire_at`'s body becomes four pieces, so that a probe can ask about the lock without taking the one the daemon takes and without writing to the file.
 
 ```rust
-/// Open `path` and try to take its lock, creating the parent directory if it is missing.
+/// Open `path`, creating the parent directory if it is missing.
 ///
-/// Shared by [`acquire_at`], which keeps the file and records its pid in it, and [`holder_at`],
-/// which drops it immediately and has only asked a question.
-fn lock(path: &Path) -> Result<File, LockError> {
+/// `read(true)` is new alongside the existing write: the pid is read back through this same open
+/// mode, and a write-only handle cannot serve that.
+///
+/// `truncate(false)` still: opening must not disturb the file before the lock is held, and the
+/// holder truncates deliberately in `record_pid` once it is.
+fn open(path: &Path) -> Result<File, LockError> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(LockError::Unavailable)?;
     }
-    // `read(true)` is new alongside the existing write: the pid is read back through this same
-    // open mode, and a write-only handle cannot serve that.
-    // `truncate(false)` still: the lock must not disturb the file before it is held, and the
-    // holder truncates deliberately in `record_pid` once it is.
-    let file = OpenOptions::new()
+    OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .open(path)
-        .map_err(LockError::Unavailable)?;
-    match file.try_lock() {
-        Ok(()) => Ok(file),
+        .map_err(LockError::Unavailable)
+}
+
+/// Report what a `try_lock` family call said, naming `path` in the refusal.
+fn locked(path: &Path, result: Result<(), std::fs::TryLockError>) -> Result<(), LockError> {
+    match result {
+        Ok(()) => Ok(()),
         Err(std::fs::TryLockError::WouldBlock) => Err(LockError::AlreadyRunning(path.to_owned())),
         Err(std::fs::TryLockError::Error(e)) => Err(LockError::Unavailable(e)),
     }
+}
+
+/// Take `path`'s exclusive lock: the claim on being the only instance, held by the daemon for as
+/// long as it runs.
+fn lock_exclusive(path: &Path) -> Result<File, LockError> {
+    let file = open(path)?;
+    locked(path, file.try_lock())?;
+    Ok(file)
+}
+
+/// Take `path`'s shared lock: the question [`holder_at`] asks, refused only by an exclusive holder.
+///
+/// Shared rather than exclusive so that two probes do not refuse each other. An exclusive probe
+/// would read the losing side's answer out of a file the last real run left a pid in, and report a
+/// dead process as live.
+fn lock_shared(path: &Path) -> Result<File, LockError> {
+    let file = open(path)?;
+    locked(path, file.try_lock_shared())?;
+    Ok(file)
 }
 
 /// Write this process's pid over whatever the file held.
@@ -133,7 +163,7 @@ fn read_pid(path: &Path) -> Option<Pid> {
 /// Returns [`LockError::AlreadyRunning`] when another process holds the lock, and
 /// [`LockError::Unavailable`] when the file cannot be created, opened, locked, or written.
 pub fn acquire_at(path: &Path) -> Result<Instance, LockError> {
-    let file = lock(path)?;
+    let file = lock_exclusive(path)?;
     record_pid(&file).map_err(LockError::Unavailable)?;
     Ok(Instance { _file: file })
 }
@@ -154,11 +184,11 @@ pub fn holder(app: &str) -> Result<Held, LockError> {
     holder_at(&lock_path(app).ok_or(LockError::NoStateDir)?)
 }
 
-/// Who holds `path` right now, found by trying to take the lock and reading the file when that is
-/// refused.
+/// Who holds `path` right now, found by trying to take a shared lock and reading the file when
+/// that is refused.
 ///
-/// Taking it is the proof that nobody else had it, and the lock is released again before this
-/// returns. So the answer describes the instant it was asked, and a process may start or exit
+/// Taking it is the proof that no exclusive holder had it, and the lock is released again before
+/// this returns. So the answer describes the instant it was asked, and a process may start or exit
 /// immediately afterwards. Callers act on it knowing that; [`acquire`] remains the only thing that
 /// decides who runs.
 ///
@@ -166,7 +196,7 @@ pub fn holder(app: &str) -> Result<Held, LockError> {
 ///
 /// Returns [`LockError::Unavailable`] when the file cannot be created, opened, or locked.
 pub fn holder_at(path: &Path) -> Result<Held, LockError> {
-    match lock(path) {
+    match lock_shared(path) {
         // Dropping the file here closes it, which releases the lock we just took.
         Ok(_probe) => Ok(Held::Free),
         Err(LockError::AlreadyRunning(_)) => Ok(read_pid(path).map_or(Held::Unnamed, Held::By)),
@@ -214,6 +244,32 @@ fn probing_writes_nothing() {
     let path = temp_lock("holder-readonly");
     assert_eq!(holder_at(&path).expect("probing"), Held::Free);
     assert!(std::fs::read_to_string(&path).expect("the probe created it").is_empty());
+}
+
+// Probes must not mistake each other for a daemon. Under an exclusive probe this fails: one probe
+// refuses the others, and they answer with the pid an earlier run left in the file, reporting a
+// dead process as live while nothing at all is running.
+#[test]
+fn probes_do_not_refuse_each_other() {
+    let path = temp_lock("holder-concurrent");
+    std::fs::create_dir_all(path.parent().expect("a parent")).expect("the directory");
+    std::fs::write(&path, "4294967295").expect("a pid from an earlier run");
+    std::thread::scope(|scope| {
+        let probes: Vec<_> = (0..8)
+            .map(|_| scope.spawn(|| holder_at(&path).expect("probing")))
+            .collect();
+        for probe in probes {
+            assert_eq!(probe.join().expect("the probing thread"), Held::Free);
+        }
+    });
+}
+
+// A probe must be refused by the daemon, which is the only reason the shared lock is a lock at all.
+#[test]
+fn a_probe_is_refused_by_the_holder() {
+    let path = temp_lock("holder-exclusive");
+    let _held = acquire_at(&path).expect("the path is free");
+    assert!(matches!(holder_at(&path).expect("probing"), Held::By(_)));
 }
 
 // A longer pid from a previous run must not leave a tail behind a shorter one.
