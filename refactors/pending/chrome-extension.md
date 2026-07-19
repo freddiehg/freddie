@@ -54,27 +54,38 @@ async function mercuryUrl() {
   return `ws://127.0.0.1:${port}`;
 }
 
+// Returns the socket to send on, so nothing downstream re-reads the module variable and finds a
+// different socket than the one it asked for.
 async function connect() {
   if (
     socket &&
     (socket.readyState === WebSocket.OPEN ||
       socket.readyState === WebSocket.CONNECTING)
   ) {
-    return;
+    return socket;
   }
-  socket = new WebSocket(await mercuryUrl());
-  socket.addEventListener("close", () => (socket = null));
-  socket.addEventListener("error", () => (socket = null));
+  const ws = new WebSocket(await mercuryUrl());
+  // Each handler clears only its own socket. A connection that fails fires `error` then `close`,
+  // and by the time `close` runs a later tab event may already have replaced `socket`; an
+  // unconditional `socket = null` would clobber the live one and strand its pending send.
+  ws.addEventListener("close", () => {
+    if (socket === ws) socket = null;
+  });
+  ws.addEventListener("error", () => {
+    if (socket === ws) socket = null;
+  });
+  socket = ws;
+  return ws;
 }
 
 async function pushUrl(url) {
   if (!url) return;
-  await connect();
+  const ws = await connect();
   const payload = JSON.stringify({ kind: "IncomingEvent.Tab", value: { url } });
-  if (socket.readyState === WebSocket.OPEN) {
-    socket.send(payload);
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(payload);
   } else {
-    socket.addEventListener("open", () => socket.send(payload), { once: true });
+    ws.addEventListener("open", () => ws.send(payload), { once: true });
   }
 }
 
@@ -89,7 +100,11 @@ chrome.tabs.onUpdated.addListener((_tabId, info, tab) => {
 });
 ```
 
-`onActivated` reads the tab that was just activated by id; `onUpdated` fires per changed tab, so it filters to `tab.active` and to updates that actually carried a new `url`. Re-sending an identical URL is harmless: `on_tab` fills the same value and dispatch produces no change (`chrome-tab-url.md`).
+`onActivated` reads the tab that was just activated by id; `onUpdated` fires per changed tab, so it filters to `tab.active` and to updates that actually carried a new `url`. Re-sending an identical URL is harmless: `record_tab_url` fills the same value and dispatch produces no change (`chrome-tab-url.md`).
+
+The frame shape is `{ kind: "IncomingEvent.Tab", value: { url } }`, which is `external-events.md`'s `IncomingEvent::Tab`. Confirmed against a running mercury: that exact frame produces a dispatch, and anything else is logged and dropped.
+
+`onUpdated` covers document loads. It is not the event for a same-document navigation, which is what an SPA does when it changes route through the History API or a fragment; `chrome.webNavigation.onHistoryStateUpdated` and `onReferenceFragmentUpdated` exist for those, and whether `onUpdated` happens to carry `info.url` for them varies by version. This costs nothing today, because `Site::from_url` matches on the host and a route change inside `claude.ai` leaves the host alone. It starts mattering the moment a bind keys on the path, and that is the change that has to add `webNavigation` rather than assume `onUpdated` grew to cover it.
 
 `chrome-extension/options.html` and `chrome-extension/options.js` are one number input over `chrome.storage.local.port`, defaulting to `DEFAULT_PORT`. Changing it takes effect on the next connection, which is the next tab event, because the worker reads storage every time it opens a socket rather than caching the value.
 
