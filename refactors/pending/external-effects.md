@@ -281,6 +281,68 @@ Its `max_message_size` goes from 64 KiB to 1 MiB: a `Command.RunJs` result is wh
 
 ## The extension's half
 
+### Frames are parsed, not cast
+
+The extension now receives, and what arrives is untrusted text from a socket any local process can reach. `JSON.parse` returns `any`, and a cast to `OutgoingEffect` is a promise rather than a check: a malformed frame would flow into a handler and fail somewhere further along, with a stack that names the wrong thing.
+
+zod parses it:
+
+```ts
+import { z } from "zod";
+import type { OutgoingEffect } from "./wire/OutgoingEffect";
+
+const command = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("Command.RunJs"),
+    value: z.object({ code: z.string() }),
+  }),
+  z.object({
+    kind: z.literal("Command.OpenTab"),
+    value: z.object({ url: z.string() }),
+  }),
+  z.object({
+    kind: z.literal("Command.CloseTabs"),
+    value: z.object({ url_glob: z.string() }),
+  }),
+  z.object({ kind: z.literal("Command.ReadSelection") }),
+]);
+
+const outgoingEffect = z.object({
+  kind: z.literal("OutgoingEffect.Command"),
+  value: z.object({ id: z.number(), command }),
+});
+```
+
+A schema is a value, and ts-rs writes types, so this is a second definition of the same thing and could drift from the Rust. It cannot, because it is checked against the generated type:
+
+```ts
+// Fails to compile if the Rust and this schema stop describing the same shape.
+type Parsed = z.infer<typeof outgoingEffect>;
+const _check: (parsed: Parsed) => OutgoingEffect = (parsed) => parsed;
+const _checkBack: (effect: OutgoingEffect) => Parsed = (effect) => effect;
+```
+
+Assignable in both directions is what makes it equality rather than "the schema accepts at least this much", which is the check that would let a dropped field through.
+
+The listener parses and reports:
+
+```ts
+socket.addEventListener("message", (ev: MessageEvent<string>) => {
+  const parsed = outgoingEffect.safeParse(JSON.parse(ev.data));
+  if (!parsed.success) {
+    console.error("mercury sent a frame this cannot read", parsed.error);
+    return;
+  }
+  void run(parsed.data.value);
+});
+```
+
+Dropped with a console line rather than throwing, for the reason mercury drops what it cannot deserialize: a peer speaking nonsense is a bug in the peer, not a reason to tear down a connection that will be needed for the next frame.
+
+`chrome.storage.local` gets the same treatment, since `get` also returns `unknown` and the hand-written `typeof port === "number"` is validation written out longhand.
+
+This makes zod the extension's first runtime dependency, so what ships to the browser stops being only `tsc` output over hand-written files. It is worth it here and would not have been for the outgoing direction alone: what mercury sends up is built by types the compiler already checked, and what comes down is text from the network.
+
 ### `RunJs` is opt-in, in the extension
 
 The gate lives in the extension, because the extension is what holds the capability: mercury asking is not the dangerous half, running it is. `chrome.storage.local.runJs` defaults to `false`, and the options page carries a checkbox that says what turning it on means in the sentence next to it.
