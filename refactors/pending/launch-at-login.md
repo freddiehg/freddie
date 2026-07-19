@@ -105,17 +105,16 @@ In `client.rs`.
 /// Where `launchctl` lives. Absolute, so `PATH` cannot point this at something else.
 const LAUNCHCTL: &str = "/bin/launchctl";
 
-/// The plist as checked in, with its placeholders still in it.
-const PLIST_TEMPLATE: &str = include_str!("../assets/hg.freddie.mercury.plist");
-
 /// Why an install did not happen.
 enum NotInstalled {
     /// The environment names no home directory to put the agent in.
     NoHome,
     /// This binary's own path could not be read.
     NoExe(io::Error),
-    /// The plist could not be written.
+    /// The plist could not be written or removed.
     Unwritable(io::Error),
+    /// The plist could not be serialized.
+    Unserializable(plist::Error),
     /// `launchctl` could not be run, or refused.
     Launchctl(io::Error),
 }
@@ -159,14 +158,11 @@ pub(crate) fn install() -> i32 {
 fn install_agent() -> Result<PathBuf, NotInstalled> {
     let program = std::env::current_exe().map_err(NotInstalled::NoExe)?;
     let path = plist_path().ok_or(NotInstalled::NoHome)?;
-    let plist = PLIST_TEMPLATE
-        .replace("__MERCURY_LABEL__", &label())
-        .replace("__MERCURY_PROGRAM__", &program.to_string_lossy());
 
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(NotInstalled::Unwritable)?;
     }
-    std::fs::write(&path, plist).map_err(NotInstalled::Unwritable)?;
+    plist::to_file_xml(&path, &Agent::running(&program)).map_err(NotInstalled::Unserializable)?;
     debug!(plist = %path.display(), program = %program.display(), "wrote the agent");
 
     // Ignored: it fails when nothing was loaded, which is the normal first install.
