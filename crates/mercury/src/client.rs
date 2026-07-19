@@ -345,8 +345,11 @@ fn install_agent() -> Result<PathBuf, NotInstalled> {
     plist::to_file_xml(&path, &Agent::running(&program)).map_err(NotInstalled::Unserializable)?;
     debug!(plist = %path.display(), program = %program.display(), "wrote the agent");
 
-    // Ignored: it fails when nothing was loaded, which is the normal first install.
-    let _ = bootout();
+    // A failure here is the normal first install: there is nothing loaded to boot out. Traced
+    // rather than ignored outright, so the log still says what launchd made of it.
+    if let Err(e) = bootout() {
+        debug!(%e, "nothing was loaded to boot out");
+    }
     launchctl(&["bootstrap", &domain()?, &path.to_string_lossy()])?;
     Ok(program)
 }
@@ -372,8 +375,10 @@ pub(crate) fn uninstall() -> i32 {
 fn uninstall_agent() -> Result<(), NotInstalled> {
     let path = plist_path().ok_or(NotInstalled::NoHome)?;
     // launchd forgets the job before its description goes, or it is left holding one whose plist
-    // no longer exists. Ignored for the same reason as in `install_agent`.
-    let _ = bootout();
+    // no longer exists. A failure is nothing having been loaded, as in `install_agent`.
+    if let Err(e) = bootout() {
+        debug!(%e, "nothing was loaded to boot out");
+    }
     match std::fs::remove_file(&path) {
         Ok(()) => {
             debug!(plist = %path.display(), "removed the agent");
@@ -396,17 +401,25 @@ fn bootout() -> Result<(), NotInstalled> {
 }
 
 /// Run `launchctl` with `args`, reporting a refusal as a failure.
+///
+/// `output` rather than `status`, so launchctl's own stderr is captured instead of inherited. It
+/// complains on a `bootout` with nothing loaded, which is the normal first install, and printing
+/// that beside "mercury installed" reads like a failure. Its words are kept for the error that
+/// does fail, where they say more than an exit code.
 fn launchctl(args: &[&str]) -> Result<(), NotInstalled> {
-    let status = Command::new(LAUNCHCTL)
+    let out = Command::new(LAUNCHCTL)
         .args(args)
-        .status()
+        .output()
         .map_err(NotInstalled::Refused)?;
-    if status.success() {
+    if out.status.success() {
         Ok(())
     } else {
+        let said = String::from_utf8_lossy(&out.stderr);
         Err(NotInstalled::Refused(io::Error::other(format!(
-            "{LAUNCHCTL} {} exited with {status}",
-            args.join(" ")
+            "{LAUNCHCTL} {} exited with {}: {}",
+            args.join(" "),
+            out.status,
+            said.trim()
         ))))
     }
 }
