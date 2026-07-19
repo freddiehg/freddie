@@ -193,6 +193,15 @@ impl std::fmt::Debug for ModifierFlags {
     }
 }
 
+impl std::ops::BitOr for ModifierFlags {
+    type Output = Self;
+
+    /// The union of two sets, so a chord's modifiers read as `COMMAND | SHIFT`.
+    fn bitor(self, other: Self) -> Self {
+        Self(self.0 | other.0)
+    }
+}
+
 impl ModifierFlags {
     pub const CONTROL: Self = Self(1 << 0);
     pub const COMMAND: Self = Self(1 << 1);

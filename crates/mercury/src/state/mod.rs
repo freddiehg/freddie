@@ -19,19 +19,21 @@ use crate::effect::emit;
 use crate::handlers::*;
 use crate::{
     AnyKey, App, ForegroundEvent, Foregrounded, MercuryEffect, MercuryEvent, MercuryStruct, Quit,
-    TabEvent, Tabbed,
+    Site, TabEvent, Tabbed,
 };
 
 mod app;
 mod home;
 mod nav;
 mod resize;
+mod site;
 mod typing;
 
 pub use app::{AppData, AppLayer, ChromeApp, GhosttyApp};
 pub use home::HomeLayer;
 pub use nav::NavLayer;
 pub use resize::ResizeLayer;
+pub use site::{ClaudeAiSite, SiteData, SiteLayer};
 pub use typing::TypingLayer;
 
 /// How long a chooser layer sits idle before returning home.
@@ -241,6 +243,7 @@ pub enum Layer {
     Resize(ResizeLayer),
     Typing(TypingLayer),
     InApp(AppLayer),
+    Site(SiteLayer),
 }
 
 impl Layer {
@@ -256,12 +259,19 @@ impl Layer {
     /// `app` is the confirmed front app, which only the in-app layer reads. Typing never binds
     /// `o`, so its arm is unreachable.
     #[must_use]
-    pub const fn overlay_content(&self, app: App) -> &'static str {
+    pub fn overlay_content(&self, foreground: &Foreground) -> &'static str {
         match self {
             Self::Home(_) => home::OVERLAY,
             Self::Nav(_) => nav::OVERLAY,
             Self::Resize(_) => resize::OVERLAY,
-            Self::InApp(_) => app::overlay_for(app),
+            Self::InApp(_) => app::overlay_for(foreground.app()),
+            // The site layer's keymap is the front tab's, so it needs the URL and not just the app.
+            Self::Site(_) => site::overlay_for(
+                foreground
+                    .confirmed_chrome()
+                    .and_then(|chrome| chrome.url.as_deref())
+                    .map(Site::from_url),
+            ),
             Self::Typing(_) => typing::OVERLAY,
         }
     }
@@ -275,6 +285,7 @@ impl Layer {
             Self::Resize(_) => "Resize",
             Self::Typing(_) => "Typing",
             Self::InApp(_) => "App",
+            Self::Site(_) => "Site",
         }
     }
 
@@ -285,6 +296,7 @@ impl Layer {
     fn rearm_timeout(&mut self) -> Option<MercuryEffect> {
         match self {
             Self::InApp(inapp) => Some(inapp.rearm()),
+            Self::Site(site) => Some(site.rearm()),
             _ => None,
         }
     }
@@ -294,6 +306,7 @@ impl Layer {
 pub type MercuryPath<'a> = &'a mut Mercury;
 pub type LayerPath<'a> = PathMut<Layer, MercuryPath<'a>>;
 pub type AppLayerPath<'a> = PathMut<AppLayer, LayerPath<'a>>;
+pub type SiteLayerPath<'a> = PathMut<SiteLayer, LayerPath<'a>>;
 
 impl Default for Mercury {
     fn default() -> Self {
@@ -350,7 +363,7 @@ impl Mercury {
         if self.overlay.is_some() {
             return self.hide_overlay();
         }
-        let content = self.layer.overlay_content(self.foreground.app());
+        let content = self.layer.overlay_content(&self.foreground);
         let (guard, effect) =
             timer_effect_and_guard(OVERLAY_DWELL, |id| MercuryEvent::Timer(TimerFired(id)));
         self.overlay = Some(guard);

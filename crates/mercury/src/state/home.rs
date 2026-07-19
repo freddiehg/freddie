@@ -21,6 +21,7 @@ pub(crate) const OVERLAY: &str = include_str!("overlays/home.txt");
     Key::KeyR.down() => to_resize,
     Key::KeyT.down() => to_typing,
     Key::KeyI.down() => to_inapp,
+    Key::KeyU.down() => to_site,
     Key::KeyQ.down() => quit,
 )]
 pub struct HomeLayer {}

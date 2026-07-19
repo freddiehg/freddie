@@ -13,7 +13,7 @@ use laserbeam::Ascend;
 
 use super::go_home;
 use crate::MercuryEffect;
-use crate::state::{AppLayer, MercuryPath, NavLayer, ResizeLayer, TypingLayer};
+use crate::state::{AppLayer, MercuryPath, NavLayer, ResizeLayer, SiteLayer, TypingLayer};
 
 /// `escape` anywhere, and a layer's idle-timeout: go back to the home layer.
 ///
@@ -53,6 +53,20 @@ pub(crate) fn to_inapp<'a, E, P: Ascend<MercuryPath<'a>>>(
 ) -> Vec<MercuryEffect> {
     let (inapp, timer) = AppLayer::new();
     let mut effects = node.parent.ascend().set_layer(inapp);
+    effects.push(timer);
+    effects
+}
+
+/// `u` in home: enter the per-tab layer.
+///
+/// Next to `i` under the same finger, because the two are neighbours in meaning as well: `i` is
+/// what the frontmost app can do, `u` is what the site in its front tab can do.
+pub(crate) fn to_site<'a, E, P: Ascend<MercuryPath<'a>>>(
+    _ev: &E,
+    node: Node<P, ()>,
+) -> Vec<MercuryEffect> {
+    let (site, timer) = SiteLayer::new();
+    let mut effects = node.parent.ascend().set_layer(site);
     effects.push(timer);
     effects
 }

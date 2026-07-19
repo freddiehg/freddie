@@ -1,0 +1,5 @@
+  CLAUDE.AI
+  ────────────────────
+  n    new chat
+  o    overlay
+  esc  home

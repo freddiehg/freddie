@@ -65,3 +65,15 @@ select_window! {
     window_9 => Num9,
     window_0 => Num0,
 }
+
+/// `n` on claude.ai: start a new chat.
+///
+/// `cmd-shift-o` is the site's own shortcut, so this is a remap and not an automation: nothing has
+/// to reach into the page. The modifiers ride as flags on the one key event, which is what keeps a
+/// modifier the user is really holding from being stranded.
+pub(crate) fn new_chat<E, N>(_ev: &E, _node: N) -> Vec<MercuryEffect> {
+    vec![tap(
+        Key::KeyO,
+        ModifierFlags::COMMAND | ModifierFlags::SHIFT,
+    )]
+}

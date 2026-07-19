@@ -4,4 +4,5 @@
   r    resize
   t    typing
   i    in-app
+  u    site
   q    quit
