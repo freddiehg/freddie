@@ -1,6 +1,7 @@
 //! What mercury can be told at startup.
 
 use clap::{Parser, Subcommand};
+use tracing::Level;
 
 /// Everything mercury can be told at startup.
 ///
@@ -22,10 +23,25 @@ pub struct Args {
 /// the verbs the way a hand-maintained usage string does. Declaration order is help order.
 #[derive(Subcommand, Debug)]
 pub enum Verb {
-    /// Run the daemon in this terminal, in the foreground.
-    Daemon(DaemonArgs),
+    /// Report whether the daemon is running, and its pid.
+    Status,
+    /// Follow the log, starting nothing.
+    Logs(LogsArgs),
     /// Ask the running daemon to quit.
     Stop(StopArgs),
+    /// Run the daemon in this terminal, in the foreground.
+    Daemon(DaemonArgs),
+}
+
+/// What `mercury logs` can be told.
+#[derive(clap::Args, Debug, PartialEq, Eq)]
+pub struct LogsArgs {
+    /// The least severe records to show: `error`, `warn`, `info`, `debug`, or `trace`.
+    ///
+    /// The file always records `debug`, whatever this says, so this widens or narrows what reaches
+    /// the terminal and never what is kept. Defaults to what a daemon's own terminal defaults to.
+    #[arg(long, default_value = DEFAULT_LOG_LEVEL)]
+    pub level: Level,
 }
 
 /// What `mercury stop` can be told.
@@ -81,6 +97,7 @@ impl Default for DaemonArgs {
 mod tests {
     use super::{Args, DaemonArgs, Verb};
     use clap::Parser;
+    use tracing::Level;
 
     fn parse(args: &[&str]) -> Args {
         Args::try_parse_from(std::iter::once("mercury").chain(args.iter().copied()))
@@ -149,6 +166,34 @@ mod tests {
     #[test]
     fn stop_takes_force() {
         assert!(stop_args(&["stop", "--force"]).force);
+    }
+
+    #[test]
+    fn the_read_only_verbs_parse() {
+        assert!(matches!(parse(&["status"]).verb, Some(Verb::Status)));
+        assert!(matches!(parse(&["logs"]).verb, Some(Verb::Logs(_))));
+    }
+
+    fn logs_args(args: &[&str]) -> super::LogsArgs {
+        let Some(Verb::Logs(args)) = parse(args).verb else {
+            panic!("the logs verb parses to Verb::Logs");
+        };
+        args
+    }
+
+    // The daemon's terminal and the log follower show the same records unless told otherwise, so
+    // they default to one constant rather than to two that happen to match.
+    #[test]
+    fn logs_defaults_to_the_daemon_default() {
+        assert_eq!(
+            logs_args(&["logs"]).level.to_string().to_lowercase(),
+            super::DEFAULT_LOG_LEVEL
+        );
+    }
+
+    #[test]
+    fn logs_takes_a_level() {
+        assert_eq!(logs_args(&["logs", "--level", "debug"]).level, Level::DEBUG);
     }
 
     #[test]

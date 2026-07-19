@@ -5,14 +5,15 @@
 
 use std::fmt;
 use std::io;
-use std::process::Command;
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use freddie_single_instance::{Held, LockError, Pid};
-use tracing::{debug, info, warn};
+use tracing::{Level, debug, info, warn};
 
-use crate::cli::StopArgs;
+use crate::cli::{LogsArgs, StopArgs};
 use crate::logging::{self, Terminal};
 
 /// The app name the lock is keyed to. The daemon acquires this; the clients probe it.
@@ -170,6 +171,116 @@ pub(crate) fn stop(args: &StopArgs) -> i32 {
         }
         Err(failure) => {
             warn!("mercury: {failure}");
+            1
+        }
+    }
+}
+
+/// Report whether the daemon is running, and which process it is.
+///
+/// Exits 1 when nothing is running, so `mercury status && ...` reads the way a shell expects. That
+/// is the opposite of `stop`, which exits 0 having found nothing to stop, and both are deliberate:
+/// this verb answers a question, so its exit code is the answer, while `stop` states a goal that a
+/// stopped mercury already satisfies.
+pub(crate) fn status() -> i32 {
+    logging::init(&Terminal::Client);
+    match freddie_single_instance::holder(APP) {
+        Ok(Held::Free) => {
+            info!("mercury is not running");
+            1
+        }
+        Ok(Held::By(pid)) => {
+            info!("mercury is running (pid {pid})");
+            0
+        }
+        // The window between a daemon taking the lock and writing its pid into it. Something is
+        // running, and that is the question this verb was asked, so it answers yes without the pid
+        // rather than waiting for one.
+        //
+        // `stop` treats the same state as a failure, because a signal needs a pid and there is
+        // none. Neither is wrong: they are asking the lock different questions.
+        Ok(Held::Unnamed) => {
+            info!("mercury is running (it has just started and has not recorded its pid)");
+            0
+        }
+        Err(e) => {
+            warn!("mercury: {e}");
+            1
+        }
+    }
+}
+
+/// Where `tail` lives. Absolute, so `PATH` cannot point this at something else.
+const TAIL: &str = "/usr/bin/tail";
+
+/// How much of the existing log to show before following.
+const TAIL_LINES: &str = "50";
+
+/// The level of a record, read out of the line the `fmt` layer wrote.
+///
+/// A stamped record is `pid=N TIMESTAMP LEVEL target: message`, so the level is the third
+/// whitespace-separated token; splitting on whitespace also drops the padding the formatter puts
+/// in front of the shorter names. `None` for a line that is not a record.
+///
+/// Reading the text is what filtering a formatted log costs. A machine format would remove the
+/// coupling and break what the file is for: `CLAUDE.md` sends a person, or an agent, to read it
+/// directly.
+fn record_level(line: &str) -> Option<Level> {
+    line.split_whitespace().nth(2)?.parse().ok()
+}
+
+/// Follow the log file: show the tail of what is there, then whatever arrives.
+///
+/// `tail -F` rather than a follower of our own. It waits for a file that does not exist yet, which
+/// is the first run on a machine before anything has been logged, and it reopens by name if the
+/// file is replaced.
+///
+/// Its stdout is piped rather than inherited, so each line can be dropped or shown. Its stderr and
+/// its process group are inherited, so Ctrl-C reaches it and ends the follow. That is the whole
+/// reason `mercury-start.md` puts the daemon in a group of its own.
+///
+/// Lines are written straight to stdout rather than traced: they are already records, out of the
+/// file this is following, and tracing them would put them back into it.
+pub(crate) fn logs(args: &LogsArgs) -> i32 {
+    // `init` returns where it put the log, which is the file to follow.
+    let path = logging::init(&Terminal::Client);
+    info!("mercury: following {}", path.display());
+
+    let mut tail = match Command::new(TAIL)
+        .args(["-n", TAIL_LINES])
+        .arg("-F")
+        .arg(&path)
+        .stdout(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(e) => {
+            warn!("mercury: could not run {TAIL}: {e}");
+            return 1;
+        }
+    };
+
+    let Some(stdout) = tail.stdout.take() else {
+        warn!("mercury: {TAIL} gave no stdout to read");
+        return 1;
+    };
+    let mut out = std::io::stdout().lock();
+    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        // A line with no level is not a record: a wrapped message, or something that reached the
+        // file without going through the formatter. Shown rather than dropped, because hiding what
+        // we cannot classify is how a log loses the one line that mattered.
+        if record_level(&line).is_none_or(|level| level <= args.level) {
+            // A closed stdout is the pipeline this was feeding going away, which ends the follow
+            // rather than being worth a word about.
+            if writeln!(out, "{line}").is_err() {
+                break;
+            }
+        }
+    }
+    match tail.wait() {
+        Ok(status) => i32::from(!status.success()),
+        Err(e) => {
+            warn!("mercury: {TAIL} could not be waited on: {e}");
             1
         }
     }

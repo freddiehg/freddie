@@ -21,11 +21,13 @@ fn run(verb: Option<Verb>) -> i32 {
             daemon::run(&DaemonArgs::default());
             0
         }
+        Some(Verb::Status) => client::status(),
+        Some(Verb::Logs(args)) => client::logs(&args),
+        Some(Verb::Stop(args)) => client::stop(&args),
         Some(Verb::Daemon(args)) => {
             daemon::run(&args);
             0
         }
-        Some(Verb::Stop(args)) => client::stop(&args),
     }
 }
 

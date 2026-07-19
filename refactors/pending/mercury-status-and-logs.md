@@ -152,7 +152,7 @@ pub struct LogsArgs {
 
 `Level` is `tracing::Level`, which is `FromStr` and so parses as a clap value directly, and `DEFAULT_LOG_LEVEL` is the `"info"` `DaemonArgs` already defaults to. One constant, so the two verbs cannot drift apart.
 
-Imports gained in `client.rs`: `std::io::{BufRead, BufReader, Write}`, `std::process::Stdio`, `tracing::Level`, and `crate::cli::DEFAULT_LOG_LEVEL`.
+Imports gained in `client.rs`: `std::io::{BufRead, BufReader, Write}`, `std::process::Stdio`, `tracing::Level`, and `crate::cli::LogsArgs`. `DEFAULT_LOG_LEVEL` stays in `cli.rs`, where `LogsArgs` carries it as the clap default.
 
 `logging.rs` needs nothing new. Every verb initializes logging now that the terminal is a layer, and `init` already returns the path it logged to, which is the path `logs` follows.
 
