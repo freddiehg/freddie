@@ -8,6 +8,7 @@ use clap::Parser;
 use cli::{Args, DaemonArgs, Verb};
 
 mod cli;
+mod client;
 mod daemon;
 mod logging;
 
@@ -24,6 +25,7 @@ fn run(verb: Option<Verb>) -> i32 {
             daemon::run(&args);
             0
         }
+        Some(Verb::Stop(args)) => client::stop(&args),
     }
 }
 

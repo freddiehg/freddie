@@ -68,7 +68,7 @@ pub(crate) fn run(args: &DaemonArgs) {
     // other's keys forever, at tens of thousands of events a second, which wedges the
     // keyboard. The binding must outlive main (`let _instance`, never `let _`): dropping
     // it releases the lock, and `let _` would drop it here.
-    let _instance = match freddie_single_instance::acquire("mercury") {
+    let _instance = match freddie_single_instance::acquire(crate::client::APP) {
         Ok(instance) => instance,
         Err(e) => {
             eprintln!("mercury: {e}; quit the running one from its menu-bar icon");

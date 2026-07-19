@@ -24,6 +24,19 @@ pub struct Args {
 pub enum Verb {
     /// Run the daemon in this terminal, in the foreground.
     Daemon(DaemonArgs),
+    /// Ask the running daemon to quit.
+    Stop(StopArgs),
+}
+
+/// What `mercury stop` can be told.
+#[derive(clap::Args, Debug, PartialEq, Eq)]
+pub struct StopArgs {
+    /// Destroy the daemon with SIGKILL instead of asking it to quit.
+    ///
+    /// For a daemon that no longer answers. It runs no destructors, so a modifier the command
+    /// layer swallowed is left down in whatever app was in front.
+    #[arg(long)]
+    pub force: bool,
 }
 
 /// What the terminal shows when nothing says otherwise. Shared by [`DaemonArgs`]'s clap default
@@ -119,6 +132,23 @@ mod tests {
     #[test]
     fn the_port_is_not_a_top_level_flag() {
         assert!(Args::try_parse_from(["mercury", "--port", "4001"]).is_err());
+    }
+
+    fn stop_args(args: &[&str]) -> super::StopArgs {
+        let Some(Verb::Stop(args)) = parse(args).verb else {
+            panic!("the stop verb parses to Verb::Stop");
+        };
+        args
+    }
+
+    #[test]
+    fn stop_is_gentle_by_default() {
+        assert!(!stop_args(&["stop"]).force);
+    }
+
+    #[test]
+    fn stop_takes_force() {
+        assert!(stop_args(&["stop", "--force"]).force);
     }
 
     #[test]
