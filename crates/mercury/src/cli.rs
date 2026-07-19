@@ -33,7 +33,8 @@ pub enum Verb {
     Logs(LogsArgs),
     /// Ask the running daemon to quit.
     Stop(StopArgs),
-    /// Run the daemon in this terminal, in the foreground.
+    /// Run the daemon in this process. Not for typing: `mercury start` spawns it.
+    #[command(hide = true)]
     Daemon(DaemonArgs),
 }
 
@@ -139,6 +140,12 @@ mod tests {
     #[test]
     fn restart_takes_force() {
         assert!(restart_args(&["restart", "--force"]).force);
+    }
+
+    // Hidden is not gone: `start` spawns it and the launch agent runs it.
+    #[test]
+    fn the_daemon_verb_still_parses() {
+        assert!(matches!(parse(&["daemon"]).verb, Some(Verb::Daemon(_))));
     }
 
     #[test]
