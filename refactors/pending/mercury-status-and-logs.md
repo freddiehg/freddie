@@ -2,32 +2,23 @@
 
 Two read-only verbs. `mercury status` says whether a daemon is running and which process it is; `mercury logs` follows the log file. Neither starts anything, stops anything, or signals anything, and both are useful against a daemon started by hand in another pane.
 
-Follows `single-instance-holder.md`, for `holder`, and `mercury-daemon-verb.md`, for the verb dispatch. Independent of `mercury-stop.md` and `mercury-start.md`, and can ship before either.
+Follows `refactors/past/mercury-stop.md`, which brought `client.rs` and its `APP` constant into being, and `refactors/past/single-instance-holder.md`, for `holder`. `mercury-start.md` builds the bare `mercury`'s log follower on `logs`.
 
-These are the first clients, so this is where `client.rs` starts. `cli.rs` holds what the command line says; `client.rs` holds what the verbs that are not the daemon do.
+## Read-only verbs leave no record
 
-## `client.rs`
+`stop` initializes logging and traces what it did, because it ended a process and the log is where the next person looks to find out why. These two change nothing, so they write nothing: no `logging::init`, no tracing, and errors on stderr only.
 
-```rust
-//! The client verbs: everything `mercury` does that is not being the daemon.
-//!
-//! None of these takes the single-instance lock. They probe it to find the daemon, and the daemon
-//! is the only process that holds it.
-
-use freddie_single_instance::Held;
-
-/// The app name the lock is keyed to. The daemon acquires this; the clients probe it.
-pub(crate) const APP: &str = "mercury";
-```
-
-`daemon::run` takes its lock through `freddie_single_instance::acquire(crate::client::APP)`, rather than repeating the `"mercury"` literal that is there today.
+That is not only tidiness. `status` is the verb a shell prompt or a watch loop runs on a timer, and a client that logged every probe would fill the daemon's own log with records of being asked whether it was alive. `logs` is worse, since it follows the file it would be writing to.
 
 ## `mercury status`
 
 ```rust
 /// Report whether the daemon is running, and which process it is.
 ///
-/// Exits 1 when nothing is running, so `mercury status && ...` reads the way a shell expects.
+/// Exits 1 when nothing is running, so `mercury status && ...` reads the way a shell expects. That
+/// is the opposite of `stop`, which exits 0 having found nothing to stop, and both are deliberate:
+/// this verb answers a question, so its exit code is the answer, while `stop` states a goal that a
+/// stopped mercury already satisfies.
 pub(crate) fn status() -> i32 {
     match freddie_single_instance::holder(APP) {
         Ok(Held::Free) => {
@@ -39,7 +30,11 @@ pub(crate) fn status() -> i32 {
             0
         }
         // The window between a daemon taking the lock and writing its pid into it. Something is
-        // running, and that is the question this verb was asked.
+        // running, and that is the question this verb was asked, so it answers yes without the
+        // pid rather than waiting for one.
+        //
+        // `stop` treats the same state as a failure, because a signal needs a pid and there is
+        // none. Neither is wrong: they are asking the lock different questions.
         Ok(Held::Unnamed) => {
             println!("mercury is running (it has just started and has not recorded its pid)");
             0
@@ -51,6 +46,8 @@ pub(crate) fn status() -> i32 {
     }
 }
 ```
+
+`use freddie_single_instance::Held;` joins the imports `client.rs` already has.
 
 ## `mercury logs`
 
@@ -126,39 +123,73 @@ pub fn init(directives: &str) -> PathBuf {
 
 ## Wiring
 
-`Verb` gains two variants, ahead of `Daemon` in declaration order so they read first in `--help`:
+`Verb` gains two variants. Declaration order is help order, and the order is the verbs that talk to a daemon before the one that becomes it, so the two most-run verbs are the first two lines of `mercury --help`.
 
-```diff
- pub enum Verb {
-+    /// Follow the log, starting nothing.
-+    Logs,
-+    /// Report whether the daemon is running, and its pid.
-+    Status,
-     /// Run the daemon in this terminal, in the foreground.
-     Daemon(DaemonArgs),
- }
+`crates/mercury/src/cli.rs`, before:
+
+```rust
+pub enum Verb {
+    /// Run the daemon in this terminal, in the foreground.
+    Daemon(DaemonArgs),
+    /// Ask the running daemon to quit.
+    Stop(StopArgs),
+}
 ```
 
-`main.rs` gains `mod client;` and two arms:
+After:
 
-```diff
- fn run(verb: Option<Verb>) -> i32 {
-     match verb {
-         None => {
-             daemon::run(DEFAULT_LOG_LEVEL);
-             0
-         }
-+        Some(Verb::Logs) => client::logs(),
-+        Some(Verb::Status) => client::status(),
-         Some(Verb::Daemon(args)) => {
-             daemon::run(&args.log_level);
-             0
-         }
-     }
- }
+```rust
+pub enum Verb {
+    /// Report whether the daemon is running, and its pid.
+    Status,
+    /// Follow the log, starting nothing.
+    Logs,
+    /// Ask the running daemon to quit.
+    Stop(StopArgs),
+    /// Run the daemon in this terminal, in the foreground.
+    Daemon(DaemonArgs),
+}
 ```
 
-Parse tests in `cli.rs`, matching the existing ones:
+`crates/mercury/src/main.rs`, before:
+
+```rust
+fn run(verb: Option<Verb>) -> i32 {
+    match verb {
+        None => {
+            daemon::run(&DaemonArgs::default());
+            0
+        }
+        Some(Verb::Daemon(args)) => {
+            daemon::run(&args);
+            0
+        }
+        Some(Verb::Stop(args)) => client::stop(&args),
+    }
+}
+```
+
+After:
+
+```rust
+fn run(verb: Option<Verb>) -> i32 {
+    match verb {
+        None => {
+            daemon::run(&DaemonArgs::default());
+            0
+        }
+        Some(Verb::Status) => client::status(),
+        Some(Verb::Logs) => client::logs(),
+        Some(Verb::Stop(args)) => client::stop(&args),
+        Some(Verb::Daemon(args)) => {
+            daemon::run(&args);
+            0
+        }
+    }
+}
+```
+
+Parse tests in `cli.rs`, beside the existing ones:
 
 ```rust
 #[test]
@@ -171,6 +202,7 @@ fn the_read_only_verbs_parse() {
 ## Verifying
 
 - `mercury status` with nothing running prints "mercury is not running" and exits 1.
-- `cargo run -p mercury -- daemon` in another pane, then `mercury status` prints that pane's pid and exits 0.
+- `mercury daemon` in another pane, then `mercury status` prints that pane's pid and exits 0, and the pid matches the one `mercury stop` reports when it ends it.
+- `mercury status` writes nothing to `~/Library/Logs/mercury/mercury.log`: the file's line count is the same before and after.
 - `mercury logs` prints the tail of the log and then follows it: switching layers in the daemon makes `dispatch` lines appear. Ctrl-C returns to the shell and leaves the daemon running.
 - `mercury logs` on a machine that has never run mercury waits, printing nothing, and starts printing when a daemon first writes.
