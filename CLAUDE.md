@@ -50,6 +50,7 @@ The file always records down to `debug`, whatever the terminal is set to, so a r
 - If a comment provides no more information than one would get by reading the code, do not include the comment.
 - A comment should not describe what wasn't done, ESPECIALLY if "we didn't do x" is more indicative of the fact that we either previously discussed doing X or in a previous iteration of a planning doc, you suggested doing X.
 - In JavaScript, a discriminated union takes exactly one form: `{ kind: "Type.Variant", value: T }`. The tag is always `kind`, its value is the dotted `Type.Variant` name, and the payload is always the single `value` field (never inline fields, never a bare variant name). Every variant that shares a `Type` prefix belongs to the same union, so `Type.` is how you read off which union a value is in.
+- Never poll and loop. Always select! or the like.
 
 ### Coding standards: nits
 
