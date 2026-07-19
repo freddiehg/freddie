@@ -28,6 +28,12 @@ This section is extremely important. A frequent source of frustration is deviati
 
 The standard for the model is exhaustive: every key in every reachable state, asserting exactly what dispatch produces. The model is a pure function of state and event, so the full table is checkable and doubles as documentation of the keymap. Not all of it exists yet; new bindings should extend toward it rather than test only the happy path.
 
+## Running mercury
+
+Never kill, quit, or restart a running mercury, and never start one that would take the single-instance lock from it. It is the live keyboard remapper on this machine, so stopping it changes how every keystroke behaves outside this session, and starting a replacement is not the same thing as leaving the one that was there alone. There is exactly one at a time (`refactors/past/single-instance.md`), so a second one cannot be started alongside it either.
+
+Verify against the mercury that is already running, or ask for a restart and let it happen. The event socket is reachable without touching the process at all: connect to `127.0.0.1:3883` and send a frame, then read the dispatch record it produced out of the log.
+
 ## Logs
 
 mercury writes its tracing output to `~/Library/Logs/mercury/mercury.log`, always, appending across runs. Read that file to debug a run.
