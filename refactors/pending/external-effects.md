@@ -29,36 +29,19 @@ pub struct CommandMessage {
 
 /// What a `MercuryEffect::Browser` carries. An effect, never an event.
 ///
-/// Every variant is named and its payload means one thing. That is the whole safety story: a
-/// hijacked channel can open a tab, close some tabs, and read a selection, none of which reaches an
-/// account. [`RunJs`] is the exception and is why it is refused unless deliberately turned on.
+/// Every variant is named and its payload means one thing. There is no variant that carries code,
+/// and there will not be: a command whose payload is "whatever the far end can do" would make this
+/// channel a way to run anything in a page holding your logged-in sessions, and the enumerated set
+/// is the whole reason a hijacked channel is a nuisance rather than a compromise.
 #[derive(serde::Serialize, Debug)]
 #[serde(tag = "kind", content = "value")]
 pub enum Command {
-    #[serde(rename = "Command.RunJs")]
-    RunJs(RunJs),
     #[serde(rename = "Command.OpenTab")]
     OpenTab(OpenTab),
     #[serde(rename = "Command.CloseTabs")]
     CloseTabs(CloseTabs),
     #[serde(rename = "Command.ReadSelection")]
     ReadSelection,
-}
-
-/// Arbitrary JavaScript, run in the front tab.
-///
-/// Off unless the extension's options page has been used to turn it on, and off again on a fresh
-/// install. Every other command is a named thing with a bounded meaning; this one's payload means
-/// "whatever the far end can do", in a page holding your logged-in sessions, which makes it the
-/// only reason the token below has to exist at all.
-///
-/// It is the same hole `external-events.md` refuses in the other direction, where `MercuryEvent`
-/// does not derive `Deserialize` so that remote key injection is unrepresentable rather than
-/// filtered. Here it cannot be unrepresentable, because the point of it is to be open-ended, so it
-/// is opt-in instead.
-#[derive(serde::Serialize, Debug)]
-pub struct RunJs {
-    pub code: String,
 }
 
 #[derive(serde::Serialize, Debug)]
@@ -115,7 +98,6 @@ The reply comes back up the socket, so it is a variant of `external-events.md`'s
 
 ```jsonc
 // mercury -> client
-{ "kind": "OutgoingEffect.Command", "value": { "id": 42, "command": { "kind": "Command.RunJs", "value": { "code": "document.title" } } } }
 { "kind": "OutgoingEffect.Command", "value": { "id": 43, "command": { "kind": "Command.ReadSelection" } } }
 
 // client -> mercury
@@ -127,9 +109,9 @@ A unit variant like `Command.ReadSelection` carries no `value` at all.
 
 ## The token
 
-`external-events.md` ships no auth, and says why: a client that can only report a tab URL is a client whose worst move is a lie about the current tab. This doc breaks that, and how badly depends on whether `RunJs` has been turned on.
+`external-events.md` ships no auth, and says why: a client that can only report a tab URL is a client whose worst move is a lie about the current tab. This doc raises the ceiling, though not as far as it would go if a command could carry code.
 
-With it off, the ceiling is a hijacked channel opening a tab, closing tabs matching a pattern, and reading the selection. With it on, the ceiling is code running in every session you are logged into. Both ends have to know who they are talking to either way, and the second is what makes it worth a shared secret rather than a shrug.
+What a hijacked channel gets is opening tabs, closing tabs matching a pattern, acting on the selected item, and reading the selection. Closing tabs loses work and reading the selection leaks whatever is on screen, so both ends should still know who they are talking to. That is a shared secret rather than nothing, and it is not the difference between annoying and catastrophic that arbitrary code would have been.
 
 - mercury has to know the client is the extension. Otherwise a local process connects, sends one tab message to become the command target, and receives the commands mercury meant for the browser. `external-events.md`'s origin check does not cover this: it rules out web pages, and a local process sends whatever `Origin` it likes, or none.
 - The extension has to know the server is mercury. A local process that binds 3883 before mercury starts is a server the extension will connect to and take commands from, and those commands run in your tabs. A client-presents-a-secret scheme does nothing about it, because the impostor can accept any secret it is handed.
@@ -277,7 +259,7 @@ impl Client {
 }
 ```
 
-Its `max_message_size` goes from 64 KiB to 1 MiB: a `Command.RunJs` result is whatever the page returned, which is bigger than a URL.
+Its `max_message_size` goes from 64 KiB to 1 MiB, for `Command.ReadSelection`: a selection is whatever the user dragged over, and a whole article is past 64 KiB.
 
 ## The extension's half
 
@@ -292,10 +274,6 @@ import { z } from "zod";
 import type { OutgoingEffect } from "./wire/OutgoingEffect";
 
 const command = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("Command.RunJs"),
-    value: z.object({ code: z.string() }),
-  }),
   z.object({
     kind: z.literal("Command.OpenTab"),
     value: z.object({ url: z.string() }),
@@ -343,21 +321,6 @@ Dropped with a console line rather than throwing, for the reason mercury drops w
 
 This makes zod the extension's first runtime dependency, so what ships to the browser stops being only `tsc` output over hand-written files. It is worth it here and would not have been for the outgoing direction alone: what mercury sends up is built by types the compiler already checked, and what comes down is text from the network.
 
-### `RunJs` is opt-in, in the extension
-
-The gate lives in the extension, because the extension is what holds the capability: mercury asking is not the dangerous half, running it is. `chrome.storage.local.runJs` defaults to `false`, and the options page carries a checkbox that says what turning it on means in the sentence next to it.
-
-```js
-if (command.kind === "Command.RunJs") {
-  const { runJs } = await chrome.storage.local.get({ runJs: false });
-  if (!runJs) {
-    return { kind: "Result.Err", value: "RunJs is off; turn it on in the extension's options" };
-  }
-}
-```
-
-Refused rather than ignored, so a handler that depended on it gets an error it can report instead of a timeout it cannot explain.
-
 The manifest gains `scripting` (to inject into pages) and host permissions for the sites it will script:
 
 ```json
@@ -376,16 +339,6 @@ async function activeTab() {
 }
 
 const HANDLERS = {
-  "Command.RunJs": async ({ code }) => {
-    const tab = await activeTab();
-    const [r] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      world: "MAIN",
-      args: [code],
-      func: (src) => eval(src),
-    });
-    return r.result;
-  },
   "Command.OpenTab": async ({ url }) => {
     await chrome.tabs.create({ url });
     return null;
@@ -423,7 +376,7 @@ socket.addEventListener("message", async (ev) => {
 
 `command.value ?? {}` covers `Command.ReadSelection`, which is a unit variant and so arrives with no `value`.
 
-`Command.RunJs` and `Command.ReadSelection` run in `world: "MAIN"` so page globals (`getSelection`, page functions) are in scope. `Command.CloseTabs` takes a Chrome URL match pattern in `url_glob`.
+`Command.ReadSelection` runs in `world: "MAIN"` so the page's own `getSelection` is in scope. The injected function is written here and fixed at build time; nothing the socket carries becomes code. `Command.CloseTabs` takes a Chrome URL match pattern in `url_glob`.
 
 The listener is registered inside `connect`, on the socket it just created, so a reconnect after the service worker was killed re-registers it.
 
