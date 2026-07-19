@@ -4,11 +4,13 @@ Run mercury as a per-user LaunchAgent that starts with the session and restarts 
 
 ## Boot into typing
 
-`Mercury::default()` boots into `Layer::Typing`, the passthrough layer: it binds only `escape` and passes everything else through, so the keyboard is normal at login. Nothing extra is needed; the launchd build just runs the default. (Home, the command layer, swallows every key it does not bind, which is why it cannot be the boot state.)
+`Mercury::default()` boots into `Layer::Typing`, which binds nothing at all: every key falls to the root, runs through the `jk` sequence, and passes through. So the keyboard is normal at login, and the launchd build just runs the default. Home, the command layer, swallows every key it does not bind, which is why it cannot be the boot state.
 
 There is no dedicated off state; typing IS the login-safe boot state.
 
-The hole: `escape` in typing drops to Home, the dead-keyboard state. So the recovery paths below are load-bearing, not nice-to-haves.
+The way from typing into Home is `jk` — `KeyJ` then `KeyK` within `JK_TIMEOUT`, 200ms. Nothing else leaves typing, and in particular `escape` does not: it is bound in Home, not in typing or at the root.
+
+So the hazard at login is typing a literal `jk` fast enough, which lands you in the layer that swallows unbound keys. It takes two deliberate keys inside a 200ms window rather than one stray press, which is why the recovery paths below are worth having without being the only thing standing between you and a dead keyboard.
 
 ## LaunchAgent, not daemon
 
