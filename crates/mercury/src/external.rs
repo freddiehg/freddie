@@ -3,7 +3,10 @@
 //! The transport is generic and the vocabulary is mercury's, the same split `freddie_app_nav` uses:
 //! the socket hands up a frame as a `&str`, and [`on_message`] decides what it means.
 
-use tracing::warn;
+use tokio::sync::mpsc::UnboundedSender;
+use tracing::{debug, warn};
+
+use crate::{MercuryEvent, tab};
 
 /// The port mercury listens on when nothing overrides it. Hardcoded in the extension too.
 ///
@@ -25,24 +28,31 @@ pub const DEFAULT_PORT: u16 = 3883;
 /// keyboard, no remote kill" would be a rule some match arm enforces rather than something the
 /// types say.
 ///
-/// Empty, so every frame is refused with ``unknown variant `IncomingEvent.Tab`, there are no
-/// variants``. Variants arrive with the features that want them.
 #[derive(serde::Deserialize, Debug)]
 #[serde(tag = "kind", content = "value")]
-pub enum IncomingEvent {}
+pub enum IncomingEvent {
+    /// The front browser tab's URL changed.
+    #[serde(rename = "IncomingEvent.Tab")]
+    Tab(TabMessage),
+}
 
-/// Turn one frame into an event. Runs on the socket's runtime, so it parses, dispatches, and
-/// returns.
+#[derive(serde::Deserialize, Debug)]
+pub struct TabMessage {
+    pub url: String,
+}
+
+/// Turn one frame into an event and send it. Runs on the socket's runtime, so it parses, sends,
+/// and returns.
 ///
 /// A frame that is not a valid [`IncomingEvent`] is logged and dropped: a client speaking nonsense
-/// is a client bug, not a reason to tear the connection down. With [`IncomingEvent`] empty that is
-/// every frame, and connecting and being ignored is what a client should see today.
-pub fn on_message(text: &str) {
+/// is a client bug, not a reason to tear the connection down.
+pub fn on_message(text: &str, event_tx: &UnboundedSender<MercuryEvent>) {
     match serde_json::from_str::<IncomingEvent>(text) {
-        // `IncomingEvent` has no variants, so this value cannot exist and the arm is empty. The
-        // first variant to land breaks this line, which is how the compiler asks where the event
-        // goes; it takes an `event_tx` from then on.
-        Ok(never) => match never {},
+        Ok(IncomingEvent::Tab(TabMessage { url })) => {
+            debug!(%url, "tab");
+            // A closed channel means the event loop has ended, which is the way out running.
+            let _ = event_tx.send(tab(url));
+        }
         Err(e) => warn!(error = %e, frame = text, "undeserializable frame"),
     }
 }
@@ -52,10 +62,21 @@ mod tests {
     use super::IncomingEvent;
 
     #[test]
-    fn every_frame_is_refused_while_the_vocabulary_is_empty() {
+    fn a_tab_frame_carries_its_url() {
+        let frame = r#"{"kind":"IncomingEvent.Tab","value":{"url":"https://claude.ai/new"}}"#;
+        let IncomingEvent::Tab(tab) =
+            serde_json::from_str::<IncomingEvent>(frame).expect("a tab frame deserializes");
+        assert_eq!(tab.url, "https://claude.ai/new");
+    }
+
+    #[test]
+    fn nothing_outside_the_vocabulary_deserializes() {
         for frame in [
-            r#"{"kind":"IncomingEvent.Tab","value":{"url":"https://claude.ai/new"}}"#,
+            // The key vocabulary is mercury's own and stays unreachable from the wire.
             r#"{"kind":"MercuryEvent.Key","value":{"key":"KeyQ"}}"#,
+            r#"{"kind":"IncomingEvent.Quit","value":null}"#,
+            // A tab frame with no url at all.
+            r#"{"kind":"IncomingEvent.Tab","value":{}}"#,
             "{}",
             "not json at all",
         ] {

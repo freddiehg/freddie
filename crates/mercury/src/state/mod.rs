@@ -19,6 +19,7 @@ use crate::effect::emit;
 use crate::handlers::*;
 use crate::{
     AnyKey, App, ForegroundEvent, Foregrounded, MercuryEffect, MercuryEvent, MercuryStruct, Quit,
+    TabEvent, Tabbed,
 };
 
 mod app;
@@ -70,6 +71,7 @@ pub(crate) fn arm_jk_timeout(window: Duration) -> (TimerGuard, MercuryEffect) {
 #[binds(MercuryStruct)]
 #[bind(
     Foregrounded => record_front_app,
+    Tabbed => record_tab_url,
     Quit => quit,
     // Only this run's window: a firing from a run that has since ended matches nothing, so the
     // handler never sees it.
@@ -575,6 +577,12 @@ pub const fn key(key: Key) -> MercuryEvent {
 #[must_use]
 pub const fn foreground(app: App) -> MercuryEvent {
     MercuryEvent::Foreground(ForegroundEvent { app })
+}
+
+/// A tab event, carrying the front tab's URL as the browser reported it.
+#[must_use]
+pub const fn tab(url: String) -> MercuryEvent {
+    MercuryEvent::Tab(TabEvent { url })
 }
 
 /// A quit-request event (the menu bar's Quit).

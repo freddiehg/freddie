@@ -12,6 +12,7 @@ mod overlay;
 mod quit;
 mod resize;
 mod root;
+mod tab;
 
 pub(crate) use app::*;
 pub(crate) use foreground::*;
@@ -21,6 +22,7 @@ pub(crate) use overlay::*;
 pub(crate) use quit::*;
 pub(crate) use resize::*;
 pub(crate) use root::*;
+pub(crate) use tab::*;
 
 use laserbeam::Ascend;
 

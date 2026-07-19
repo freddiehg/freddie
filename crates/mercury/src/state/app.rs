@@ -34,7 +34,6 @@ pub(crate) const fn overlay_for(app: App) -> &'static str {
 #[binds(MercuryStruct)]
 #[derived_child(app_data)]
 #[bind(
-    // Only this layer's own timer: a firing from a layer already left matches nothing.
     |path| path.get().home_timeout.trigger() => to_home,
     Key::Escape.down() => to_home,
     Key::KeyO.down() => toggle_overlay,

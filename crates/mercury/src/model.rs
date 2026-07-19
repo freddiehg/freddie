@@ -3,7 +3,7 @@
 use bind::Bindings;
 use freddie_keys::{Key, KeyEvent, KeyPress};
 
-use crate::{AnyKey, ForegroundEvent, Foregrounded, MercuryEffect, Quit};
+use crate::{AnyKey, ForegroundEvent, Foregrounded, MercuryEffect, Quit, TabEvent, Tabbed};
 use freddie::TimerFired;
 
 /// Every trigger Mercury can register, one variant per source.
@@ -13,6 +13,7 @@ pub enum MercuryTrigger {
     KeyPress(KeyPress),
     AnyKey(AnyKey),
     Foregrounded(Foregrounded),
+    Tabbed(Tabbed),
     Quit(Quit),
 }
 
@@ -26,6 +27,7 @@ pub enum MercuryTrigger {
 pub enum MercuryEvent {
     Key(KeyEvent),
     Foreground(ForegroundEvent),
+    Tab(TabEvent),
     Quit(Quit),
     /// A timer fired, carrying which one. Every timer shares it: what tells them apart is which
     /// node still holds that guard, which its binding matches on.

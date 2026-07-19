@@ -173,7 +173,11 @@ async fn run(
     // A busy port panics. The single-instance lock already means the squatter is some other
     // program, and a mercury that came up deaf would present as "the extension broke" while
     // looking perfectly healthy.
-    let _socket = freddie_event_socket::listen(port, mercury::on_message).unwrap_or_else(|e| {
+    let _socket = freddie_event_socket::listen(port, {
+        let event_tx = event_tx.clone();
+        move |text| mercury::on_message(text, &event_tx)
+    })
+    .unwrap_or_else(|e| {
         panic!("could not bind 127.0.0.1:{port}: {e}; find it with `lsof -i :{port}`")
     });
 
