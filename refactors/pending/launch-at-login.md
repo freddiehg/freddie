@@ -44,6 +44,10 @@ So the hazard at login is typing a literal `jk` fast enough, which lands you in 
 
 `KeepAlive`/`SuccessfulExit=false` restarts on a crash but stays dead after a deliberate exit. Every deliberate way out is one: `q` from home, the menu bar's Quit, `mercury stop`, and `launchctl bootout` all reach the model's quit and exit zero, because SIGTERM is routed into the event channel (`refactors/past/mercury-stop.md`).
 
+So does every refusal to start. `mercury daemon` exits zero when another instance holds the lock, when the menu bar cannot be created, and when the keyboard grab is denied. That is the behaviour this plist wants and it must stay that way: none of those is fixed by trying again, and a nonzero exit would have launchd retry a refused daemon every `ThrottleInterval` for as long as the machine is up. launchd revives a mercury that died unexpectedly and leaves one down that declined to run.
+
+It is worth stating because it currently happens by omission rather than by intent — `daemon::run` returns nothing and `main` hands back a literal zero — and because the obvious tidying, returning a code from each failure arm, is the thing that would break it. If those arms ever do report codes, the plist needs `SuccessfulExit` reconsidered in the same change.
+
 `ThrottleInterval` stops a crash loop from respawning a keyboard-eater ten times a second. No `StandardOutPath` and no `LOG_LEVEL`: mercury writes its own log, and `--log-level` governs a terminal a launchd job does not have. `HOME` is set for agents, which `logging::log_dir` needs; `PATH` is minimal but `/bin/kill` and `open`, the only subprocesses, are at absolute paths.
 
 ```
