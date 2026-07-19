@@ -87,7 +87,15 @@ Nothing extra is needed for a hand-started mercury meeting the agent's. `mercury
 
 ## Bundle vs bare binary
 
-A bare binary at `/usr/local/bin/mercury` is enough for a headless remapper. Once the menu bar owns an `NSStatusItem`, an app bundle with `SMAppService.agent(plistName:)` (macOS 13+) becomes the cleaner path: it registers the agent from the bundle instead of a hand-installed plist. Decide it with the menu bar, not before.
+Everything above ships a bare binary: `mercury` at `/usr/local/bin`, a plist written by hand into `~/Library/LaunchAgents`, and `launchctl bootstrap` run once. That works and is what this doc plans.
+
+The alternative is an app bundle. `Mercury.app` holds the binary at `Contents/MacOS/mercury`, an `Info.plist`, and its agent plist at `Contents/Library/LaunchAgents/`; the app calls `SMAppService.agent(plistName:).register()` (macOS 13+) and macOS installs the agent itself. Three things follow from that, and none of them are available to a bare binary:
+
+- the job appears in System Settings under Login Items, with a toggle, instead of existing only as a file the user has to know about
+- `LSUIElement` in `Info.plist` makes it an accessory app, replacing the `freddie_main_loop::init_menu_bar_app()` call
+- a bundle identifier and one signature over the whole bundle give TCC a stable identity to key a grant to
+
+The third is the reason to decide this after the launchd experiment rather than before it. If an agent gets a tap, the bare binary is enough and the bundle buys only tidiness. If it does not, a signed bundle is the most likely thing that fixes it, and the work belongs there rather than in a wrapper.
 
 ## Open
 
