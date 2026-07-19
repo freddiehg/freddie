@@ -98,10 +98,9 @@ impl fmt::Display for Failure {
             Self::Unsignalable(SignalFailure { pid, error }) => {
                 write!(f, "could not signal pid {pid}: {error}")
             }
-            Self::Ignored(pid) => write!(
-                f,
-                "pid {pid} still holds the lock; `mercury stop --force` destroys it"
-            ),
+            // No verb named: `stop` and `restart` both reach this, and `--force` is on whichever
+            // one was typed.
+            Self::Ignored(pid) => write!(f, "pid {pid} still holds the lock; --force destroys it"),
         }
     }
 }
