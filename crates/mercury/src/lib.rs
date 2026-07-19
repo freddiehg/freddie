@@ -44,12 +44,14 @@
 pub use freddie_keys::{Key, KeyEvent, KeyPress, ModifierFlags, PressType};
 
 mod effect;
+mod external;
 mod handlers;
 mod model;
 mod sources;
 mod state;
 
 pub use effect::{MercuryEffect, Placement};
+pub use external::{DEFAULT_PORT, on_message};
 pub use model::{MercuryEvent, MercuryStruct, MercuryTrigger};
 pub use sources::{AnyKey, App, ForegroundEvent, Foregrounded, Quit};
 pub use state::{

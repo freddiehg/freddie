@@ -24,6 +24,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 clap = { version = "4.6.2", features = ["derive", "env"] }
+freddie_event_socket = { version = "0.0.1", path = "../freddie_event_socket" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.150"
 
 [features]
 # Derives the tests need and the normal build does not: effect equality, for asserting what a
@@ -40,6 +43,9 @@ bind = { path = "../bind", version = "0.0.1", features = ["check"] }
 mercury = { path = ".", features = ["testing"] }
 # The transitions tests rebuild a timer effect to assert what entering nav produced.
 freddie = { path = "../freddie", version = "0.0.1" }
+tokio-tungstenite = "0.24"
+futures-util = { version = "0.3.33", default-features = false }
+tokio = { version = "1", features = ["rt", "macros", "net", "time"] }
 
 [lints]
 workspace = true
