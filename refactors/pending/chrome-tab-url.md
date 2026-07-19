@@ -74,7 +74,53 @@ pub struct ClaudeAiSite {}
 
 A derived level can itself have a derived child (the `derived.rs` test pins exactly this: two derived levels, one under the other, reaching the root). So `ChromeApp` -> `SiteData` -> the site node is a legal chain, and `site_data` reaches the root by ascending its parent chain the way `app_data` reaches `root.foregrounded`. A site with no binds is not a variant and returns `None`, exactly like `App::Zed` in `app_data`.
 
-`Site::from_url` parses the host and maps it, the browser-tab analog of `App::from_bundle_id`: `claude.ai` -> `Site::ClaudeAi`, everything else -> `Site::Other`. The raw URL stays on the Chrome value, so later handlers that want the URL itself (copy-url, open-in-editor) still have it.
+`Site::from_url` is the browser-tab analog of `App::from_bundle_id`, and it matches on the host alone. The raw URL stays on the Chrome value, so later handlers that want the URL itself (copy-url, open-in-editor) still have it.
+
+```rust
+/// The site a tab belongs to. `Other` is anything with no binds of its own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Site {
+    ClaudeAi,
+    Other,
+}
+
+impl Site {
+    /// Which site `url` belongs to.
+    ///
+    /// The host has to match exactly, so `claude.ai.evil.com` is [`Site::Other`]: a suffix match
+    /// would hand any domain that ends the right way whatever binds the real site has.
+    #[must_use]
+    pub fn from_url(url: &str) -> Self {
+        match host(url) {
+            Some("claude.ai") => Self::ClaudeAi,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// The host of `url`, without a leading `www.`, a port, or userinfo. `None` for anything with no
+/// host at all, which is `about:blank` and `file:///…`.
+///
+/// Chrome hands up a URL it has already normalized, so the host arrives lowercased and there is no
+/// case folding to do here. Hand-rolled rather than the `url` crate, whose idna support pulls the
+/// ICU4X tree for a comparison this covers.
+fn host(url: &str) -> Option<&str> {
+    let after_scheme = url.split_once("://")?.1;
+    let authority = after_scheme
+        .find(['/', '?', '#'])
+        .map_or(after_scheme, |end| &after_scheme[..end]);
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let host = host_port.find(':').map_or(host_port, |end| &host_port[..end]);
+    (!host.is_empty()).then(|| host.strip_prefix("www.").unwrap_or(host))
+}
+```
+
+Compiled and tested before landing here, clippy-clean under the workspace's `pedantic` and `nursery` lints. What `host` is pinned against:
+
+- `https://claude.ai/new`, `https://claude.ai`, `https://claude.ai?q=1`, `https://claude.ai#top` all give `claude.ai`.
+- `https://www.claude.ai/x` gives `claude.ai`, `http://claude.ai:8080/x` gives `claude.ai`, and `https://user:pw@claude.ai/x` gives `claude.ai`.
+- `https://claude.ai.evil.com/` gives `claude.ai.evil.com`, and `https://notclaude.ai/` gives `notclaude.ai`, so neither is [`Site::ClaudeAi`].
+- `chrome://extensions` gives `extensions`; `about:blank`, `file:///Users/x`, and `""` give `None`.
 
 ## The effect is just a keystroke
 
@@ -101,5 +147,4 @@ Actions that no keystroke expresses (open the URL in Zed, run page JavaScript, c
 ## Open questions
 
 - One enum or two for the foregrounded app: a single `ForegroundedApp` used by events and effects too (which loses `Copy`), or a `Copy` identity plus the stateful `ForegroundedApp` at the root. The two-type split is the starting recommendation.
-- How `Site::from_url` matches: exact host, host suffix, or path too (some sites want per-path binds).
 - Whether this generalizes across browsers behind one `TabEvent`, the way `App::from_bundle_id` collapses apps behind one enum.
