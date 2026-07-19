@@ -1,14 +1,12 @@
 # external effects: mercury driving the browser
 
-Not built. It builds on `external-events.md`, which ships the socket and owns the direction where mercury is told things. This doc owns the other direction: mercury asks a connected client to do something and uses the answer.
+Not built. `external-events.md` ships the socket and the direction where mercury is told things. This doc owns the other direction: mercury tells a connected client to do something.
 
-"Run this JavaScript in the front tab" is an effect, the way `Foreground` and `Tap` are effects. The model returns it, the effect loop performs it by writing it to the socket, and what comes back up is a reply. Both halves are here: mercury's, and the extension's handler table (`chrome-extension.md` ships the extension that this extends).
+Effects are fire and forget. `state.handle` returns `Vec<MercuryEffect>` and the effect loop performs each one; no effect returns a value to the model, and nothing waits. A command is one more effect, performed by writing it to the socket. `IncomingEvent` stays what `external-events.md` defines: a tab URL, and whatever later features add as events of their own.
 
-The motivating actions are the ones no keystroke expresses: open the front tab's URL in Zed, read the selection, close every tab matching a pattern, pull a value out of the page.
+## The vocabulary
 
-## `OutgoingEffect` is serialize-only
-
-Nothing in this direction has a `Deserialize` impl, so a command cannot arrive from outside even by accident. That is the same reasoning `external-events.md` applies to `IncomingEvent`, pointed the other way.
+One enum per level of the state tree that emits commands. `ChromeApp`'s level builds a `TabCommand`; `XSite`'s builds an `XCommand`. A handler cannot construct a command for a level it is not on.
 
 ```rust
 // crates/mercury/src/external.rs
@@ -18,30 +16,26 @@ Nothing in this direction has a `Deserialize` impl, so a command cannot arrive f
 #[serde(tag = "kind", content = "value")]
 pub enum OutgoingEffect {
     #[serde(rename = "OutgoingEffect.Command")]
-    Command(CommandMessage),
+    Command(Command),
 }
 
-#[derive(serde::Serialize, Debug)]
-pub struct CommandMessage {
-    pub id: CommandId,
-    pub command: Command,
-}
-
-/// What a `MercuryEffect::Browser` carries. An effect, never an event.
-///
-/// Every variant is named and its payload means one thing. There is no variant that carries code,
-/// and there will not be: a command whose payload is "whatever the far end can do" would make this
-/// channel a way to run anything in a page holding your logged-in sessions, and the enumerated set
-/// is the whole reason a hijacked channel is a nuisance rather than a compromise.
 #[derive(serde::Serialize, Debug)]
 #[serde(tag = "kind", content = "value")]
 pub enum Command {
-    #[serde(rename = "Command.OpenTab")]
-    OpenTab(OpenTab),
-    #[serde(rename = "Command.CloseTabs")]
-    CloseTabs(CloseTabs),
-    #[serde(rename = "Command.ReadSelection")]
-    ReadSelection,
+    #[serde(rename = "Command.Tab")]
+    Tab(TabCommand),
+    #[serde(rename = "Command.X")]
+    X(XCommand),
+}
+
+/// The browser itself, from any page. `ChromeApp`'s level emits these.
+#[derive(serde::Serialize, Debug)]
+#[serde(tag = "kind", content = "value")]
+pub enum TabCommand {
+    #[serde(rename = "TabCommand.Open")]
+    Open(OpenTab),
+    #[serde(rename = "TabCommand.Close")]
+    Close(CloseTabs),
 }
 
 #[derive(serde::Serialize, Debug)]
@@ -55,345 +49,254 @@ pub struct CloseTabs {
     pub url_glob: String,
 }
 
-/// Monotonic per-process, so a reply is never mistaken for a reply to an earlier command.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, serde::Serialize, serde::Deserialize)]
-pub struct CommandId(u64);
+/// x.com's list, emitted by `XSite` (`twitter-site.md`).
+#[derive(serde::Serialize, Debug)]
+#[serde(tag = "kind", content = "value")]
+pub enum XCommand {
+    #[serde(rename = "XCommand.SelectMove")]
+    SelectMove(SelectMove),
+    #[serde(rename = "XCommand.SelectAct")]
+    SelectAct(SelectAct),
+}
+
+#[derive(serde::Serialize, Debug)]
+pub struct SelectMove {
+    pub delta: i32,
+}
+
+#[derive(serde::Serialize, Debug)]
+pub struct SelectAct {
+    pub action: XAction,
+}
+
+#[derive(serde::Serialize, Debug)]
+#[serde(tag = "kind", content = "value")]
+pub enum XAction {
+    #[serde(rename = "XAction.Open")]
+    Open,
+    #[serde(rename = "XAction.Like")]
+    Like,
+    #[serde(rename = "XAction.Reply")]
+    Reply,
+    #[serde(rename = "XAction.Repost")]
+    Repost,
+    #[serde(rename = "XAction.Bookmark")]
+    Bookmark,
+}
 ```
 
-The reply comes back up the socket, so it is a variant of `external-events.md`'s `IncomingEvent`. It belongs there for the same reason `ForegroundEvent` is an event: mercury asked for something, and the world is reporting what happened. The command bus is what consumes it, rather than `event_tx`, because the effect that sent the command is already waiting on it.
-
-```rust
- pub enum IncomingEvent {
-     #[serde(rename = "IncomingEvent.Tab")]
-     Tab(TabMessage),
-+    /// What came of a command mercury sent. The command bus routes it to the waiting effect by
-+    /// `id`, so it reaches the model as that effect's outcome rather than through `event_tx`.
-+    #[serde(rename = "IncomingEvent.Reply")]
-+    Reply(ReplyMessage),
- }
-
-+#[derive(serde::Deserialize, Debug)]
-+pub struct ReplyMessage {
-+    pub id: CommandId,
-+    pub result: Result,
-+}
-
-+/// What a command produced. Deserialize only: it arrives inside an `IncomingEvent::Reply`.
-+///
-+/// It shadows the prelude's `Result` in this module, which is the point: it is a result, with the
-+/// same `Ok(value)` / `Err(message)` meaning, and the union convention makes the wire tag the type
-+/// name, so shadowing is what gets `Result.Ok` / `Result.Err` on the wire. Anything in this module
-+/// that wants the prelude's spells it `std::result::Result`.
-+#[derive(serde::Deserialize, Debug)]
-+#[serde(tag = "kind", content = "value")]
-+pub enum Result {
-+    /// Whatever JSON the handler returned.
-+    #[serde(rename = "Result.Ok")]
-+    Ok(serde_json::Value),
-+    /// The message from a command that threw.
-+    #[serde(rename = "Result.Err")]
-+    Err(String),
-+}
-```
+A level that splits splits its enum with it. When the extension reports which x.com page is front, `XSite` gains a derived child per page and `XCommand` gains `Timeline(TimelineCommand)` and `Post(PostCommand)`, each emitted by the level of the same name.
 
 ```jsonc
 // mercury -> client
-{ "kind": "OutgoingEffect.Command", "value": { "id": 43, "command": { "kind": "Command.ReadSelection" } } }
-
-// client -> mercury
-{ "kind": "IncomingEvent.Reply", "value": { "id": 42, "result": { "kind": "Result.Ok", "value": "hello" } } }
-{ "kind": "IncomingEvent.Reply", "value": { "id": 43, "result": { "kind": "Result.Err", "value": "no active tab" } } }
+{ "kind": "OutgoingEffect.Command", "value": { "kind": "Command.X", "value": { "kind": "XCommand.SelectMove", "value": { "delta": 1 } } } }
+{ "kind": "OutgoingEffect.Command", "value": { "kind": "Command.Tab", "value": { "kind": "TabCommand.Open", "value": { "url": "https://x.com/home" } } } }
 ```
 
-A unit variant like `Command.ReadSelection` carries no `value` at all.
+Serialize only, so nothing here can arrive from outside.
 
-## The token
-
-`external-events.md` ships no auth, and says why: a client that can only report a tab URL is a client whose worst move is a lie about the current tab. This doc raises the ceiling, though not as far as it would go if a command could carry code.
-
-What a hijacked channel gets is opening tabs, closing tabs matching a pattern, acting on the selected item, and reading the selection. Closing tabs loses work and reading the selection leaks whatever is on screen, so both ends should still know who they are talking to. That is a shared secret rather than nothing, and it is not the difference between annoying and catastrophic that arbitrary code would have been.
-
-- mercury has to know the client is the extension. Otherwise a local process connects, sends one tab message to become the command target, and receives the commands mercury meant for the browser. `external-events.md`'s origin check does not cover this: it rules out web pages, and a local process sends whatever `Origin` it likes, or none.
-- The extension has to know the server is mercury. A local process that binds 3883 before mercury starts is a server the extension will connect to and take commands from, and those commands run in your tabs. A client-presents-a-secret scheme does nothing about it, because the impostor can accept any secret it is handed.
-
-One shared secret, checked in both directions, covers both. The user pastes it once.
-
-```rust
-// crates/mercury/src/external.rs
-
-/// Read the persisted token, generating and writing one on first run.
-///
-/// Lives beside the single-instance lock, in the platform state directory, for the same reason: it
-/// must survive across runs and must not be swept out of a temp directory. 16 bytes from
-/// `/dev/urandom`, hex encoded, and the file is created `0o600`.
-///
-/// Persisted rather than minted per run, because a per-run token means re-pasting into the
-/// extension's options page after every restart, which is the kind of friction that ends with the
-/// gate turned off.
-pub fn token() -> std::io::Result<String>;
-
-/// Where `token` keeps it, so the log can name the file for the user to open.
-pub fn token_path() -> PathBuf;
-```
-
-`freddie_event_socket::listen` grows the gate:
-
-```rust
- pub fn listen<F>(port: u16, auth: Auth, on_message: F) -> std::io::Result<EventSocket>
- where
-     F: Fn(&Client, &str) + Send + Sync + 'static;
-
-+/// What a connecting client must present, and what the server proves back.
-+pub enum Auth {
-+    /// Anyone on loopback may connect.
-+    Open,
-+    /// The connection is refused unless its `?token=` matches, and the handshake response carries
-+    /// `sec-mercury-token` so the client can tell a real server from a squatter.
-+    Token(String),
-+}
-```
-
-The client's half of the token is checked during the HTTP handshake against the request URI's `token` query parameter; a mismatch is answered with 401 and the connection dropped before any frame is read. A query parameter is what a Chrome service worker can attach without a CSP fight, and checking at the handshake means an unauthorized client never gets to send anything.
-
-The server's half rides the handshake response, so the extension can drop the connection before running anything if the header is missing or wrong.
-
-## The model never awaits
-
-`state.handle` is synchronous and stays that way. A command is an effect:
+## The effect
 
 ```rust
  pub enum MercuryEffect {
      Foreground(App),
-     Tap { key: Key, flags: ModifierFlags },
+     Tap(Chord),
      // …
-+    /// Ask the connected browser to do something. Fire-and-forget from the effect loop's side; the
-+    /// answer comes back as an event, the way `Foreground` is answered by the app-nav watcher.
++    /// Tell the connected browser to do something.
 +    Browser(Command),
  }
 ```
 
-`perform_effect` spawns the send and the wait, and feeds the outcome back in as an event, which is the same decoupling `Foreground` already has: the effect asks, and something else reports what happened.
+x.com's `j`:
 
 ```rust
-// crates/mercury/src/external.rs
-
-/// A command that got no reply in this long is dropped and its waiter told `TimedOut`. A page that
-/// hangs must not leak an entry per command forever.
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// The in-flight commands, and where to send the next one.
-pub struct CommandBus {
-    next_id: AtomicU64,
-    pending: Mutex<HashMap<CommandId, oneshot::Sender<Result>>>,
-    /// The client that spoke most recently. There is no separate connect callback: the extension
-    /// pushes a tab URL as soon as it connects, so the newest speaker is the live browser, and a
-    /// client that never speaks is one nothing can be asked of anyway.
-    target: Mutex<Option<Client>>,
-}
-
-pub enum CommandError {
-    /// Nothing is connected, so there is nobody to ask.
-    NoClient,
-    /// The client went away between the send and the reply.
-    Disconnected,
-    /// No reply inside `COMMAND_TIMEOUT`.
-    TimedOut,
-    /// The client ran the command and it failed.
-    Failed(String),
-}
-
-impl CommandBus {
-    /// Send `command` and wait for its reply.
-    ///
-    /// `std::result::Result`, not this module's `Result`, which is the wire type a client sends
-    /// back and which `run` unwraps into `CommandError::Failed`.
-    pub async fn run(
-        &self,
-        command: Command,
-    ) -> std::result::Result<serde_json::Value, CommandError>;
-
-    /// Record the client that just spoke as the command target.
-    pub fn set_target(&self, client: &Client);
-
-    /// Hand a reply to whoever is waiting on it. A reply for an unknown id is logged and dropped:
-    /// it is a reply to a command that already timed out.
-    pub fn resolve(&self, reply: ReplyMessage);
+pub(crate) fn next_post<E, N>(_ev: &E, _node: N) -> Vec<MercuryEffect> {
+    vec![MercuryEffect::Browser(Command::X(XCommand::SelectMove(
+        SelectMove { delta: 1 },
+    )))]
 }
 ```
 
-`on_message` takes the client and the bus, which is why `listen`'s callback grows a `&Client`:
+## Performing it
+
+`freddie_event_socket` gains a handle to a connection:
 
 ```rust
--pub fn on_message(text: &str, event_tx: &UnboundedSender<MercuryEvent>) {
-+pub fn on_message(
-+    client: &Client,
-+    text: &str,
-+    event_tx: &UnboundedSender<MercuryEvent>,
-+    bus: &CommandBus,
-+) {
-     match serde_json::from_str::<IncomingEvent>(text) {
-         Ok(IncomingEvent::Tab(TabMessage { url })) => {
-             debug!(%url, "tab");
-+            bus.set_target(client);
-             let _ = event_tx.send(tab(url));
-         }
-+        Ok(IncomingEvent::Reply(reply)) => bus.resolve(reply),
-         Err(e) => warn!(error = %e, frame = text, "undeserializable frame"),
-     }
- }
-```
-
-`freddie_event_socket` gains the type that makes talking back possible:
-
-```rust
-/// A live client connection. Cloneable and cheap: it is a sender into that connection's write task,
-/// so a caller can stash one and send to it later.
+/// A live client connection. Cloneable and cheap: it is a sender into that connection's write
+/// task, so a caller can stash one and send to it later.
 #[derive(Clone)]
 pub struct Client {
     outgoing: UnboundedSender<String>,
 }
 
 impl Client {
-    /// Queue `text` to this client. `Err` means the connection is gone.
-    pub fn send(&self, text: String) -> std::result::Result<(), Disconnected>;
+    /// Queue `text` to this client.
+    ///
+    /// # Errors
+    ///
+    /// If the connection is gone.
+    pub fn send(&self, text: String) -> Result<(), Disconnected>;
+}
+
+pub fn listen<F>(port: u16, auth: Auth, on_message: F) -> std::io::Result<EventSocket>
+where
+    F: Fn(&Client, &str) + Send + Sync + 'static;
+```
+
+mercury writes to the client that spoke most recently. The extension pushes a tab URL as soon as it connects, so that is the browser.
+
+```rust
+// crates/mercury/src/external.rs
+
+/// Where commands go: the client that spoke most recently.
+pub struct Browser {
+    client: Mutex<Option<Client>>,
+}
+
+impl Browser {
+    pub fn set(&self, client: &Client);
+
+    /// Serialize `command` and write it. A failure is logged and dropped.
+    pub fn send(&self, command: Command);
 }
 ```
 
-Its `max_message_size` goes from 64 KiB to 1 MiB, for `Command.ReadSelection`: a selection is whatever the user dragged over, and a whole article is past 64 KiB.
+`on_message` records the sender, before:
+
+```rust
+pub fn on_message(text: &str, event_tx: &UnboundedSender<MercuryEvent>) {
+    match serde_json::from_str::<IncomingEvent>(text) {
+        Ok(IncomingEvent::Tab(TabMessage { url })) => {
+            debug!(%url, "tab");
+            let _ = event_tx.send(tab(url));
+        }
+        Err(e) => warn!(error = %e, frame = text, "undeserializable frame"),
+    }
+}
+```
+
+after:
+
+```rust
+pub fn on_message(
+    client: &Client,
+    text: &str,
+    event_tx: &UnboundedSender<MercuryEvent>,
+    browser: &Browser,
+) {
+    match serde_json::from_str::<IncomingEvent>(text) {
+        Ok(IncomingEvent::Tab(TabMessage { url })) => {
+            debug!(%url, "tab");
+            browser.set(client);
+            let _ = event_tx.send(tab(url));
+        }
+        Err(e) => warn!(error = %e, frame = text, "undeserializable frame"),
+    }
+}
+```
+
+`perform_effect` gains an arm:
+
+```rust
++        MercuryEffect::Browser(command) => browser.send(command),
+```
+
+## The token
+
+`external-events.md` refuses web pages at the handshake and asks for nothing else, because a client that can only report a tab URL can only lie about the front tab. A client that can close tabs and act on posts is worth gating.
+
+mercury has to know the client is the extension: otherwise a local process connects, sends one tab frame to become the target, and receives what mercury meant for the browser. The extension has to know the server is mercury: otherwise a local process that binds 3883 first is a server it takes commands from.
+
+One shared secret, checked both ways, pasted once.
+
+```rust
+// crates/mercury/src/external.rs
+
+/// Read the persisted token, generating and writing one on first run.
+///
+/// Beside the single-instance lock, in the platform state directory: it survives across runs and is
+/// not swept out of a temp directory. 16 bytes from `/dev/urandom`, hex encoded, `0o600`.
+pub fn token() -> std::io::Result<String>;
+
+/// Where [`token`] keeps it, for the log to name.
+pub fn token_path() -> PathBuf;
+```
+
+`listen` gains the gate:
+
+```rust
++/// What a connecting client presents, and what the server proves back.
++pub enum Auth {
++    Open,
++    /// The handshake is refused unless `?token=` matches, and its response carries
++    /// `sec-mercury-token` for the client to check.
++    Token(String),
++}
+```
+
+The client's half is a query parameter, which a Chrome service worker can attach, checked during the HTTP handshake and answered with 401 on a mismatch. The server's half rides the handshake response, so the extension drops the connection before acting on anything.
+
+`chrome-extension/options.html` gains a second input, over `chrome.storage.local.token`. mercury logs `token_path` at startup.
 
 ## The extension's half
 
-### Frames are parsed, not cast
+The manifest gains `scripting` and the hosts it acts on:
 
-The extension now receives, and what arrives is untrusted text from a socket any local process can reach. `JSON.parse` returns `any`, and a cast to `OutgoingEffect` is a promise rather than a check: a malformed frame would flow into a handler and fail somewhere further along, with a stack that names the wrong thing.
+```json
+{
+  "permissions": ["tabs", "scripting", "storage"],
+  "host_permissions": ["http://127.0.0.1/*", "https://x.com/*"]
+}
+```
 
-zod parses it:
+A content script per site owns that site's list and its actions (`twitter-site.md`). The service worker holds the socket and forwards:
 
 ```ts
-import { z } from "zod";
 import type { OutgoingEffect } from "./wire/OutgoingEffect";
 
-const command = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("Command.OpenTab"),
-    value: z.object({ url: z.string() }),
-  }),
-  z.object({
-    kind: z.literal("Command.CloseTabs"),
-    value: z.object({ url_glob: z.string() }),
-  }),
-  z.object({ kind: z.literal("Command.ReadSelection") }),
-]);
-
-const outgoingEffect = z.object({
+const outgoingEffect: z.ZodType<OutgoingEffect> = z.object({
   kind: z.literal("OutgoingEffect.Command"),
-  value: z.object({ id: z.number(), command }),
+  value: command,
 });
-```
 
-A schema is a value, and ts-rs writes types, so this is a second definition of the same thing and could drift from the Rust. It cannot, because it is checked against the generated type:
-
-```ts
-// Fails to compile if the Rust and this schema stop describing the same shape.
-type Parsed = z.infer<typeof outgoingEffect>;
-const _check: (parsed: Parsed) => OutgoingEffect = (parsed) => parsed;
-const _checkBack: (effect: OutgoingEffect) => Parsed = (effect) => effect;
-```
-
-Assignable in both directions is what makes it equality rather than "the schema accepts at least this much", which is the check that would let a dropped field through.
-
-The listener parses and reports:
-
-```ts
 socket.addEventListener("message", (ev: MessageEvent<string>) => {
   const parsed = outgoingEffect.safeParse(JSON.parse(ev.data));
   if (!parsed.success) {
     console.error("mercury sent a frame this cannot read", parsed.error);
     return;
   }
-  void run(parsed.data.value);
+  void deliver(parsed.data.value);
 });
-```
 
-Dropped with a console line rather than throwing, for the reason mercury drops what it cannot deserialize: a peer speaking nonsense is a bug in the peer, not a reason to tear down a connection that will be needed for the next frame.
-
-`chrome.storage.local` gets the same treatment, since `get` also returns `unknown` and the hand-written `typeof port === "number"` is validation written out longhand.
-
-This makes zod the extension's first runtime dependency, so what ships to the browser stops being only `tsc` output over hand-written files. It is worth it here and would not have been for the outgoing direction alone: what mercury sends up is built by types the compiler already checked, and what comes down is text from the network.
-
-The manifest gains `scripting` (to inject into pages) and host permissions for the sites it will script:
-
-```json
-{
-  "permissions": ["tabs", "scripting", "storage"],
-  "host_permissions": ["http://127.0.0.1/*", "<all_urls>"]
-}
-```
-
-A handler table maps each command variant to the API call that runs it, and a `message` listener dispatches by variant and replies with the result or the caught error:
-
-```js
-async function activeTab() {
-  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  return tab;
-}
-
-const HANDLERS = {
-  "Command.OpenTab": async ({ url }) => {
-    await chrome.tabs.create({ url });
-    return null;
-  },
-  "Command.CloseTabs": async ({ url_glob }) => {
-    const tabs = await chrome.tabs.query({ url: url_glob });
-    await chrome.tabs.remove(tabs.map((t) => t.id));
-    return null;
-  },
-  "Command.ReadSelection": async () => {
-    const tab = await activeTab();
-    const [r] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      world: "MAIN",
-      func: () => String(getSelection()),
-    });
-    return r.result;
-  },
-};
-
-socket.addEventListener("message", async (ev) => {
-  const msg = JSON.parse(ev.data);
-  if (msg.kind !== "OutgoingEffect.Command") return;
-  const { id, command } = msg.value;
-  let result;
-  try {
-    const value = await HANDLERS[command.kind](command.value ?? {});
-    result = { kind: "Result.Ok", value };
-  } catch (e) {
-    result = { kind: "Result.Err", value: String(e) };
+// `Command.Tab` is the worker's own; a site's command goes to that site's content script.
+async function deliver(command: OutgoingEffect["value"]): Promise<void> {
+  if (command.kind === "Command.Tab") {
+    await runTabCommand(command.value);
+    return;
   }
-  socket.send(JSON.stringify({ kind: "IncomingEvent.Reply", value: { id, result } }));
-});
+  const [tab] = await chrome.tabs.query({
+    active: true,
+    lastFocusedWindow: true,
+  });
+  if (tab?.id !== undefined) await chrome.tabs.sendMessage(tab.id, command);
+}
 ```
 
-`command.value ?? {}` covers `Command.ReadSelection`, which is a unit variant and so arrives with no `value`.
+`JSON.parse` returns `any`, so a frame off a socket any local process can reach is parsed rather than cast. Annotating the schema `z.ZodType<OutgoingEffect>` checks it against the ts-rs generated type, so a variant added in Rust that the schema does not follow fails `tsc`.
 
-`Command.ReadSelection` runs in `world: "MAIN"` so the page's own `getSelection` is in scope. The injected function is written here and fixed at build time; nothing the socket carries becomes code. `Command.CloseTabs` takes a Chrome URL match pattern in `url_glob`.
-
-The listener is registered inside `connect`, on the socket it just created, so a reconnect after the service worker was killed re-registers it.
+zod becomes the extension's first runtime dependency.
 
 ## Changes
 
-1. The token: `token`, `token_path`, `Auth` on `listen`, both directions of the check, and the extension's options page (`chrome-extension/options.html` and `options.js`, a one-input page over `chrome.storage.local.token`, with `"options_page"` and the `storage` permission in the manifest). mercury logs `token_path` at startup so the user can open it. It ships before anything can be commanded.
-2. `Client` and `OutgoingEffect` on the socket crate, plus the raised message size. `listen`'s callback grows its `&Client`, and `on_message` takes it and ignores it.
-3. The bus: `CommandBus`, `MercuryEffect::Browser`, `perform_effect` spawning it, and `IncomingEvent::Reply` resolving it. The outcome is logged, since no handler wants it yet.
-4. The extension's handler table.
+1. The token: `token`, `token_path`, `Auth` on `listen`, both halves of the check, and the extension's second options input.
+2. `Client` on the socket crate, `listen`'s callback growing a `&Client`, `on_message` taking it.
+3. The vocabulary, `MercuryEffect::Browser`, `Browser`, and `perform_effect`'s arm. `TabCommand::Open` is the first bind that uses it.
+4. The extension's dispatch: zod, the worker's forwarding, and x.com's content script.
 
-The event that carries an answer back into the model, and which handler wants it, belong to the doc for whatever feature needs one first.
+Tests, over a fake client on a loopback port:
 
-Tests for the bus, over a fake client on a loopback port:
-
-- `run` returns the `Result.Ok` payload for the id it sent.
-- Two commands in flight resolve to their own replies, with replies arriving out of order.
-- A reply for an unknown id is dropped and leaves `pending` empty.
-- No client is `NoClient` immediately, without waiting out the timeout.
-- A client that never replies yields `TimedOut` and leaves `pending` empty.
+- Each command variant serializes to the nested form above.
+- `Browser::send` with no client attached logs and returns.
+- Of two clients that connect in turn, the one that spoke most recently is written to.
+- A disconnected client's `send` is an error rather than a panic.
 - A wrong `?token=` is refused at the handshake, and a handshake response without the token makes a client disconnect.
