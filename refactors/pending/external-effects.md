@@ -28,6 +28,10 @@ pub struct CommandMessage {
 }
 
 /// What a `MercuryEffect::Browser` carries. An effect, never an event.
+///
+/// Every variant is named and its payload means one thing. That is the whole safety story: a
+/// hijacked channel can open a tab, close some tabs, and read a selection, none of which reaches an
+/// account. [`RunJs`] is the exception and is why it is refused unless deliberately turned on.
 #[derive(serde::Serialize, Debug)]
 #[serde(tag = "kind", content = "value")]
 pub enum Command {
@@ -41,6 +45,17 @@ pub enum Command {
     ReadSelection,
 }
 
+/// Arbitrary JavaScript, run in the front tab.
+///
+/// Off unless the extension's options page has been used to turn it on, and off again on a fresh
+/// install. Every other command is a named thing with a bounded meaning; this one's payload means
+/// "whatever the far end can do", in a page holding your logged-in sessions, which makes it the
+/// only reason the token below has to exist at all.
+///
+/// It is the same hole `external-events.md` refuses in the other direction, where `MercuryEvent`
+/// does not derive `Deserialize` so that remote key injection is unrepresentable rather than
+/// filtered. Here it cannot be unrepresentable, because the point of it is to be open-ended, so it
+/// is opt-in instead.
 #[derive(serde::Serialize, Debug)]
 pub struct RunJs {
     pub code: String,
@@ -112,7 +127,9 @@ A unit variant like `Command.ReadSelection` carries no `value` at all.
 
 ## The token
 
-`external-events.md` ships no auth, and says why: a client that can only report a tab URL is a client whose worst move is a lie about the current tab. This doc breaks that. A `Command.RunJs` runs arbitrary JavaScript in a logged-in browser session, so both ends have to know who they are talking to.
+`external-events.md` ships no auth, and says why: a client that can only report a tab URL is a client whose worst move is a lie about the current tab. This doc breaks that, and how badly depends on whether `RunJs` has been turned on.
+
+With it off, the ceiling is a hijacked channel opening a tab, closing tabs matching a pattern, and reading the selection. With it on, the ceiling is code running in every session you are logged into. Both ends have to know who they are talking to either way, and the second is what makes it worth a shared secret rather than a shrug.
 
 - mercury has to know the client is the extension. Otherwise a local process connects, sends one tab message to become the command target, and receives the commands mercury meant for the browser. `external-events.md`'s origin check does not cover this: it rules out web pages, and a local process sends whatever `Origin` it likes, or none.
 - The extension has to know the server is mercury. A local process that binds 3883 before mercury starts is a server the extension will connect to and take commands from, and those commands run in your tabs. A client-presents-a-secret scheme does nothing about it, because the impostor can accept any secret it is handed.
@@ -263,6 +280,21 @@ impl Client {
 Its `max_message_size` goes from 64 KiB to 1 MiB: a `Command.RunJs` result is whatever the page returned, which is bigger than a URL.
 
 ## The extension's half
+
+### `RunJs` is opt-in, in the extension
+
+The gate lives in the extension, because the extension is what holds the capability: mercury asking is not the dangerous half, running it is. `chrome.storage.local.runJs` defaults to `false`, and the options page carries a checkbox that says what turning it on means in the sentence next to it.
+
+```js
+if (command.kind === "Command.RunJs") {
+  const { runJs } = await chrome.storage.local.get({ runJs: false });
+  if (!runJs) {
+    return { kind: "Result.Err", value: "RunJs is off; turn it on in the extension's options" };
+  }
+}
+```
+
+Refused rather than ignored, so a handler that depended on it gets an error it can report instead of a timeout it cannot explain.
 
 The manifest gains `scripting` (to inject into pages) and host permissions for the sites it will script:
 
