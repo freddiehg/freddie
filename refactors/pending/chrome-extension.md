@@ -169,14 +169,24 @@ ts-rs exports during a test run, so the command is:
 cargo test -p mercury --features typescript export_bindings
 ```
 
-The output is checked in, because the extension has no build step and a developer loading it unpacked should not need a Rust toolchain to have working types. CI regenerates and fails if the result differs:
+The output is checked in, because the extension has no build step and a developer loading it unpacked should not need a Rust toolchain to have working types.
 
-```
-cargo test -p mercury --features typescript export_bindings
-git diff --exit-code chrome-extension/types/
+Checked in means it can go stale, so it is regenerated in both places that already run the tests, and both fail when what they produce is not what was committed. Without that the generated file is a copy that rots.
+
+Neither place needs a new command to do the regenerating. `.pre-commit-config.yaml`'s `cargo-test` hook and CI's `cargo-test` job both run `cargo test --all --all-features`, and `--all-features` turns on `typescript`, so the export runs on every commit that touches Rust and on every push.
+
+Pre-commit needs nothing at all. It compares the working tree before and after its hooks and refuses a commit whose hooks changed a file, which is the same failure `cargo fmt` produces when it reformats something: the commit stops, the regenerated file is sitting there, and it goes in with `git add`.
+
+CI needs one step, in the `cargo-test` job, after the tests:
+
+```yaml
+      - name: Run cargo test
+        run: cargo test --all --all-features
+      - name: Wire types are up to date
+        run: git diff --exit-code chrome-extension/types/
 ```
 
-That check is the point of the whole arrangement: without it the generated file is just a copy that rots.
+A pull request that changes `IncomingEvent` and forgets to commit the regenerated `.d.ts` fails there, naming the file.
 
 ## Type checking, linting, and formatting
 
@@ -245,7 +255,7 @@ export default [
 
 Prettier runs with its defaults; there is no `.prettierrc`, because a config file that only restates the defaults is one more thing to disagree with.
 
-These are not wired into `.pre-commit-config.yaml`. Its hooks are `types: [rust]` and run cargo, and adding node tooling there would put a `npm install` in the path of every Rust commit. Run them from `chrome-extension/`, and in CI as their own job.
+These are not wired into `.pre-commit-config.yaml`. Its hooks are `types: [rust]` and run cargo, and adding node tooling there would put an `npm install` in the path of every Rust commit. Run them from `chrome-extension/`, and in CI as their own job, which is separate from the wire-type check above: that one belongs to the Rust job because a Rust change is what invalidates it.
 
 ## The README
 
