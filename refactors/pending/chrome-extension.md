@@ -20,9 +20,10 @@ That last part is a build requirement, not a preference. A `cdylib` depending on
 chrome-extension/
   README.md            how to build, install, and check that it works
   Cargo.toml           its own [workspace], not a member of the root one
-  src/lib.rs           the socket, the reconnect, and the frame encoding
-  js/background.js     registers the chrome listeners and calls into wasm
-  js/options.js        the port setting
+  src/lib.rs           the listeners, the socket, the reconnect, and the frame encoding
+  src/options.rs       the port setting
+  js/background.js     two lines: the service worker has to be JavaScript
+  js/options.js        two lines, for the same reason
   manifest.json
   options.html
   pkg/                 wasm-bindgen output, gitignored
@@ -107,11 +108,13 @@ crate-type = ["cdylib"]
 [dependencies]
 freddie_wire = { path = "../crates/freddie_wire" }
 wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
 serde_json = "1"
 
 [dependencies.web-sys]
 version = "0.3"
-features = ["WebSocket", "MessageEvent", "Event", "BinaryType"]
+features = ["WebSocket", "Event"]
 
 [profile.release]
 # The binary ships to a browser, so size is the thing to optimize.
@@ -122,12 +125,12 @@ lto = true
 `chrome-extension/src/lib.rs`:
 
 ```rust
-//! The mercury bridge's wasm half: it owns the socket and the frame encoding.
+//! The mercury bridge, all of it: the `chrome.*` listeners, the socket, and the frame encoding.
 //!
-//! The JavaScript shim owns the `chrome.*` listeners, because those are callback registrations that
-//! read better where they are declared, and it calls [`push_url`] with a URL and nothing else. So
-//! every frame on the wire is built here, by `freddie_wire`'s own `Serialize`, and the shim never
-//! constructs one.
+//! The JavaScript is two lines calling [`start`], because an MV3 manifest's `service_worker` takes a
+//! `.js` path and will not take a `.wasm`. Nothing else lives there. `chrome.*` is reachable from
+//! here through `js_namespace`, so a listener registered in JavaScript would be a second place to
+//! look for the same logic and a second thing to keep in step with the wire format.
 
 use std::cell::RefCell;
 
@@ -135,22 +138,118 @@ use freddie_wire::{IncomingEvent, TabMessage};
 use wasm_bindgen::prelude::*;
 use web_sys::WebSocket;
 
+/// mercury's default, from the other side of the contract. The options page overrides it, and it
+/// has to match whatever `--port` or `MERCURY_PORT` mercury was given.
+const DEFAULT_PORT: u16 = 3883;
+
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = ["chrome", "tabs", "onActivated"], js_name = addListener)]
+    fn on_tab_activated(callback: &JsValue);
+
+    #[wasm_bindgen(js_namespace = ["chrome", "tabs", "onUpdated"], js_name = addListener)]
+    fn on_tab_updated(callback: &JsValue);
+
+    #[wasm_bindgen(js_namespace = ["chrome", "windows", "onFocusChanged"], js_name = addListener)]
+    fn on_focus_changed(callback: &JsValue);
+
+    #[wasm_bindgen(js_namespace = ["chrome", "tabs"], js_name = query)]
+    fn tabs_query(info: &JsValue) -> js_sys::Promise;
+
+    #[wasm_bindgen(js_namespace = ["chrome", "storage", "local"], js_name = get)]
+    fn storage_get(defaults: &JsValue) -> js_sys::Promise;
+}
+
+/// Register every listener. Called once per service-worker lifetime, from the two lines of
+/// JavaScript that the manifest forces to exist.
+///
+/// The worker is killed after roughly 30s idle and revived by these same listeners, so this runs
+/// again on the next tab event and the first push after it reconnects.
+#[wasm_bindgen]
+pub fn start() {
+    // A tab was activated, so the URL is whatever that tab has.
+    let activated = Closure::<dyn FnMut(JsValue)>::new(|info: JsValue| {
+        spawn_push(active_tab_url_of_window(js_sys::Reflect::get(&info, &"windowId".into()).ok()));
+    });
+    on_tab_activated(activated.as_ref());
+    activated.forget();
+
+    // A tab changed. `onUpdated` fires per changed tab, so this filters to the active one and to
+    // changes that actually carried a URL.
+    let updated = Closure::<dyn FnMut(JsValue, JsValue, JsValue)>::new(
+        |_id: JsValue, change: JsValue, tab: JsValue| {
+            let changed_url = js_sys::Reflect::get(&change, &"url".into()).ok();
+            let active = js_sys::Reflect::get(&tab, &"active".into())
+                .ok()
+                .and_then(|a| a.as_bool())
+                .unwrap_or(false);
+            if active && let Some(url) = changed_url.and_then(|u| u.as_string()) {
+                spawn_push(Some(url));
+            }
+        },
+    );
+    on_tab_updated(updated.as_ref());
+    updated.forget();
+
+    // Returning from another app, and switching between two Chrome windows, both change which tab
+    // is front with no tab event at all. `WINDOW_ID_NONE` is -1 and means Chrome lost focus, so
+    // there is nothing to report.
+    let focused = Closure::<dyn FnMut(JsValue)>::new(|window_id: JsValue| {
+        if window_id.as_f64() != Some(-1.0) {
+            spawn_push(active_tab_url_of_window(Some(window_id)));
+        }
+    });
+    on_focus_changed(focused.as_ref());
+    focused.forget();
+}
+
 thread_local! {
     /// The live socket, if there is one. A service worker is single-threaded, so a `thread_local`
     /// `RefCell` is the whole of the synchronization needed.
     static SOCKET: RefCell<Option<WebSocket>> = const { RefCell::new(None) };
 }
 
-/// Push `url` to mercury, opening the socket if it is not already open.
+/// Read the configured port, then push `url`, on the worker's own task.
 ///
-/// `port` comes from the shim, which reads it from extension storage; this side does not know what
-/// a `chrome.storage` is.
+/// Both the port and the window's active tab are promises, so every listener ends up here rather
+/// than pushing inline.
+fn spawn_push(url: Option<String>) {
+    wasm_bindgen_futures::spawn_local(async move {
+        let Some(url) = url else { return };
+        push_url(port().await, url);
+    });
+}
+
+/// The configured port, or [`DEFAULT_PORT`] if the options page has never been used.
+async fn port() -> u16 {
+    let defaults = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&defaults, &"port".into(), &DEFAULT_PORT.into());
+    let stored = wasm_bindgen_futures::JsFuture::from(storage_get(&defaults)).await;
+    stored
+        .ok()
+        .and_then(|s| js_sys::Reflect::get(&s, &"port".into()).ok())
+        .and_then(|p| p.as_f64())
+        .map_or(DEFAULT_PORT, |p| p as u16)
+}
+
+/// The active tab's URL in `window_id`, or `None` if that window has no tab with one.
+async fn active_tab_url_of_window(window_id: Option<JsValue>) -> Option<String> {
+    let query = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&query, &"active".into(), &true.into());
+    if let Some(id) = window_id {
+        let _ = js_sys::Reflect::set(&query, &"windowId".into(), &id);
+    }
+    let tabs = wasm_bindgen_futures::JsFuture::from(tabs_query(&query)).await.ok()?;
+    let first = js_sys::Array::from(&tabs).get(0);
+    js_sys::Reflect::get(&first, &"url".into()).ok()?.as_string()
+}
+
+/// Push `url` to mercury, opening the socket if it is not already open.
 ///
 /// Failures are dropped rather than reported. There is nothing useful to do with a URL that could
 /// not be sent: the next tab event supersedes it, and a retry queue would be a queue of stale
 /// answers to a question nobody asked yet.
-#[wasm_bindgen]
-pub fn push_url(port: u16, url: String) {
+fn push_url(port: u16, url: String) {
     let frame = match serde_json::to_string(&IncomingEvent::Tab(TabMessage { url })) {
         Ok(frame) => frame,
         Err(_) => return,
@@ -207,45 +306,16 @@ fn connect(port: u16) -> Option<WebSocket> {
 }
 ```
 
-`chrome-extension/js/background.js`, the shim:
+`chrome-extension/js/background.js`, in full:
 
 ```js
-// Registers the chrome listeners and hands URLs to wasm. It builds no frames and knows no wire
-// format: `push_url` is the whole interface.
+import init, { start } from "../pkg/mercury_extension.js";
 
-import init, { push_url } from "../pkg/mercury_extension.js";
-
-// mercury's default, from `freddie_wire`'s side of the contract. The options page overrides it, and
-// it has to match whatever `--port` or `MERCURY_PORT` mercury was given.
-const DEFAULT_PORT = 3883;
-
-// The wasm module is instantiated once per service-worker lifetime. The worker is killed after
-// roughly 30s idle and revived by these listeners, so this runs again on the next tab event.
-const ready = init();
-
-async function pushUrl(url) {
-  if (!url) return;
-  await ready;
-  const { port } = await chrome.storage.local.get({ port: DEFAULT_PORT });
-  push_url(port, url);
-}
-
-chrome.tabs.onActivated.addListener(({ tabId }) => {
-  chrome.tabs.get(tabId, (tab) => pushUrl(tab.url));
-});
-
-chrome.tabs.onUpdated.addListener((_tabId, info, tab) => {
-  if (info.url && tab.active) pushUrl(tab.url);
-});
-
-// Returning from another app, and switching between two Chrome windows, both change which tab is
-// front without any tab event firing. WINDOW_ID_NONE means Chrome lost focus, so there is nothing
-// to report; otherwise the active tab of the window that just got focus is the answer.
-chrome.windows.onFocusChanged.addListener((windowId) => {
-  if (windowId === chrome.windows.WINDOW_ID_NONE) return;
-  chrome.tabs.query({ active: true, windowId }, ([tab]) => pushUrl(tab?.url));
-});
+await init().then(start);
 ```
+
+That is all the JavaScript there is, and it exists only because the manifest's `service_worker` takes
+a `.js` path. Top-level `await` is available because the worker is a module.
 
 `chrome-extension/manifest.json`:
 
@@ -268,7 +338,7 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
 
 `tabs` grants the `url` field on a `Tab`. `host_permissions` for the loopback lets the worker open the WebSocket: Chrome checks a `ws://` connection against the matching `http://` host permission, and match patterns carry no port, so `http://127.0.0.1/*` covers every port mercury might be on.
 
-`chrome-extension/options.html` and `js/options.js` are one number input over `chrome.storage.local.port`, defaulting to `DEFAULT_PORT`. mercury's port moves with `--port` or `MERCURY_PORT`, and an extension pinned to one number would connect to nothing the moment it did, with no symptom beyond per-site binds quietly not working. Storage is read on every push rather than cached, so a change takes effect on the next tab event.
+`chrome-extension/options.html` is one number input, and `js/options.js` is the same two lines pointed at an `options` entry point in `src/options.rs`, which reads and writes `chrome.storage.local.port` through the same `storage_get` binding. It defaults to `DEFAULT_PORT`. mercury's port moves with `--port` or `MERCURY_PORT`, and an extension pinned to one number would connect to nothing the moment it did, with no symptom beyond per-site binds quietly not working. Storage is read on every push rather than cached, so a change takes effect on the next tab event.
 
 ## Change 3: the README
 
@@ -345,6 +415,7 @@ One extension serves the Chromium browsers that support MV3 with the same `chrom
 
 Every one of these is cheap to settle once the extension loads, and none of them is settled now.
 
+- That `js_namespace = ["chrome", "tabs", "onActivated"]` resolves as written. A nested namespace path is supported, and this is the ordinary use of it, but the `chrome.*` objects are not the globals wasm-bindgen is usually pointed at.
 - That `wasm-bindgen --target web` output instantiates inside an MV3 service worker. The glue resolves the `.wasm` relative to `import.meta.url` and fetches it, which is same-origin under `chrome-extension://` and should be allowed, but "should" is doing work in that sentence.
 - That `wasm-unsafe-eval` in `extension_pages` covers the service worker, and not only extension pages proper.
 - That `chrome.windows.onFocusChanged` fires when focus returns from another application, rather than only between Chrome windows, and whether devtools taking focus produces a spurious push.
