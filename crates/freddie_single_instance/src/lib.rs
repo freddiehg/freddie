@@ -263,10 +263,50 @@ pub fn holder_at(path: &Path) -> Result<Held, LockError> {
     }
 }
 
+/// Wait until nothing holds `app`'s lock.
+///
+/// # Errors
+///
+/// Returns [`LockError::NoStateDir`] when the environment names no per-user directory,
+/// and otherwise whatever [`await_free_at`] returns.
+pub fn await_free(app: &str) -> Result<(), LockError> {
+    await_free_at(&lock_path(app).ok_or(LockError::NoStateDir)?)
+}
+
+/// Wait until nothing holds `path`'s lock, returning as it is released.
+///
+/// Blocks in flock, which grants the shared lock the moment the exclusive holder lets
+/// go, so this notices a release without an interval to poll on. The shared lock is
+/// dropped before this returns, so it leaves the path as it found it. Whether the path
+/// is still free once the caller acts on the answer is not something this can promise,
+/// for the reason [`holder_at`] gives.
+///
+/// Shared rather than exclusive, as in [`holder_at`]: several callers waiting on one
+/// holder are all granted the moment it releases, rather than each taking the path and
+/// handing it on, which is both what a waiter means and the shorter window in which
+/// observers hold a path the next holder is trying to acquire.
+///
+/// There is no timeout, because flock has none to offer. A caller that needs one runs
+/// this on a thread and stops listening to it.
+///
+/// # Errors
+///
+/// Returns [`LockError::Unavailable`] when the file cannot be created, opened, or
+/// locked.
+pub fn await_free_at(path: &Path) -> Result<(), LockError> {
+    let file = open(path)?;
+    // The blocking form returns `io::Result`, not the `TryLockError` `locked` reads, and
+    // has no refusal to report: it returns when the lock is granted or not at all.
+    file.lock_shared().map_err(LockError::Unavailable)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Held, Instance, LockError, Pid, acquire_at, holder_at, lock_path, state_dir};
+    use super::{
+        Held, Instance, LockError, Pid, acquire_at, await_free_at, holder_at, lock_path, state_dir,
+    };
     use std::path::PathBuf;
+    use std::time::Duration;
 
     // A path of this test's own. Both halves of the name are needed, for different
     // collisions: `name` keeps libtest's threads, which share a pid, off each other's
@@ -394,6 +434,56 @@ mod tests {
         let _held = acquire_at(&path).expect("the path is free");
         let written = std::fs::read_to_string(&path).expect("reading it back");
         assert_eq!(written, std::process::id().to_string());
+    }
+
+    #[test]
+    fn waiting_blocks_until_the_holder_releases() {
+        let path = temp_lock("await-release");
+        let held = acquire_at(&path).expect("the path is free");
+        let waiter = std::thread::spawn(move || await_free_at(&path));
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!waiter.is_finished(), "the lock is still held");
+        drop(held);
+        waiter
+            .join()
+            .expect("the waiting thread")
+            .expect("the lock came free");
+    }
+
+    #[test]
+    fn waiting_on_a_free_path_returns_at_once() {
+        let path = temp_lock("await-free");
+        await_free_at(&path).expect("nothing holds it");
+    }
+
+    // Every waiter on one holder is released, none left behind the others.
+    #[test]
+    fn every_waiter_is_released() {
+        let path = temp_lock("await-many");
+        let held = acquire_at(&path).expect("the path is free");
+        let waiters: Vec<_> = (0..4)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || await_free_at(&path))
+            })
+            .collect();
+        std::thread::sleep(Duration::from_millis(50));
+        drop(held);
+        for waiter in waiters {
+            waiter
+                .join()
+                .expect("the waiting thread")
+                .expect("the lock came free");
+        }
+    }
+
+    // The wait leaves the path as it found it, or the next acquire would be refused by whoever
+    // just finished waiting for it.
+    #[test]
+    fn waiting_leaves_the_path_free() {
+        let path = temp_lock("await-releases");
+        await_free_at(&path).expect("nothing holds it");
+        acquire_at(&path).expect("the wait let go of what it took");
     }
 
     #[cfg(target_os = "macos")]

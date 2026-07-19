@@ -10,7 +10,7 @@ A blocking `lock_shared` is granted the instant the exclusive holder lets go, so
 
 The lock is also the right thing to wait on, rather than the holding process disappearing. The daemon releases it as it exits, and a released lock is exactly the condition under which the next acquire succeeds. Those are not the same instant, and it is the second one that callers act on.
 
-Shared rather than exclusive, for the reason `holder_at` takes a shared lock: two clients waiting on the same holder must not block each other, and an exclusive waiter would hold the path shut against the next holder for as long as its caller took to drop it.
+Shared rather than exclusive, for the reason `holder_at` takes a shared lock: several callers waiting on one holder are all granted the moment it releases, rather than each taking the path and handing it on. Both waits complete either way, since the lock is dropped as the call returns; the shared one is what a waiter means, and it is the shorter window in which observers hold a path the next holder is trying to acquire.
 
 ## The wait
 
@@ -55,10 +55,7 @@ Added to the existing module, using its `temp_lock` helper.
 fn waiting_blocks_until_the_holder_releases() {
     let path = temp_lock("await-release");
     let held = acquire_at(&path).expect("the path is free");
-    let waiter = {
-        let path = path.clone();
-        std::thread::spawn(move || await_free_at(&path))
-    };
+    let waiter = std::thread::spawn(move || await_free_at(&path));
     std::thread::sleep(std::time::Duration::from_millis(50));
     assert!(!waiter.is_finished(), "the lock is still held");
     drop(held);
