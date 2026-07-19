@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use freddie_single_instance::{Held, LockError, Pid};
 use tracing::{Level, debug, info, warn};
 
-use crate::cli::{LogsArgs, StopArgs};
+use crate::cli::{LogsArgs, RestartArgs, StopArgs};
 use crate::logging::{self, Terminal};
 
 /// The app name the lock is keyed to. The daemon acquires this; the clients probe it.
@@ -331,6 +331,35 @@ fn report(running: Result<Running, NotStarted>) -> i32 {
 /// `mercury start`, and the bare `mercury`: make sure a daemon is up, and do not stay to watch.
 pub(crate) fn start() -> i32 {
     logging::init(&Terminal::Client);
+    report(ensure_started())
+}
+
+/// `mercury restart`: replace the running daemon with a fresh one.
+///
+/// The two halves are already sequenced by the lock. [`stop_daemon`] returns only once the lock is
+/// free, which is the same condition [`ensure_started`] needs to find, so the new daemon never
+/// races the old one's shutdown and reports "already running" against the process it just replaced.
+///
+/// A daemon that would not stop means no start is attempted: the old process still owns the tap,
+/// and spawning a second one that the lock immediately refuses would say nothing useful.
+///
+/// Starting from cold is a restart with an empty first half rather than an error, so a script that
+/// restarts after a rebuild does not have to know whether anything was up.
+pub(crate) fn restart(args: &RestartArgs) -> i32 {
+    logging::init(&Terminal::Client);
+    let signal = if args.force {
+        Signal::Kill
+    } else {
+        Signal::Terminate
+    };
+    match stop_daemon(signal) {
+        Ok(Some(pid)) => info!("mercury stopped (pid {pid})"),
+        Ok(None) => debug!("nothing was running to stop"),
+        Err(failure) => {
+            warn!("mercury: not restarting: {failure}");
+            return 1;
+        }
+    }
     report(ensure_started())
 }
 

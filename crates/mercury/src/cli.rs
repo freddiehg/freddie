@@ -25,6 +25,8 @@ pub struct Args {
 pub enum Verb {
     /// Start the daemon if it is not running, and exit.
     Start,
+    /// Stop the running daemon and start a fresh one.
+    Restart(RestartArgs),
     /// Report whether the daemon is running, and its pid.
     Status,
     /// Follow the log, starting nothing.
@@ -33,6 +35,17 @@ pub enum Verb {
     Stop(StopArgs),
     /// Run the daemon in this terminal, in the foreground.
     Daemon(DaemonArgs),
+}
+
+/// What `mercury restart` can be told.
+#[derive(clap::Args, Debug, PartialEq, Eq)]
+pub struct RestartArgs {
+    /// Destroy the running daemon with SIGKILL instead of asking it to quit.
+    ///
+    /// For a daemon that no longer answers. It runs no destructors, so a modifier the command
+    /// layer swallowed is left down in whatever app was in front.
+    #[arg(long)]
+    pub force: bool,
 }
 
 /// What `mercury logs` can be told.
@@ -108,6 +121,24 @@ mod tests {
     #[test]
     fn the_lifecycle_verbs_parse() {
         assert!(matches!(parse(&["start"]).verb, Some(Verb::Start)));
+        assert!(matches!(parse(&["restart"]).verb, Some(Verb::Restart(_))));
+    }
+
+    fn restart_args(args: &[&str]) -> super::RestartArgs {
+        let Some(Verb::Restart(args)) = parse(args).verb else {
+            panic!("the restart verb parses to Verb::Restart");
+        };
+        args
+    }
+
+    #[test]
+    fn restart_is_gentle_by_default() {
+        assert!(!restart_args(&["restart"]).force);
+    }
+
+    #[test]
+    fn restart_takes_force() {
+        assert!(restart_args(&["restart", "--force"]).force);
     }
 
     #[test]

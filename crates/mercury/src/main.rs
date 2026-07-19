@@ -17,6 +17,7 @@ fn run(verb: Option<Verb>) -> i32 {
     match verb {
         // The bare `mercury` is `mercury start`: one behaviour, not two that agree.
         None | Some(Verb::Start) => client::start(),
+        Some(Verb::Restart(args)) => client::restart(&args),
         Some(Verb::Status) => client::status(),
         Some(Verb::Logs(args)) => client::logs(&args),
         Some(Verb::Stop(args)) => client::stop(&args),
