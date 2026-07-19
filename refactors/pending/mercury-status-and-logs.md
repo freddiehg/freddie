@@ -6,7 +6,7 @@ Follows `refactors/past/mercury-stop.md`, which brought `client.rs` and its `APP
 
 ## Both verbs speak through tracing
 
-`one-log-many-writers.md` makes the terminal a layer and the file the record of everything, so these two say their lines with `info!` and `warn!` like the daemon does, and both lines land in the file as well as on the terminal. Neither prints.
+`refactors/past/one-log-many-writers.md` made the terminal a layer and the file the record of everything, so these two say their lines with tracing and neither prints. The levels there decide the audience, and these verbs follow it: `info!` is the answer and goes to stdout, `warn!` is a problem and goes to stderr, and anything a verb did along the way is `debug!`, which only the file keeps.
 
 The one thing that does not go through tracing is `tail`'s output under `logs`. Those lines came out of the file, so emitting them as records would append them back into the file being followed, which would then show them again. `logs` displays what it reads; it does not re-log it.
 
@@ -20,7 +20,7 @@ The one thing that does not go through tracing is `tail`'s output under `logs`. 
 /// this verb answers a question, so its exit code is the answer, while `stop` states a goal that a
 /// stopped mercury already satisfies.
 pub(crate) fn status() -> i32 {
-    logging::init(Terminal::Client);
+    logging::init(&Terminal::Client);
     match freddie_single_instance::holder(APP) {
         Ok(Held::Free) => {
             info!("mercury is not running");
@@ -48,7 +48,7 @@ pub(crate) fn status() -> i32 {
 }
 ```
 
-`use freddie_single_instance::Held;` and `use crate::logging::Terminal;` join the imports `client.rs` already has.
+`use freddie_single_instance::Held;` joins the imports `client.rs` already has; `logging::Terminal` is already there for `stop`.
 
 ## `mercury logs`
 
@@ -92,7 +92,7 @@ fn record_level(line: &str) -> Option<Level> {
 /// file this is following, and tracing them would put them back into it.
 pub(crate) fn logs(args: &LogsArgs) -> i32 {
     // `init` returns where it put the log, which is the file to follow.
-    let path = logging::init(Terminal::Client);
+    let path = logging::init(&Terminal::Client);
     info!("mercury: following {}", path.display());
 
     let mut tail = match std::process::Command::new(TAIL)
