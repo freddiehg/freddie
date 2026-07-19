@@ -217,6 +217,28 @@ async fn serve(
         }
     });
 
+    // `launchctl bootout` and `mercury stop` both send SIGTERM. Route it into the event channel as
+    // the same Quit the menu bar sends, so a terminated mercury leaves the way it would have on
+    // its own: the model turns it into `Kill`, the effect loop breaks, and the `Interceptor`
+    // releases the keyboard.
+    //
+    // A spawned task rather than a third `select!` arm, because an arm that completed would drop
+    // the other two futures and skip the graceful path this exists to run.
+    match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        Ok(mut term) => {
+            let event_tx = event_tx.clone();
+            tokio::spawn(async move {
+                if term.recv().await.is_some() {
+                    info!("SIGTERM: quitting");
+                    let _ = event_tx.send(quit_event());
+                }
+            });
+        }
+        Err(e) => {
+            warn!(error = %e, "no SIGTERM handler; a terminated mercury will not release the keyboard");
+        }
+    }
+
     // `select!` rather than `join!`: the effect loop ends on `Kill`, and the event
     // loop never does, because the tap thread holds a sender for as long as the
     // grab is alive.

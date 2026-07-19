@@ -19,7 +19,7 @@ freddie_overlay = { path = "../freddie_overlay", version = "0.0.1" }
 freddie_windows = { path = "../freddie_windows", version = "0.0.1" }
 freddie_single_instance = { path = "../freddie_single_instance", version = "0.0.1" }
 derive_more = { version = "2", features = ["from", "try_into"] }
-tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt", "macros", "signal", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
