@@ -4,11 +4,11 @@ Two read-only verbs. `mercury status` says whether a daemon is running and which
 
 Follows `refactors/past/mercury-stop.md`, which brought `client.rs` and its `APP` constant into being, and `refactors/past/single-instance-holder.md`, for `holder`. `mercury-start.md` builds the bare `mercury`'s log follower on `logs`.
 
-## Read-only verbs leave no record
+## Both verbs speak through tracing
 
-`stop` initializes logging and traces what it did, because it ended a process and the log is where the next person looks to find out why. These two change nothing, so they write nothing: no `logging::init`, no tracing, and errors on stderr only.
+`one-log-many-writers.md` makes the terminal a layer and the file the record of everything, so these two say their lines with `info!` and `warn!` like the daemon does, and both lines land in the file as well as on the terminal. Neither prints.
 
-That is not only tidiness. `status` is the verb a shell prompt or a watch loop runs on a timer, and a client that logged every probe would fill the daemon's own log with records of being asked whether it was alive. `logs` is worse, since it follows the file it would be writing to.
+The one thing that does not go through tracing is `tail`'s output under `logs`. Those lines came out of the file, so emitting them as records would append them back into the file being followed, which would then show them again. `logs` displays what it reads; it does not re-log it.
 
 ## `mercury status`
 
@@ -20,13 +20,14 @@ That is not only tidiness. `status` is the verb a shell prompt or a watch loop r
 /// this verb answers a question, so its exit code is the answer, while `stop` states a goal that a
 /// stopped mercury already satisfies.
 pub(crate) fn status() -> i32 {
+    logging::init(Terminal::Client);
     match freddie_single_instance::holder(APP) {
         Ok(Held::Free) => {
-            println!("mercury is not running");
+            info!("mercury is not running");
             1
         }
         Ok(Held::By(pid)) => {
-            println!("mercury is running (pid {pid})");
+            info!("mercury is running (pid {pid})");
             0
         }
         // The window between a daemon taking the lock and writing its pid into it. Something is
@@ -36,90 +37,108 @@ pub(crate) fn status() -> i32 {
         // `stop` treats the same state as a failure, because a signal needs a pid and there is
         // none. Neither is wrong: they are asking the lock different questions.
         Ok(Held::Unnamed) => {
-            println!("mercury is running (it has just started and has not recorded its pid)");
+            info!("mercury is running (it has just started and has not recorded its pid)");
             0
         }
         Err(e) => {
-            eprintln!("mercury: {e}");
+            warn!("mercury: {e}");
             1
         }
     }
 }
 ```
 
-`use freddie_single_instance::Held;` joins the imports `client.rs` already has.
+`use freddie_single_instance::Held;` and `use crate::logging::Terminal;` join the imports `client.rs` already has.
 
 ## `mercury logs`
+
+The file records `debug` always, and the daemon writes a record per keystroke, so an unfiltered follow is a firehose that hides the thing you were watching for. The file keeps everything; this chooses what to show.
 
 ```rust
 /// Where `tail` lives. Absolute, so `PATH` cannot point this at something else.
 const TAIL: &str = "/usr/bin/tail";
 
-/// How much of the existing log to print before following.
+/// How much of the existing log to show before following.
 const TAIL_LINES: &str = "50";
 
-/// Follow the log file: print the tail of what is there, then whatever arrives.
+/// The level field the `fmt` layer writes, surrounded as it appears in a record.
+///
+/// Reading the text is what filtering a formatted log costs. The alternative is a machine format,
+/// which would break the thing the file is for: `CLAUDE.md` sends a person, or an agent, to read
+/// it directly.
+const DEBUG_RECORD: &str = " DEBUG ";
+
+/// Follow the log file: show the tail of what is there, then whatever arrives.
 ///
 /// `tail -F` rather than a follower of our own. It waits for a file that does not exist yet, which
 /// is the first run on a machine before anything has been logged, and it reopens by name if the
 /// file is replaced. Verified on macOS 25.5.0 against a path created a second after `tail`
 /// started: the lines appear.
 ///
-/// The child inherits this terminal's stdio and its process group, so Ctrl-C reaches it and ends
-/// the follow. That is the whole reason `mercury-start.md` puts the daemon in a group of its own.
+/// Its stdout is piped rather than inherited, so each line can be dropped or shown. Its stderr and
+/// its process group are inherited, so Ctrl-C reaches it and ends the follow. That is the whole
+/// reason `mercury-start.md` puts the daemon in a group of its own.
 ///
-/// The log records `debug` whatever `--log-level` says, and this prints it verbatim; narrowing it
-/// is a grep over the text, not a filter this can apply.
-pub(crate) fn logs() -> i32 {
-    let path = crate::logging::log_path();
-    println!("mercury: following {}", path.display());
-    match std::process::Command::new(TAIL)
+/// Lines are written straight to stdout rather than traced: they are already records, out of the
+/// file this is following, and tracing them would put them back into it.
+pub(crate) fn logs(args: &LogsArgs) -> i32 {
+    // `init` returns where it put the log, which is the file to follow.
+    let path = logging::init(Terminal::Client);
+    info!("mercury: following {}", path.display());
+
+    let mut tail = match std::process::Command::new(TAIL)
         .args(["-n", TAIL_LINES])
         .arg("-F")
         .arg(&path)
-        .status()
+        .stdout(Stdio::piped())
+        .spawn()
     {
+        Ok(child) => child,
+        Err(e) => {
+            warn!("mercury: could not run {TAIL}: {e}");
+            return 1;
+        }
+    };
+
+    let Some(stdout) = tail.stdout.take() else {
+        warn!("mercury: {TAIL} gave no stdout to read");
+        return 1;
+    };
+    let mut out = std::io::stdout().lock();
+    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        if args.debug || !line.contains(DEBUG_RECORD) {
+            // A closed stdout is the pipeline this was feeding going away, which ends the follow
+            // rather than being worth a word about.
+            if writeln!(out, "{line}").is_err() {
+                break;
+            }
+        }
+    }
+    match tail.wait() {
         Ok(status) => i32::from(!status.success()),
         Err(e) => {
-            eprintln!("mercury: could not run {TAIL}: {e}");
+            warn!("mercury: {TAIL} could not be waited on: {e}");
             1
         }
     }
 }
 ```
 
-## The log path without a subscriber
-
-`logs` needs the path in a process that installs no subscriber and creates no file, which `init` cannot give it.
-
-`crates/mercury/src/logging.rs`, before:
-
 ```rust
-pub fn init(directives: &str) -> PathBuf {
-    let dir = log_dir();
-    // ...
-    dir.join(LOG_FILE)
+/// What `mercury logs` can be told.
+#[derive(clap::Args, Debug, PartialEq, Eq)]
+pub struct LogsArgs {
+    /// Show `DEBUG` records too, which is every key the daemon dispatched.
+    ///
+    /// The file always has them. This is about what reaches the terminal.
+    #[arg(long)]
+    pub debug: bool,
 }
 ```
 
-After:
+Imports gained in `client.rs`: `std::io::{BufRead, BufReader, Write}` and `std::process::Stdio`.
 
-```rust
-/// Where the log file is, whether or not tracing has been initialized or anything has been written.
-///
-/// Separate from [`init`] because `mercury logs` needs the path without installing a subscriber of
-/// its own: the daemon owns the log, and a client only reads it.
-#[must_use]
-pub fn log_path() -> PathBuf {
-    log_dir().join(LOG_FILE)
-}
-
-pub fn init(directives: &str) -> PathBuf {
-    let dir = log_dir();
-    // ... unchanged ...
-    log_path()
-}
-```
+`logging.rs` needs nothing new. Every verb initializes logging now that the terminal is a layer, and `init` already returns the path it logged to, which is the path `logs` follows.
 
 ## Wiring
 
@@ -143,7 +162,7 @@ pub enum Verb {
     /// Report whether the daemon is running, and its pid.
     Status,
     /// Follow the log, starting nothing.
-    Logs,
+    Logs(LogsArgs),
     /// Ask the running daemon to quit.
     Stop(StopArgs),
     /// Run the daemon in this terminal, in the foreground.
@@ -179,7 +198,7 @@ fn run(verb: Option<Verb>) -> i32 {
             0
         }
         Some(Verb::Status) => client::status(),
-        Some(Verb::Logs) => client::logs(),
+        Some(Verb::Logs(args)) => client::logs(&args),
         Some(Verb::Stop(args)) => client::stop(&args),
         Some(Verb::Daemon(args)) => {
             daemon::run(&args);
@@ -195,7 +214,23 @@ Parse tests in `cli.rs`, beside the existing ones:
 #[test]
 fn the_read_only_verbs_parse() {
     assert!(matches!(parse(&["status"]).verb, Some(Verb::Status)));
-    assert!(matches!(parse(&["logs"]).verb, Some(Verb::Logs)));
+    assert!(matches!(parse(&["logs"]).verb, Some(Verb::Logs(_))));
+}
+
+#[test]
+fn logs_hides_debug_by_default() {
+    let Some(Verb::Logs(args)) = parse(&["logs"]).verb else {
+        panic!("the logs verb parses to Verb::Logs");
+    };
+    assert!(!args.debug);
+}
+
+#[test]
+fn logs_takes_debug() {
+    let Some(Verb::Logs(args)) = parse(&["logs", "--debug"]).verb else {
+        panic!("the logs verb parses to Verb::Logs");
+    };
+    assert!(args.debug);
 }
 ```
 
@@ -203,6 +238,8 @@ fn the_read_only_verbs_parse() {
 
 - `mercury status` with nothing running prints "mercury is not running" and exits 1.
 - `mercury daemon` in another pane, then `mercury status` prints that pane's pid and exits 0, and the pid matches the one `mercury stop` reports when it ends it.
-- `mercury status` writes nothing to `~/Library/Logs/mercury/mercury.log`: the file's line count is the same before and after.
-- `mercury logs` prints the tail of the log and then follows it: switching layers in the daemon makes `dispatch` lines appear. Ctrl-C returns to the shell and leaves the daemon running.
+- `mercury status` says its line on the terminal and the same words appear in the log, stamped with the client's pid.
+- `mercury logs` shows the tail of the log and then follows it: switching layers in the daemon makes `dispatch` lines appear. Ctrl-C returns to the shell and leaves the daemon running.
+- `mercury logs` shows no `DEBUG` records while the daemon is logging a record per keystroke; `mercury logs --debug` shows them.
+- `mercury logs | head -5` exits rather than failing when `head` closes the pipe.
 - `mercury logs` on a machine that has never run mercury waits, printing nothing, and starts printing when a daemon first writes.
