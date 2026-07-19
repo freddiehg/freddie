@@ -175,12 +175,30 @@ Verified on the pinned 1.96.0: this format writes `mercury stopped (pid 19708)\n
 `init` takes which one it is:
 
 ```rust
-pub fn init(terminal: Terminal<'_>) -> PathBuf
+pub fn init(terminal: &Terminal<'_>) -> PathBuf
 ```
+
+By reference: `init` matches on it and consumes nothing, which the workspace's `clippy::pedantic` requires.
 
 with `daemon::run` passing `Terminal::Daemon(LogLevel(&args.log_level))` and each client verb passing `Terminal::Client`. `CLIENT_LOG_LEVEL` disappears: a client's terminal filter is the level split above, not a directive.
 
-### The client verbs
+### A client's level is its audience
+
+The split above makes the level decide who sees a record, so a client verb's levels mean something they did not mean before:
+
+- `info!` is the verb's answer. It reaches stdout, and there is one per invocation.
+- `warn!` and `error!` are the problem the user has to see. They reach stderr.
+- `debug!` is what the verb did along the way. Only the file keeps it.
+
+`stop_daemon`'s narration is all `debug!` for that reason. At `info!` it printed three lines where the verb had one thing to say:
+
+```
+signalling the daemon daemon=23922 signal=Terminate
+the daemon released the lock daemon=23922
+mercury stopped (pid 23922)
+```
+
+and its `warn!`s printed the failure twice, once as narration and once as `stop`'s own line.
 
 ```rust
         Ok(Some(pid)) => {
@@ -204,7 +222,7 @@ with `daemon::run` passing `Terminal::Daemon(LogLevel(&args.log_level))` and eac
 `logging.rs` reports its own setup failures before there is a subscriber to report them to. Rather than leaving them as prints, they are held until there is one:
 
 ```rust
-pub fn init(terminal: Terminal<'_>) -> PathBuf {
+pub fn init(terminal: &Terminal<'_>) -> PathBuf {
     let dir = log_dir();
     // Held rather than printed: there is no subscriber yet, and a setup failure belongs in the
     // file as much as anything else does.
