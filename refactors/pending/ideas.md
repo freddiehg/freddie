@@ -100,6 +100,14 @@ That is `accumulate`'s first real consumer, and it is worth more than the regist
 
 Further out, `laserbeam-missing-features.md` sketches enumerating every reachable state at the type level. That would generate the whole manual: every layer, every binding, every path into and out of it, from the types.
 
+## Verbs that are wanted and unbuilt
+
+`freddie ready` — reports, or establishes, that freddie is up and ready. Probably an alias for `status`, though "establishes" would make it `start` that waits for the tap rather than for the lock.
+
+`freddie dynamite` — clears state. What state, and back to what, is the question: the model's layer is already recoverable through `escape`, so this would be for the things `escape` cannot reach.
+
+Both predate the daemon verbs and neither is superseded by them.
+
 ## Stunts
 
 Log every dispatch and replay it. The log already contains the event, the effects, and the state on one line, which was for debugging. It is also a test case. Replaying a day of keystrokes against a changed model and diffing the effects is a regression suite nobody has to write.
