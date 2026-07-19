@@ -6,5 +6,10 @@
   "background": { "service_worker": "dist/background.js", "type": "module" },
   "permissions": ["tabs", "storage"],
   "host_permissions": ["http://127.0.0.1/*"],
-  "options_page": "options.html"
+  "options_page": "options.html",
+  "icons": {
+    "16": "icons/mercury.png",
+    "48": "icons/mercury.png",
+    "128": "icons/mercury.png"
+  }
 }
