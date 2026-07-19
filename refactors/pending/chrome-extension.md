@@ -14,7 +14,7 @@ An MV3 background service worker is killed after roughly 30s idle, which closes 
 
 ## Stream the active tab's URL
 
-Two files under `chrome-extension/`. It depends on `external-events.md`'s Change 2 being live on `127.0.0.1:8797` and on `chrome-tab-url.md`'s `TabEvent`; with both, this ships the URL stream end to end.
+Two files under `chrome-extension/`. It depends on `external-events.md`'s Change 2 being live on `127.0.0.1:3883` and on `chrome-tab-url.md`'s `TabEvent`; with both, this ships the URL stream end to end.
 
 `chrome-extension/manifest.json`:
 
@@ -29,7 +29,7 @@ Two files under `chrome-extension/`. It depends on `external-events.md`'s Change
 }
 ```
 
-`tabs` grants the `url` field on a `Tab`. `host_permissions` for the loopback lets the worker open the WebSocket: Chrome checks a `ws://` connection against the matching `http://` host permission, and match patterns ignore the port, so `http://127.0.0.1/*` covers `:8797`.
+`tabs` grants the `url` field on a `Tab`. `host_permissions` for the loopback lets the worker open the WebSocket: Chrome checks a `ws://` connection against the matching `http://` host permission, and match patterns ignore the port, so `http://127.0.0.1/*` covers `:3883`.
 
 `chrome-extension/background.js`:
 
@@ -38,7 +38,7 @@ Two files under `chrome-extension/`. It depends on `external-events.md`'s Change
 // tab's URL on every tab switch and in-tab navigation. Event-driven: it reconnects on the next
 // event, with no keepalive timer and no poll.
 
-const MERCURY_URL = "ws://127.0.0.1:8797";
+const MERCURY_URL = "ws://127.0.0.1:3883";
 
 let socket = null;
 
