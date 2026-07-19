@@ -1,0 +1,5 @@
+# Docusaurus pulls in these two, and pnpm blocks an unreviewed install script and then
+# exits non-zero over it. Neither one's script does anything the site build needs.
+allowBuilds:
+  '@swc/core': false
+  core-js: false
