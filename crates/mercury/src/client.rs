@@ -5,7 +5,7 @@
 
 use std::fmt;
 use std::io;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, IsTerminal, Write};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -416,6 +416,47 @@ fn record_level(line: &str) -> Option<Level> {
     line.split_whitespace().nth(2)?.parse().ok()
 }
 
+/// Dim, for the part of a record that is the same on every line.
+const DIM: &str = "\x1b[2m";
+
+/// Back to the terminal's own colours.
+const RESET: &str = "\x1b[0m";
+
+/// The colour `fmt` would have given a level, had the file been written in colour.
+fn level_color(level: Level) -> &'static str {
+    match level.as_str() {
+        "ERROR" => "\x1b[31m",
+        "WARN" => "\x1b[33m",
+        "INFO" => "\x1b[32m",
+        "DEBUG" => "\x1b[34m",
+        "TRACE" => "\x1b[35m",
+        _ => "",
+    }
+}
+
+/// Show one record, colouring it the way the daemon's own terminal would have.
+///
+/// The file is written with ANSI off, because `CLAUDE.md` sends a person or an agent to read it
+/// with `cat` and `grep`, and escapes in the file would defeat both. Colour is added here instead,
+/// where the format is known: a record is `pid=N TIMESTAMP LEVEL target: message`, so splitting on
+/// the level's own name divides the prefix that is the same every line from the rest.
+///
+/// A line with no level, or a stdout that is not a terminal, is written through unchanged.
+fn show(out: &mut impl Write, line: &str, level: Option<Level>, color: bool) -> io::Result<()> {
+    let split = level
+        .filter(|_| color)
+        .and_then(|level| Some((level, line.split_once(level.as_str())?)));
+    match split {
+        Some((level, (head, rest))) => writeln!(
+            out,
+            "{DIM}{head}{RESET}{}{}{RESET}{rest}",
+            level_color(level),
+            level.as_str()
+        ),
+        None => writeln!(out, "{line}"),
+    }
+}
+
 /// Follow the log file: show the tail of what is there, then whatever arrives.
 ///
 /// `tail -F` rather than a follower of our own. It waits for a file that does not exist yet, which
@@ -451,15 +492,20 @@ pub(crate) fn logs(args: &LogsArgs) -> i32 {
         warn!("mercury: {TAIL} gave no stdout to read");
         return 1;
     };
+    // Asked once: a pipeline gets the file's plain text, a terminal gets colour.
+    let color = std::io::stdout().is_terminal();
     let mut out = std::io::stdout().lock();
     for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        let level = record_level(&line);
         // A line with no level is not a record: a wrapped message, or something that reached the
         // file without going through the formatter. Shown rather than dropped, because hiding what
         // we cannot classify is how a log loses the one line that mattered.
-        if record_level(&line).is_none_or(|level| level <= args.level) {
+        if level.is_none_or(|level| level <= args.level) {
             // A closed stdout is the pipeline this was feeding going away, which ends the follow
-            // rather than being worth a word about.
-            if writeln!(out, "{line}").is_err() {
+            // rather than being worth a word about. Noticed on the next record rather than at
+            // once, because that is when the write happens: `mercury logs | head -3` waits for
+            // the daemon to say one more thing, exactly as `tail -f | head -3` does.
+            if show(&mut out, &line, level, color).is_err() {
                 break;
             }
         }
@@ -521,5 +567,58 @@ fn signal_pid(pid: Pid, signal: Signal) -> io::Result<()> {
         Ok(())
     } else {
         Err(io::Error::other(format!("/bin/kill exited with {status}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{record_level, show};
+    use tracing::Level;
+
+    const RECORD: &str =
+        "pid=34322 2026-07-19T13:11:19.717128Z  INFO mercury::daemon: SIGTERM: quitting";
+
+    fn shown(line: &str, color: bool) -> String {
+        let mut out = Vec::new();
+        show(&mut out, line, record_level(line), color).expect("writing to a Vec");
+        String::from_utf8(out).expect("the record is utf8")
+    }
+
+    #[test]
+    fn the_level_is_the_third_token() {
+        assert_eq!(record_level(RECORD), Some(Level::INFO));
+        assert_eq!(
+            record_level("pid=1 2026-07-19T13:11:19.717128Z DEBUG a: b"),
+            Some(Level::DEBUG)
+        );
+    }
+
+    // Anything that did not come out of the formatter has no level, and is shown rather than
+    // dropped.
+    #[test]
+    fn a_line_that_is_not_a_record_has_no_level() {
+        assert_eq!(record_level("a stray line"), None);
+        assert_eq!(record_level(""), None);
+    }
+
+    // A pipeline gets what the file holds, byte for byte.
+    #[test]
+    fn without_colour_a_record_is_passed_through() {
+        assert_eq!(shown(RECORD, false), format!("{RECORD}\n"));
+    }
+
+    // The prefix is dimmed, the level takes its own colour, and the message is left alone.
+    #[test]
+    fn with_colour_the_level_is_painted() {
+        assert_eq!(
+            shown(RECORD, true),
+            "\x1b[2mpid=34322 2026-07-19T13:11:19.717128Z  \x1b[0m\x1b[32mINFO\x1b[0m \
+             mercury::daemon: SIGTERM: quitting\n"
+        );
+    }
+
+    #[test]
+    fn a_line_with_no_level_is_never_painted() {
+        assert_eq!(shown("a stray line", true), "a stray line\n");
     }
 }
