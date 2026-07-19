@@ -71,7 +71,7 @@ In `client.rs`, alongside what `mercury-status-and-logs.md` put there.
 
 ### What is printed and what is traced
 
-Both, for different readers. The result line is the verb's output: a script reads it, and no `LOG_LEVEL` may suppress it, so it goes to stdout through `println!` unadorned. Everything about how the stop went is a tracing event, so the file under `~/Library/Logs/mercury` carries the client's side of the story next to the daemon's `SIGTERM: quitting` and `kill: exiting`. Failures do both: `eprintln!` because the user is looking at the terminal, and `warn!` because the next person is looking at the log.
+Both, for different readers. The result line is the verb's output: a script reads it, and no `LOG_LEVEL` may suppress it, so it goes to stdout through `println!` unadorned. Everything about how the stop went is a tracing event, so the file under `~/Library/Logs/mercury` carries the client's side of the story next to the daemon's `SIGTERM: quitting` and `kill: exiting`. Failures do both, but not in the same place: `stop_daemon` traces them where they happen, and hands the caller a [`Failure`] to word for the terminal, so `restart` can say "not restarting" over the same fact.
 
 `stop` therefore initializes logging, which only `daemon::run` did before:
 
@@ -89,6 +89,7 @@ with `logging::init(CLIENT_LOG_LEVEL);` as the first line of `stop`.
 Two processes append to that file whenever a client runs against a live daemon. `tracing_appender` opens it with `O_APPEND` and writes a record per `write` call, so records land whole and in arrival order.
 
 ```rust
+use std::fmt;
 use std::io;
 use std::process::Command;
 use std::sync::mpsc;
@@ -150,16 +151,56 @@ impl Signal {
 
 /// What [`stop_daemon`] found and did.
 ///
-/// `stop` and `restart` both need the outcome and word it differently, so the stopping reports the
-/// fact and each caller phrases its own line. The failures are worded inside `stop_daemon`,
-/// because a daemon that would not go away reads the same whichever verb asked.
+/// `stop` and `restart` both need the outcome and word it differently, so `stop_daemon` reports
+/// facts and prints nothing. It traces, because the log records where a thing happened rather than
+/// who is being spoken to, but the terminal line is the caller's.
 enum Stopped {
     /// A daemon was signalled and let go of the lock.
     Was(Pid),
     /// There was nothing to stop.
     NotRunning,
-    /// A daemon is there and did not go away, or could not be found to signal.
-    Failed,
+    /// A daemon is there and is still there.
+    Failed(Failure),
+}
+
+/// Why a stop did not happen.
+///
+/// Separate variants because the remedies differ: `--force` answers [`Failure::Ignored`] and
+/// nothing else. There is no pid to destroy in the other three.
+enum Failure {
+    /// The lock could not be read, so nothing is known about what holds it.
+    Unreadable(LockError),
+    /// Something holds the lock and recorded no pid, so there is nothing to signal.
+    Anonymous,
+    /// The signal could not be sent to the pid the lock named.
+    Unsignalable(SignalFailure),
+    /// The daemon was signalled and still holds the lock.
+    Ignored(Pid),
+}
+
+/// A signal that could not be sent, and to whom.
+struct SignalFailure {
+    pid: Pid,
+    error: io::Error,
+}
+
+/// The terminal wording for each, without the `mercury: ` a caller puts in front.
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unreadable(e) => write!(f, "{e}"),
+            Self::Anonymous => f.write_str(
+                "something holds the lock but recorded no pid; it is starting or shutting down",
+            ),
+            Self::Unsignalable(SignalFailure { pid, error }) => {
+                write!(f, "could not signal pid {pid}: {error}")
+            }
+            Self::Ignored(pid) => write!(
+                f,
+                "pid {pid} still holds the lock; `mercury stop --force` destroys it"
+            ),
+        }
+    }
 }
 
 /// Ask the running daemon to go, and wait for it to let go of the lock.
@@ -169,32 +210,26 @@ fn stop_daemon(signal: Signal) -> Stopped {
         Ok(Target::NotRunning) => return Stopped::NotRunning,
         Ok(Target::Anonymous) => {
             warn!("the lock is held by a holder that recorded no pid");
-            eprintln!(
-                "mercury: something holds the lock but recorded no pid; it is starting or shutting down"
-            );
-            return Stopped::Failed;
+            return Stopped::Failed(Failure::Anonymous);
         }
-        Err(e) => {
-            warn!(error = %e, "could not read the lock");
-            eprintln!("mercury: {e}");
-            return Stopped::Failed;
+        Err(error) => {
+            warn!(%error, "could not read the lock");
+            return Stopped::Failed(Failure::Unreadable(error));
         }
     };
     // Before the signal, so the wait cannot miss a daemon that exits between the two.
     let freed = watch_for_free();
     info!(%pid, ?signal, "signalling the daemon");
-    if let Err(e) = signal_pid(pid, signal) {
-        warn!(%pid, error = %e, "could not signal the daemon");
-        eprintln!("mercury: could not signal pid {pid}: {e}");
-        return Stopped::Failed;
+    if let Err(error) = signal_pid(pid, signal) {
+        warn!(%pid, %error, "could not signal the daemon");
+        return Stopped::Failed(Failure::Unsignalable(SignalFailure { pid, error }));
     }
     if matches!(freed.recv_timeout(STOP_TIMEOUT), Ok(Ok(()))) {
         info!(%pid, "the daemon released the lock");
         Stopped::Was(pid)
     } else {
         warn!(%pid, timeout = ?STOP_TIMEOUT, "the daemon still holds the lock");
-        eprintln!("mercury: pid {pid} still holds the lock; `mercury stop --force` destroys it");
-        Stopped::Failed
+        Stopped::Failed(Failure::Ignored(pid))
     }
 }
 
@@ -218,7 +253,10 @@ pub(crate) fn stop(args: &StopArgs) -> i32 {
             println!("mercury is not running");
             0
         }
-        Stopped::Failed => 1,
+        Stopped::Failed(failure) => {
+            eprintln!("mercury: {failure}");
+            1
+        }
     }
 }
 
