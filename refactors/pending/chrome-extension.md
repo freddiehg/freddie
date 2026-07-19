@@ -14,7 +14,9 @@ An MV3 background service worker is killed after roughly 30s idle, which closes 
 
 ## Stream the active tab's URL
 
-Two files under `chrome-extension/`. It depends on `external-events.md`'s Change 2 being live on `127.0.0.1:3883` and on `chrome-tab-url.md`'s `TabEvent`; with both, this ships the URL stream end to end.
+`chrome-extension/` at the top level of the repository, beside `crates/`, not inside it. It is not a Rust crate and cargo has no business seeing it, and it is loaded unpacked from that path at `chrome://extensions`.
+
+Four files. It depends on `external-events.md`'s Change 2 being live on `127.0.0.1:3883` and on `chrome-tab-url.md`'s `TabEvent`; with both, this ships the URL stream end to end.
 
 `chrome-extension/manifest.json`:
 
@@ -24,12 +26,15 @@ Two files under `chrome-extension/`. It depends on `external-events.md`'s Change
   "name": "mercury bridge",
   "version": "0.0.1",
   "background": { "service_worker": "background.js" },
-  "permissions": ["tabs"],
-  "host_permissions": ["http://127.0.0.1/*"]
+  "permissions": ["tabs", "storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "options_page": "options.html"
 }
 ```
 
-`tabs` grants the `url` field on a `Tab`. `host_permissions` for the loopback lets the worker open the WebSocket: Chrome checks a `ws://` connection against the matching `http://` host permission, and match patterns ignore the port, so `http://127.0.0.1/*` covers `:3883`.
+`tabs` grants the `url` field on a `Tab`. `host_permissions` for the loopback lets the worker open the WebSocket: Chrome checks a `ws://` connection against the matching `http://` host permission, and match patterns ignore the port, so `http://127.0.0.1/*` covers every port mercury might be on.
+
+`storage` and the options page are the port. mercury's port moves with `--port` or `MERCURY_PORT` (`external-events.md`), and an extension pinned to one number would connect to nothing the moment it does, with no symptom beyond per-site binds quietly not working. `DEFAULT_PORT` is the default on both sides, so the setting stays untouched unless you move mercury.
 
 `chrome-extension/background.js`:
 
@@ -38,11 +43,18 @@ Two files under `chrome-extension/`. It depends on `external-events.md`'s Change
 // tab's URL on every tab switch and in-tab navigation. Event-driven: it reconnects on the next
 // event, with no keepalive timer and no poll.
 
-const MERCURY_URL = "ws://127.0.0.1:3883";
+// mercury's default. Overridden from the options page, which has to match whatever `--port` or
+// `MERCURY_PORT` mercury was given.
+const DEFAULT_PORT = 3883;
 
 let socket = null;
 
-function connect() {
+async function mercuryUrl() {
+  const { port } = await chrome.storage.local.get({ port: DEFAULT_PORT });
+  return `ws://127.0.0.1:${port}`;
+}
+
+async function connect() {
   if (
     socket &&
     (socket.readyState === WebSocket.OPEN ||
@@ -50,14 +62,14 @@ function connect() {
   ) {
     return;
   }
-  socket = new WebSocket(MERCURY_URL);
+  socket = new WebSocket(await mercuryUrl());
   socket.addEventListener("close", () => (socket = null));
   socket.addEventListener("error", () => (socket = null));
 }
 
-function pushUrl(url) {
+async function pushUrl(url) {
   if (!url) return;
-  connect();
+  await connect();
   const payload = JSON.stringify({ kind: "IncomingEvent.Tab", value: { url } });
   if (socket.readyState === WebSocket.OPEN) {
     socket.send(payload);
@@ -78,6 +90,8 @@ chrome.tabs.onUpdated.addListener((_tabId, info, tab) => {
 ```
 
 `onActivated` reads the tab that was just activated by id; `onUpdated` fires per changed tab, so it filters to `tab.active` and to updates that actually carried a new `url`. Re-sending an identical URL is harmless: `on_tab` fills the same value and dispatch produces no change (`chrome-tab-url.md`).
+
+`chrome-extension/options.html` and `chrome-extension/options.js` are one number input over `chrome.storage.local.port`, defaulting to `DEFAULT_PORT`. Changing it takes effect on the next connection, which is the next tab event, because the worker reads storage every time it opens a socket rather than caching the value.
 
 Install for development by loading `chrome-extension/` unpacked at `chrome://extensions`. A packed or store build is deferred; nothing in the code depends on which.
 
