@@ -4,7 +4,7 @@ import { themes as prismThemes } from 'prism-react-renderer';
 
 const config: Config = {
   title: 'freddie',
-  favicon: 'img/favicon.ico',
+  favicon: 'img/mercury.png',
 
   url: 'https://freddiehg.github.io',
   baseUrl: '/freddie/',
