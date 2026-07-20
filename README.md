@@ -36,7 +36,9 @@ This comes at a cost. For very simple cases, writing programs is more work than 
 
 ## `mercury`
 
-This repository contains a sample program built with `freddie`, entitled `mercury`. You should not expect it to fit your use case. It is here to be read, run, studied, used as an example, forked, and modified.
+This repository contains a sample program built with `freddie`, entitled `mercury`. It is MacOS-only, and requires accessibility permissions. At most, one instance of `mercury` runs at a time.
+
+You should not expect it to fit your use case. It is here to be read, run, studied, used as an example, forked, and modified.
 
 ### Running `mercury`
 
@@ -61,24 +63,27 @@ mercury install
 mercury uninstall
 ```
 
-`mercury` is macOS only, and it needs Accessibility permissions.
+### `mercury` user guide
 
-Max one instance of `mercury` runs at a time.
+I would recommend you, in addition to starting `mercury`, run `mercury logs`. This will allow you to see the state of `mercury` after every event. As the commit of this writing, it boots up into this state:
 
-### The tour
+```
+Mercury { foreground: Foreground { app: Ghostty, navigating: false }, typing_state: TypingState { held: HeldModifiers {}, jk: KeySequence {} }, overlay: None, layer: Typing(TypingLayer) }
+```
 
-mercury comes up as a menu-bar item. The icon shows the layer you are in, and Quit lives in that menu deliberately: the way out must not depend on the grabbed keyboard still working.
+If you read that state closely, you'll see it booted up into the typing layer. You can also see this by examining the menu bar item, which should sho a mercury icon and the string "Typing".
 
-It boots into typing, which binds nothing. Every key falls through to the root, runs through the `jk` sequence, and passes through, so the keyboard is normal until you ask for something.
+In this typing layer, all keystrokes are passed through. The only way to leave the typing layer is to enter the sequence `jk`, which navigates to the home layer. (If you pause for at least 200ms after typing `j`, you will be able to type the characters `jk`.)
 
-Type `jk` quickly, inside 200ms, and you are in home. Home is a command layer: it swallows keys it does not bind, which is why it cannot be what you boot into. From there:
+From any layer except the typing layer, you can press `o` to to show an overlay. If you now press it from the home layer, you'll find that you that you can press `n` for nav, `t` for typing, `i` for inapp, `s` for site, `r` for resize and `q` for quit.
 
-- `n` then `c` foregrounds Chrome. `f`, `g`, `z` do the same for Finder, Ghostty, and Zed, and each lands you in that app's own layer once it is actually frontmost.
-- `r` then an arrow places the focused window: up maximizes, left and right take half the screen. Then it returns home on its own.
-- `o` shows the current layer's keymap as an overlay, so you do not have to remember any of this.
-- `t` returns to typing, `escape` returns to home from every layer that binds it, and `q` quits.
+From the nav layer, you can hit `t` for typing, `z` to foreground zed, `f` to foreground finder, `g` to foreground ghostty, `c` to foreground Google Chrome, `space` to open spotlight, and `esc` to go home (all non-typing layers send you home after you type `esc`). (These aren't the apps you use?? Fork it!)
 
-Once Chrome is frontmost, `r` refreshes the tab. Once Ghostty is, `j` and `k` walk tmux's windows and `1` through `0` jump to the first ten. Those bindings exist only while that app is up. Go one level finer and the frontmost URL matters too: on `claude.ai`, `n` starts a new chat.
+When an app is foregrounded, if you enter the inapp layer (`i` from home), you'll have keybindings that are custom to that app. In Chrome, `r` refreshes, and `l` selects the location bar, `shift-l` copies the location, `cmd-l` copies the domain.
+
+There is also a Chrome extension (at ./chrome-extension) that you can load into Chrome, which will report to mercury the foregrounded tab. If you do this, then the site layer (accessible via `s` from home or from inapp) will have per-site bindings. For example, on `claude.ai`, `n` will create a new tab (normally bound to `cmd-shift-o`).
+
+In the resize layer (`r` from home), `up` maximizes a window, `right` resizes to the right half, `left` resizes to the left half.
 
 ### The model
 
