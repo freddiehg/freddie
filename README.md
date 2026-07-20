@@ -119,7 +119,7 @@ The `mercury` data model is what controls which handler is executed when you cal
 
 In the simplest case, the state is a nested enum. For example, `struct Mercury` contains a `#[resolve_into] layer: Layer` field, which is an enum. Different keys can be bound on different layers. For example, `c` navigates to Google Chrome iff `matches!(state.layer, Layer::Nav(_))`, but not in other layers.
 
-Here, the handlers bound on `NavLayer` take precedence over the handlers bound on `Layer`, which take precedence over the handlers bound on `Mercury`. (Ideally, we would like to error if an event would be handled twice, and that is on the roadmap.)
+Here, the handlers bound on `NavLayer` take precedence over the handlers bound on `Layer`, which take precedence over the handlers bound on `Mercury`. (Ideally, we would like to error if an event would be handled twice. That is not currently enabled in `freddie`.)
 
 However, this runs into a limitation! How do you handle the currently foregrounded app, which is only relevant in in the `InApp` layer? On the other hand, `struct InApp` could have `#[resolve_into] currently_foregrounded_app: CurrentlyForegroundedApp`, and that would work! But, that means that when you navigate to the inapp layer, you must know (or discover) the foregrounded app.
 
@@ -172,7 +172,7 @@ And the handler:
 ```rust
 fn louder<'a>(_ev: &KeyEvent, node: Node<VolumeLayerPath<'a>, ()>) -> Vec<MercuryEffect> {
     let layer: &mut VolumeLayer = node.parent.get_mut();
-    layer.volume = (layer.volume + 10).min(100);
+    layer.volume = layer.volume + 10;
     vec![MercuryEffect::SetVolume(layer.volume)]
 }
 ```
@@ -194,13 +194,60 @@ That `unreachable!` has nothing to guard, and the compiler cannot tell. A state 
 
 A handler that needs more than its own level climbs. `node.parent.into_parent()` is the `Layer` above, and one more is the root, `&mut Mercury`, which is how `esc` sets the layer back to home from wherever it was pressed.
 
+### Triggers
+
+A trigger is the other half of a binding, and it answers one question: does this event run this handler? Two things have to line up. The event has to be of the kind the trigger reads, and the trigger has to match what that event carries.
+
+A `freddie` program has one event type, whose variants are its sources:
+
+```rust
+pub enum MercuryEvent {
+    Key(KeyEvent),
+    Foreground(ForegroundEvent),
+    Tab(TabEvent),
+    Quit(Quit),
+    Timer(TimerFired),
+}
+```
+
+A trigger names the variant it reads and says what matching means:
+
+```rust
+pub trait EventTrigger {
+    type Event;
+    fn is_matching(&self, event: &Self::Event) -> bool;
+}
+```
+
+Dispatch narrows the event to `&Self::Event` first, with a `TryFrom`, and asks `is_matching` only if that succeeded. So a key binding never sees a tab event: the narrowing fails, the binding is skipped, and the trigger never runs. Adding a source is adding a variant and the triggers that read it, and nothing that binds a key has to hear about it.
+
+Keys come with several triggers, which differ in how much of the event they look at. `Key::KeyR` matches that key on either press with any modifiers held; `Key::KeyR.down()` is a `KeyPress`, and matches the direction too; `Key::KeyL.down().with(ModifierFlags::COMMAND)` is a `KeyChord`, and matches the modifiers exactly, which is why Chrome binds `l`, `shift-l` and `cmd-l` as three chords rather than one key. `AnyKey` matches every key event there is, and lives at the root as the last resort for whatever no layer claimed.
+
+A trigger does not have to be a constant. It can be a closure over the state its node is bound on:
+
+```rust
+#[bind(
+    |path| path.get().home_timeout.trigger() => to_home,
+)]
+```
+
+Every timer fires the same `MercuryEvent::Timer`, so the event alone cannot say which one went off. The layer holds the guard for the timer it set, and that guard's `trigger()` matches its own firing and nothing else. Which node is still holding the guard is what tells two timers apart. The closure is handed a shared reference, so a trigger reads state and cannot write it.
+
+When the state might not hold one, the trigger is an `Option`, and `None` matches nothing:
+
+```rust
+|mercury_path| mercury_path.overlay_timer().map(TimerGuard::trigger) => hide_overlay,
+```
+
+While no overlay is up there is no timer, the trigger is `None`, and the binding is quiet. Nothing branches on absence.
+
 ## `mercury logs`
 
 `mercury` writes to `~/Library/Logs/mercury/mercury.log`, always, appending across runs, and always down to `debug` whatever the terminal was asked for. One record per dispatched event carries the event, the effects it produced, and the resulting state, so a run is reconstructable afterwards.
 
-```
-mercury logs                 records at info and above
-mercury logs --level debug   widen that
+```sh
+mercury logs                 # records at info and above
+mercury logs --level debug   # widen that
 ```
 
 Every record carries the pid of the process that wrote it, because a client verb and the daemon both append to the one file.
