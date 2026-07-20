@@ -68,13 +68,63 @@ jobs:
       - run: pnpm run lint
       - run: pnpm run format:check
 
+  build-website:
+    name: Build website
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: docs-website
+    steps:
+      - uses: actions/checkout@v4
+      # `defaults.run.working-directory` does not reach an action's own steps, so this
+      # one is told where the package.json naming the pnpm version lives.
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: docs-website/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: docs-website/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm run build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs-website/build
+
   all-checks-passed:
     name: All checks passed
     runs-on: ubuntu-latest
-    needs: [cargo-fmt, cargo-clippy, cargo-test, extension]
+    needs: [cargo-fmt, cargo-clippy, cargo-test, extension, build-website]
     steps:
       - name: Do nothing
         run: echo "all checks passed"
+
+  # The site goes out only behind `all-checks-passed`, so a red build never deploys.
+  # The artifact comes from `build-website` in this same run.
+  deploy-website:
+    name: Deploy to GitHub Pages
+    runs-on: ubuntu-latest
+    needs: [all-checks-passed]
+    if: >-
+      github.event_name == 'push' &&
+      github.repository == 'freddiehg/freddie' &&
+      github.ref == 'refs/heads/master'
+    # On the job rather than the workflow: two CI runs may overlap freely, but two
+    # deployments of the same site may not.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
 
   # Push to master -> publish a snapshot version of every crate: 0.0.0-main.<run>.
   main-release:
