@@ -14,6 +14,28 @@ for effect in effects {
 }
 ```
 
+## What a handler hands back
+
+`Bindings::Output` is what dispatch returns, and for `mercury` it is `Vec<MercuryEffect>`. A handler is not held to that type. It returns anything that is `Into` the output, so a handler with one effect to ask for returns it bare:
+
+```rust
+pub(crate) const fn refresh<E, N>(_ev: &E, _node: N) -> MercuryEffect {
+    tap(Key::KeyR, ModifierFlags::COMMAND)
+}
+```
+
+That compiles because `mercury` owns the conversion:
+
+```rust
+impl From<MercuryEffect> for Vec<MercuryEffect> {
+    fn from(effect: MercuryEffect) -> Self {
+        vec![effect]
+    }
+}
+```
+
+The framework asks only for `Into<Self::Output>`, so which return types are legal is a decision each program makes by writing the impls it wants.
+
 ## Adding a variant
 
 TODO: add the variant to `MercuryEffect`, and show the shape an effect carrying data takes.

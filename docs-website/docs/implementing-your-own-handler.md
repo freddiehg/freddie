@@ -27,14 +27,42 @@ pub struct VolumeLayer {
 And the handler:
 
 ```rust
-fn louder<'a>(_ev: &KeyEvent, node: Node<VolumeLayerPath<'a>, ()>) -> Vec<MercuryEffect> {
+fn louder<'a>(_ev: &KeyEvent, node: Node<VolumeLayerPath<'a>, ()>) -> MercuryEffect {
     let layer: &mut VolumeLayer = node.parent.get_mut();
     layer.volume = layer.volume + 10;
-    vec![MercuryEffect::SetVolume(layer.volume)]
+    MercuryEffect::SetVolume(layer.volume)
 }
 ```
 
 `node.parent` is the path to the level the binding was written on, so `get_mut` hands back this layer, unconditionally. There is no question of whether the volume layer is the active one: `louder` runs because it was, and the path is what says so.
+
+## What a handler returns
+
+`louder` asks for one thing, so it returns one thing. `Bindings::Output` is what dispatch returns, and for `mercury` that is still `Vec<MercuryEffect>`. A handler returns anything that is `Into` the output, and dispatch converts it.
+
+```rust
+/// One effect, returned bare.
+pub(crate) const fn refresh<E, N>(_ev: &E, _node: N) -> MercuryEffect {
+    tap(Key::KeyR, ModifierFlags::COMMAND)
+}
+
+/// Several, returned as the vector.
+pub(crate) fn replay(presses: Vec<KeyPress>) -> Vec<MercuryEffect> {
+    // ...
+}
+```
+
+The conversion is the program's, not the framework's:
+
+```rust
+impl From<MercuryEffect> for Vec<MercuryEffect> {
+    fn from(effect: MercuryEffect) -> Self {
+        vec![effect]
+    }
+}
+```
+
+So the set of things a handler may return is something you extend. Writing `From<Option<MercuryEffect>>` lets a handler decline to produce one, and `From<()>` covers the handlers that only mutate state.
 
 ## Climbing to a parent
 

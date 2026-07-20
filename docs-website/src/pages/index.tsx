@@ -16,10 +16,10 @@ pub struct VolumeLayer {
     volume: u8,
 }`;
 
-const handlerExample = `fn louder<'a>(_ev: &KeyEvent, node: Node<VolumeLayerPath<'a>, ()>) -> Vec<MercuryEffect> {
+const handlerExample = `fn louder<'a>(_ev: &KeyEvent, node: Node<VolumeLayerPath<'a>, ()>) -> MercuryEffect {
     let layer: &mut VolumeLayer = node.parent.get_mut();
     layer.volume = layer.volume + 10;
-    vec![MercuryEffect::SetVolume(layer.volume)]
+    MercuryEffect::SetVolume(layer.volume)
 }`;
 
 function Features() {
@@ -179,11 +179,6 @@ function EventsCanBeAnything() {
             </p>
           </div>
         </div>
-        <p style={{ paddingTop: '1rem' }}>
-          Is this the real life? Is this just a frame someone sent over
-          loopback? Dispatch narrows the event, finds the binding, and never
-          asks.
-        </p>
       </div>
     </section>
   );

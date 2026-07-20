@@ -8,10 +8,10 @@ sidebar_position: 5
 `laserbeam` is the typed mutable path that bindings are built over. A handler bound on a level is handed a path to that level, so it can call `get_mut` unconditionally.
 
 ```rust
-fn louder<'a>(_ev: &KeyEvent, node: Node<VolumeLayerPath<'a>, ()>) -> Vec<MercuryEffect> {
+fn louder<'a>(_ev: &KeyEvent, node: Node<VolumeLayerPath<'a>, ()>) -> MercuryEffect {
     let layer: &mut VolumeLayer = node.parent.get_mut();
     layer.volume = layer.volume + 10;
-    vec![MercuryEffect::SetVolume(layer.volume)]
+    MercuryEffect::SetVolume(layer.volume)
 }
 ```
 
