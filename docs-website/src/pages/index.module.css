@@ -1,5 +1,12 @@
 .centeredHeading {
   text-align: center;
+  color: var(--freddie-red);
+}
+
+/* The red clears 9:1 on a white page and 1.4:1 on the dark one, so dark mode
+   takes the yellow the docs already use for the same job. */
+[data-theme='dark'] .centeredHeading {
+  color: var(--freddie-yellow);
 }
 
 .codeBlockWrap pre {
