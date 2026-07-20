@@ -55,11 +55,15 @@ function Features() {
             </p>
           </div>
           <div className="col col--4">
-            <h3>Pure, and therefore testable</h3>
+            <h3>Pure, and therefore knowable</h3>
             <p>
-              <code>state.handle(event)</code> is a state transformer: state and
-              event in, updated state and effects out. Effects are returned, not
-              performed, so the whole keymap is a table you can assert on.
+              <code>state.handle(event)</code> takes state and event and hands
+              back the updated state and a list of effects, performing none of
+              them. What a key does in a given layer is something you read off
+              rather than something you run the program to find out. Every
+              state a binding can be reached in is written down, so the
+              question of what happens next has an answer you can check without
+              a keyboard in your hand. A test asserts on exactly that.
             </p>
           </div>
         </div>
