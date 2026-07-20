@@ -37,12 +37,11 @@ function Features() {
         </p>
         <div className="row" style={{ paddingTop: '1.5rem' }}>
           <div className="col col--4">
-            <h3>A program, not a config file</h3>
+            <h3>Fork it, build it, run it</h3>
             <p>
-              You fork the repository, make the changes you want, and run{' '}
-              <code>cargo build</code>. You respond to whatever events you want,
-              you manage state however you choose, and your handlers receive
-              that state.
+              The whole thing ships as a repository you clone and a binary you
+              compile. Your edits are Rust, the state is a struct you declared,
+              and <code>cargo build</code> is the deploy step.
             </p>
           </div>
           <div className="col col--4">
@@ -72,9 +71,47 @@ function Features() {
   );
 }
 
-function BindingSection() {
+function DontStopMeNow() {
   return (
     <section className="alt-background">
+      <div className="container">
+        <h2 className={styles.centeredHeading}>Don&rsquo;t stop me now.</h2>
+        <p>
+          You do not configure <code>freddie</code>. You write a program with
+          it. There is no config file, no DSL, and no schema of somebody
+          else&rsquo;s questions to answer.
+        </p>
+        <p>
+          That distinction only matters at the edges, and the edges are where
+          you end up. A configuration format is a fixed set of questions its
+          author decided to ask, and it works right until you want something
+          they did not anticipate. Then it stops. Your options become abusing
+          whatever escape hatch exists, or bolting a second program onto the
+          side to do the part the first one cannot, which is how a keyboard
+          setup turns into three files that disagree about what state you are
+          in.
+        </p>
+        <p>
+          Here you fork the repository and edit Rust. The state is a struct you
+          declared. The handlers are functions you wrote. Adding an event source
+          is adding a variant. Nothing has to be expressible in someone
+          else&rsquo;s format before you can do it, so there is no ceiling to
+          hit and nothing to work around when you reach it.
+        </p>
+        <p>
+          It costs more than a config file for the simple cases, and it wants a
+          toolchain and a rebuild. That is the trade. It is also a much smaller
+          trade than it was two years ago: hand the crate to an LLM and describe
+          the binding you want.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+function BindingSection() {
+  return (
+    <section>
       <div className="container">
         <h2 className={styles.centeredHeading}>
           A binding is a trigger and a handler.
@@ -106,7 +143,7 @@ function BindingSection() {
 
 function EventsCanBeAnything() {
   return (
-    <section>
+    <section className="alt-background">
       <div className="container">
         <h2 className={styles.centeredHeading}>Events can be anything.</h2>
         <p>
@@ -154,7 +191,7 @@ function EventsCanBeAnything() {
 
 function EffectsCanBeAnything() {
   return (
-    <section className="alt-background">
+    <section>
       <div className="container">
         <h2 className={styles.centeredHeading}>Effects can be anything.</h2>
         <p>
@@ -200,7 +237,7 @@ function EffectsCanBeAnything() {
 
 function Mercury() {
   return (
-    <section>
+    <section className="alt-background">
       <div className="container">
         <h2 className={styles.centeredHeading}>Mercury rising.</h2>
         <p>
@@ -246,6 +283,7 @@ export default function Home(): ReactNode {
       <HomepageHeader />
       <main>
         <Features />
+        <DontStopMeNow />
         <BindingSection />
         <EventsCanBeAnything />
         <EffectsCanBeAnything />
