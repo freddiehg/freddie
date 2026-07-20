@@ -103,31 +103,65 @@ With that out of the way, let's discuss the specifics of `mercury`.
 
 ### `mercury` setup
 
-> The "regular program" part of `mercury start`.
+`mercury` uses `clap` to parse commands. The main subcommand is `mercury start`, which calls a hidden internal command, `mercury daemon`, which does the following:
 
-`mercury start` calls a hidden internal command, `mercury daemon`, which does the following:
-
-- Takes the single-instance lock, so a second mercury cannot come up alongside the first and fight it over the keyboard.
-- Puts up the menu bar item, whose Quit is a way out that does not go through the keyboard.
+- Takes the single-instance lock, so multiple instances of `mercury` cannot run at the same time.
+- Creates the initial state.
+- Puts up the menu bar item.
 - Grabs the keyboard, which swallows every key and hands it to the model as an event. The grab also hands back an emitter, which is how keys get back out.
 - Subscribes to the other sources: the frontmost app, the event socket on `127.0.0.1:3883`, and SIGTERM.
-- Runs the event loop and the effect loop, over a channel each.
-
-Sources feed the event channel. The event loop dispatches each event and sends the effects it produced to the effect channel. The effect loop performs them: emitting keys, foregrounding apps, placing windows, setting timers, copying to the clipboard, drawing the overlay, retitling the menu bar item. All of that is one worker thread, which owns the state, so nothing is shared and nothing is locked.
-
-Quitting is an effect too. It ends the effect loop rather than the process, so the exit runs destructors and the keyboard is released on the way out.
+- For each event, calls `state.dispatch(event)`, which gives us a vector of effects.
+- For each effect, handles it. For example, doing so might emit a keypress, foreground an app, change the menu bar text, or quit mercury.
 
 ### `mercury` data model
 
-`mercury` intentionally has a fairly standard data model, designed to be easily extended and modified for your use case.
+The `mercury` data model is what controls which handler is executed when you call `state.handle(event)`. `mercury` intentionally has a fairly standard data model, designed to be easily extended and modified for your use case.
 
-Every event is dispatched. Dispatch mutates state and emits a set of effects, and touches nothing else.
+In the simplest case, the state is a nested enum. For example, `struct Mercury` contains a `#[resolve_into] layer: Layer` field, which is an enum. Different keys can be bound on different layers. For example, `c` navigates to Google Chrome iff `matches!(state.layer, Layer::Nav(_))`, but not in other layers.
 
-State is a large nested enum: which layer you are in, which app is frontmost, which site that app has open. Handlers attach to branches of that tree, and a handler runs only when the state is in the shape it was attached to. In the nav layer `c` foregrounds Chrome; elsewhere in the tree `c` is not bound to that at all.
+Here, the handlers bound on `NavLayer` take precedence over the handlers bound on `Layer`, which take precedence over the handlers bound on `Mercury`. (Ideally, we would like to error if an event would be handled twice, and that is on the roadmap.)
 
-Two things follow from that shape.
+However, this runs into a limitation! How do you handle the currently foregrounded app, which is only relevant in in the `InApp` layer? On the other hand, `struct InApp` could have `#[resolve_into] currently_foregrounded_app: CurrentlyForegroundedApp`, and that would work! But, that means that when you navigate to the inapp layer, you must know (or discover) the foregrounded app.
 
-The model is a pure function of state and event, so the whole keymap is checkable as a table, and the tests read as documentation of the keymap.
+Discovering it at that time is not a great pattern. Learning what app is foregrounded is quick, so in this specific case, it wouldn't be a problem. But, what if it wasn't so easy? For example, if finding out meant making a network request? Regardless, doing so is impure, and thus violates one of the basic tenets of `freddie`: `state.handle` is pure.
+
+So, we must know what app is foregrounded. Hence, the root `Mercury` struct keeps track of what app is foregrounded. But now, how to populate `#[resolve_into] currently_foregrounded_app`? Do we copy the state when transitioning? That works, but it also means that we have to be careful and not only maintain the state at the root, but also keep the state wherever it is used up-to-date.
+
+The solution that `freddie` offers is virtual fields.
+
+A virtual field is a child level that is computed during dispatch instead of stored in the state. `AppLayer` declares one with `#[derived_child]`, naming the function that builds it:
+
+```rust
+#[derive(Bind, Debug)]
+#[node(parent = LayerPath)]
+#[binds(MercuryStruct)]
+#[derived_child(app_data)]
+#[bind(
+    Key::Escape.down() => to_home,
+    Key::KeyO.down() => toggle_overlay,
+    // ...
+)]
+pub struct AppLayer {
+    home_timeout: TimerGuard,
+}
+
+/// Reads the confirmed front app, the only copy, and builds the level for it.
+const fn app_data(path: &AppLayerPath) -> Option<AppData> {
+    // AppLayer -> Layer -> Mercury.
+    let root = path.parent().parent();
+    match root.foreground.confirmed() {
+        Some(App::Chrome) => Some(AppData::Chrome(ChromeApp::new())),
+        Some(App::Ghostty) => Some(AppData::Ghostty(GhosttyApp::new())),
+        _ => None,
+    }
+}
+```
+
+When dispatch reaches `AppLayer`, it calls `app_data`, which walks up to the root, reads the one copy of the frontmost app, and hands back the level to descend into. `ChromeApp` and `GhosttyApp` are `#[derived_node]`s: they are not stored anywhere and they hold nothing, existing for the length of one dispatch to carry their bindings. So `r` refreshes only while Chrome is frontmost, `j` and `k` walk tmux's windows only while Ghostty is, and the apps that bind nothing get `None` and no level at all.
+
+Nothing is copied on the way into the layer, so nothing can go stale. `app_data` receives a shared reference, so a virtual field reads the state and cannot write it or reach out to the world, which keeps `state.handle` pure.
+
+The same attribute is how the site layer reaches per-site bindings, off the URL the Chrome extension reports.
 
 And a handler receives a typed path from its own leaf up to the root:
 
