@@ -25,6 +25,7 @@ pub(crate) const OVERLAY: &str = include_str!("overlays/nav.txt");
     Key::KeyF.down() => open_finder,
     Key::KeyG.down() => open_ghostty,
     Key::KeyZ.down() => open_zed,
+    Key::Space.down() => open_spotlight,
 )]
 pub struct NavLayer {
     // Read for the trigger matching its firing, and held for its `Drop`: dropping the guard cancels nav's return-home timer.

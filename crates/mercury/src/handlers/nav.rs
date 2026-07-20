@@ -7,8 +7,11 @@
 //! [`app_data`](crate::state)), so the old app's bindings do not apply in the gap.
 
 use bind::Node;
+use freddie_keys::{Key, ModifierFlags};
 use laserbeam::Ascend;
 
+use super::to_typing;
+use crate::effect::tap;
 use crate::state::{AppLayer, MercuryPath};
 use crate::{App, MercuryEffect};
 
@@ -48,4 +51,19 @@ pub(crate) fn open_zed<'a, E, P: Ascend<MercuryPath<'a>>>(
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
     navigate(node.parent, App::Zed)
+}
+
+/// `space` in nav: open Spotlight and land in typing, so what you type next reaches its field.
+///
+/// Not a [`navigate`]: Spotlight is a text field rather than an app with its own in-app bindings,
+/// and it is opened with its own chord rather than by foregrounding anything. The tap comes before
+/// the transition, so the modifier downs typing's `open` emits land on Spotlight rather than on the
+/// app being left.
+pub(crate) fn open_spotlight<'a, E, P: Ascend<MercuryPath<'a>>>(
+    ev: &E,
+    node: Node<P, ()>,
+) -> Vec<MercuryEffect> {
+    let mut effects = vec![tap(Key::Space, ModifierFlags::COMMAND)];
+    effects.extend(to_typing(ev, node));
+    effects
 }

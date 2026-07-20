@@ -10,7 +10,8 @@
 //!   layer for that app. Nav is a one-shot chooser: it picks once and leaves. The app is not
 //!   recorded on the choice; the watcher reports the app that comes up, and until it does the
 //!   in-app level is empty. So `n c` foregrounds Chrome and, once it is frontmost, `r`
-//!   refreshes it, with no separate `i`.
+//!   refreshes it, with no separate `i`. `space` is the other way to reach an app: it opens
+//!   Spotlight and lands in typing, so the name types itself.
 //! - [`ResizeLayer`] (`r` from home): the arrows place the focused window, up to maximize and
 //!   left and right to the halves, then it goes back to home.
 //! - [`TypingLayer`]: `escape` goes home, any other key passes through.

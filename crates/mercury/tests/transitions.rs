@@ -384,6 +384,27 @@ fn every_nav_choice_enters_inapp() {
     }
 }
 
+// `space` in nav opens Spotlight and leaves for typing, so the query reaches its field. The tap
+// comes first, ahead of the transition's effects.
+#[test]
+fn nav_space_opens_spotlight_and_enters_typing() {
+    let mut m = home();
+    let _ = m.handle(&key(Key::KeyN));
+    assert_eq!(
+        m.handle(&key(Key::Space)),
+        Some(vec![
+            tap(Key::Space, ModifierFlags::COMMAND),
+            shows("Typing")
+        ])
+    );
+    assert!(matches!(m.layer(), Layer::Typing(_)));
+    // Nothing was foregrounded, and no navigation is pending: Spotlight is not an app choice.
+    assert_eq!(m.foreground.app(), App::Other);
+    assert!(!m.foreground.navigating());
+    // Typing passes keys through, so what follows types itself into Spotlight.
+    assert_eq!(m.handle(&key(Key::KeyC)), Some(passed(Key::KeyC)));
+}
+
 // The whole point: `n c` foregrounds Chrome and, once the watcher reports it, `r`
 // refreshes it. No separate `i`.
 #[test]
