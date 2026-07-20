@@ -38,6 +38,7 @@ pub(crate) const fn overlay_for(app: App) -> &'static str {
     Key::Escape.down() => to_home,
     Key::KeyO.down() => toggle_overlay,
     Key::KeyN.down() => to_nav,
+    Key::KeyS.down() => to_site,
     Key::KeyT.down() => to_typing,
 )]
 pub struct AppLayer {

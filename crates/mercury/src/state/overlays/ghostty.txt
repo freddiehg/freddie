@@ -3,5 +3,6 @@
   j k  walk panes
   0-9  select window
   n    nav
+  s    site
   t    typing
   esc  home

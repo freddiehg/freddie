@@ -472,6 +472,20 @@ fn i_enters_inapp_for_the_foregrounded_app() {
     assert_eq!(m.foreground.app(), App::Chrome);
 }
 
+// `s` in the in-app layer reaches the site layer, the way `u` does from home: `i` is what the
+// front app can do, `s` is what the site in its front tab can do, with no trip through home.
+#[test]
+fn inapp_s_enters_site() {
+    let mut m = home();
+    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&key(Key::KeyI));
+    assert_eq!(
+        m.handle(&key(Key::KeyS)),
+        Some(vec![shows("Site"), return_home_timer()])
+    );
+    assert!(matches!(m.layer(), Layer::Site(_)));
+}
+
 // The in-app layer works like home for entering nav and typing: `n` and `t` reach
 // past the app's own bindings (which bind neither) to the layer's.
 #[test]

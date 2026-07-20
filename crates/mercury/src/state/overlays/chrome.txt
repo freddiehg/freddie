@@ -2,5 +2,6 @@
   ────────────────────
   r    refresh
   n    nav
+  s    site
   t    typing
   esc  home
