@@ -1,6 +1,6 @@
-# mercury bridge
+# Freddie Active Tab Reporter
 
-Pushes Chrome's active tab URL to a running mercury, which is how per-site key remaps know what
+Reports Chrome's active tab URL to a running mercury, which is how per-site key remaps know what
 site you are on. It sends one message and takes none.
 
 ## Build

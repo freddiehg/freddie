@@ -1,16 +1,15 @@
 {
-  "name": "mercury-bridge",
+  "name": "freddie-active-tab-reporter",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.9.0",
   "scripts": {
-    "build": "pnpm run icons && tsc",
-    "watch": "pnpm run icons && tsc --watch",
+    "build": "tsc",
+    "watch": "tsc --watch",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check .",
-    "icons": "mkdir -p icons && cp ../crates/mercury/assets/mercury.png icons/"
+    "format:check": "prettier --check ."
   },
   "devDependencies": {
     "@eslint/js": "^9",

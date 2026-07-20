@@ -1,15 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "mercury bridge",
+  "name": "Freddie Active Tab Reporter",
   "version": "0.0.1",
-  "description": "Pushes Chrome's active tab URL to a running mercury.",
+  "description": "Reports Chrome's active tab URL to a running mercury.",
   "background": { "service_worker": "dist/background.js", "type": "module" },
   "permissions": ["tabs", "storage"],
   "host_permissions": ["http://127.0.0.1/*"],
   "options_page": "options.html",
   "icons": {
-    "16": "icons/mercury.png",
-    "48": "icons/mercury.png",
-    "128": "icons/mercury.png"
+    "16": "icons/freddie-16.png",
+    "48": "icons/freddie-48.png",
+    "128": "icons/freddie-128.png"
   }
 }
