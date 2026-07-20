@@ -84,6 +84,15 @@ pub enum MercuryEffect {
     Timer(TimerEffect<MercuryEvent>),
 }
 
+/// One effect is a dispatch output of one effect, so a handler with a single thing to ask for
+/// returns it bare and dispatch wraps it. `Bindings::Output` stays the vector, since a handler
+/// that asks for several is the other half of the same trait.
+impl From<MercuryEffect> for Vec<MercuryEffect> {
+    fn from(effect: MercuryEffect) -> Self {
+        vec![effect]
+    }
+}
+
 pub(crate) const fn tap(key: Key, flags: ModifierFlags) -> MercuryEffect {
     MercuryEffect::Tap(Chord { key, flags })
 }

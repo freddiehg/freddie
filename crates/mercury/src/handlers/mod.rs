@@ -1,8 +1,10 @@
 //! The key and foreground handlers, one module per layer.
 //!
-//! Each is a `fn(&SourceEvent, Node<OwnPath, ()>) -> Vec<MercuryEffect>`. It reaches the tree
-//! through the path the node carries, and returns inert effects. `crate::state` glob-imports
-//! this module so the derive-generated dispatch can name them.
+//! Each is a `fn(&SourceEvent, Node<OwnPath, ()>) -> R`, where `R` is `Vec<MercuryEffect>` or,
+//! for a handler with one thing to ask for, `MercuryEffect` itself: dispatch converts what comes
+//! back into the output type. It reaches the tree through the path the node carries, and returns
+//! inert effects. `crate::state` glob-imports this module so the derive-generated dispatch can
+//! name them.
 
 mod app;
 mod foreground;
@@ -46,8 +48,9 @@ pub(crate) fn go_home(root: &mut Mercury) -> Vec<MercuryEffect> {
 /// Generic over the path, so every chooser binds it from its own node.
 pub(crate) fn and_go_home<'a, P: Ascend<MercuryPath<'a>>>(
     path: P,
-    mut effects: Vec<MercuryEffect>,
+    effects: impl Into<Vec<MercuryEffect>>,
 ) -> Vec<MercuryEffect> {
+    let mut effects = effects.into();
     effects.extend(go_home(path.ascend()));
     effects
 }

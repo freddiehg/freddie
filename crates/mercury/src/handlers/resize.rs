@@ -11,20 +11,17 @@ pub(crate) fn maximize<'a, E, P: Ascend<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
-    and_go_home(node.parent, vec![MercuryEffect::Place(Placement::Maximize)])
+    and_go_home(node.parent, MercuryEffect::Place(Placement::Maximize))
 }
 pub(crate) fn left_half<'a, E, P: Ascend<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
-    and_go_home(node.parent, vec![MercuryEffect::Place(Placement::LeftHalf)])
+    and_go_home(node.parent, MercuryEffect::Place(Placement::LeftHalf))
 }
 pub(crate) fn right_half<'a, E, P: Ascend<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
-    and_go_home(
-        node.parent,
-        vec![MercuryEffect::Place(Placement::RightHalf)],
-    )
+    and_go_home(node.parent, MercuryEffect::Place(Placement::RightHalf))
 }

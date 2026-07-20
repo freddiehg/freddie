@@ -12,8 +12,8 @@ use crate::sources::host;
 use crate::state::MercuryPath;
 
 /// `r` in Chrome: cmd-r, a refresh. Touches neither event nor node, so both are generic.
-pub(crate) fn refresh<E, N>(_ev: &E, _node: N) -> Vec<MercuryEffect> {
-    vec![tap(Key::KeyR, ModifierFlags::COMMAND)]
+pub(crate) fn refresh<E, N>(_ev: &E, _node: N) -> MercuryEffect {
+    tap(Key::KeyR, ModifierFlags::COMMAND)
 }
 
 /// `l` in Chrome: cmd-l, focusing the address bar, and then typing.
