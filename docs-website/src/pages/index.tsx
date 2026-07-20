@@ -175,27 +175,26 @@ function EventsCanBeAnything() {
         </p>
         <div className="row" style={{ paddingTop: '1.5rem' }}>
           <div className="col col--4">
-            <h3>Under pressure</h3>
+            <h3>Keys, before the app sees them</h3>
             <p>
-              The keyboard grab hands you every key with its modifiers before
-              the frontmost app sees any of it, which is the whole reason a
-              remapper can exist.
+              The grab hands you every key with its modifiers first, which is
+              the whole reason a remapper can exist at all.
             </p>
           </div>
           <div className="col col--4">
-            <h3>Radio ga ga</h3>
+            <h3>Anything that can open a socket</h3>
             <p>
-              Anything that can open a socket to <code>127.0.0.1:3883</code> is
-              an event source. That is how a Chrome extension tells{' '}
+              A frame arriving on <code>127.0.0.1:3883</code> becomes an event
+              like any other. That is how a Chrome extension tells{' '}
               <code>mercury</code> which tab you are looking at.
             </p>
           </div>
           <div className="col col--4">
-            <h3>Another one bites the dust</h3>
+            <h3>Hardware coming and going</h3>
             <p>
-              Hardware comes and goes, and both directions are events. A monitor
-              connecting, a headset disconnecting, an app quitting out from
-              under the layer that was bound to it.
+              Both directions count: a monitor connecting, a headset
+              disconnecting, an app quitting out from under the layer that was
+              bound to it.
             </p>
           </div>
         </div>
@@ -217,15 +216,15 @@ function EffectsCanBeAnything() {
         </p>
         <div className="row" style={{ paddingTop: '1.5rem' }}>
           <div className="col col--4">
-            <h3>Hammer to fall</h3>
+            <h3>Emit a key</h3>
             <p>
-              Emit a key. Swallow <code>caps</code> and send <code>esc</code>,
-              or turn one chord into four. The keyboard is just another thing
-              the program can drive.
+              Swallow <code>caps</code> and send <code>esc</code>, or turn one
+              chord into four. The keyboard is just another thing the program
+              can drive.
             </p>
           </div>
           <div className="col col--4">
-            <h3>Play the game</h3>
+            <h3>Move windows and apps</h3>
             <p>
               Foreground an app, throw the focused window at the left half of
               the screen, retitle the menu bar, put an overlay up saying what is
@@ -233,11 +232,11 @@ function EffectsCanBeAnything() {
             </p>
           </div>
           <div className="col col--4">
-            <h3>I want it all</h3>
+            <h3>Run arbitrary code</h3>
             <p>
-              Run arbitrary code. Call an API, shell out, clone the repository
-              whose page you are sitting on. An effect is a variant and the arm
-              that performs it.
+              Call an API, shell out, clone the repository whose page you are
+              sitting on. An effect is a variant and the arm that performs
+              it.
             </p>
           </div>
         </div>
