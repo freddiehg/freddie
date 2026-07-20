@@ -37,12 +37,13 @@ function Features() {
         </p>
         <div className="row" style={{ paddingTop: '1.5rem' }}>
           <div className="col col--4">
-            <h3>Many sources, one queue</h3>
+            <h3>A binding can use anything you know</h3>
             <p>
-              The keyboard, the frontmost app, a socket, a timer and SIGTERM
-              all feed the same queue, and one event is dispatched per
-              iteration. Nothing interleaves and there is no lock to hold, so
-              the model only ever sees a sequence.
+              Every source feeds the same state, so what a key does can depend
+              on all of it at once. That is how <code>n</code> opens a new chat
+              while you are on claude.ai and means nothing anywhere else. A
+              remapper that can only see the frontmost app has no way to say
+              that.
             </p>
           </div>
           <div className="col col--4">
