@@ -37,34 +37,27 @@ function Features() {
         </p>
         <div className="row" style={{ paddingTop: '1.5rem' }}>
           <div className="col col--4">
-            <h3>A binding can use anything you know</h3>
+            <h3>Integrate the whole machine</h3>
             <p>
-              Every source feeds the same state, so what a key does can depend
-              on all of it at once. That is how <code>n</code> opens a new chat
-              while you are on claude.ai and means nothing anywhere else. A
-              remapper that can only see the frontmost app has no way to say
-              that.
+              Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do
+              eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut
+              enim ad minim veniam, quis nostrud exercitation ullamco laboris.
             </p>
           </div>
           <div className="col col--4">
             <h3>One place the decision is made</h3>
             <p>
-              This key was pressed, this app was foregrounded, this browser tab
-              became active, this device connected. Emit this key, foreground
-              this app, resize this window, run this arbitrary code. All of it
-              flows through one model.
+              Duis aute irure dolor in reprehenderit in voluptate velit esse
+              cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat
+              cupidatat non proident, sunt in culpa qui officia deserunt.
             </p>
           </div>
           <div className="col col--4">
             <h3>Pure, and therefore knowable</h3>
             <p>
-              <code>state.handle(event)</code> takes state and event and hands
-              back the updated state and a list of effects, performing none of
-              them. What a key does in a given layer is something you read off
-              rather than something you run the program to find out. Every
-              state a binding can be reached in is written down, so the
-              question of what happens next has an answer you can check without
-              a keyboard in your hand. A test asserts on exactly that.
+              Sed ut perspiciatis unde omnis iste natus error sit voluptatem
+              accusantium doloremque laudantium, totam rem aperiam, eaque ipsa
+              quae ab illo inventore veritatis et quasi architecto beatae.
             </p>
           </div>
         </div>
