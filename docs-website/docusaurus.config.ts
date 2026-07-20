@@ -4,6 +4,7 @@ import { themes as prismThemes } from 'prism-react-renderer';
 
 const config: Config = {
   title: 'freddie',
+  tagline: 'A bespoke control plane for your computer.',
   favicon: 'img/mercury.png',
 
   url: 'https://www.freddie.rs',
@@ -52,8 +53,13 @@ const config: Config = {
     colorMode: {
       respectPrefersColorScheme: true,
     },
+    image: 'img/freddie.png',
     navbar: {
       title: 'freddie',
+      logo: {
+        alt: 'freddie',
+        src: 'img/freddie.png',
+      },
       items: [
         {
           type: 'docSidebar',
@@ -71,7 +77,29 @@ const config: Config = {
     },
     footer: {
       style: 'dark',
-      links: [],
+      links: [
+        {
+          title: 'Docs',
+          items: [
+            { label: 'Introduction', to: '/docs/' },
+            {
+              label: 'Getting Started with Mercury',
+              to: '/docs/getting-started-with-mercury',
+            },
+            { label: 'Architecture', to: '/docs/architecture/' },
+          ],
+        },
+        {
+          title: 'More',
+          items: [
+            { label: 'Blog', to: '/blog' },
+            {
+              label: 'GitHub',
+              href: 'https://github.com/freddiehg/freddie',
+            },
+          ],
+        },
+      ],
       copyright: undefined,
     },
     prism: {

@@ -6,25 +6,80 @@
 
 /* You can override the default Infima variables here. */
 :root {
-  --ifm-color-primary: #2e8555;
-  --ifm-color-primary-dark: #29784c;
-  --ifm-color-primary-darker: #277148;
-  --ifm-color-primary-darkest: #205d3b;
-  --ifm-color-primary-light: #33925d;
-  --ifm-color-primary-lighter: #359962;
-  --ifm-color-primary-lightest: #3cad6e;
+  --ifm-color-primary: #b58900;
+  --ifm-color-primary-dark: #a37b00;
+  --ifm-color-primary-darker: #9a7400;
+  --ifm-color-primary-darkest: #7f6000;
+  --ifm-color-primary-light: #c79700;
+  --ifm-color-primary-lighter: #d09e00;
+  --ifm-color-primary-lightest: #e8b419;
+  --ifm-black: #1a1a1a;
+  --ifm-color-gold: #f5c518;
+  --ifm-alt-background: #fdf8ec;
+  --ifm-alt-background-border: #e6dcc4;
+  --ifm-h2-font-size: 2.5rem;
+  --ifm-h3-font-size: 1.4rem;
   --ifm-code-font-size: 95%;
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+
+  font-size: 18px;
+}
+
+@media screen and (max-width: 996px) {
+  :root {
+    --ifm-h2-font-size: 2rem;
+  }
 }
 
 /* For readability concerns, you should choose a lighter palette in dark mode. */
 [data-theme='dark'] {
-  --ifm-color-primary: #25c2a0;
-  --ifm-color-primary-dark: #21af90;
-  --ifm-color-primary-darker: #1fa588;
-  --ifm-color-primary-darkest: #1a8870;
-  --ifm-color-primary-light: #29d5b0;
-  --ifm-color-primary-lighter: #32d8b4;
-  --ifm-color-primary-lightest: #4fddbf;
+  --ifm-color-primary: #e0aa2a;
+  --ifm-color-primary-dark: #d09c1f;
+  --ifm-color-primary-darker: #c4931d;
+  --ifm-color-primary-darkest: #a17918;
+  --ifm-color-primary-light: #e5b645;
+  --ifm-color-primary-lighter: #e8bc54;
+  --ifm-color-primary-lightest: #eecb7e;
+  --ifm-black: #141414;
+  --ifm-color-gold: #f5c518;
+  --ifm-background-color: #1b1a17;
+  --ifm-background-surface-color: #24221e;
+  --ifm-alt-background: #2e2b26;
+  --ifm-alt-background-border: #433f37;
   --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+}
+
+.footer--dark {
+  --ifm-footer-background-color: #1f1d1a;
+}
+
+.margin-bottom--lg {
+  margin-bottom: 3rem !important;
+}
+
+/* Word wrap in all code blocks */
+pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.navbar__logo img {
+  border-radius: 50%;
+  background-color: white;
+}
+
+main h2 {
+  margin-bottom: 2rem;
+}
+
+main > section > .container {
+  padding-top: 4.5rem;
+  padding-bottom: 4.5rem;
+}
+
+.alt-background {
+  padding-top: 1px;
+  background-color: var(--ifm-alt-background);
+  border-top: 1px solid var(--ifm-alt-background-border);
+  border-bottom: 1px solid var(--ifm-alt-background-border);
 }
