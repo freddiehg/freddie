@@ -25,8 +25,9 @@
   --freddie-clay: #cd9f8f;
   --freddie-red: #971313;
 
-  --ifm-alt-background: #fdf9f1;
-  --ifm-alt-background-border: #eee2cc;
+  /* The palette's clay, taken down to a tint the body copy can sit on. */
+  --ifm-alt-background: #fbeee8;
+  --ifm-alt-background-border: #f0dbd1;
   --ifm-h2-font-size: 2.5rem;
   --ifm-h3-font-size: 1.4rem;
   --ifm-code-font-size: 95%;

@@ -11,12 +11,22 @@
   --ifm-button-background-color: #ffffff;
   --ifm-button-border-color: #ffffff;
   --ifm-button-color: var(--freddie-ink);
+
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
 }
 
 .buttons :global(.button--secondary):hover {
   --ifm-button-background-color: #f4f4f5;
   --ifm-button-border-color: #f4f4f5;
   color: var(--freddie-ink);
+}
+
+.githubMark {
+  width: 1.15em;
+  height: 1.15em;
+  fill: currentColor;
 }
 
 @media screen and (max-width: 996px) {

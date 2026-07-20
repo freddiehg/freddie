@@ -24,7 +24,7 @@ const handlerExample = `fn louder<'a>(_ev: &KeyEvent, node: Node<VolumeLayerPath
 
 function Features() {
   return (
-    <section className="alt-background">
+    <section>
       <div className="container">
         <h2 className={styles.centeredHeading}>Events in, effects out.</h2>
         <p>
@@ -63,33 +63,6 @@ function Features() {
             </p>
           </div>
         </div>
-      </div>
-    </section>
-  );
-}
-
-function WhyNotKarabiner() {
-  return (
-    <section>
-      <div className="container">
-        <h2 className={styles.centeredHeading}>
-          Why not Karabiner? Why not Hammerspoon?
-        </h2>
-        <p>
-          These are excellent programs, but they are configuration-driven, and
-          that bounds what they can express. You can bind keys differently based
-          on which app is foregrounded, but not on which Chrome tab is active or
-          which devices are connected. So you either smuggle state through
-          unused keypresses, bind everything everywhere and sort it out in the
-          handler, or reach for an external program like Hammerspoon. All three
-          spread the configuration out and make the overall state hard to reason
-          about.
-        </p>
-        <p>
-          That freedom costs more than a config file for very simple cases. It
-          wins for the complicated ones, and LLMs make writing the program a lot
-          cheaper than it used to be.
-        </p>
       </div>
     </section>
   );
@@ -175,7 +148,6 @@ export default function Home(): ReactNode {
       <HomepageHeader />
       <main>
         <Features />
-        <WhyNotKarabiner />
         <BindingSection />
         <Mercury />
       </main>
