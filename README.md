@@ -129,72 +129,97 @@ So, we must know what app is foregrounded. Hence, the root `Mercury` struct keep
 
 The solution that `freddie` offers is virtual fields.
 
-A virtual field is a child level that is computed during dispatch instead of stored in the state. `AppLayer` declares one with `#[derived_child]`, naming the function that builds it:
+A virtual field is a child level that is computed during dispatch instead of stored in the state. `AppLayer` declares one with `#[derived_child(app_data)]`. `app_data` is a function that returns a struct that implements `Bind`:
 
 ```rust
-#[derive(Bind, Debug)]
-#[node(parent = LayerPath)]
-#[binds(MercuryStruct)]
-#[derived_child(app_data)]
-#[bind(
-    Key::Escape.down() => to_home,
-    Key::KeyO.down() => toggle_overlay,
-    // ...
-)]
-pub struct AppLayer {
-    home_timeout: TimerGuard,
-}
-
-/// Reads the confirmed front app, the only copy, and builds the level for it.
+/// Reads the foregrounded app, the only copy, and builds the level for it.
 const fn app_data(path: &AppLayerPath) -> Option<AppData> {
     // AppLayer -> Layer -> Mercury.
     let root = path.parent().parent();
-    match root.foreground.confirmed() {
-        Some(App::Chrome) => Some(AppData::Chrome(ChromeApp::new())),
-        Some(App::Ghostty) => Some(AppData::Ghostty(GhosttyApp::new())),
+    match &root.foreground {
+        App::Chrome => Some(AppData::Chrome(ChromeApp::new())),
+        App::Ghostty => Some(AppData::Ghostty(GhosttyApp::new())),
+        App::Other => None
+    }
+}
+```
+
+When dispatch reaches `AppLayer`, it calls `app_data`, which walks up to the root, reads the one copy of the frontmost app, and hands back the level to descend into. So, thus, we bind `r` to refresh only while Chrome is frontmost.
+
+And when we receive the next event, we re-call `app_data`, so we never have to worry about stale bindings.
+
+### Bindings
+
+A binding is a trigger and the handler it runs, written on the level where it applies. Say we want `l`, in the site layer, while a Google Meet call is open, to copy the meeting's link and go home. `mercury` does not ship this one, but it is small enough to write out in full.
+
+The meeting code is part of the URL, and the URL is reported by the Chrome extension, so the Meet level is a virtual field that parses the code once and carries it:
+
+```rust
+enum SiteData {
+    Meet(MeetSite),
+    Claude(ClaudeSite),
+}
+
+#[derive(Bind, Debug)]
+#[derived_node(parent = SiteLayerPath)]
+#[binds(MercuryStruct)]
+#[bind(
+    Key::KeyL.down() => copy_meeting_link,
+)]
+pub struct MeetSite {
+    code: String,
+}
+
+fn site_data(path: &SiteLayerPath) -> Option<SiteData> {
+    let url = path.parent().parent().foreground.chrome_url()?;
+    match host(url)? {
+        "meet.google.com" => Some(SiteData::Meet(MeetSite {
+            code: meeting_code(url)?,
+        })),
+        "claude.ai" => Some(SiteData::Claude(ClaudeSite::new())),
         _ => None,
     }
 }
 ```
 
-When dispatch reaches `AppLayer`, it calls `app_data`, which walks up to the root, reads the one copy of the frontmost app, and hands back the level to descend into. `ChromeApp` and `GhosttyApp` are `#[derived_node]`s: they are not stored anywhere and they hold nothing, existing for the length of one dispatch to carry their bindings. So `r` refreshes only while Chrome is frontmost, `j` and `k` walk tmux's windows only while Ghostty is, and the apps that bind nothing get `None` and no level at all.
-
-Nothing is copied on the way into the layer, so nothing can go stale. `app_data` receives a shared reference, so a virtual field reads the state and cannot write it or reach out to the world, which keeps `state.handle` pure.
-
-The same attribute is how the site layer reaches per-site bindings, off the URL the Chrome extension reports.
-
-And a handler receives a typed path from its own leaf up to the root:
+And the handler:
 
 ```rust
-pub(crate) fn open_chrome<'a, E, P: Ascend<MercuryPath<'a>>>(
-    _ev: &E,
-    node: Node<P, ()>,
+fn copy_meeting_link<'a, P: Ascend<MercuryPath<'a>>>(
+    _ev: &KeyEvent,
+    node: Node<P, MeetSite>,
 ) -> Vec<MercuryEffect> {
-    navigate(node.parent, App::Chrome)
+    let link = format!("https://meet.google.com/{}", node.data.code);
+    let root: MercuryPath<'_> = node.parent.ascend();
+    let mut effects = root.set_layer(HomeLayer {});
+    effects.push(MercuryEffect::Copy(Copied::Text(link)));
+    effects
 }
 ```
 
-Everything the branch already matched on is available, typed. States that cannot happen are not unwrapped and panicked on; they are not reachable from where the handler sits.
+`node.data` is what this level built: the meeting code, already parsed, typed `String` and not `Option<String>`, because a `MeetSite` exists only when there was a code to parse. `node.parent` is the level above, and `ascend` walks from there to any ancestor, here the root, where it arrives as `&mut Mercury` and can set the layer.
 
-### The edges
+That walk is the point of the typed path. Written against the whole state instead, the same handler has to recover both facts that dispatch had already established:
 
-Inside is pure. Outside is arbitrary code, and that is the point.
-
-Sources are whatever can produce an event: the keyboard grab, the frontmost-app watcher, and the menu-bar item are the ones built on macOS APIs. Watching a file and emitting an event when it changes would be another. Effects are the same in reverse.
-
-mercury also listens on `127.0.0.1:3883`, so processes outside it can push events in. Anything that can hold a WebSocket can drive it:
-
+```rust
+fn copy_meeting_link(state: &mut Mercury) -> Vec<MercuryEffect> {
+    let Layer::Site(site) = &state.layer else {
+        unreachable!("bound in the site layer")
+    };
+    let Some(SiteData::Meet(meet)) = site_data(site) else {
+        unreachable!("bound on meet.google.com")
+    };
+    // ...
+}
 ```
-{"kind":"IncomingEvent.Tab","value":{"url":"https://claude.ai/new"}}
-```
 
-`chrome-extension/` is the first client, pushing the front tab's URL, which is how the site layer knows where you are.
+Dispatch matched the layer and matched the host on its way down to this handler. The path is the record of that walk, so the handler receives the results rather than recomputing them, and the two `unreachable!` arms have nothing to guard: a state this binding cannot be reached in is not an arm that panics, it is a value the handler is never handed.
 
-`IncomingEvent` is the whole external vocabulary, so a sender can report the front tab and nothing else. `MercuryEvent` does not derive `Deserialize`, which is what makes remote key injection and remote quit unrepresentable rather than filtered. Web pages are refused at the handshake, because a WebSocket handshake is exempt from the same-origin policy and any open tab could otherwise reach the socket.
+A handler that reads none of the level's data can stay generic over it, which is how one function serves several levels. `to_home` takes `Node<P, ()>`, and `esc` is bound to it in the home, nav, in-app, site, and resize layers.
 
-### Logs
+## `mercury logs`
 
-mercury writes to `~/Library/Logs/mercury/mercury.log`, always, appending across runs, and always down to `debug` whatever the terminal was asked for. One record per dispatched event carries the event, the effects it produced, and the resulting state, so a run is reconstructable afterwards.
+`mercury` writes to `~/Library/Logs/mercury/mercury.log`, always, appending across runs, and always down to `debug` whatever the terminal was asked for. One record per dispatched event carries the event, the effects it produced, and the resulting state, so a run is reconstructable afterwards.
 
 ```
 mercury logs                 records at info and above
