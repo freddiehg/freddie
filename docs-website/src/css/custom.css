@@ -42,6 +42,8 @@
   --ifm-alt-background: rgb(var(--freddie-yellow-rgb) / 0.11);
   --ifm-alt-background-border: rgb(var(--freddie-yellow-rgb) / 0.35);
 
+  --ifm-toc-border-color: rgb(var(--freddie-ink-rgb) / 0.12);
+
   --ifm-h2-font-size: 2.5rem;
   --ifm-h3-font-size: 1.4rem;
   --ifm-code-font-size: 95%;
@@ -73,6 +75,7 @@
   --ifm-background-surface-color: rgb(var(--freddie-white-rgb) / 0.05);
   --ifm-alt-background: rgb(var(--freddie-white-rgb) / 0.035);
   --ifm-alt-background-border: rgb(var(--freddie-white-rgb) / 0.1);
+  --ifm-toc-border-color: rgb(var(--freddie-white-rgb) / 0.1);
   --docusaurus-highlighted-code-line-bg: rgb(var(--freddie-white-rgb) / 0.08);
 }
 
@@ -101,6 +104,13 @@
 pre {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* Infima rules a line down the right of the doc sidebar. Nothing needs
+   separating there: the sidebar and the article are already a column of links
+   next to a column of prose. */
+.theme-doc-sidebar-container {
+  border-right: none;
 }
 
 .navbar__logo img {
