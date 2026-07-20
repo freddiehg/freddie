@@ -137,8 +137,8 @@ const fn app_data(path: &AppLayerPath) -> Option<AppData> {
     // AppLayer -> Layer -> Mercury.
     let root = path.parent().parent();
     match &root.foreground {
-        App::Chrome => Some(AppData::Chrome(ChromeApp::new())),
-        App::Ghostty => Some(AppData::Ghostty(GhosttyApp::new())),
+        Foregrounded::Chrome => Some(AppData::Chrome(ChromeApp::new())),
+        Foregrounded::Ghostty => Some(AppData::Ghostty(GhosttyApp::new())),
         _ => None
     }
 }
