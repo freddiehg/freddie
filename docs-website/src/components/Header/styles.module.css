@@ -3,11 +3,12 @@
   position: relative;
   overflow: hidden;
 
+  /* Two stops, both warm. Running this from black to yellow puts the midpoint
+     somewhere around mud. */
   background: linear-gradient(
     75deg,
-    var(--ifm-black) 0%,
-    var(--ifm-color-primary) 55%,
-    var(--ifm-color-gold) 100%
+    var(--freddie-orange) 0%,
+    var(--freddie-yellow) 100%
   );
   text-align: center;
 }
@@ -18,23 +19,23 @@
   border-radius: 50%;
   object-fit: cover;
   background-color: white;
-  border: 4px solid rgba(255, 255, 255, 0.85);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  border: 4px solid rgba(255, 255, 255, 0.9);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
   margin-bottom: 1.5rem;
 }
 
+/* The gradient is bright at both ends, so the type is ink rather than white. */
 .heroTitle {
   font-size: 5em;
   letter-spacing: 4px;
-  text-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
-  color: white;
+  color: var(--freddie-ink);
   margin-bottom: 0.25em;
 }
 
 .heroSubtitle {
   line-height: 1.25;
-  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
-  color: white;
+  color: var(--freddie-ink);
+  opacity: 0.85;
 }
 
 @media screen and (max-width: 996px) {

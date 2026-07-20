@@ -6,17 +6,24 @@
 
 /* You can override the default Infima variables here. */
 :root {
-  --ifm-color-primary: #b58900;
-  --ifm-color-primary-dark: #a37b00;
-  --ifm-color-primary-darker: #9a7400;
-  --ifm-color-primary-darkest: #7f6000;
-  --ifm-color-primary-light: #c79700;
-  --ifm-color-primary-lighter: #d09e00;
-  --ifm-color-primary-lightest: #e8b419;
-  --ifm-black: #1a1a1a;
-  --ifm-color-gold: #f5c518;
-  --ifm-alt-background: #fdf8ec;
-  --ifm-alt-background-border: #e6dcc4;
+  /* Links and body-sized interactive text sit on white, so the brand hue is
+     pushed all the way to orange. A gold dark enough to read at 4.5:1 there
+     is a brown. */
+  --ifm-color-primary: #c2410c;
+  --ifm-color-primary-dark: #ae3a0b;
+  --ifm-color-primary-darker: #a4370a;
+  --ifm-color-primary-darkest: #872d08;
+  --ifm-color-primary-light: #d6480e;
+  --ifm-color-primary-lighter: #e04c0f;
+  --ifm-color-primary-lightest: #ea5a1d;
+
+  /* Large surfaces only: the hero gradient and the buttons. */
+  --freddie-orange: #ea580c;
+  --freddie-yellow: #fbbf24;
+  --freddie-ink: #18181b;
+
+  --ifm-alt-background: #fffaf0;
+  --ifm-alt-background-border: #f0e3cc;
   --ifm-h2-font-size: 2.5rem;
   --ifm-h3-font-size: 1.4rem;
   --ifm-code-font-size: 95%;
@@ -31,26 +38,40 @@
   }
 }
 
-/* For readability concerns, you should choose a lighter palette in dark mode. */
+/* On a dark background the brand can be the bright yellow itself, which is
+   where it actually looks like gold rather than mud. */
 [data-theme='dark'] {
-  --ifm-color-primary: #e0aa2a;
-  --ifm-color-primary-dark: #d09c1f;
-  --ifm-color-primary-darker: #c4931d;
-  --ifm-color-primary-darkest: #a17918;
-  --ifm-color-primary-light: #e5b645;
-  --ifm-color-primary-lighter: #e8bc54;
-  --ifm-color-primary-lightest: #eecb7e;
-  --ifm-black: #141414;
-  --ifm-color-gold: #f5c518;
-  --ifm-background-color: #1b1a17;
-  --ifm-background-surface-color: #24221e;
-  --ifm-alt-background: #2e2b26;
-  --ifm-alt-background-border: #433f37;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+  --ifm-color-primary: #fbbf24;
+  --ifm-color-primary-dark: #f9b40b;
+  --ifm-color-primary-darker: #eeab07;
+  --ifm-color-primary-darkest: #c48d06;
+  --ifm-color-primary-light: #fcc63d;
+  --ifm-color-primary-lighter: #fccc4c;
+  --ifm-color-primary-lightest: #fdd97a;
+
+  /* Neutral greys. Tinting these toward the brand is what made them muddy. */
+  --ifm-background-color: #18181b;
+  --ifm-background-surface-color: #212124;
+  --ifm-alt-background: #1f1f22;
+  --ifm-alt-background-border: #33333a;
+  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.08);
 }
 
 .footer--dark {
-  --ifm-footer-background-color: #1f1d1a;
+  --ifm-footer-background-color: #212124;
+}
+
+/* Yellow is too light to carry white text, so the primary button inverts. */
+.button--primary {
+  --ifm-button-background-color: var(--freddie-yellow);
+  --ifm-button-border-color: var(--freddie-yellow);
+  --ifm-button-color: var(--freddie-ink);
+}
+
+.button--primary:hover {
+  --ifm-button-background-color: #f6ad0a;
+  --ifm-button-border-color: #f6ad0a;
+  color: var(--freddie-ink);
 }
 
 .margin-bottom--lg {

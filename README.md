@@ -242,12 +242,6 @@ Every record carries the pid of the process that wrote it, because a client verb
 
 Work is haphazardly planned in `refactors/pending/` and moved to `refactors/past/` once it has shipped.
 
-## Contributing
-
-Please reach out! freddie is moving very fast, so my fear is that, in the amount of time it takes to coordinate on the right work, I can just ask my clanker to implement the feature. But I'd love to hear about what you want to see in freddie.
-
-But it should (by and large) be ready for folks to experiment with!
-
 ## Alternatives
 
 ### Why freddie? Why not karabiner? Why not hammerspoon?
@@ -278,7 +272,7 @@ And Hammerspoon requires you to write Lua, which means bringing footguns into th
 
 ### Why not X, Y or Z?
 
-There are lots of options! I've been a happy user of many of them (including [Karabiner](https://karabiner-elements.pqrs.org/), [Hammerspoon](https://www.hammerspoon.org/), [BetterTouchTool](https://folivora.ai/), [Homerow](https://www.homerow.app/) and [Vimium](https://vimium.github.io/)). But I didn't find any that provided the flexibility, safety and totality that freddie provides.
+There are lots of options! I've been a happy user of many of them (including [Karabiner](https://karabiner-elements.pqrs.org/), [Hammerspoon](https://www.hammerspoon.org/), [BetterTouchTool](https://folivora.ai/), [Homerow](https://www.homerow.app/) and [Vimium](https://vimium.github.io/)). But I didn't find any that provided the flexibility, safety and totality that freddie provides. And I prefer programming to configuration!
 
 In practice, I will incorporate many of these into my freddie program. For example, Homerow is great! I don't (necessarily) want to recreate its functionality, and will probably trigger it from freddie. And I can't live without Vimium.
 
@@ -294,8 +288,14 @@ And there's a deeper reason:
 
 - There's a flywheel effect. The way I build software tends to build on itself. The ideas from [Relay](https://relay.dev) informed [Isograph](https://isograph.dev), which informed [Barnum](https://barnum-circus.github.io), which inform freddie. And the ideas in freddie will inform an impending Isograph rewrite.
 
-Ultimately, I see all of these as solving variations of the same problem: how to provide great DevEx for producing complicated apps that are correct and performant by construction?
+Ultimately, I see all of these as tackling the same problem from a different angle: how to provide great DevEx for producing complicated apps that are correct and performant by construction?
 
 ## Prior art
 
 freddie's event loop follows two existing systems. [Isograph](https://github.com/isographlabs/isograph)'s language server is the same shape: several sources feed one queue, one event is dispatched per iteration, and dispatch is a `ControlFlow` chain that takes the first matching handler. [Barnum](https://github.com/barnum-circus/barnum) goes a step further with deferred effects run off a queue by an async scheduler, whose results feed back as events. freddie's difference from barnum is that its handlers mutate state directly during dispatch, where barnum's only return a value the engine writes back. See `refactors/past/event-loop.md` for detail.
+
+## Contributing
+
+Please reach out! freddie is moving very fast, so my fear is that, in the amount of time it takes to coordinate on the right work, I can just ask my clanker to implement the feature. But I'd love to hear about what you want to see in freddie.
+
+But it should (by and large) be ready for folks to experiment with!
