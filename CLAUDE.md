@@ -28,6 +28,14 @@ This section is extremely important. A frequent source of frustration is deviati
 
 The standard for the model is exhaustive: every key in every reachable state, asserting exactly what dispatch produces. The model is a pure function of state and event, so the full table is checkable and doubles as documentation of the keymap. Not all of it exists yet; new bindings should extend toward it rather than test only the happy path.
 
+## Where a binding leaves you
+
+Every binding decides what layer it ends in, and the decision follows from what the user is expected to do next. A new binding that does not answer this is unfinished.
+
+- If the action is one you would plausibly do again right away, stay in the layer. Walking tmux's windows and refreshing Chrome repeat, so they stay.
+- If it is a choice rather than something you repeat, leave. Placing a window and jumping to a numbered tmux window are each one decision, so they go home (`and_go_home`). Nav's app-choosers leave too, into the in-app layer.
+- If what follows the action is typing, the layer it leaves for is typing. Anything that puts a cursor in a text field qualifies: Chrome's `l` focuses the address bar, and claude.ai's `n` opens a new chat in its prompt box. Both end in `to_typing`, because a command layer would swallow what the user typed next.
+
 ## Running mercury
 
 Mercury is the live keyboard remapper on this machine: while it is stopped, the keyboard behaves the way macOS would. There is exactly one at a time (`refactors/past/single-instance.md`), so a second cannot run alongside it.
