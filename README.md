@@ -14,26 +14,6 @@ And `freddie` aims to do this in a way that provides a great developer experienc
 
 This repository contains one such demo program, `mercury`, and you should not expect it to fit your use case. It is here to be read, run, studied, used as an example, forked, and modified. See below for more information.
 
-## Alternatives
-
-### Why `freddie`? Why not karabiner? Why not hammerspoon?
-
-In many ways `freddie` is a replacement for Karabiner and other keyboard remappers. These are excellent programs, but they are limited in their customizability due to being configuration-driven. For example, you can bind keys differently in Karabiner based on which app is foregrounded, but not which Chrome tab is active or which devices are connected. And so, if you want to do that, you have three bad options:
-
-- emit a (hopefully unused) keypress that changes some internal Karabiner state, and make sure to keep that state in sync, or
-- bind all keys for all states, and then have the handler know what to do, or
-- use an external program, such as hammerspoon.
-
-Most folks will choose the third option, leading to a spaghettification of configuration code, and a difficulty reasoning about the overall state.
-
-### What alternative is there to being configuration-driven?
-
-With Karabiner, you download a binary and provide a configuration. With `freddie`, you fork the repository, make the changes you want, and run `cargo build` to generate the new binary.
-
-That gives the freedom to do whatever you want: you can respond to whatever events you want, and you can manage state however you choose, and your handlers receive this state.
-
-This comes at a cost. For very simple cases, writing programs is more work than using a configuration file. But `freddie` aims to provide a great developer experience, and is a better option for certain complicated use cases, and besides: LLMs make writing programs a lot easier than before. So, have an LLM do it :)
-
 ## `mercury`
 
 This repository contains a sample program built with `freddie`, entitled `mercury`. It is MacOS-only, and requires accessibility permissions. At most, one instance of `mercury` runs at a time.
@@ -271,3 +251,23 @@ But it should (by and large) be ready for folks to experiment with!
 ## Prior art
 
 `freddie`'s event loop follows two existing systems. [`isograph`](https://github.com/isographlabs/isograph)'s language server is the same shape: several sources feed one queue, one event is dispatched per iteration, and dispatch is a `ControlFlow` chain that takes the first matching handler. [`barnum`](https://github.com/barnum-circus/barnum) goes a step further with deferred effects run off a queue by an async scheduler, whose results feed back as events. `freddie`'s difference from `barnum` is that its handlers mutate state directly during dispatch, where `barnum`'s only return a value the engine writes back. See `refactors/past/event-loop.md` for detail.
+
+## Alternatives
+
+### Why `freddie`? Why not karabiner? Why not hammerspoon?
+
+In many ways `freddie` is a replacement for Karabiner and other keyboard remappers. These are excellent programs, but they are limited in their customizability due to being configuration-driven. For example, you can bind keys differently in Karabiner based on which app is foregrounded, but not which Chrome tab is active or which devices are connected. And so, if you want to do that, you have three bad options:
+
+- emit a (hopefully unused) keypress that changes some internal Karabiner state, and make sure to keep that state in sync, or
+- bind all keys for all states, and then have the handler know what to do, or
+- use an external program, such as hammerspoon.
+
+Most folks will choose the third option, leading to a spaghettification of configuration code, and a difficulty reasoning about the overall state.
+
+### What alternative is there to being configuration-driven?
+
+With Karabiner, you download a binary and provide a configuration. With `freddie`, you fork the repository, make the changes you want, and run `cargo build` to generate the new binary.
+
+That gives the freedom to do whatever you want: you can respond to whatever events you want, and you can manage state however you choose, and your handlers receive this state.
+
+This comes at a cost. For very simple cases, writing programs is more work than using a configuration file. But `freddie` aims to provide a great developer experience, and is a better option for certain complicated use cases, and besides: LLMs make writing programs a lot easier than before. So, have an LLM do it :)
