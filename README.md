@@ -2,7 +2,7 @@
 
 **`freddie` is a set of tools for building a bespoke control plane for your computer**.
 
-This program ingests a stream of events and produces a stream of effects. One such event is generated when you press a key on your keyboard, and one such effect is a simulated keypress! **So, `freddie` can be used to build a key remapper.** But the events and effects are arbitrary, and so `freddie` can be used to build something much more powerful.
+A `freddie` program ingests a stream of events and produces a stream of effects. One such event is generated when you press a key on your keyboard, and one such effect is a simulated keypress! **So, `freddie` can be used to build a key remapper.** But the events and effects are arbitrary, and so `freddie` can be used to build something much more powerful.
 
 Want to ensure that when you connect a specific microphone, Wispr Flow uses that one? Want to rearrange your windows when connecting to a specific monitor? Want a keybinding to mute/unmute yourself in Google meets/Zoom? Want a hotkey to send a transcribed message to a specific Claude instance? Want to be able to clone a repository, directly from github.com?
 
@@ -32,7 +32,7 @@ With Karabiner, you download a binary and provide a configuration. With `freddie
 
 That gives the freedom to do whatever you want: you can respond to whatever events you want, and you can manage state however you choose, and your handlers receive this state.
 
-This comes at a cost. For very simple cases, writing programs is more work than using a configuration file. But `freddie` aims to provide a great developer experience, and is the a better option for certain complicated use cases, and besides: LLMs make writing programs a lot easier than before. So, have an LLM do it :)
+This comes at a cost. For very simple cases, writing programs is more work than using a configuration file. But `freddie` aims to provide a great developer experience, and is a better option for certain complicated use cases, and besides: LLMs make writing programs a lot easier than before. So, have an LLM do it :)
 
 ## `mercury`
 
@@ -65,23 +65,23 @@ mercury uninstall
 
 ### `mercury` user guide
 
-I would recommend you, in addition to starting `mercury`, run `mercury logs`. This will allow you to see the state after every event. As the commit of this writing, it boots up into this state:
+I would recommend you, in addition to starting `mercury`, run `mercury logs`. This will allow you to see the state after every event. As of the commit of this writing, it boots up into this state:
 
 ```
 Mercury { foreground: Foreground { app: Ghostty, navigating: false }, typing_state: TypingState { held: HeldModifiers {}, jk: KeySequence {} }, overlay: None, layer: Typing(TypingLayer) }
 ```
 
-If you read that state closely, you'll see it booted up into the typing layer. You can also see this by examining the menu bar item, which should sho a mercury icon and the string "Typing".
+If you read that state closely, you'll see it booted up into the typing layer. You can also see this by examining the menu bar item, which should show a mercury icon and the string "Typing".
 
 In this **typing** layer, all keystrokes are passed through. The only way to leave the typing layer is to enter the sequence `jk`, which navigates to the home layer. (If you pause for at least 200ms after typing `j`, you will be able to type the characters `jk`.)
 
-From any layer except the typing layer, you can press `o` to to show an overlay. If you now press it from the home layer, you'll find that you that you can press `n` for nav, `t` for typing, `i` for inapp, `s` for site, `r` for resize and `q` for quit.
+From any layer except the typing layer, you can press `o` to show an overlay. If you now press it from the home layer, you'll find that you can press `n` for nav, `t` for typing, `i` for inapp, `s` for site, `r` for resize and `q` for quit.
 
 From the **nav** layer, you can hit `t` for typing, `z` to foreground zed, `f` to foreground finder, `g` to foreground ghostty, `c` to foreground Google Chrome, `space` to open spotlight, and `esc` to go home (all non-typing layers send you home after you type `esc`). (These aren't the apps you use?? Fork it!)
 
 When an app is foregrounded, if you enter the **inapp** layer (`i` from home), you'll have keybindings that are custom to that app. In Chrome, `r` refreshes, and `l` selects the location bar, `shift-l` copies the location, `cmd-l` copies just the host (i.e. `www.x.com` from `https://www.x.com/foo`). (This has other behavior for other foregrounded apps, see the source code.)
 
-There is also a Chrome extension (at ./chrome-extension) that you can load into Chrome, which will report the URL of the foregrounded tab. If you do this, then the **site** layer (accessible via `s` from home or from inapp) will have per-site bindings. For example, on `claude.ai`, `n` will create a new tab (normally bound to `cmd-shift-o`) and leave you in the typing layer, since a new chat lands in its prompt box.
+There is also a Chrome extension (at ./chrome-extension) that you can load into Chrome, which will report the URL of the foregrounded tab. If you do this, then the **site** layer (accessible via `s` from home or from inapp) will have per-site bindings. For example, on `claude.ai`, `n` will create a new chat (normally bound to `cmd-shift-o`) and leave you in the typing layer, since a new chat lands in its prompt box.
 
 In the **resize** layer (`r` from home), `up` maximizes a window, `right` resizes to the right half, `left` resizes to the left half.
 
@@ -110,7 +110,7 @@ With that out of the way, let's discuss the specifics of `mercury`.
 - Puts up the menu bar item.
 - Grabs the keyboard, which swallows every key and hands it to the model as an event. The grab also hands back an emitter, which is how keys get back out.
 - Subscribes to the other sources: the frontmost app, the event socket on `127.0.0.1:3883`, and SIGTERM.
-- For each event, calls `state.dispatch(event)`, which gives us a vector of effects.
+- For each event, calls `state.handle(event)`, which gives us a vector of effects.
 - For each effect, handles it. For example, doing so might emit a keypress, foreground an app, change the menu bar text, or quit mercury.
 
 ### `mercury` data model
@@ -121,7 +121,7 @@ In the simplest case, the state is a nested enum. For example, `struct Mercury` 
 
 Here, the handlers bound on `NavLayer` take precedence over the handlers bound on `Layer`, which take precedence over the handlers bound on `Mercury`. (Ideally, we would like to error if an event would be handled twice. That is not currently enabled in `freddie`.)
 
-However, this runs into a limitation! How do you handle the currently foregrounded app, which is only relevant in in the `InApp` layer? On the other hand, `struct InApp` could have `#[resolve_into] currently_foregrounded_app: CurrentlyForegroundedApp`, and that would work! But, that means that when you navigate to the inapp layer, you must know (or discover) the foregrounded app.
+However, this runs into a limitation! How do you handle the currently foregrounded app, which is only relevant in the inapp layer? On the other hand, `struct AppLayer` could have `#[resolve_into] currently_foregrounded_app: CurrentlyForegroundedApp`, and that would work! But, that means that when you navigate to the inapp layer, you must know (or discover) the foregrounded app.
 
 Discovering it at that time is not a great pattern. Learning what app is foregrounded is quick, so in this specific case, it wouldn't be a problem. But, what if it wasn't so easy? For example, if finding out meant making a network request? Regardless, doing so is impure, and thus violates one of the basic tenets of `freddie`: `state.handle` is pure.
 
@@ -139,12 +139,12 @@ const fn app_data(path: &AppLayerPath) -> Option<AppData> {
     match &root.foreground {
         App::Chrome => Some(AppData::Chrome(ChromeApp::new())),
         App::Ghostty => Some(AppData::Ghostty(GhosttyApp::new())),
-        App::Other => None
+        _ => None
     }
 }
 ```
 
-When dispatch reaches `AppLayer`, it calls `app_data`, which walks up to the root, reads the one copy of the frontmost app, and hands back the level to descend into. So, thus, we bind `r` to refresh only while Chrome is frontmost.
+When dispatch reaches `AppLayer`, it calls `app_data`, which walks up to the root, reads the one copy of the frontmost app, and hands back the level to descend into. So we bind `r` to refresh only while Chrome is frontmost.
 
 And when we receive the next event, we re-call `app_data`, so we never have to worry about stale bindings.
 
