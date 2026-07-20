@@ -37,11 +37,12 @@ function Features() {
         </p>
         <div className="row" style={{ paddingTop: '1.5rem' }}>
           <div className="col col--4">
-            <h3>Fork it, build it, run it</h3>
+            <h3>Many sources, one queue</h3>
             <p>
-              The whole thing ships as a repository you clone and a binary you
-              compile. Your edits are Rust, the state is a struct you declared,
-              and <code>cargo build</code> is the deploy step.
+              The keyboard, the frontmost app, a socket, a timer and SIGTERM
+              all feed the same queue, and one event is dispatched per
+              iteration. Nothing interleaves and there is no lock to hold, so
+              the model only ever sees a sequence.
             </p>
           </div>
           <div className="col col--4">
@@ -92,9 +93,11 @@ function DontStopMeNow() {
           in.
         </p>
         <p>
-          Here you fork the repository and edit Rust. The state is a struct you
-          declared. The handlers are functions you wrote. Adding an event source
-          is adding a variant. Nothing has to be expressible in someone
+          Here you fork it, build it, and run it. The whole thing ships as a
+          repository you clone and a binary you compile, so your edits are Rust
+          and <code>cargo build</code> is the deploy step. The state is a struct
+          you declared. The handlers are functions you wrote. Adding an event
+          source is adding a variant. Nothing has to be expressible in someone
           else&rsquo;s format before you can do it, so there is no ceiling to
           hit and nothing to work around when you reach it.
         </p>
