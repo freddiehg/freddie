@@ -64,7 +64,11 @@ pub trait Bindings {
     type Trigger: Eq + Hash;
     /// The unified event the app dispatches.
     type Event;
-    /// What a handler returns: the effect data for the consumer to perform.
+    /// What dispatch returns: the effect data for the consumer to perform.
+    ///
+    /// A handler returns anything that is `Into` this, which is what lets one handler produce
+    /// a whole `Vec<Effect>` and the next produce a single effect. The consumer owns the
+    /// conversions, so what a handler may return is its choice rather than this crate's.
     type Output;
 }
 
