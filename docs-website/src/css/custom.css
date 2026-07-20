@@ -6,24 +6,27 @@
 
 /* You can override the default Infima variables here. */
 :root {
-  /* Links and body-sized interactive text sit on white, so the brand hue is
-     pushed all the way to orange. A gold dark enough to read at 4.5:1 there
-     is a brown. */
-  --ifm-color-primary: #c2410c;
-  --ifm-color-primary-dark: #ae3a0b;
-  --ifm-color-primary-darker: #a4370a;
-  --ifm-color-primary-darkest: #872d08;
-  --ifm-color-primary-light: #d6480e;
-  --ifm-color-primary-lighter: #e04c0f;
-  --ifm-color-primary-lightest: #ea5a1d;
+  /* Links sit on white at body size, which the ochre cannot do: it lands at
+     2.6:1, and any gold darkened until it clears 4.5:1 is a brown. The red
+     carries the warmth there instead, at 9:1. */
+  --ifm-color-primary: #971313;
+  --ifm-color-primary-dark: #881111;
+  --ifm-color-primary-darker: #801010;
+  --ifm-color-primary-darkest: #6a0d0d;
+  --ifm-color-primary-light: #ac1616;
+  --ifm-color-primary-lighter: #b91818;
+  --ifm-color-primary-lightest: #d02323;
 
-  /* Large surfaces only: the hero gradient and the buttons. */
-  --freddie-orange: #e08a2e;
-  --freddie-yellow: #fbbf24;
-  --freddie-ink: #18181b;
+  /* Large surfaces only: the hero wash and the buttons. */
+  --freddie-white: #fefefe;
+  --freddie-yellow: #fad449;
+  --freddie-ink: #231e1b;
+  --freddie-ochre: #c58b33;
+  --freddie-clay: #cd9f8f;
+  --freddie-red: #971313;
 
-  --ifm-alt-background: #fffaf0;
-  --ifm-alt-background-border: #f0e3cc;
+  --ifm-alt-background: #fdf9f1;
+  --ifm-alt-background-border: #eee2cc;
   --ifm-h2-font-size: 2.5rem;
   --ifm-h3-font-size: 1.4rem;
   --ifm-code-font-size: 95%;
@@ -41,19 +44,20 @@
 /* On a dark background the brand can be the bright yellow itself, which is
    where it actually looks like gold rather than mud. */
 [data-theme='dark'] {
-  --ifm-color-primary: #fbbf24;
-  --ifm-color-primary-dark: #f9b40b;
-  --ifm-color-primary-darker: #eeab07;
-  --ifm-color-primary-darkest: #c48d06;
-  --ifm-color-primary-light: #fcc63d;
-  --ifm-color-primary-lighter: #fccc4c;
-  --ifm-color-primary-lightest: #fdd97a;
+  --ifm-color-primary: #fad449;
+  --ifm-color-primary-dark: #f9cd28;
+  --ifm-color-primary-darker: #f8c917;
+  --ifm-color-primary-darkest: #d3a908;
+  --ifm-color-primary-light: #fbdb6a;
+  --ifm-color-primary-lighter: #fcdf7b;
+  --ifm-color-primary-lightest: #fdeaab;
 
-  /* Neutral greys. Tinting these toward the brand is what made them muddy. */
-  --ifm-background-color: #18181b;
-  --ifm-background-surface-color: #212124;
-  --ifm-alt-background: #1f1f22;
-  --ifm-alt-background-border: #33333a;
+  /* The palette's near-black is the page. The alternating band goes darker
+     rather than lighter, because lifting a warm dark is what makes mud. */
+  --ifm-background-color: #231e1b;
+  --ifm-background-surface-color: #2b2523;
+  --ifm-alt-background: #1b1715;
+  --ifm-alt-background-border: #3a322d;
   --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.08);
 }
 

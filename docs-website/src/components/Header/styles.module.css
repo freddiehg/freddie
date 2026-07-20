@@ -3,12 +3,13 @@
   position: relative;
   overflow: hidden;
 
-  /* Two stops, both warm. Running this from black to yellow puts the midpoint
-     somewhere around mud. */
-  background: linear-gradient(
-    75deg,
-    var(--freddie-orange) 0%,
-    var(--freddie-yellow) 100%
+  /* The two colours and nothing else, but thrown as a spotlight rather than
+     slid left to right: yellow blooms behind the logo and falls off to ochre
+     at the edges, so the light has a source. */
+  background: radial-gradient(
+    ellipse 115% 90% at 50% 16%,
+    var(--freddie-yellow) 0%,
+    var(--freddie-ochre) 78%
   );
   text-align: center;
 }
