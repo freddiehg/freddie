@@ -53,7 +53,7 @@
 
 .heroSubtitle {
   /* Infima's .hero__subtitle is a flat 1.5rem at every width. */
-  font-size: 1.65rem;
+  font-size: 1.815rem;
   line-height: 1.25;
   color: var(--freddie-ink);
   opacity: 0.85;
