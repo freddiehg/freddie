@@ -1,6 +1,6 @@
 use bind::Bind;
 use freddie::TimerGuard;
-use freddie_keys::Key;
+use freddie_keys::{Key, ModifierFlags};
 
 #[allow(clippy::wildcard_imports)]
 use crate::handlers::*;
@@ -100,7 +100,14 @@ const fn app_data(path: &AppLayerPath) -> Option<AppData> {
 #[derive(Bind, Debug)]
 #[derived_node(parent = AppLayerPath)]
 #[binds(MercuryStruct)]
-#[bind(Key::KeyR.down() => refresh)]
+// `l` is bound at three modifier combinations, so all three are chords: a plain `KeyPress` ignores
+// the flags, and any two of these would then match the same event.
+#[bind(
+    Key::KeyR.down() => refresh,
+    Key::KeyL.down().bare() => focus_address_bar,
+    Key::KeyL.down().with(ModifierFlags::SHIFT) => copy_url,
+    Key::KeyL.down().with(ModifierFlags::COMMAND) => copy_host,
+)]
 pub struct ChromeApp {}
 
 impl ChromeApp {

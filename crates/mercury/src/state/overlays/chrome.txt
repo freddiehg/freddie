@@ -1,6 +1,9 @@
   CHROME
   ────────────────────
   r    refresh
+  l    address bar
+  ⇧l   copy url
+  ⌘l   copy host
   n    nav
   s    site
   t    typing

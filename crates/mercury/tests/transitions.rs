@@ -5,9 +5,9 @@
 
 use bind::SimpleRunner;
 use mercury::{
-    App, Chord, HomeLayer, JK_TIMEOUT, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryEvent,
-    MercuryStruct, ModifierFlags, OVERLAY_DWELL, Placement, PressType, RETURN_TO_HOME_TIMEOUT,
-    foreground, key, quit_event,
+    App, Chord, Copied, HomeLayer, JK_TIMEOUT, Key, KeyEvent, Layer, Mercury, MercuryEffect,
+    MercuryEvent, MercuryStruct, ModifierFlags, OVERLAY_DWELL, Placement, PressType,
+    RETURN_TO_HOME_TIMEOUT, UrlPart, foreground, key, quit_event, tab,
 };
 
 // Entering nav, resize, or the in-app layer arms the return-to-home timer; this is the effect
@@ -470,6 +470,123 @@ fn i_enters_inapp_for_the_foregrounded_app() {
     );
     assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foreground.app(), App::Chrome);
+}
+
+// Chrome in the in-app layer, with `url` reported for its front tab.
+fn chrome_showing(url: &str) -> Mercury {
+    let mut m = home();
+    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&key(Key::KeyI));
+    let _ = m.handle(&tab(url.to_owned()));
+    m
+}
+
+fn copies(text: &str) -> MercuryEffect {
+    MercuryEffect::Copy(Copied::Text(text.to_owned()))
+}
+
+// `l` focuses the address bar and lands in typing, so the URL you type gets there.
+#[test]
+fn chrome_l_focuses_the_address_bar_and_enters_typing() {
+    let mut m = chrome_showing("https://www.x.com/asdfasdf");
+    assert_eq!(
+        m.handle(&key(Key::KeyL)),
+        Some(vec![
+            tap(Key::KeyL, ModifierFlags::COMMAND),
+            shows("Typing")
+        ])
+    );
+    assert!(matches!(m.layer(), Layer::Typing(_)));
+}
+
+// `shift-l` copies the whole URL, out of the state rather than out of the address bar: no keys are
+// sent to Chrome at all.
+#[test]
+fn chrome_shift_l_copies_the_url() {
+    let mut m = chrome_showing("https://www.x.com/asdfasdf");
+    assert_eq!(
+        m.handle(&key_with(Key::KeyL, ModifierFlags::SHIFT)),
+        Some(in_app(vec![copies("https://www.x.com/asdfasdf")]))
+    );
+    // It repeats, so it stays in the in-app layer.
+    assert!(matches!(m.layer(), Layer::InApp(_)));
+}
+
+// `cmd-l` copies the host, `www.` and all.
+#[test]
+fn chrome_cmd_l_copies_the_host() {
+    let mut m = chrome_showing("https://www.x.com/asdfasdf");
+    assert_eq!(
+        m.handle(&key_with(Key::KeyL, ModifierFlags::COMMAND)),
+        Some(in_app(vec![copies("www.x.com")]))
+    );
+    assert!(matches!(m.layer(), Layer::InApp(_)));
+}
+
+// The three are one key at three modifier combinations, and each does only its own thing.
+#[test]
+fn the_three_ls_do_not_shadow_each_other() {
+    for (event, want) in [
+        (
+            key(Key::KeyL),
+            vec![tap(Key::KeyL, ModifierFlags::COMMAND), shows("Typing")],
+        ),
+        (
+            key_with(Key::KeyL, ModifierFlags::SHIFT),
+            in_app(vec![copies("https://claude.ai/new")]),
+        ),
+        (
+            key_with(Key::KeyL, ModifierFlags::COMMAND),
+            in_app(vec![copies("claude.ai")]),
+        ),
+    ] {
+        let mut m = chrome_showing("https://claude.ai/new");
+        assert_eq!(m.handle(&event), Some(want), "{event:?}");
+    }
+}
+
+// With no URL reported there is nothing to copy out of the state, so the copy asks Chrome instead.
+// Which is the case for a tab the extension never saw, or no extension at all.
+#[test]
+fn a_copy_with_no_reported_url_asks_chrome() {
+    let mut m = home();
+    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&key(Key::KeyI));
+    assert_eq!(
+        m.handle(&key_with(Key::KeyL, ModifierFlags::SHIFT)),
+        Some(in_app(vec![MercuryEffect::Copy(Copied::FrontTabUrl(
+            UrlPart::Whole
+        ))]))
+    );
+    assert_eq!(
+        m.handle(&key_with(Key::KeyL, ModifierFlags::COMMAND)),
+        Some(in_app(vec![MercuryEffect::Copy(Copied::FrontTabUrl(
+            UrlPart::Host
+        ))]))
+    );
+}
+
+// A URL with no host has no host to copy, and asking Chrome would get the same answer back.
+#[test]
+fn copying_the_host_of_a_hostless_url_copies_nothing() {
+    let mut m = chrome_showing("about:blank");
+    assert_eq!(
+        m.handle(&key_with(Key::KeyL, ModifierFlags::COMMAND)),
+        Some(in_app(vec![]))
+    );
+}
+
+// The `l` bindings are Chrome's, not the in-app layer's: another app's level does not get them.
+#[test]
+fn the_ls_are_chromes_alone() {
+    let mut m = home();
+    let _ = m.handle(&foreground(App::Ghostty));
+    let _ = m.handle(&key(Key::KeyI));
+    assert_eq!(m.handle(&key(Key::KeyL)), Some(in_app(vec![])));
+    assert_eq!(
+        m.handle(&key_with(Key::KeyL, ModifierFlags::SHIFT)),
+        Some(in_app(vec![]))
+    );
 }
 
 // `s` in the in-app layer reaches the site layer, the way `u` does from home: `i` is what the

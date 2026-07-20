@@ -147,7 +147,8 @@ fn site_host(url: &str) -> Option<&str> {
 /// Chrome hands up a URL it has already normalized, so the host arrives lowercased and there is no
 /// case folding to do here. Hand-rolled rather than the `url` crate, whose idna support pulls the
 /// ICU4X tree for a comparison this covers.
-pub(crate) fn host(url: &str) -> Option<&str> {
+#[must_use]
+pub fn host(url: &str) -> Option<&str> {
     let after_scheme = url.split_once("://")?.1;
     let authority = after_scheme
         .find(['/', '?', '#'])

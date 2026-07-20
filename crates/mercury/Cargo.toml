@@ -31,6 +31,10 @@ serde = { version = "1.0.229", features = ["derive"] }
 plist = "1.10"
 serde_json = "1.0.150"
 ts-rs = { version = "10", features = ["serde-compat"], optional = true }
+# The clipboard, for the copies. `NSPasteboard` through objc2, which is the stack the overlay and
+# the menu bar already sit on, so on this target it adds itself and nothing else. Default features
+# off: the image ones pull the `image` crate to move pictures mercury never touches.
+arboard = { version = "3.6.1", default-features = false }
 
 [features]
 # Off in every normal build. The derive writes `chrome-extension/src/wire/*.ts` during a test run

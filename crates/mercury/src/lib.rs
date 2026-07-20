@@ -51,10 +51,10 @@ mod model;
 mod sources;
 mod state;
 
-pub use effect::{Chord, MercuryEffect, Placement};
+pub use effect::{Chord, Copied, MercuryEffect, Placement, UrlPart};
 pub use external::{DEFAULT_PORT, on_message};
 pub use model::{MercuryEvent, MercuryStruct, MercuryTrigger};
-pub use sources::{AnyKey, App, ForegroundEvent, Foregrounded, Quit, Site, TabEvent, Tabbed};
+pub use sources::{AnyKey, App, ForegroundEvent, Foregrounded, Quit, Site, TabEvent, Tabbed, host};
 pub use state::{
     AppData, AppLayer, ChromeApp, ClaudeAiSite, Foreground, ForegroundedApp, ForegroundedChrome,
     GhosttyApp, HomeLayer, JK_TIMEOUT, Layer, Mercury, NavLayer, OVERLAY_DWELL,

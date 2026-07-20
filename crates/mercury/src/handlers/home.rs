@@ -39,9 +39,12 @@ pub(crate) fn to_nav<'a, E, P: Ascend<MercuryPath<'a>>>(
 }
 
 /// `t`: enter the typing layer. Bound from home and from the in-app layer.
-pub(crate) fn to_typing<'a, E, P: Ascend<MercuryPath<'a>>>(
+///
+/// Generic over the node's data as well, because an app's level binds it too (Chrome's `l` focuses
+/// the address bar and lands here) and a derived node carries its data rather than `()`.
+pub(crate) fn to_typing<'a, E, P: Ascend<MercuryPath<'a>>, D>(
     _ev: &E,
-    node: Node<P, ()>,
+    node: Node<P, D>,
 ) -> Vec<MercuryEffect> {
     node.parent.ascend().set_layer(TypingLayer::new())
 }

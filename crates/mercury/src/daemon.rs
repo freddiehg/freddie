@@ -42,7 +42,8 @@ use std::ops::ControlFlow;
 use freddie::{AlwaysEqual, TimerEffect};
 use freddie_keyboard::Emitter;
 use mercury::{
-    App, Chord, Mercury, MercuryEffect, MercuryEvent, Placement, foreground, quit_event,
+    App, Chord, Copied, Mercury, MercuryEffect, MercuryEvent, Placement, UrlPart, foreground, host,
+    quit_event,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot::error::TryRecvError;
@@ -325,6 +326,7 @@ fn perform_effect(
             Err(e) => warn!(key = ?ke.key, press = ?ke.press, error = %e, "emit failed"),
         },
         MercuryEffect::Place(placement) => place_window(placement),
+        MercuryEffect::Copy(what) => copy(what),
         MercuryEffect::Kill => {
             info!("kill: exiting");
             return ControlFlow::Break(());
@@ -378,6 +380,60 @@ fn place_window(placement: Placement) {
         Ok(()) => debug!(?placement, "placed the window"),
         Err(e) => warn!(?placement, error = %e, "place failed"),
     });
+}
+
+/// Put text on the clipboard, fire-and-forget on its own thread like the rest: `arboard` talks to
+/// `NSPasteboard`, and [`Copied::FrontTabUrl`] runs `osascript`, neither of which the effect loop
+/// should wait on.
+///
+/// The pasteboard keeps what it is handed, so the `Clipboard` going out of scope at the end of the
+/// thread does not take the text with it.
+fn copy(what: Copied) {
+    std::thread::spawn(move || {
+        let Some(text) = (match what {
+            Copied::Text(text) => Some(text),
+            Copied::FrontTabUrl(part) => front_tab_url(part),
+        }) else {
+            return;
+        };
+        match arboard::Clipboard::new().and_then(|mut board| board.set_text(text.clone())) {
+            Ok(()) => debug!(%text, "copied"),
+            Err(e) => warn!(%text, error = %e, "copy failed"),
+        }
+    });
+}
+
+/// Ask Chrome for its front tab's URL, and keep `part` of it.
+///
+/// Only for the tab nobody reported: mercury holds the URL whenever the extension is connected, so
+/// this is the fallback, and it is a subprocess and an Apple Events permission rather than a field
+/// already in the state. `None` when Chrome answers with nothing usable, which is what a window
+/// with no tabs and a denied permission both look like from here.
+fn front_tab_url(part: UrlPart) -> Option<String> {
+    const SCRIPT: &str =
+        "tell application \"Google Chrome\" to get URL of active tab of front window";
+    let out = match std::process::Command::new("osascript")
+        .args(["-e", SCRIPT])
+        .output()
+    {
+        Ok(out) => out,
+        Err(e) => {
+            warn!(error = %e, "asking chrome for its front tab failed");
+            return None;
+        }
+    };
+    if !out.status.success() {
+        warn!(
+            stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+            "chrome did not answer with a url"
+        );
+        return None;
+    }
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    match part {
+        UrlPart::Whole => (!url.is_empty()).then_some(url),
+        UrlPart::Host => host(&url).map(ToOwned::to_owned),
+    }
 }
 
 /// Foreground an app for real, fire-and-forget on its own thread so the effect

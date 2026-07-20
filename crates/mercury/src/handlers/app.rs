@@ -1,17 +1,75 @@
-//! In-app handlers: Chrome's refresh, and Ghostty's tmux window navigation.
+//! In-app handlers: Chrome's refresh, address bar and copies, and Ghostty's tmux window
+//! navigation.
 
 use bind::Node;
 use freddie_keys::{Key, ModifierFlags};
 use laserbeam::Ascend;
 
-use super::and_go_home;
+use super::{and_go_home, to_typing};
 use crate::MercuryEffect;
-use crate::effect::tap;
+use crate::effect::{Copied, UrlPart, tap};
+use crate::sources::host;
 use crate::state::MercuryPath;
 
 /// `r` in Chrome: cmd-r, a refresh. Touches neither event nor node, so both are generic.
 pub(crate) fn refresh<E, N>(_ev: &E, _node: N) -> Vec<MercuryEffect> {
     vec![tap(Key::KeyR, ModifierFlags::COMMAND)]
+}
+
+/// `l` in Chrome: cmd-l, focusing the address bar, and then typing.
+///
+/// A focused text field is somewhere you type, and the in-app layer would swallow what you typed
+/// at it, so this leaves for typing the way nav's `space` does.
+pub(crate) fn focus_address_bar<'a, E, P: Ascend<MercuryPath<'a>>, D>(
+    ev: &E,
+    node: Node<P, D>,
+) -> Vec<MercuryEffect> {
+    let mut effects = vec![tap(Key::KeyL, ModifierFlags::COMMAND)];
+    effects.extend(to_typing(ev, node));
+    effects
+}
+
+/// `shift-l` in Chrome: the front tab's whole URL, onto the clipboard.
+pub(crate) fn copy_url<'a, E, P: Ascend<MercuryPath<'a>>, D>(
+    _ev: &E,
+    node: Node<P, D>,
+) -> Vec<MercuryEffect> {
+    copy(node.parent, UrlPart::Whole)
+}
+
+/// `cmd-l` in Chrome: the front tab's host, onto the clipboard.
+pub(crate) fn copy_host<'a, E, P: Ascend<MercuryPath<'a>>, D>(
+    _ev: &E,
+    node: Node<P, D>,
+) -> Vec<MercuryEffect> {
+    copy(node.parent, UrlPart::Host)
+}
+
+/// Copy `part` of the front tab's URL.
+///
+/// The extension reports that URL as it changes, so the text is normally already here and the
+/// effect carries it. Nothing typed at Chrome and nothing read back out of it: the copy does not
+/// touch the address bar, so what you were part-way through typing there survives it.
+///
+/// Without a reported URL there is nothing to take a host from, and asking Chrome is the only way
+/// to answer at all, so that case falls back to [`Copied::FrontTabUrl`]. A URL with no host
+/// (`about:blank`, `file:///...`) has no answer either way, and copies nothing.
+fn copy<'a, P: Ascend<MercuryPath<'a>>>(path: P, part: UrlPart) -> Vec<MercuryEffect> {
+    let root: MercuryPath<'_> = path.ascend();
+    let Some(url) = root
+        .foreground
+        .confirmed_chrome()
+        .and_then(|chrome| chrome.url.as_deref())
+    else {
+        return vec![MercuryEffect::Copy(Copied::FrontTabUrl(part))];
+    };
+    let text = match part {
+        UrlPart::Whole => Some(url),
+        UrlPart::Host => host(url),
+    };
+    text.map(|text| MercuryEffect::Copy(Copied::Text(text.to_owned())))
+        .into_iter()
+        .collect()
 }
 
 /// A tmux command: the `ctrl-a` prefix, then the command key.
