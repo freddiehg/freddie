@@ -1,33 +1,58 @@
-# freddie
+# `freddie`
 
-freddie is a set of tools for building a program, specific to your computer, that ingests a stream of events and produces a stream of effects.
+**`freddie` is a set of tools for building a bespoke control plane for your computer**.
 
-Events are things like: this key was pressed, this app was foregrounded, this browser tab became frontmost. Effects are things like: emit this key, foreground this app, place this window, run this arbitrary code. A program built on freddie is the one place that state lives and the one place those decisions get made, instead of half a dozen small utilities that each know nothing about the others.
+This program ingests a stream of events and produces a stream of effects. One such event is generated when you press a key on your keyboard, and one such effect is a simulated keypress! **So, `freddie` can be used to build a key remapper.** But the events and effects are arbitrary, and so `freddie` can be used to build something much more powerful.
 
-The obvious use is keyboard remapping, and that undersells it.
+Want to ensure that when you connect a specific microphone, Wispr Flow uses that one? Want to rearrange your windows when connecting to a specific monitor? Want a keybinding to mute/unmute yourself in Google meets/Zoom? Want a hotkey to send a transcribed message to a specific Claude instance? Want to be able to clone a repository, directly from github.com?
 
-## mercury is the demo, not the product
+All of this is possible with `freddie`.
 
-This repository ships one such program, `mercury`, and you should not expect it to fit your use case. It navigates to Ghostty and Zed, which is useless if you do not use Ghostty and Zed. It is here to be read, run, and forked.
+Example events include: this key was pressed, this app was foregrounded, this browser tab became active, this external device connected. Example effects include: emit this key, foreground this app, resize this window, run this arbitrary code. A program built on `freddie` is the central place where the decision of how to respond to an event is made.
 
-The reason to write a program rather than a configuration file is that configuration limits what state you can react to. Karabiner can bind keys by frontmost app; no version of its config file binds keys by frontmost browser tab. mercury does, because a browser tab is just another event arriving at the same dispatcher.
+And `freddie` aims to do this in a way that provides a great developer experience.
 
-The same goes for behavior rather than bindings. `jk` returns you to the home layer, and the thing tracking that sequence is a data structure in this repository: `JK_TIMEOUT` is 200ms at `crates/mercury/src/state/mod.rs:59`. A different window, a different escape sequence, a different tie-break are all edits, not feature requests against a schema.
+## mercury
+
+This repository contains one such demo program, `mercury`, and you should not expect it to fit your use case. It is here to be read, run, studied, and forked. See below for more information.
+
+## Alternatives
+
+### Why `freddie`? Why not karabiner? Why not hammerspoon?
+
+In many ways `freddie` is a replacement for Karabiner and other keyboard remappers. These are excellent programs, but they are limited in their customizability due to being configuration-driven. For example, you can bind keys differently in Karabiner based on which app is foregrounded, but not which Chrome tab is active or which devices are connected. And so, if you want to do that, you have three bad options:
+
+- emit a (hopefully unused) keypress that changes some internal Karabiner state, and make sure to keep that state in sync!
+- bind all keys for all states, and then have the handler know what to do, or
+- use an external program, such as hammerspoon.
+
+Most folks will choose the third option, leading to a spaghettification of configuration code, and a difficulty reasoning about the overall state.
+
+### What alternative is there to being configuration-driven?
+
+With Karabiner, you download a binary and provide a configuration. With `freddie`, you fork the repository, make the changes you want, and run `cargo build` to generate the new binary.
+
+That gives the freedom to do whatever you want!
+
+This comes at a cost, and `freddie` is not for everyone. For very simple cases, writing programs is more work than using a configuration file. But `freddie` aims to provide a great developer experience, and is the a better option for certain complicated use cases, and besides: LLMs make writing programs a lot easier than before. So, have an LLM do it :)
 
 ## Running mercury
 
-```
-cargo run -p mercury
-```
+Clone the repository. From the root, `cargo run -p mercury` or `cargo install --path crates/mercury && mercury`.
 
-That builds mercury and starts it as a detached daemon, then exits. Installed on your path, the verbs are:
+That builds mercury and starts it as a detached daemon, then exits. You can run the following:
 
 ```
-mercury           start one, or report the one already running
-mercury restart   replace the running one, which is what a rebuild wants
-mercury stop      ask the running one to quit
-mercury status    the running one, and its pid
-mercury logs      follow the log, starting nothing
+# these start mercury in the background
+mercury
+mercury start
+
+mercury restart
+mercury stop
+mercury status
+mercury logs
+
+# install mercury
 ```
 
 `stop` and `restart` take `--force`, which destroys the daemon with SIGKILL rather than asking it to quit. That runs no destructors, so a modifier a command layer swallowed is left down in whatever app was in front; it is for a daemon that no longer answers.
@@ -134,7 +159,7 @@ Every record carries the pid of the process that wrote it, because a client verb
 
 ## Where code goes
 
-mercury is one consumer of freddie, not freddie itself. figaro is another, and there will be more. So the test for whether something belongs in mercury is whether figaro would write it differently: if figaro's copy would be identical, it does not belong in mercury, it belongs in a `freddie_*` crate that both depend on.
+mercury is one consumer of `freddie`, not `freddie` itself. figaro is another, and there will be more. So the test for whether something belongs in mercury is whether figaro would write it differently: if figaro's copy would be identical, it does not belong in mercury, it belongs in a `freddie_*` crate that both depend on.
 
 What mercury keeps is what is only true of mercury: its `App` enum, its state tree, its bindings, its effects, and the table mapping bundle ids onto its apps. What it does not keep is anything about how macOS works. Grabbing the keyboard, foregrounding an app, watching the frontmost app, and giving the main thread to a run loop are all identical in figaro, and each lives in its own crate.
 
@@ -146,4 +171,4 @@ Work is planned in `refactors/pending/` and moved to `refactors/past/` once it h
 
 ## Prior art
 
-freddie's event loop follows two existing systems. isograph's language server is the same shape: several sources feed one queue, one event is dispatched per iteration, and dispatch is a `ControlFlow` chain that takes the first matching handler. barnum goes a step further with deferred effects run off a queue by an async scheduler, whose results feed back as events. freddie's difference from barnum is that its handlers mutate state directly during dispatch, where barnum's only return a value the engine writes back. See `refactors/past/event-loop.md` for detail.
+`freddie`'s event loop follows two existing systems. isograph's language server is the same shape: several sources feed one queue, one event is dispatched per iteration, and dispatch is a `ControlFlow` chain that takes the first matching handler. barnum goes a step further with deferred effects run off a queue by an async scheduler, whose results feed back as events. `freddie`'s difference from barnum is that its handlers mutate state directly during dispatch, where barnum's only return a value the engine writes back. See `refactors/past/event-loop.md` for detail.
