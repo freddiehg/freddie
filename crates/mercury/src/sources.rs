@@ -125,20 +125,29 @@ impl Site {
     /// would hand any domain that ends the right way whatever binds the real site has.
     #[must_use]
     pub fn from_url(url: &str) -> Self {
-        match host(url) {
+        match site_host(url) {
             Some("claude.ai") => Self::ClaudeAi,
             _ => Self::Other,
         }
     }
 }
 
-/// The host of `url`, without a leading `www.`, a port, or userinfo. `None` for anything with no
-/// host at all, which is `about:blank` and `file:///...`.
+/// The host that identifies a site: [`host`] without a leading `www.`, because `www.claude.ai` and
+/// `claude.ai` are the same site and binding one of them only would be a coin flip.
+fn site_host(url: &str) -> Option<&str> {
+    host(url).map(|host| host.strip_prefix("www.").unwrap_or(host))
+}
+
+/// The host of `url` as it appears, without a port or userinfo: `https://www.x.com/a` is
+/// `www.x.com`. `None` for anything with no host at all, which is `about:blank` and `file:///...`.
+///
+/// The `www.` is kept because this is also what a copy puts on the clipboard, and a URL's host is
+/// what it says it is. [`site_host`] is the one that drops it, for matching.
 ///
 /// Chrome hands up a URL it has already normalized, so the host arrives lowercased and there is no
 /// case folding to do here. Hand-rolled rather than the `url` crate, whose idna support pulls the
 /// ICU4X tree for a comparison this covers.
-fn host(url: &str) -> Option<&str> {
+pub(crate) fn host(url: &str) -> Option<&str> {
     let after_scheme = url.split_once("://")?.1;
     let authority = after_scheme
         .find(['/', '?', '#'])
@@ -149,21 +158,22 @@ fn host(url: &str) -> Option<&str> {
     let host = host_port
         .find(':')
         .map_or(host_port, |end| &host_port[..end]);
-    (!host.is_empty()).then(|| host.strip_prefix("www.").unwrap_or(host))
+    (!host.is_empty()).then_some(host)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Site, host};
+    use super::{Site, host, site_host};
 
+    // The host as it appears, `www.` and all: this is what a copy puts on the clipboard.
     #[test]
-    fn the_host_is_what_a_site_matches_on() {
+    fn the_host_is_the_one_the_url_carries() {
         for (url, want) in [
             ("https://claude.ai/new", Some("claude.ai")),
             ("https://claude.ai", Some("claude.ai")),
             ("https://claude.ai?q=1", Some("claude.ai")),
             ("https://claude.ai#top", Some("claude.ai")),
-            ("https://www.claude.ai/x", Some("claude.ai")),
+            ("https://www.x.com/asdfasdf", Some("www.x.com")),
             ("http://claude.ai:8080/x", Some("claude.ai")),
             ("https://user:pw@claude.ai/x", Some("claude.ai")),
             ("https://claude.ai.evil.com/", Some("claude.ai.evil.com")),
@@ -174,6 +184,20 @@ mod tests {
             ("", None),
         ] {
             assert_eq!(host(url), want, "{url}");
+        }
+    }
+
+    // The host a site is matched on drops the `www.`, and only a leading one.
+    #[test]
+    fn the_site_host_drops_the_www() {
+        for (url, want) in [
+            ("https://www.claude.ai/x", Some("claude.ai")),
+            ("https://claude.ai/x", Some("claude.ai")),
+            ("https://www.x.com/asdfasdf", Some("x.com")),
+            ("https://notwww.claude.ai/", Some("notwww.claude.ai")),
+            ("about:blank", None),
+        ] {
+            assert_eq!(site_host(url), want, "{url}");
         }
     }
 
