@@ -261,6 +261,22 @@ mercury`}
           is per-site, <code>r</code> is resize, and <code>o</code> shows you an
           overlay of what is bound.
         </p>
+        <p>
+          Once you want it there every time, <code>mercury install</code>{' '}
+          registers it to start at login, and <code>mercury uninstall</code>{' '}
+          takes that back out. The rest of the verbs drive the running one:{' '}
+          <code>restart</code> replaces it after a rebuild, <code>stop</code>{' '}
+          ends it through the model so a command layer hands your modifiers
+          back, and <code>status</code> and <code>logs</code> report on it
+          without touching it.
+        </p>
+        <div className={styles.codeBlockWrap}>
+          <CodeBlock language="bash">
+            {`mercury install     # start it at login
+mercury restart     # replace the running one
+mercury logs        # follow what it is doing`}
+          </CodeBlock>
+        </div>
         <div className={styles.ctaContainer}>
           <Link
             className="button button--primary button--lg"

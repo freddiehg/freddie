@@ -24,8 +24,8 @@
   box-shadow: 0 8px 32px rgb(var(--freddie-ink-rgb) / 0.2);
   margin-bottom: 1.5rem;
   transition:
-    box-shadow 220ms ease,
-    transform 220ms ease;
+    box-shadow 160ms ease,
+    transform 160ms ease;
 }
 
 .heroLogo:hover {
@@ -37,7 +37,7 @@
    hover still reads as a transition rather than a snap. */
 @media (prefers-reduced-motion: reduce) {
   .heroLogo {
-    transition: box-shadow 220ms ease;
+    transition: box-shadow 160ms ease;
   }
 
   .heroLogo:hover {
