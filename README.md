@@ -65,7 +65,7 @@ mercury uninstall
 
 ### `mercury` user guide
 
-I would recommend you, in addition to starting `mercury`, run `mercury logs`. This will allow you to see the state of `mercury` after every event. As the commit of this writing, it boots up into this state:
+I would recommend you, in addition to starting `mercury`, run `mercury logs`. This will allow you to see the state after every event. As the commit of this writing, it boots up into this state:
 
 ```
 Mercury { foreground: Foreground { app: Ghostty, navigating: false }, typing_state: TypingState { held: HeldModifiers {}, jk: KeySequence {} }, overlay: None, layer: Typing(TypingLayer) }
@@ -73,19 +73,53 @@ Mercury { foreground: Foreground { app: Ghostty, navigating: false }, typing_sta
 
 If you read that state closely, you'll see it booted up into the typing layer. You can also see this by examining the menu bar item, which should sho a mercury icon and the string "Typing".
 
-In this typing layer, all keystrokes are passed through. The only way to leave the typing layer is to enter the sequence `jk`, which navigates to the home layer. (If you pause for at least 200ms after typing `j`, you will be able to type the characters `jk`.)
+In this **typing** layer, all keystrokes are passed through. The only way to leave the typing layer is to enter the sequence `jk`, which navigates to the home layer. (If you pause for at least 200ms after typing `j`, you will be able to type the characters `jk`.)
 
 From any layer except the typing layer, you can press `o` to to show an overlay. If you now press it from the home layer, you'll find that you that you can press `n` for nav, `t` for typing, `i` for inapp, `s` for site, `r` for resize and `q` for quit.
 
-From the nav layer, you can hit `t` for typing, `z` to foreground zed, `f` to foreground finder, `g` to foreground ghostty, `c` to foreground Google Chrome, `space` to open spotlight, and `esc` to go home (all non-typing layers send you home after you type `esc`). (These aren't the apps you use?? Fork it!)
+From the **nav** layer, you can hit `t` for typing, `z` to foreground zed, `f` to foreground finder, `g` to foreground ghostty, `c` to foreground Google Chrome, `space` to open spotlight, and `esc` to go home (all non-typing layers send you home after you type `esc`). (These aren't the apps you use?? Fork it!)
 
-When an app is foregrounded, if you enter the inapp layer (`i` from home), you'll have keybindings that are custom to that app. In Chrome, `r` refreshes, and `l` selects the location bar, `shift-l` copies the location, `cmd-l` copies the domain.
+When an app is foregrounded, if you enter the **inapp** layer (`i` from home), you'll have keybindings that are custom to that app. In Chrome, `r` refreshes, and `l` selects the location bar, `shift-l` copies the location, `cmd-l` copies just the host (i.e. `www.x.com` from `https://www.x.com/foo`). (This has other behavior for other foregrounded apps, see the source code.)
 
-There is also a Chrome extension (at ./chrome-extension) that you can load into Chrome, which will report to mercury the foregrounded tab. If you do this, then the site layer (accessible via `s` from home or from inapp) will have per-site bindings. For example, on `claude.ai`, `n` will create a new tab (normally bound to `cmd-shift-o`).
+There is also a Chrome extension (at ./chrome-extension) that you can load into Chrome, which will report the URL of the foregrounded tab. If you do this, then the **site** layer (accessible via `s` from home or from inapp) will have per-site bindings. For example, on `claude.ai`, `n` will create a new tab (normally bound to `cmd-shift-o`).
 
-In the resize layer (`r` from home), `up` maximizes a window, `right` resizes to the right half, `left` resizes to the left half.
+In the **resize** layer (`r` from home), `up` maximizes a window, `right` resizes to the right half, `left` resizes to the left half.
 
-### The model
+And in addition, mercury creates a menu bar item, which shows the current layer name and exposes a "quit" option. If you, while iterating, end up with a non-responsive keyboard, you can still save yourself :)
+
+## Architecture of a `freddie` program
+
+### Big picture
+
+Every `freddie` app, including `mercury`, will have a similar model, which should be familiar to those acquainted with the [elm architecture](https://guide.elm-lang.org/architecture/). A program maintains some state and receives a stream of events. These events are dispatched, which may result in a handler getting called. Which specific handler is executed depends on the program state. A handler can mutate the state and return effects. These effects are handled.
+
+The "regular program" part is the setup: subscribe to streams of events and turn those into an enum, and call `let effects = state.handle(event).unwrap_or_default()`, and then for each effect, handle it.
+
+The "freddie" part of the program is everything that happens when you call `state.handle(event)`. Conveniently, `handle` is a pure state transformer: you pass the state and event in, and you receive the updated state and effects out. This makes it extremely easy to test!
+
+> To be pedantic: `state.handle` can also create timer effects (which bump a global ID), and dropping the corresponding timer guard prevents those timer effects from firing. But because we don't execute effects in tests, including timer effects, `state.handle` remains pure and testable. Likewise, we don't assert anything about timer IDs.
+
+With that out of the way, let's discuss the specifics of `mercury`.
+
+### `mercury` setup
+
+> The "regular program" part of `mercury start`.
+
+`mercury start` calls a hidden internal command, `mercury daemon`, which does the following:
+
+- Takes the single-instance lock, so a second mercury cannot come up alongside the first and fight it over the keyboard.
+- Puts up the menu bar item, whose Quit is a way out that does not go through the keyboard.
+- Grabs the keyboard, which swallows every key and hands it to the model as an event. The grab also hands back an emitter, which is how keys get back out.
+- Subscribes to the other sources: the frontmost app, the event socket on `127.0.0.1:3883`, and SIGTERM.
+- Runs the event loop and the effect loop, over a channel each.
+
+Sources feed the event channel. The event loop dispatches each event and sends the effects it produced to the effect channel. The effect loop performs them: emitting keys, foregrounding apps, placing windows, setting timers, copying to the clipboard, drawing the overlay, retitling the menu bar item. All of that is one worker thread, which owns the state, so nothing is shared and nothing is locked.
+
+Quitting is an effect too. It ends the effect loop rather than the process, so the exit runs destructors and the keyboard is released on the way out.
+
+### `mercury` data model
+
+`mercury` intentionally has a fairly standard data model, designed to be easily extended and modified for your use case.
 
 Every event is dispatched. Dispatch mutates state and emits a set of effects, and touches nothing else.
 
