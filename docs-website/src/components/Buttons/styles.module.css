@@ -8,18 +8,18 @@
 /* Against the gradient, plain white reads as a button where Infima's grey
    secondary goes muddy. */
 .buttons :global(.button--secondary) {
-  --ifm-button-background-color: #ffffff;
-  --ifm-button-border-color: #ffffff;
+  --ifm-button-background-color: var(--freddie-white);
+  --ifm-button-border-color: var(--freddie-white);
   --ifm-button-color: var(--freddie-ink);
 
   display: inline-flex;
   align-items: center;
   gap: 0.5em;
+  transition: filter 180ms ease;
 }
 
 .buttons :global(.button--secondary):hover {
-  --ifm-button-background-color: #f4f4f5;
-  --ifm-button-border-color: #f4f4f5;
+  filter: brightness(0.96);
   color: var(--freddie-ink);
 }
 

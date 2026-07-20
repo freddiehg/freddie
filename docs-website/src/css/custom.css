@@ -2,22 +2,13 @@
  * Any CSS included here will be global. The classic template
  * bundles Infima by default. Infima is a CSS framework designed to
  * work well for content-centric websites.
+ *
+ * Every colour on the site is one of the six below. Anything paler or darker
+ * than a palette entry is that entry at an alpha over the surface behind it,
+ * rather than a new hex, so there is nothing here to keep in sync by hand.
  */
 
-/* You can override the default Infima variables here. */
 :root {
-  /* Links sit on white at body size, which the ochre cannot do: it lands at
-     2.6:1, and any gold darkened until it clears 4.5:1 is a brown. The red
-     carries the warmth there instead, at 9:1. */
-  --ifm-color-primary: #971313;
-  --ifm-color-primary-dark: #881111;
-  --ifm-color-primary-darker: #801010;
-  --ifm-color-primary-darkest: #6a0d0d;
-  --ifm-color-primary-light: #ac1616;
-  --ifm-color-primary-lighter: #b91818;
-  --ifm-color-primary-lightest: #d02323;
-
-  /* Large surfaces only: the hero wash and the buttons. */
   --freddie-white: #fefefe;
   --freddie-yellow: #fad449;
   --freddie-ink: #231e1b;
@@ -25,13 +16,36 @@
   --freddie-clay: #cd9f8f;
   --freddie-red: #971313;
 
-  /* The palette's clay, taken down to a tint the body copy can sit on. */
-  --ifm-alt-background: #fbeee8;
-  --ifm-alt-background-border: #f0dbd1;
+  --freddie-white-rgb: 254 254 254;
+  --freddie-yellow-rgb: 250 212 73;
+  --freddie-ink-rgb: 35 30 27;
+  --freddie-ochre-rgb: 197 139 51;
+  --freddie-clay-rgb: 205 159 143;
+  --freddie-red-rgb: 151 19 19;
+}
+
+/* You can override the default Infima variables here. */
+:root {
+  /* Links sit on white at body size, which the ochre cannot do: it lands at
+     2.6:1, and any gold darkened until it clears 4.5:1 is a brown. The red
+     carries the warmth there instead, at 9:1. Infima wants a seven step ramp
+     and gets one colour, so a hover shifts by opacity rather than by hue. */
+  --ifm-color-primary: var(--freddie-red);
+  --ifm-color-primary-dark: var(--freddie-red);
+  --ifm-color-primary-darker: var(--freddie-red);
+  --ifm-color-primary-darkest: var(--freddie-red);
+  --ifm-color-primary-light: var(--freddie-red);
+  --ifm-color-primary-lighter: var(--freddie-red);
+  --ifm-color-primary-lightest: var(--freddie-red);
+
+  /* The yellow, thinned until body copy sits on it. */
+  --ifm-alt-background: rgb(var(--freddie-yellow-rgb) / 0.11);
+  --ifm-alt-background-border: rgb(var(--freddie-yellow-rgb) / 0.35);
+
   --ifm-h2-font-size: 2.5rem;
   --ifm-h3-font-size: 1.4rem;
   --ifm-code-font-size: 95%;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+  --docusaurus-highlighted-code-line-bg: rgb(var(--freddie-ink-rgb) / 0.1);
 
   font-size: 18px;
 }
@@ -42,28 +56,28 @@
   }
 }
 
-/* On a dark background the brand can be the bright yellow itself, which is
-   where it actually looks like gold rather than mud. */
+/* On a dark background the brand can be the yellow itself, which is where it
+   reads as gold rather than mud. */
 [data-theme='dark'] {
-  --ifm-color-primary: #fad449;
-  --ifm-color-primary-dark: #f9cd28;
-  --ifm-color-primary-darker: #f8c917;
-  --ifm-color-primary-darkest: #d3a908;
-  --ifm-color-primary-light: #fbdb6a;
-  --ifm-color-primary-lighter: #fcdf7b;
-  --ifm-color-primary-lightest: #fdeaab;
+  --ifm-color-primary: var(--freddie-yellow);
+  --ifm-color-primary-dark: var(--freddie-yellow);
+  --ifm-color-primary-darker: var(--freddie-yellow);
+  --ifm-color-primary-darkest: var(--freddie-yellow);
+  --ifm-color-primary-light: var(--freddie-yellow);
+  --ifm-color-primary-lighter: var(--freddie-yellow);
+  --ifm-color-primary-lightest: var(--freddie-yellow);
 
-  /* The palette's near-black is the page. The alternating band goes darker
-     rather than lighter, because lifting a warm dark is what makes mud. */
-  --ifm-background-color: #231e1b;
-  --ifm-background-surface-color: #2b2523;
-  --ifm-alt-background: #1b1715;
-  --ifm-alt-background-border: #3a322d;
-  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.08);
+  /* The palette's near-black is the page, and the surfaces above it are that
+     same page lifted by a little white. */
+  --ifm-background-color: var(--freddie-ink);
+  --ifm-background-surface-color: rgb(var(--freddie-white-rgb) / 0.05);
+  --ifm-alt-background: rgb(var(--freddie-white-rgb) / 0.035);
+  --ifm-alt-background-border: rgb(var(--freddie-white-rgb) / 0.1);
+  --docusaurus-highlighted-code-line-bg: rgb(var(--freddie-white-rgb) / 0.08);
 }
 
 .footer--dark {
-  --ifm-footer-background-color: #212124;
+  --ifm-footer-background-color: var(--freddie-ink);
 }
 
 /* Yellow is too light to carry white text, so the primary button inverts. */
@@ -73,9 +87,9 @@
   --ifm-button-color: var(--freddie-ink);
 }
 
+/* Hover darkens the button it is on rather than naming a second yellow. */
 .button--primary:hover {
-  --ifm-button-background-color: #f6ad0a;
-  --ifm-button-border-color: #f6ad0a;
+  filter: brightness(0.94);
   color: var(--freddie-ink);
 }
 
@@ -91,7 +105,7 @@ pre {
 
 .navbar__logo img {
   border-radius: 50%;
-  background-color: white;
+  background-color: var(--freddie-white);
 }
 
 main h2 {

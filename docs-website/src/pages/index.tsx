@@ -104,7 +104,7 @@ function Mercury() {
   return (
     <section>
       <div className="container">
-        <h2 className={styles.centeredHeading}>Meet mercury.</h2>
+        <h2 className={styles.centeredHeading}>Mercury rising.</h2>
         <p>
           This repository ships one program built with <code>freddie</code>,
           called <code>mercury</code>. It is macOS-only and it requires
