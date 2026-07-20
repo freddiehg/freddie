@@ -33,7 +33,7 @@ function Features() {
           on your keyboard, and one such effect is a simulated keypress, so{' '}
           <code>freddie</code> can be used to build a key remapper. But the
           events and effects are arbitrary, and so <code>freddie</code> can be
-          used to build something much more powerful.
+          used to build something much more powerful: a control plane for your computer.
         </p>
         <div className="row" style={{ paddingTop: '1.5rem' }}>
           <div className="col col--4">
@@ -113,13 +113,13 @@ function BindingSection() {
   return (
     <section>
       <div className="container">
-        <h2 className={styles.centeredHeading}>
-          A binding is a trigger and a handler.
-        </h2>
+        <h2 className={styles.centeredHeading}>A kind of magic.</h2>
         <p>
-          Say we want a volume layer, where <code>up</code> and <code>down</code>{' '}
-          change the volume and the layer remembers what it set it to. The
-          volume lives on the layer, because that is the only place it is used:
+          A binding is a trigger and the handler it runs, written on the level
+          where it applies. Say we want a volume layer, where <code>up</code>{' '}
+          and <code>down</code> change the volume and the layer remembers what
+          it set it to. The volume lives on the layer, because that is the only
+          place it is used:
         </p>
         <div className={styles.codeBlockWrap}>
           <CodeBlock language="rust">{bindingExample}</CodeBlock>
@@ -135,6 +135,22 @@ function BindingSection() {
           the active one. <code>louder</code> runs because it was, and the path
           is what says so. A state a binding cannot be reached in is not an arm
           that panics, it is a value the handler is never handed.
+        </p>
+        <p>
+          That is most of what the developer experience amounts to: the derive
+          writes the dispatch, and the types carry what dispatch already worked
+          out so your handler never re-derives it. A trigger that reads key
+          events cannot be hung on a tab event, because the narrowing is a{' '}
+          <code>TryFrom</code> that fails to compile rather than a branch that
+          fails at three in the morning.
+        </p>
+        <p>
+          The loop is short too. <code>bacon restart</code> rebuilds and
+          replaces the running daemon, so an edited binding is live without you
+          touching a window, and <code>mercury logs</code> prints one record per
+          dispatched event carrying the event, the effects it produced, and the
+          resulting state. When something is bound wrong, the log already says
+          what happened.
         </p>
       </div>
     </section>
@@ -273,6 +289,7 @@ mercury logs        # follow what it is doing`}
           </CodeBlock>
         </div>
         <div className={styles.ctaContainer}>
+          <p className={styles.ctaLine}>So, are you ready, Freddie?</p>
           <Link
             className="button button--primary button--lg"
             to="/docs/getting-started-with-mercury"
