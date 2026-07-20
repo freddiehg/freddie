@@ -33,9 +33,11 @@
   transform: translateY(-3px);
 }
 
+/* The lift is motion and goes; the shadow is a cross-fade and stays, so the
+   hover still reads as a transition rather than a snap. */
 @media (prefers-reduced-motion: reduce) {
   .heroLogo {
-    transition: none;
+    transition: box-shadow 220ms ease;
   }
 
   .heroLogo:hover {
