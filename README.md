@@ -81,13 +81,13 @@ From the **nav** layer, you can hit `t` for typing, `z` to foreground zed, `f` t
 
 When an app is foregrounded, if you enter the **inapp** layer (`i` from home), you'll have keybindings that are custom to that app. In Chrome, `r` refreshes, and `l` selects the location bar, `shift-l` copies the location, `cmd-l` copies just the host (i.e. `www.x.com` from `https://www.x.com/foo`). (This has other behavior for other foregrounded apps, see the source code.)
 
-There is also a Chrome extension (at ./chrome-extension) that you can load into Chrome, which will report the URL of the foregrounded tab. If you do this, then the **site** layer (accessible via `s` from home or from inapp) will have per-site bindings. For example, on `claude.ai`, `n` will create a new tab (normally bound to `cmd-shift-o`).
+There is also a Chrome extension (at ./chrome-extension) that you can load into Chrome, which will report the URL of the foregrounded tab. If you do this, then the **site** layer (accessible via `s` from home or from inapp) will have per-site bindings. For example, on `claude.ai`, `n` will create a new tab (normally bound to `cmd-shift-o`) and leave you in the typing layer, since a new chat lands in its prompt box.
 
 In the **resize** layer (`r` from home), `up` maximizes a window, `right` resizes to the right half, `left` resizes to the left half.
 
 And in addition, mercury creates a menu bar item, which shows the current layer name and exposes a "quit" option. If you, while iterating, end up with a non-responsive keyboard, you can still save yourself :)
 
-## Architecture of a `freddie` program
+## Architecture of `mercury`, a `freddie` program
 
 ### Big picture
 
@@ -232,14 +232,6 @@ A trigger does not have to be a constant. It can be a closure over the state its
 ```
 
 Every timer fires the same `MercuryEvent::Timer`, so the event alone cannot say which one went off. The layer holds the guard for the timer it set, and that guard's `trigger()` matches its own firing and nothing else. Which node is still holding the guard is what tells two timers apart. The closure is handed a shared reference, so a trigger reads state and cannot write it.
-
-When the state might not hold one, the trigger is an `Option`, and `None` matches nothing:
-
-```rust
-|mercury_path| mercury_path.overlay_timer().map(TimerGuard::trigger) => hide_overlay,
-```
-
-While no overlay is up there is no timer, the trigger is `None`, and the binding is quiet. Nothing branches on absence.
 
 ## `mercury logs`
 

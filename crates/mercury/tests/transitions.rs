@@ -589,6 +589,38 @@ fn the_ls_are_chromes_alone() {
     );
 }
 
+// Chrome in the site layer, with `url` reported for its front tab.
+fn site_showing(url: &str) -> Mercury {
+    let mut m = chrome_showing(url);
+    let _ = m.handle(&key(Key::KeyS));
+    m
+}
+
+// `n` on claude.ai sends the site's own new-chat shortcut and lands in typing, so what you type
+// reaches the prompt box the new chat opened in.
+#[test]
+fn claude_ai_n_starts_a_new_chat_and_enters_typing() {
+    let mut m = site_showing("https://claude.ai/new");
+    assert_eq!(
+        m.handle(&key(Key::KeyN)),
+        Some(vec![
+            tap(Key::KeyO, ModifierFlags::COMMAND | ModifierFlags::SHIFT),
+            shows("Typing")
+        ])
+    );
+    assert!(matches!(m.layer(), Layer::Typing(_)));
+}
+
+// The new-chat binding is claude.ai's alone: another site's front tab leaves `n` unbound in the
+// site layer.
+#[test]
+fn n_is_claude_ais_alone() {
+    let mut m = site_showing("https://www.x.com/asdfasdf");
+    // Swallowed, and the site layer treats the keypress as activity: its return-home timer resets.
+    assert_eq!(m.handle(&key(Key::KeyN)), Some(vec![return_home_timer()]));
+    assert!(matches!(m.layer(), Layer::Site(_)));
+}
+
 // `s` in the in-app layer reaches the site layer, the way `u` does from home: `i` is what the
 // front app can do, `s` is what the site in its front tab can do, with no trip through home.
 #[test]

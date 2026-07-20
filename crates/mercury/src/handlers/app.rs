@@ -124,14 +124,22 @@ select_window! {
     window_0 => Num0,
 }
 
-/// `n` on claude.ai: start a new chat.
+/// `n` on claude.ai: start a new chat, and then type.
 ///
 /// `cmd-shift-o` is the site's own shortcut, so this is a remap and not an automation: nothing has
 /// to reach into the page. The modifiers ride as flags on the one key event, which is what keeps a
 /// modifier the user is really holding from being stranded.
-pub(crate) fn new_chat<E, N>(_ev: &E, _node: N) -> Vec<MercuryEffect> {
-    vec![tap(
+///
+/// A new chat lands in its prompt box, which is somewhere you type, so this leaves for typing the
+/// way Chrome's `l` does.
+pub(crate) fn new_chat<'a, E, P: Ascend<MercuryPath<'a>>, D>(
+    ev: &E,
+    node: Node<P, D>,
+) -> Vec<MercuryEffect> {
+    let mut effects = vec![tap(
         Key::KeyO,
         ModifierFlags::COMMAND | ModifierFlags::SHIFT,
-    )]
+    )];
+    effects.extend(to_typing(ev, node));
+    effects
 }
