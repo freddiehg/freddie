@@ -147,7 +147,7 @@ pub struct KeyEvent {
 /// modifier posted microseconds earlier, so a chord posted back to back carries the wrong flags.
 /// Stating the flags on the event and applying exactly them makes the emitted stream say what it
 /// means, whatever the source thinks.
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct ModifierFlags(u8);
 
 impl std::fmt::Debug for KeyEvent {
@@ -305,6 +305,48 @@ impl EventTrigger for KeyPress {
     }
 }
 
+impl KeyPress {
+    /// A trigger matching this press only when exactly `flags` are held.
+    #[must_use]
+    pub const fn with(self, flags: ModifierFlags) -> KeyChord {
+        KeyChord {
+            key: self.key,
+            press: self.press,
+            flags,
+        }
+    }
+
+    /// A trigger matching this press only when no modifier is held.
+    ///
+    /// The counterpart to [`with`](Self::with): a node that binds one key at several modifier
+    /// combinations spells every one of them as a chord, so no two of its triggers can match the
+    /// same event and which one wins is not a question about declaration order.
+    #[must_use]
+    pub const fn bare(self) -> KeyChord {
+        self.with(ModifierFlags::empty())
+    }
+}
+
+/// A key going one direction with exactly these modifiers held, from [`KeyPress::with`].
+///
+/// Where [`KeyPress`] ignores the flags an event carries, this matches them exactly, so `cmd`-`l`
+/// and a bare `l` are different triggers. Caps lock is not a [`ModifierFlags`] bit (the backend
+/// leaves `AlphaShift` out of its mapping), so a chord matches with caps lock on or off.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct KeyChord {
+    pub key: Key,
+    pub press: PressType,
+    pub flags: ModifierFlags,
+}
+
+impl EventTrigger for KeyChord {
+    type Event = KeyEvent;
+
+    fn is_matching(&self, event: &KeyEvent) -> bool {
+        self.key == event.key && self.press == event.press && self.flags == event.flags
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Key, KeyEvent, ModifierFlags, PressType};
@@ -342,6 +384,72 @@ mod tests {
             format!("{chord:?}"),
             "KeyEvent { key: KeyV, press: Up, flags: ModifierFlags(COMMAND|SHIFT) }"
         );
+    }
+
+    #[test]
+    fn a_chord_matches_only_its_own_modifiers() {
+        let bare = KeyEvent {
+            key: Key::KeyL,
+            press: PressType::Down,
+            flags: ModifierFlags::empty(),
+        };
+        let with_command = KeyEvent {
+            key: Key::KeyL,
+            press: PressType::Down,
+            flags: ModifierFlags::COMMAND,
+        };
+        let with_both = KeyEvent {
+            key: Key::KeyL,
+            press: PressType::Down,
+            flags: ModifierFlags::COMMAND | ModifierFlags::SHIFT,
+        };
+
+        // The three are mutually exclusive: each event matches exactly one of them.
+        for (trigger, matching) in [
+            (Key::KeyL.down().bare(), &bare),
+            (Key::KeyL.down().with(ModifierFlags::COMMAND), &with_command),
+            (
+                Key::KeyL
+                    .down()
+                    .with(ModifierFlags::COMMAND | ModifierFlags::SHIFT),
+                &with_both,
+            ),
+        ] {
+            for event in [&bare, &with_command, &with_both] {
+                assert_eq!(
+                    trigger.is_matching(event),
+                    std::ptr::eq(event, matching),
+                    "{trigger:?} against {event:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_chord_matches_neither_the_other_key_nor_the_release() {
+        let trigger = Key::KeyL.down().with(ModifierFlags::COMMAND);
+        assert!(!trigger.is_matching(&KeyEvent {
+            key: Key::KeyK,
+            press: PressType::Down,
+            flags: ModifierFlags::COMMAND,
+        }));
+        assert!(!trigger.is_matching(&KeyEvent {
+            key: Key::KeyL,
+            press: PressType::Up,
+            flags: ModifierFlags::COMMAND,
+        }));
+    }
+
+    // A plain press ignores the flags, which is why a node binding one key at several modifier
+    // combinations has to spell every one of them as a chord.
+    #[test]
+    fn a_press_matches_whatever_modifiers_are_held() {
+        let trigger = Key::KeyL.down();
+        assert!(trigger.is_matching(&KeyEvent {
+            key: Key::KeyL,
+            press: PressType::Down,
+            flags: ModifierFlags::COMMAND,
+        }));
     }
 
     #[test]
