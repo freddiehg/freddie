@@ -100,6 +100,100 @@ function BindingSection() {
   );
 }
 
+function EventsCanBeAnything() {
+  return (
+    <section>
+      <div className="container">
+        <h2 className={styles.centeredHeading}>Events can be anything.</h2>
+        <p>
+          A key going down is an event. So is an app coming to the front, a tab
+          changing its URL, a display waking up, a microphone being plugged in,
+          a timer going off, and a frame arriving on a socket from a program
+          you wrote last week. The event type is an enum you own, and adding a
+          source is adding a variant to it.
+        </p>
+        <div className="row" style={{ paddingTop: '1.5rem' }}>
+          <div className="col col--4">
+            <h3>Under pressure</h3>
+            <p>
+              The keyboard grab hands you every key with its modifiers before
+              the frontmost app sees any of it, which is the whole reason a
+              remapper can exist.
+            </p>
+          </div>
+          <div className="col col--4">
+            <h3>Radio ga ga</h3>
+            <p>
+              Anything that can open a socket to <code>127.0.0.1:3883</code> is
+              an event source. That is how a Chrome extension tells{' '}
+              <code>mercury</code> which tab you are looking at.
+            </p>
+          </div>
+          <div className="col col--4">
+            <h3>Another one bites the dust</h3>
+            <p>
+              Hardware comes and goes, and both directions are events. A monitor
+              connecting, a headset disconnecting, an app quitting out from
+              under the layer that was bound to it.
+            </p>
+          </div>
+        </div>
+        <p style={{ paddingTop: '1rem' }}>
+          Is this the real life? Is this just a frame someone sent over
+          loopback? Dispatch narrows the event, finds the binding, and never
+          asks.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+function EffectsCanBeAnything() {
+  return (
+    <section className="alt-background">
+      <div className="container">
+        <h2 className={styles.centeredHeading}>Effects can be anything.</h2>
+        <p>
+          A handler does not do things. It returns a list of things to be done,
+          and the run loop does them. That split is what keeps{' '}
+          <code>state.handle</code> a pure function, and it means the list can
+          hold whatever you are willing to write.
+        </p>
+        <div className="row" style={{ paddingTop: '1.5rem' }}>
+          <div className="col col--4">
+            <h3>Hammer to fall</h3>
+            <p>
+              Emit a key. Swallow <code>caps</code> and send <code>esc</code>,
+              or turn one chord into four. The keyboard is just another thing
+              the program can drive.
+            </p>
+          </div>
+          <div className="col col--4">
+            <h3>Play the game</h3>
+            <p>
+              Foreground an app, throw the focused window at the left half of
+              the screen, retitle the menu bar, put an overlay up saying what is
+              bound right now.
+            </p>
+          </div>
+          <div className="col col--4">
+            <h3>I want it all</h3>
+            <p>
+              Run arbitrary code. Call an API, shell out, clone the repository
+              whose page you are sitting on. An effect is a variant and the arm
+              that performs it.
+            </p>
+          </div>
+        </div>
+        <p style={{ paddingTop: '1rem' }}>
+          Nothing in that list runs during dispatch, so a test asserts on what
+          came back rather than on what happened. The show goes on afterwards.
+        </p>
+      </div>
+    </section>
+  );
+}
+
 function Mercury() {
   return (
     <section>
@@ -149,6 +243,8 @@ export default function Home(): ReactNode {
       <main>
         <Features />
         <BindingSection />
+        <EventsCanBeAnything />
+        <EffectsCanBeAnything />
         <Mercury />
       </main>
     </Layout>
