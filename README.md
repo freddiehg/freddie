@@ -150,72 +150,49 @@ And when we receive the next event, we re-call `app_data`, so we never have to w
 
 ### Bindings
 
-A binding is a trigger and the handler it runs, written on the level where it applies. Say we want `l`, in the site layer, while a Google Meet call is open, to copy the meeting's link and go home. `mercury` does not ship this one, but it is small enough to write out in full.
+A binding is a trigger and the handler it runs, written on the level where it applies. Say we want a volume layer, where `up` and `down` change the volume and the layer remembers what it set it to. `mercury` does not ship this one, but it is small enough to write out in full.
 
-The meeting code is part of the URL, and the URL is reported by the Chrome extension, so the Meet level is a virtual field that parses the code once and carries it:
+The volume lives on the layer, because that is the only place it is used:
 
 ```rust
-enum SiteData {
-    Meet(MeetSite),
-    Claude(ClaudeSite),
-}
-
 #[derive(Bind, Debug)]
-#[derived_node(parent = SiteLayerPath)]
+#[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
-    Key::KeyL.down() => copy_meeting_link,
+    Key::UpArrow.down() => louder,
+    Key::DownArrow.down() => quieter,
 )]
-pub struct MeetSite {
-    code: String,
-}
-
-fn site_data(path: &SiteLayerPath) -> Option<SiteData> {
-    let url = path.parent().parent().foreground.chrome_url()?;
-    match host(url)? {
-        "meet.google.com" => Some(SiteData::Meet(MeetSite {
-            code: meeting_code(url)?,
-        })),
-        "claude.ai" => Some(SiteData::Claude(ClaudeSite::new())),
-        _ => None,
-    }
+pub struct VolumeLayer {
+    volume: u8,
 }
 ```
 
 And the handler:
 
 ```rust
-fn copy_meeting_link<'a, P: Ascend<MercuryPath<'a>>>(
-    _ev: &KeyEvent,
-    node: Node<P, MeetSite>,
-) -> Vec<MercuryEffect> {
-    let link = format!("https://meet.google.com/{}", node.data.code);
-    let root: MercuryPath<'_> = node.parent.ascend();
-    let mut effects = root.set_layer(HomeLayer {});
-    effects.push(MercuryEffect::Copy(Copied::Text(link)));
-    effects
+fn louder<'a>(_ev: &KeyEvent, node: Node<VolumeLayerPath<'a>, ()>) -> Vec<MercuryEffect> {
+    let layer: &mut VolumeLayer = node.parent.get_mut();
+    layer.volume = (layer.volume + 10).min(100);
+    vec![MercuryEffect::SetVolume(layer.volume)]
 }
 ```
 
-`node.data` is what this level built: the meeting code, already parsed, typed `String` and not `Option<String>`, because a `MeetSite` exists only when there was a code to parse. `node.parent` is the level above, and `ascend` walks from there to any ancestor, here the root, where it arrives as `&mut Mercury` and can set the layer.
+`node.parent` is the path to the level the binding was written on, so `get_mut` hands back this layer, unconditionally. There is no question of whether the volume layer is the active one. `louder` runs because it was, and the path is what says so.
 
-That walk is the point of the typed path. Written against the whole state instead, the same handler has to recover both facts that dispatch had already established:
+That is the point of the typed path. Written against the whole state instead, the handler has to recover what dispatch already knew:
 
 ```rust
-fn copy_meeting_link(state: &mut Mercury) -> Vec<MercuryEffect> {
-    let Layer::Site(site) = &state.layer else {
-        unreachable!("bound in the site layer")
-    };
-    let Some(SiteData::Meet(meet)) = site_data(site) else {
-        unreachable!("bound on meet.google.com")
+fn louder(state: &mut Mercury) -> Vec<MercuryEffect> {
+    let Layer::Volume(layer) = &mut state.layer else {
+        unreachable!("bound in the volume layer")
     };
     // ...
 }
 ```
 
-Dispatch matched the layer and matched the host on its way down to this handler. The path is the record of that walk, so the handler receives the results rather than recomputing them, and the two `unreachable!` arms have nothing to guard: a state this binding cannot be reached in is not an arm that panics, it is a value the handler is never handed.
+That `unreachable!` has nothing to guard, and the compiler cannot tell. A state a binding cannot be reached in is not an arm that panics, it is a value the handler is never handed.
 
-A handler that reads none of the level's data can stay generic over it, which is how one function serves several levels. `to_home` takes `Node<P, ()>`, and `esc` is bound to it in the home, nav, in-app, site, and resize layers.
+A handler that needs more than its own level climbs. `node.parent.into_parent()` is the `Layer` above, and one more is the root, `&mut Mercury`, which is how `esc` sets the layer back to home from wherever it was pressed.
 
 ## `mercury logs`
 
