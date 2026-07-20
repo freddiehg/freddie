@@ -12,9 +12,7 @@ Example events include: this key was pressed, this app was foregrounded, this br
 
 And `freddie` aims to do this in a way that provides a great developer experience.
 
-## mercury
-
-This repository contains one such demo program, `mercury`, and you should not expect it to fit your use case. It is here to be read, run, studied, and forked. See below for more information.
+This repository contains one such demo program, `mercury`, and you should not expect it to fit your use case. It is here to be read, run, studied, used as an example, forked, and modified. See below for more information.
 
 ## Alternatives
 
@@ -22,7 +20,7 @@ This repository contains one such demo program, `mercury`, and you should not ex
 
 In many ways `freddie` is a replacement for Karabiner and other keyboard remappers. These are excellent programs, but they are limited in their customizability due to being configuration-driven. For example, you can bind keys differently in Karabiner based on which app is foregrounded, but not which Chrome tab is active or which devices are connected. And so, if you want to do that, you have three bad options:
 
-- emit a (hopefully unused) keypress that changes some internal Karabiner state, and make sure to keep that state in sync!
+- emit a (hopefully unused) keypress that changes some internal Karabiner state, and make sure to keep that state in sync, or
 - bind all keys for all states, and then have the handler know what to do, or
 - use an external program, such as hammerspoon.
 
@@ -32,13 +30,19 @@ Most folks will choose the third option, leading to a spaghettification of confi
 
 With Karabiner, you download a binary and provide a configuration. With `freddie`, you fork the repository, make the changes you want, and run `cargo build` to generate the new binary.
 
-That gives the freedom to do whatever you want!
+That gives the freedom to do whatever you want: you can respond to whatever events you want, and you can manage state however you choose, and your handlers receive this state.
 
-This comes at a cost, and `freddie` is not for everyone. For very simple cases, writing programs is more work than using a configuration file. But `freddie` aims to provide a great developer experience, and is the a better option for certain complicated use cases, and besides: LLMs make writing programs a lot easier than before. So, have an LLM do it :)
+This comes at a cost. For very simple cases, writing programs is more work than using a configuration file. But `freddie` aims to provide a great developer experience, and is the a better option for certain complicated use cases, and besides: LLMs make writing programs a lot easier than before. So, have an LLM do it :)
 
-## Running mercury
+## `mercury`
 
-Clone the repository. From the root, `cargo run -p mercury` or `cargo install --path crates/mercury && mercury`.
+This repository contains a sample program built with `freddie`, entitled `mercury`. You should not expect it to fit your use case. It is here to be read, run, studied, used as an example, forked, and modified.
+
+### Running `mercury`
+
+`mercury` is the example program, built with `freddie`, and is included in this repository.
+
+To install it, clone the repository. From the root, `cargo run -p mercury` or `cargo install --path crates/mercury && mercury`.
 
 That builds mercury and starts it as a detached daemon, then exits. You can run the following:
 
@@ -52,18 +56,16 @@ mercury stop
 mercury status
 mercury logs
 
-# install mercury
+# start mercury at login, and stop doing so
+mercury install
+mercury uninstall
 ```
 
-`stop` and `restart` take `--force`, which destroys the daemon with SIGKILL rather than asking it to quit. That runs no destructors, so a modifier a command layer swallowed is left down in whatever app was in front; it is for a daemon that no longer answers.
+`mercury` is macOS only, and it needs Accessibility permissions.
 
-macOS only, and it needs Accessibility, which the system prompts for the first time it grabs the keyboard. Nothing else: the tap is an active one, `CGEventTapOptions::Default` at `CGEventTapLocation::Session`, and Input Monitoring gates listen-only taps, which observe without being able to remap anything.
+Max one instance of `mercury` runs at a time.
 
-One mercury runs at a time. A second is refused at startup rather than allowed to fight the first over every keystroke.
-
-`bacon restart` rebuilds and replaces the running daemon together, so an edited binding goes live without touching a window. That is the edit loop.
-
-## The tour
+### The tour
 
 mercury comes up as a menu-bar item. The icon shows the layer you are in, and Quit lives in that menu deliberately: the way out must not depend on the grabbed keyboard still working.
 
@@ -78,7 +80,7 @@ Type `jk` quickly, inside 200ms, and you are in home. Home is a command layer: i
 
 Once Chrome is frontmost, `r` refreshes the tab. Once Ghostty is, `j` and `k` walk tmux's windows and `1` through `0` jump to the first ten. Those bindings exist only while that app is up. Go one level finer and the frontmost URL matters too: on `claude.ai`, `n` starts a new chat.
 
-## The model
+### The model
 
 Every event is dispatched. Dispatch mutates state and emits a set of effects, and touches nothing else.
 
@@ -101,7 +103,7 @@ pub(crate) fn open_chrome<'a, E, P: Ascend<MercuryPath<'a>>>(
 
 Everything the branch already matched on is available, typed. States that cannot happen are not unwrapped and panicked on; they are not reachable from where the handler sits.
 
-## The edges
+### The edges
 
 Inside is pure. Outside is arbitrary code, and that is the point.
 
@@ -117,22 +119,7 @@ mercury also listens on `127.0.0.1:3883`, so processes outside it can push event
 
 `IncomingEvent` is the whole external vocabulary, so a sender can report the front tab and nothing else. `MercuryEvent` does not derive `Deserialize`, which is what makes remote key injection and remote quit unrepresentable rather than filtered. Web pages are refused at the handshake, because a WebSocket handshake is exempt from the same-origin policy and any open tab could otherwise reach the socket.
 
-## Starting at login
-
-```
-cargo install --path crates/mercury
-mercury install
-```
-
-`install` registers the binary that ran it as a per-user LaunchAgent, so mercury starts with the session and comes back if it crashes. It copies no binary anywhere, which is why `cargo install` comes first. `mercury uninstall` takes the agent back out.
-
-The agent needs its own Accessibility grant the first time it runs, because it has no terminal in its ancestry to inherit one from. That grant is keyed to the installed path, so a later `cargo install --path` over the same path keeps it.
-
-Booting into typing is what makes this safe: a login that came up in a command layer would swallow every key you pressed.
-
-Under the agent, a rebuild wants `launchctl kickstart -k gui/$(id -u)/hg.freddie.mercury`, which replaces the process launchd is managing. `mercury restart` would spawn a replacement launchd did not start and will not keep alive.
-
-## Logs
+### Logs
 
 mercury writes to `~/Library/Logs/mercury/mercury.log`, always, appending across runs, and always down to `debug` whatever the terminal was asked for. One record per dispatched event carries the event, the effects it produced, and the resulting state, so a run is reconstructable afterwards.
 
@@ -157,18 +144,16 @@ Every record carries the pid of the process that wrote it, because a client verb
 - `freddie_single_instance`: the lock that keeps one mercury running.
 - `mercury`: the application.
 
-## Where code goes
+## Roadmap
 
-mercury is one consumer of `freddie`, not `freddie` itself. figaro is another, and there will be more. So the test for whether something belongs in mercury is whether figaro would write it differently: if figaro's copy would be identical, it does not belong in mercury, it belongs in a `freddie_*` crate that both depend on.
+Work is haphazardly planned in `refactors/pending/` and moved to `refactors/past/` once it has shipped.
 
-What mercury keeps is what is only true of mercury: its `App` enum, its state tree, its bindings, its effects, and the table mapping bundle ids onto its apps. What it does not keep is anything about how macOS works. Grabbing the keyboard, foregrounding an app, watching the frontmost app, and giving the main thread to a run loop are all identical in figaro, and each lives in its own crate.
+## Contributing
 
-This is easy to get wrong, because the first consumer is the only consumer and everything looks app-specific while it is the only thing there. The rule is about the second consumer, before it exists.
+Please reach out! `freddie` is moving very fast, so my fear is that, in the amount of time it takes to coordinate on the right work, I can just ask my clanker to implement the feature. But I'd love to hear about what you want to see in `freddie`.
 
-## Planning
-
-Work is planned in `refactors/pending/` and moved to `refactors/past/` once it has shipped. A doc there is meant to carry enough detail that someone with no context can implement it without making design decisions along the way, which is why they hold before-and-after code rather than descriptions of it.
+But it should (by and large) be ready for folks to experiment with!
 
 ## Prior art
 
-`freddie`'s event loop follows two existing systems. isograph's language server is the same shape: several sources feed one queue, one event is dispatched per iteration, and dispatch is a `ControlFlow` chain that takes the first matching handler. barnum goes a step further with deferred effects run off a queue by an async scheduler, whose results feed back as events. `freddie`'s difference from barnum is that its handlers mutate state directly during dispatch, where barnum's only return a value the engine writes back. See `refactors/past/event-loop.md` for detail.
+`freddie`'s event loop follows two existing systems. [`isograph`](https://github.com/isographlabs/isograph)'s language server is the same shape: several sources feed one queue, one event is dispatched per iteration, and dispatch is a `ControlFlow` chain that takes the first matching handler. [`barnum`](https://github.com/barnum-circus/barnum) goes a step further with deferred effects run off a queue by an async scheduler, whose results feed back as events. `freddie`'s difference from `barnum` is that its handlers mutate state directly during dispatch, where `barnum`'s only return a value the engine writes back. See `refactors/past/event-loop.md` for detail.
