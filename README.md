@@ -264,6 +264,14 @@ In many ways `freddie` is a replacement for Karabiner and other keyboard remappe
 
 Most folks will choose the third option, leading to a spaghettification of configuration code, and a difficulty reasoning about the overall state.
 
+### Why not hammerspoon?
+
+Hammerspoon is a real programming environment, so the argument above does not apply to it: you can write whatever you want in Lua, including everything `freddie` does. The difference is the state model, and the developer experience that follows from it.
+
+Hammerspoon gives you watchers and callbacks: an `hs.hotkey.modal` here, an `hs.application.watcher` there, an `hs.eventtap` around them, each closing over its own local variables. There is no one value that answers "what is the keyboard doing right now" — the answer is distributed across the closures, and keeping them consistent is your job. `freddie` has a single state, a single queue, and one dispatch per event, so what a key does is a pure function of that state and that event. That is what makes the keymap testable as a table rather than by pressing keys and seeing what happens.
+
+The rest is Rust versus Lua. A layer you forgot to handle is a compile error rather than a `nil` you find when you press the key; states that should not exist can be made unrepresentable; `cargo test` runs the model without a running daemon or a hijacked keyboard. Hammerspoon's answer is `hs.reload` and trying it, which is faster to start with and worse once the thing is big.
+
 ### What alternative is there to being configuration-driven?
 
 With Karabiner, you download a binary and provide a configuration. With `freddie`, you fork the repository, make the changes you want, and run `cargo build` to generate the new binary.
