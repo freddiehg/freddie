@@ -1,28 +1,28 @@
-# `freddie`
+# freddie
 
-**`freddie` is a set of tools for building a bespoke control plane for your computer**.
+**freddie is a set of tools for building a bespoke control plane for your computer**.
 
-A `freddie` program ingests a stream of events and produces a stream of effects. One such event is generated when you press a key on your keyboard, and one such effect is a simulated keypress! **So, `freddie` can be used to build a key remapper.** But the events and effects are arbitrary, and so `freddie` can be used to build something much more powerful.
+A freddie program ingests a stream of events and produces a stream of effects. One such event is generated when you press a key on your keyboard, and one such effect is a simulated keypress! **So, freddie can be used to build a key remapper.** But the events and effects are arbitrary, and so freddie can be used to build something much more powerful.
 
 Want to ensure that when you connect a specific microphone, Wispr Flow uses that one? Want to rearrange your windows when connecting to a specific monitor? Want a keybinding (accessible from anywhere) to mute/unmute yourself in Google meets/Zoom? Want a hotkey to send a transcribed message to a specific Claude instance? Want to be able to clone a repository, directly from github.com?
 
-All of this is possible with `freddie`.
+All of this is possible with freddie.
 
-Example events include: this key was pressed, this app was foregrounded, this browser tab became active, this external device connected. Example effects include: emit this key, foreground this app, resize this window, run this arbitrary code. A program built on `freddie` is the central place where the decision of how to respond to an event is made.
+Example events include: this key was pressed, this app was foregrounded, this browser tab became active, this external device connected. Example effects include: emit this key, foreground this app, resize this window, run this arbitrary code. A program built on freddie is the central place where the decision of how to respond to an event is made.
 
-And `freddie` aims to do this in a way that provides a great developer experience.
+And freddie aims to do this in a way that provides a great developer experience.
 
 This repository contains one such demo program, `mercury`, and you should not expect it to fit your use case. It is here to be read, run, studied, used as an example, forked, and modified. See below for more information.
 
 ## `mercury`
 
-This repository contains a sample program built with `freddie`, entitled `mercury`. It is MacOS-only, and requires accessibility permissions. At most, one instance of `mercury` runs at a time.
+This repository contains a sample program built with freddie, entitled `mercury`. It is MacOS-only, and requires accessibility permissions. At most, one instance of `mercury` runs at a time.
 
 You should not expect it to fit your use case. It is here to be read, run, studied, used as an example, forked, and modified.
 
 ### Running `mercury`
 
-`mercury` is the example program, built with `freddie`, and is included in this repository.
+`mercury` is the example program, built with freddie, and is included in this repository.
 
 To install it, clone the repository. From the root, `cargo run -p mercury` or `cargo install --path crates/mercury && mercury`.
 
@@ -67,11 +67,11 @@ In the **resize** layer (`r` from home), `up` maximizes a window, `right` resize
 
 And in addition, mercury creates a menu bar item, which shows the current layer name and exposes a "quit" option. If you, while iterating, end up with a non-responsive keyboard, you can still save yourself :)
 
-## Architecture of `mercury`, a `freddie` program
+## Architecture of `mercury`, a freddie program
 
 ### Big picture
 
-Every `freddie` app, including `mercury`, will have a similar model, which should be familiar to those acquainted with the [elm architecture](https://guide.elm-lang.org/architecture/). A program maintains some state and receives a stream of events. These events are dispatched, which may result in a handler getting called. Which specific handler is executed depends on the program state. A handler can mutate the state and return effects. These effects are handled.
+Every freddie app, including `mercury`, will have a similar model, which should be familiar to those acquainted with the [elm architecture](https://guide.elm-lang.org/architecture/). A program maintains some state and receives a stream of events. These events are dispatched, which may result in a handler getting called. Which specific handler is executed depends on the program state. A handler can mutate the state and return effects. These effects are handled.
 
 The "regular program" part is the setup: subscribe to streams of events and turn those into an enum, and call `let effects = state.handle(event).unwrap_or_default()`, and then for each effect, handle it.
 
@@ -99,15 +99,15 @@ The `mercury` data model is what controls which handler is executed when you cal
 
 In the simplest case, the state is a nested enum. For example, `struct Mercury` contains a `#[resolve_into] layer: Layer` field, which is an enum. Different keys can be bound on different layers. For example, `c` navigates to Google Chrome iff `matches!(state.layer, Layer::Nav(_))`, but not in other layers.
 
-Here, the handlers bound on `NavLayer` take precedence over the handlers bound on `Layer`, which take precedence over the handlers bound on `Mercury`. (Ideally, we would like to error if an event would be handled twice. That is not currently enabled in `freddie`.)
+Here, the handlers bound on `NavLayer` take precedence over the handlers bound on `Layer`, which take precedence over the handlers bound on `Mercury`. (Ideally, we would like to error if an event would be handled twice. That is not currently enabled in freddie.)
 
 However, this runs into a limitation! How do you handle the currently foregrounded app, which is only relevant in the inapp layer? On the other hand, `struct AppLayer` could have `#[resolve_into] currently_foregrounded_app: CurrentlyForegroundedApp`, and that would work! But, that means that when you navigate to the inapp layer, you must know (or discover) the foregrounded app.
 
-Discovering it at that time is not a great pattern. Learning what app is foregrounded is quick, so in this specific case, it wouldn't be a problem. But, what if it wasn't so easy? For example, if finding out meant making a network request? Regardless, doing so is impure, and thus violates one of the basic tenets of `freddie`: `state.handle` is pure.
+Discovering it at that time is not a great pattern. Learning what app is foregrounded is quick, so in this specific case, it wouldn't be a problem. But, what if it wasn't so easy? For example, if finding out meant making a network request? Regardless, doing so is impure, and thus violates one of the basic tenets of freddie: `state.handle` is pure.
 
 So, we must know what app is foregrounded. Hence, the root `Mercury` struct keeps track of what app is foregrounded. But now, how to populate `#[resolve_into] currently_foregrounded_app`? Do we copy the state when transitioning? That works, but it also means that we have to be careful and not only maintain the state at the root, but also keep the state wherever it is used up-to-date.
 
-The solution that `freddie` offers is virtual fields.
+The solution that freddie offers is virtual fields.
 
 A virtual field is a child level that is computed during dispatch instead of stored in the state. `AppLayer` declares one with `#[derived_child(app_data)]`. `app_data` is a function that returns a struct that implements `Bind`:
 
@@ -178,7 +178,7 @@ A handler that needs more than its own level climbs. `node.parent.into_parent()`
 
 A trigger is the other half of a binding, and it answers one question: does this event run this handler? Two things have to line up. The event has to be of the kind the trigger reads, and the trigger has to match what that event carries.
 
-A `freddie` program has one event type, whose variants are its sources:
+A freddie program has one event type, whose variants are its sources:
 
 ```rust
 pub enum MercuryEvent {
@@ -244,19 +244,15 @@ Work is haphazardly planned in `refactors/pending/` and moved to `refactors/past
 
 ## Contributing
 
-Please reach out! `freddie` is moving very fast, so my fear is that, in the amount of time it takes to coordinate on the right work, I can just ask my clanker to implement the feature. But I'd love to hear about what you want to see in `freddie`.
+Please reach out! freddie is moving very fast, so my fear is that, in the amount of time it takes to coordinate on the right work, I can just ask my clanker to implement the feature. But I'd love to hear about what you want to see in freddie.
 
 But it should (by and large) be ready for folks to experiment with!
 
-## Prior art
-
-`freddie`'s event loop follows two existing systems. [`isograph`](https://github.com/isographlabs/isograph)'s language server is the same shape: several sources feed one queue, one event is dispatched per iteration, and dispatch is a `ControlFlow` chain that takes the first matching handler. [`barnum`](https://github.com/barnum-circus/barnum) goes a step further with deferred effects run off a queue by an async scheduler, whose results feed back as events. `freddie`'s difference from `barnum` is that its handlers mutate state directly during dispatch, where `barnum`'s only return a value the engine writes back. See `refactors/past/event-loop.md` for detail.
-
 ## Alternatives
 
-### Why `freddie`? Why not karabiner? Why not hammerspoon?
+### Why freddie? Why not karabiner? Why not hammerspoon?
 
-In many ways `freddie` is a replacement for Karabiner and other keyboard remappers. These are excellent programs, but they are limited in their customizability due to being configuration-driven. For example, you can bind keys differently in Karabiner based on which app is foregrounded, but not which Chrome tab is active or which devices are connected. And so, if you want to do that, you have three bad options:
+In many ways freddie is a replacement for Karabiner and other keyboard remappers. These are excellent programs, but they are limited in their customizability due to being configuration-driven. For example, you can bind keys differently in Karabiner based on which app is foregrounded, but not which Chrome tab is active or which devices are connected. And so, if you want to do that, you have three bad options:
 
 - emit a (hopefully unused) keypress that changes some internal Karabiner state, and make sure to keep that state in sync, or
 - bind all keys for all states, and then have the handler know what to do, or
@@ -264,18 +260,42 @@ In many ways `freddie` is a replacement for Karabiner and other keyboard remappe
 
 Most folks will choose the third option, leading to a spaghettification of configuration code, and a difficulty reasoning about the overall state.
 
-### Why not hammerspoon?
-
-Hammerspoon is a real programming environment, so the argument above does not apply to it: you can write whatever you want in Lua, including everything `freddie` does. The difference is the state model, and the developer experience that follows from it.
-
-Hammerspoon gives you watchers and callbacks: an `hs.hotkey.modal` here, an `hs.application.watcher` there, an `hs.eventtap` around them, each closing over its own local variables. There is no one value that answers "what is the keyboard doing right now" — the answer is distributed across the closures, and keeping them consistent is your job. `freddie` has a single state, a single queue, and one dispatch per event, so what a key does is a pure function of that state and that event. That is what makes the keymap testable as a table rather than by pressing keys and seeing what happens.
-
-The rest is Rust versus Lua. A layer you forgot to handle is a compile error rather than a `nil` you find when you press the key; states that should not exist can be made unrepresentable; `cargo test` runs the model without a running daemon or a hijacked keyboard. Hammerspoon's answer is `hs.reload` and trying it, which is faster to start with and worse once the thing is big.
-
 ### What alternative is there to being configuration-driven?
 
-With Karabiner, you download a binary and provide a configuration. With `freddie`, you fork the repository, make the changes you want, and run `cargo build` to generate the new binary.
+With Karabiner, you download a binary and provide a configuration. With freddie, you fork the repository, make the changes you want, and run `cargo build` to generate the new binary.
 
 That gives the freedom to do whatever you want: you can respond to whatever events you want, and you can manage state however you choose, and your handlers receive this state.
 
-This comes at a cost. For very simple cases, writing programs is more work than using a configuration file. But `freddie` aims to provide a great developer experience, and is a better option for certain complicated use cases, and besides: LLMs make writing programs a lot easier than before. So, have an LLM do it :)
+This comes at a cost. For very simple cases, writing programs is more work than using a configuration file. But freddie aims to provide a great developer experience, and is a better option for certain complicated use cases, and besides: LLMs make writing programs a lot easier than before. So, have an LLM do it :)
+
+### Why not Hammerspoon?
+
+Hammerspoon is a real programming environment, and you can write whatever you want in Lua, including everything freddie does. The difference is in the state model and in the developer experience.
+
+Hammerspoon gives you watchers and callbacks: an `hs.hotkey.modal` here, an `hs.application.watcher` there, an `hs.eventtap` around them, each closing over its own local variables. There is no one value that answers "what is the keyboard doing right now" — the answer is distributed across the closures, and keeping them consistent is your job. freddie has a single state, a single queue, and one dispatch per event, so what a key does is a pure function of that state and that event. That is what makes the keymap unit-testable.
+
+And Hammerspoon requires you to write Lua, which means bringing footguns into the home and calling them pets. Good luck! Hope you're not building software that you're relying on. But if that's your thing, then you'll probably like Hammerspoon!
+
+### Why not X, Y or Z?
+
+There are lots of options! I've been a happy user of many of them (including [Karabiner](https://karabiner-elements.pqrs.org/), [Hammerspoon](https://www.hammerspoon.org/), [BetterTouchTool](https://folivora.ai/), [Homerow](https://www.homerow.app/) and [Vimium](https://vimium.github.io/)). But I didn't find any that provided the flexibility, safety and totality that freddie provides.
+
+In practice, I will incorporate many of these into my freddie program. For example, Homerow is great! I don't (necessarily) want to recreate its functionality, and will probably trigger it from freddie. And I can't live without Vimium.
+
+### So, why did you build this?
+
+There are the immediate reasons:
+
+- It's fun, and provides a sense of satisfaction, to build something that provides values to the world.
+- It's an important new skill, and I need practice leveraging LLMs to write more, better software.
+- The costs have gone down.
+
+And there's a deeper reason:
+
+- There's a flywheel effect. The way I build software tends to build on itself. The ideas from [Relay](https://relay.dev) informed [Isograph](https://isograph.dev), which informed [Barnum](https://barnum-circus.github.io), which inform freddie. And the ideas in freddie will inform an impending Isograph rewrite.
+
+Ultimately, I see all of these as solving variations of the same problem: how to provide great DevEx for producing complicated apps that are correct and performant by construction?
+
+## Prior art
+
+freddie's event loop follows two existing systems. [Isograph](https://github.com/isographlabs/isograph)'s language server is the same shape: several sources feed one queue, one event is dispatched per iteration, and dispatch is a `ControlFlow` chain that takes the first matching handler. [Barnum](https://github.com/barnum-circus/barnum) goes a step further with deferred effects run off a queue by an async scheduler, whose results feed back as events. freddie's difference from barnum is that its handlers mutate state directly during dispatch, where barnum's only return a value the engine writes back. See `refactors/past/event-loop.md` for detail.
