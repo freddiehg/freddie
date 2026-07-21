@@ -8,7 +8,7 @@ image: /img/blog/announcing-freddie.jpg
 
 ![A newborn freddie](/img/blog/announcing-freddie.jpg)
 
-It is with enormous pride that we announce the arrival of freddie, a set of tools for building a bespoke control plane for your computer, weighing in at fifteen crates and growing fast. He has his father's eyes and an unsettling interest in everything your keyboard is doing.
+It is with enormous pride that we announce the arrival of freddie, a set of tools for building a bespoke control plane for your computer, weighing in at fifteen crates and growing fast.
 
 He is receiving visitors, and he is ready for you to experiment with.
 
@@ -16,7 +16,7 @@ He is receiving visitors, and he is ready for you to experiment with.
 
 ## What it is
 
-A freddie program ingests a stream of events and produces a stream of effects. One such event is generated when you press a key, and one such effect is a simulated keypress, so freddie can be used to build a key remapper. But the events and effects are arbitrary, so it can be used to build something much more powerful.
+A freddie program ingests a stream of events and produces a stream of effects. One such event is generated when you press a key, and one such effect is a simulated keypress, so freddie can be used to build a key remapper. But the events and effects are arbitrary, so it can be used to build something much more powerful: a control plane for your computer.
 
 Some of what that gets you:
 
@@ -27,13 +27,17 @@ Some of what that gets you:
 
 None of those are keybindings in the sense a remapper means. Two depend on something no config file can see, one involves no keypress at all, and one requires remembering a value between events.
 
-## Why not a config file
+## Building a freddie program
 
-Karabiner and the other remappers are excellent, but they are configuration-driven, and a configuration format is a fixed set of questions its author decided to ask. It works right up until you want something they did not anticipate. Then it stops, and your options are abusing whatever escape hatch exists, or bolting a second program onto the side to do the part the first one cannot. That is how a keyboard setup turns into three files that disagree about what state you are in.
+Freddie is unlike most other keyboard remappers: instead of providing a configuration and running a program, you compile it yourself. In that sense, it is more similar to hammerspoon or QMK than to Karabiner.
 
-There is a deeper version of the same problem. In a configuration-driven tool you do not write functions, so your handlers never get access to the state at all. Putting a window back where it was needs somebody to have remembered where that was, and there is nowhere to put it.
+Configuration-driven programs inherently limit what you can do. If you are attempting to bind a key differently depending on which app is foregrounded, you are fine, because that is a question the author thought to ask. If you are attempting to bind it on which tab is active in Chrome, you are not, because nothing in the format has anywhere to put the answer.
 
-With freddie you fork the repository and edit Rust. The state is a struct you declared. The handlers are functions you wrote. Adding an event source is adding a variant.
+That is the shape of every wall you hit. A configuration format is a fixed set of questions somebody else decided to ask, and the moment you want something outside the set, your options are abusing whatever escape hatch exists or bolting a second program onto the side to do the part the first one cannot. That is how a keyboard setup turns into three files that disagree about what state you are in.
+
+There is a deeper version of the same problem. In a configuration-driven tool you do not write functions, so your handlers never see the state at all. Putting a window back where it was needs somebody to have remembered where it used to be, and there is nowhere to keep that.
+
+Compiling your own program removes the wall rather than moving it. The state is a struct you declared, so it holds whatever the job needs. The handlers are functions you wrote, so they can read and change it. Adding an event source is adding a variant to an enum. Nothing has to be expressible in someone else's format before you are allowed to do it.
 
 ## What a binding looks like
 
