@@ -339,9 +339,11 @@ function Mercury() {
         </Prose>
         <Prose>
           <p>
-            <code>mercury</code> boots into the typing layer, which passes all keystrokes through. Typing <code>jk</code> takes you to the home layer. From there, <code>n</code> is nav, <code>i</code> is in-app, <code>s</code>{' '}
-            is per-site, <code>r</code> is resize, and <code>o</code> shows you an
-            overlay of the layer&rsquo;s keymap.
+            <code>mercury</code> boots into the typing layer, which passes all
+            keystrokes through. Typing <code>jk</code> takes you to the home layer.
+            From there, <code>n</code> takes you to nav, <code>i</code> to in-app,{' '}
+            <code>s</code> to per-site, and <code>r</code> to resize.{' '}
+            <code>o</code> displays an overlay containing the layer&rsquo;s keymap.
           </p>
           <p>
             Once you want it there every time, <code>mercury install</code>{' '}
