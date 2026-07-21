@@ -442,6 +442,28 @@ fn focused_window() -> Option<AXUIElementRef> {
     (status == 0 && !window.is_null()).then(|| window.cast_mut().cast())
 }
 
+/// Set one `AXValue` attribute of `element`.
+fn set_attribute<A: AxAttribute>(element: AXUIElementRef, value: A::Value) {
+    // SAFETY: `AXValueCreate` copies out of the pointer it is given, which lives for the
+    // call, and returns a +1 reference `Owned` takes responsibility for.
+    #[expect(unsafe_code)]
+    let Some(boxed) =
+        (unsafe { Owned::new(AXValueCreate(A::KIND, (&raw const value).cast()).cast()) })
+    else {
+        return;
+    };
+    // SAFETY: `element` is live, and setting an attribute takes ownership of neither
+    // argument. `boxed` is released when it drops at the end of this function.
+    #[expect(unsafe_code)]
+    unsafe {
+        AXUIElementSetAttributeValue(
+            element,
+            CFString::new(A::NAME).as_concrete_TypeRef(),
+            boxed.0,
+        );
+    }
+}
+
 /// Set the window's position and size, twice.
 ///
 /// Twice because some apps clamp a move against their current size, so the first
@@ -451,26 +473,8 @@ fn set_frame(window: AXUIElementRef, frame: Frame) {
     let size = CGSize::new(frame.width, frame.height);
 
     for _ in 0..2 {
-        // SAFETY: `AXValueCreate` copies out of the pointer it is given, and both
-        // values live for the call. Each returned value is +1 and released here.
-        // `window` is a live element; setting an attribute takes no ownership.
-        #[expect(unsafe_code)]
-        unsafe {
-            let position = AXValueCreate(kAXValueTypeCGPoint, (&raw const origin).cast());
-            let extent = AXValueCreate(kAXValueTypeCGSize, (&raw const size).cast());
-            AXUIElementSetAttributeValue(
-                window,
-                CFString::new(kAXPositionAttribute).as_concrete_TypeRef(),
-                position.cast(),
-            );
-            AXUIElementSetAttributeValue(
-                window,
-                CFString::new(kAXSizeAttribute).as_concrete_TypeRef(),
-                extent.cast(),
-            );
-            CFRelease(position.cast());
-            CFRelease(extent.cast());
-        }
+        set_attribute::<Position>(window, origin);
+        set_attribute::<Size>(window, size);
     }
 }
 
