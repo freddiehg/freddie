@@ -65,9 +65,33 @@ function Features() {
   );
 }
 
-function DontStopMeNow() {
+function Video() {
   return (
     <section className="alt-background">
+      <div className="container">
+        <div className="kicker">It&rsquo;s worth a look</div>
+        <h2 className={styles.centeredHeading}>See it running.</h2>
+        <div className="row">
+          <div className="col col--8 col--offset-2 margin-top--md">
+            <iframe
+              width="100%"
+              height="444"
+              src="https://www.youtube-nocookie.com/embed/3GWZ9yiskFk"
+              title="Placeholder video"
+              allow="autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share"
+              allowFullScreen
+              frameBorder="0"
+            ></iframe>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function DontStopMeNow() {
+  return (
+    <section>
       <div className="container">
         <div className="kicker">It&rsquo;s powerful</div>
         <h2 className={styles.centeredHeading}>For programmers, by programmers</h2>
@@ -79,34 +103,16 @@ function DontStopMeNow() {
             Want to bind different keys depending on which app is foregrounded? That's fine, because these programs tend to expose "the current foregrounded app" to you. But, want to bind keys based on what tab is active in Chrome? You can't incorporate arbitrary events, so you're out of luck. Want a binding that only exists while your good microphone is plugged in, or one that changes the moment you dock and the second monitor wakes up? Same answer.
           </p>
           <p>
-            You do not configure freddie. You write a program with
-            it. There is no config file, no DSL, and no schema of somebody
-            else&rsquo;s questions to answer.
+            And there's a deeper problem: in other frameworks, your handlers never get access to the state. Want one key that maximizes a window and, pressed again, puts it back exactly where it was? Then something has to remember the window's old position. So, that's something that's impossible . In freddie the state is a struct you declared, so the handler reads the old rectangle out of it and writes the new one back.
           </p>
           <p>
-            That distinction only matters at the edges, and the edges are where
-            you end up. A configuration format is a fixed set of questions its
-            author decided to ask, and it works right until you want something
-            they did not anticipate. Then it stops. Your options become abusing
-            whatever escape hatch exists, or bolting a second program onto the
-            side to do the part the first one cannot, which is how a keyboard
-            setup turns into three files that disagree about what state you are
-            in.
+            arbitrary effect
           </p>
           <p>
-            Here you fork it, build it, and run it. The whole thing ships as a
-            repository you clone and a binary you compile, so your edits are Rust
-            and <code>cargo build</code> is the deploy step. The state is a struct
-            you declared. The handlers are functions you wrote. Adding an event
-            source is adding a variant. Nothing has to be expressible in someone
-            else&rsquo;s format before you can do it, so there is no ceiling to
-            hit and nothing to work around when you reach it.
+            cargo build
           </p>
           <p>
-            It costs more than a config file for the simple cases, and it wants a
-            toolchain and a rebuild. That is the trade. It is also a much smaller
-            trade than it was two years ago: hand the crate to an LLM and describe
-            the binding you want.
+            tradeoff
           </p>
         </Prose>
       </div>
@@ -116,7 +122,7 @@ function DontStopMeNow() {
 
 function BindingSection() {
   return (
-    <section>
+    <section className="alt-background">
       <div className="container">
         <div className="kicker">It&rsquo;s a kind of magic</div>
         <h2 className={styles.centeredHeading}>Guaranteed to blow your mind</h2>
@@ -175,7 +181,7 @@ function BindingSection() {
 
 function Mercury() {
   return (
-    <section className="alt-background">
+    <section>
       <div className="container">
         <div className="kicker">It&rsquo;s ready for you</div>
         <h2 className={styles.centeredHeading}>Mercury rising.</h2>
@@ -231,7 +237,7 @@ function Mercury() {
 
 function AreYouReady() {
   return (
-    <section>
+    <section className="alt-background">
       <div className="container">
         <h2 className={styles.centeredHeading}>Are you ready, Freddie?</h2>
         <div className={styles.ctaContainer}>
@@ -256,6 +262,7 @@ export default function Home(): ReactNode {
       <HomepageHeader />
       <main>
         <Features />
+        <Video />
         <DontStopMeNow />
         <BindingSection />
         <Mercury />

@@ -112,7 +112,7 @@
 /* The homepage bands alternate and the last one is plain, so the footer takes
    the tinted turn and the run continues past the end of the page. */
 .footer {
-  --ifm-footer-background-color: var(--ifm-alt-background);
+  --ifm-footer-background-color: transparent;
   border-top: 1px solid var(--ifm-alt-background-border);
 }
 
