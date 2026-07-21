@@ -134,12 +134,9 @@
 }
 
 /* Infima aligns inline code to the parent's midline rather than its baseline,
-   which sits the code low in a line of Maison. Baseline is closer, and the
-   monospace still rides a little low against it, so nudge it up. */
+   which sits the code low in a line of Maison. */
 code {
   vertical-align: baseline;
-  position: relative;
-  top: -0.025em;
 }
 
 /* Word wrap in all code blocks */
