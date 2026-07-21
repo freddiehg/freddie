@@ -87,41 +87,40 @@ struct PendingPlacement {
 pub const PLACEMENT_SETTLE: Duration = Duration::from_millis(250);
 ```
 
-`Frame` gains the comparison, in `freddie_windows`:
+The comparison lives in mercury, beside the rule it serves. `freddie_windows::Frame` stays four numbers: how close two frames have to be before a placement counts as landed is this consumer's policy, and a different one would pick a different number or want exactness.
 
 ```rust
-impl Frame {
-    /// How far apart two frames may be and still be the same placement, in points. Apps
-    /// clamp what they are given (a terminal snaps to whole character cells), so a frame
-    /// reported after a set is near what was asked for rather than equal to it.
-    const TOLERANCE: f64 = 2.0;
+/// How far apart two frames may be and still be the same placement, in points.
+///
+/// Apps clamp what they are given (a terminal snaps to whole character cells), so a frame
+/// reported after a set is near what was asked for rather than equal to it.
+const TOLERANCE: f64 = 2.0;
 
-    /// Whether this frame is `other` to within [`TOLERANCE`](Self::TOLERANCE) on every
-    /// edge.
-    #[must_use]
-    pub fn approx_eq(self, other: Self) -> bool {
-        (self.x - other.x).abs() <= Self::TOLERANCE
-            && (self.y - other.y).abs() <= Self::TOLERANCE
-            && (self.width - other.width).abs() <= Self::TOLERANCE
-            && (self.height - other.height).abs() <= Self::TOLERANCE
-    }
+/// Whether `a` is `b` to within [`TOLERANCE`] on every edge.
+fn same_placement(a: Frame, b: Frame) -> bool {
+    (a.x - b.x).abs() <= TOLERANCE
+        && (a.y - b.y).abs() <= TOLERANCE
+        && (a.width - b.width).abs() <= TOLERANCE
+        && (a.height - b.height).abs() <= TOLERANCE
 }
 ```
 
 # Change 2: recording a move decides whether to forget
 
-`Windows::record`'s `Moved` arm, before:
+`Windows::record`'s frame-change arms, before:
 
 ```rust
-            WindowChange::Moved(moved) => {
+            WindowChange::Moved(moved) | WindowChange::Resized(moved) => {
                 self.frames.insert(moved.window, moved.frame);
             }
 ```
 
+Mercury keeps a frame and nothing else, so a move and a resize are the same to it and it says so with one arm. The source reports them apart because another consumer will want them apart.
+
 After:
 
 ```rust
-            WindowChange::Moved(moved) => {
+            WindowChange::Moved(moved) | WindowChange::Resized(moved) => {
                 let ours = self.pending_covers(moved);
                 if let Some(state) = self.windows.get_mut(&moved.window) {
                     state.frame = moved.frame;
@@ -147,7 +146,7 @@ impl Windows {
         if pending.window != moved.window {
             return false;
         }
-        if pending.frame.approx_eq(moved.frame) {
+        if same_placement(pending.frame, moved.frame) {
             self.pending = None;
         }
         true

@@ -1,6 +1,6 @@
 # Window observation
 
-`freddie_windows` becomes a source as well as a sink, the shape `freddie_app_nav` already has: [`watch`] reports what windows are doing, [`set_frame`] asks for a change, [`snapshot`] seeds the initial state, and nothing ties a call to a report.
+`freddie_windows` becomes a source as well as a sink, the shape `freddie_app_nav` already has: [`watch`] reports what windows are doing, `WindowSink::set_frame` asks for a change, `Watcher::snapshot` seeds the initial state, and nothing ties a call to a report.
 
 Mercury's model ends up holding the geometry: every window's id and frame, which one is focused, and the monitors. It is filled by events like `foreground` and the Chrome tab URL are, so dispatch reads no OS state and an effect carries everything it needs.
 
@@ -15,12 +15,12 @@ Per app, one `AXObserver` on the application element, created when the app appea
 
 On each window element, added as the window is seen:
 
-- `kAXWindowMovedNotification` and `kAXWindowResizedNotification`, which are the same event to mercury: the frame changed.
+- `kAXWindowMovedNotification` and `kAXWindowResizedNotification`, one variant each. A consumer that treats them alike collapses them itself, which is not a decision the crate gets to make on its behalf.
 - `kAXUIElementDestroyedNotification`.
 
 An `AXObserver` gives a `CFRunLoopSource`. It is added to the main run loop, which `freddie_main_loop` is already inside, so a callback runs there exactly as `freddie_app_nav`'s does. Observation is per-pid and costs no thread and no poll.
 
-An app that refuses Accessibility, or has not finished launching, fails `AXObserverCreate`. That is logged at `debug` and the app is skipped: its windows are invisible to mercury, which loses restore for them and nothing else.
+An app that refuses Accessibility, or has not finished launching, fails `AXObserverCreate`. That is logged at `debug` and the app is skipped: its windows are never reported and cannot be addressed, and every other app goes on being observed.
 
 ## Identity
 
@@ -28,7 +28,7 @@ A window's identity is its `CGWindowID`. An `AXUIElementRef` is not it: elements
 
 `_AXUIElementGetWindow` is the only way across. It is private, exported by HIServices, and has been there since 10.x. A window whose id cannot be read produces no events, so a future removal of the symbol costs window observation and leaves the rest of the crate standing.
 
-The crate keeps the reverse direction too: a table from `WindowId` to the retained element observing it. That is what makes [`set_frame`] a lookup into a table the observer already maintains rather than a walk of every app's `kAXWindowsAttribute`. It is also the only place that mapping exists, so the model and the effects speak `WindowId` alone.
+The crate keeps the reverse direction too: a table from `WindowId` to the retained element observing it. That is what makes `WindowSink::set_frame` a lookup into a table the observer already maintains rather than a walk of every app's `kAXWindowsAttribute`. It is also the only place that mapping exists, so the model and the effects speak `WindowId` alone.
 
 ---
 
@@ -335,9 +335,14 @@ One `AXObserver` per app, all of them owned by the watcher, and the events they 
 pub enum WindowChange {
     /// A window appeared, with the frame it appeared at.
     Opened(WindowFrame),
-    /// A window's frame changed: moved, resized, or both. The two notifications are one
-    /// change, because the frame is what mercury keeps.
+    /// A window moved, with the frame it moved to.
     Moved(WindowFrame),
+    /// A window was resized, with the frame it was resized to.
+    ///
+    /// Separate from [`Moved`](Self::Moved) because the OS reports them separately. A
+    /// consumer keeping only a frame handles the two the same way; one that cares which
+    /// happened can tell, and could not if this crate had merged them.
+    Resized(WindowFrame),
     /// A window went away.
     Closed(WindowId),
     /// The focused window changed. `None` when the app that came forward has no focused
@@ -425,7 +430,7 @@ The pieces behind `watch`:
 - `observe_app(&Watcher, pid)` builds the `Registration`, calls `AXObserverCreate`, adds `kAXFocusedWindowChangedNotification` and `kAXWindowCreatedNotification` on the app element with that `refcon`, adds the source to `CFRunLoop::get_main()` under `kCFRunLoopDefaultMode`, then walks `kAXWindowsAttribute` once and calls `observe_window` for each.
 - `observe_window(&Registration, element)` reads the id, inserts a retained `Element` into `observed.elements`, adds `kAXWindowMovedNotification`, `kAXWindowResizedNotification`, and `kAXUIElementDestroyedNotification` on the window element, and reports `Opened`.
 - The app set is kept current from `NSWorkspace`'s `didLaunchApplication` and `didTerminateApplication`, seeded from `runningApplications`. On terminate, the app's `AppObserver` is dropped and every `elements` entry for its windows is removed, each reported as `Closed`.
-- An app that refuses Accessibility, or has not finished launching, fails `AXObserverCreate`. That is logged at `debug` and the app is skipped: its windows are invisible to mercury, which loses restore for them and nothing else.
+- An app that refuses Accessibility, or has not finished launching, fails `AXObserverCreate`. That is logged at `debug` and the app is skipped: its windows are never reported and cannot be addressed, and every other app goes on being observed.
 
 The C callback dispatches on the notification name:
 
@@ -454,7 +459,12 @@ unsafe extern "C" fn on_notification(
         kAXWindowCreatedNotification => observe_window(registration, element),
         kAXWindowMovedNotification | kAXWindowResizedNotification => {
             if let (Some(window), Some(frame)) = (window_id(element), window_frame(element)) {
-                registration.report(WindowChange::Moved(WindowFrame { window, frame }));
+                let moved = WindowFrame { window, frame };
+                registration.report(if name == kAXWindowMovedNotification {
+                    WindowChange::Moved(moved)
+                } else {
+                    WindowChange::Resized(moved)
+                });
             }
         }
         kAXUIElementDestroyedNotification => {
