@@ -112,10 +112,8 @@ fn place<'a, P: Ascend<MercuryPath<'a>>>(
     within: impl Fn(Frame) -> Frame,
 ) -> Vec<MercuryEffect> {
     let root = path.ascend();
-    let effects = match target(&root.windows, within) {
-        Some(target) => vec![MercuryEffect::SetFrame(target)],
-        None => Vec::new(),
-    };
+    let effects = target(&root.windows, within)
+        .map_or_else(Vec::new, |target| vec![MercuryEffect::SetFrame(target)]);
     and_go_home_from(root, effects)
 }
 

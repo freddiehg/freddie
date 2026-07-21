@@ -52,7 +52,16 @@ pub(crate) fn and_go_home<'a, P: Ascend<MercuryPath<'a>>>(
     path: P,
     effects: impl IntoIterator<Item = MercuryEffect>,
 ) -> Vec<MercuryEffect> {
+    and_go_home_from(path.ascend(), effects)
+}
+
+/// [`and_go_home`] for a caller that has already ascended, which a handler that read the
+/// root's state to build its effects has.
+pub(crate) fn and_go_home_from(
+    root: &mut Mercury,
+    effects: impl IntoIterator<Item = MercuryEffect>,
+) -> Vec<MercuryEffect> {
     let mut effects: Vec<_> = effects.into_iter().collect();
-    effects.extend(go_home(path.ascend()));
+    effects.extend(go_home(root));
     effects
 }

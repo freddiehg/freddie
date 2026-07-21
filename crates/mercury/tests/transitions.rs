@@ -7,8 +7,8 @@ use bind::SimpleRunner;
 use freddie_windows::{Frame, Monitor, WindowChange, WindowFrame, WindowId};
 use mercury::{
     App, Chord, Copied, HomeLayer, JK_TIMEOUT, Key, KeyEvent, Layer, Mercury, MercuryEffect,
-    MercuryEvent, MercuryStruct, ModifierFlags, OVERLAY_DWELL, Placement, PressType,
-    RETURN_TO_HOME_TIMEOUT, UrlPart, WindowEvent, Windows, foreground, key, quit_event, tab,
+    MercuryEvent, MercuryStruct, ModifierFlags, OVERLAY_DWELL, PressType, RETURN_TO_HOME_TIMEOUT,
+    UrlPart, WindowEvent, Windows, foreground, key, quit_event, tab,
 };
 
 // Entering nav, resize, or the in-app layer arms the return-to-home timer; this is the effect
@@ -898,22 +898,38 @@ fn home_r_enters_resize() {
     assert!(matches!(m.layer(), Layer::Resize(_)));
 }
 
-// Resize is a one-shot chooser, like nav: each arrow emits its placement and lands
-// back in home, so `r up` maximizes and leaves you where you started.
+// Resize is a one-shot chooser, like nav: each arrow emits the rectangle its window is
+// going to and lands back in home, so `r up` maximizes and leaves you where you started.
 #[test]
 fn the_arrows_place_the_window_and_return_home() {
-    for (k, placement) in [
-        (Key::UpArrow, Placement::Maximize),
-        (Key::LeftArrow, Placement::LeftHalf),
-        (Key::RightArrow, Placement::RightHalf),
+    for (k, frame) in [
+        (Key::UpArrow, SCREEN.visible),
+        (
+            Key::LeftArrow,
+            Frame {
+                width: 800.0,
+                ..SCREEN.visible
+            },
+        ),
+        (
+            Key::RightArrow,
+            Frame {
+                x: 800.0,
+                width: 800.0,
+                ..SCREEN.visible
+            },
+        ),
     ] {
-        let mut m = home();
+        let mut m = home_with_a_window();
         let _ = m.handle(&key(Key::KeyR));
         assert!(matches!(m.layer(), Layer::Resize(_)));
 
         assert_eq!(
             m.handle(&key(k)),
-            Some(leaves(vec![MercuryEffect::Place(placement)])),
+            Some(leaves(vec![MercuryEffect::SetFrame(WindowFrame {
+                window: WINDOW,
+                frame,
+            })])),
             "{k:?}"
         );
         assert!(
@@ -921,6 +937,16 @@ fn the_arrows_place_the_window_and_return_home() {
             "{k:?} stayed in resize"
         );
     }
+}
+
+// With nothing focused there is nothing to place, so the key is spent and the layer is
+// left, but no window moves.
+#[test]
+fn a_placement_with_no_focused_window_asks_for_nothing() {
+    let mut m = home();
+    let _ = m.handle(&key(Key::KeyR));
+    assert_eq!(m.handle(&key(Key::UpArrow)), Some(leaves(vec![])));
+    assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
 // Escape leaves resize without placing anything.
@@ -937,16 +963,25 @@ fn escape_leaves_resize() {
 // Placing twice means entering resize twice: `r up r left`.
 #[test]
 fn placing_twice_re_enters_resize() {
-    let mut m = home();
+    let mut m = home_with_a_window();
     let _ = m.handle(&key(Key::KeyR));
     assert_eq!(
         m.handle(&key(Key::UpArrow)),
-        Some(leaves(vec![MercuryEffect::Place(Placement::Maximize)]))
+        Some(leaves(vec![MercuryEffect::SetFrame(WindowFrame {
+            window: WINDOW,
+            frame: SCREEN.visible,
+        })]))
     );
     let _ = m.handle(&key(Key::KeyR));
     assert_eq!(
         m.handle(&key(Key::LeftArrow)),
-        Some(leaves(vec![MercuryEffect::Place(Placement::LeftHalf)]))
+        Some(leaves(vec![MercuryEffect::SetFrame(WindowFrame {
+            window: WINDOW,
+            frame: Frame {
+                width: 800.0,
+                ..SCREEN.visible
+            },
+        })]))
     );
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
@@ -1650,4 +1685,42 @@ fn the_monitor_is_the_one_the_window_is_on() {
 fn no_screens_reported_means_no_monitor() {
     let m = home();
     assert_eq!(m.windows.monitor_for(WINDOW_FRAME), None);
+}
+
+// A window on the second display fills that display, not the one it started on. This is
+// what `monitor_for` is for, and it only shows up with more than one screen.
+#[test]
+fn a_placement_uses_the_screen_the_window_is_on() {
+    const SECOND: Monitor = Monitor {
+        full: Frame {
+            x: 1600.0,
+            y: 0.0,
+            width: 1000.0,
+            height: 800.0,
+        },
+        visible: Frame {
+            x: 1600.0,
+            y: 25.0,
+            width: 1000.0,
+            height: 775.0,
+        },
+    };
+    let on_second = Frame {
+        x: 1700.0,
+        ..WINDOW_FRAME
+    };
+
+    let mut m = home();
+    let _ = m.handle(&windows(WindowChange::Screens(vec![SCREEN, SECOND])));
+    let _ = m.handle(&windows(opened(WINDOW, on_second)));
+    let _ = m.handle(&windows(WindowChange::Focused(Some(WINDOW))));
+    let _ = m.handle(&key(Key::KeyR));
+
+    assert_eq!(
+        m.handle(&key(Key::UpArrow)),
+        Some(leaves(vec![MercuryEffect::SetFrame(WindowFrame {
+            window: WINDOW,
+            frame: SECOND.visible,
+        })]))
+    );
 }

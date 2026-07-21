@@ -41,9 +41,10 @@ use std::ops::ControlFlow;
 
 use freddie::{AlwaysEqual, TimerEffect};
 use freddie_keyboard::Emitter;
+use freddie_windows::{WindowFrame, WindowSink};
 use mercury::{
-    App, Chord, Copied, Mercury, MercuryEffect, MercuryEvent, Placement, UrlPart, WindowEvent,
-    Windows, foreground, host, quit_event,
+    App, Chord, Copied, Mercury, MercuryEffect, MercuryEvent, UrlPart, WindowEvent, Windows,
+    foreground, host, quit_event,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot::error::TryRecvError;
@@ -76,12 +77,6 @@ pub(crate) fn run(args: &DaemonArgs) {
             return;
         }
     };
-
-    // `freddie_windows` reads the screen's visible frame, which is AppKit and so
-    // main-thread-bound. Do it here, while we still are one, and cache it.
-    if let Err(e) = freddie_windows::init() {
-        error!(error = %e, "window placement unavailable");
-    }
 
     // NSApp as an accessory (menu-bar) app, before the status item is created and
     // before the loop pumps its events.
@@ -140,11 +135,14 @@ pub(crate) fn run(args: &DaemonArgs) {
             let _ = event_tx.send(MercuryEvent::Window(WindowEvent { change }));
         }
     });
-    let (_window_watcher, window_state) = match windows {
-        Ok((watcher, snapshot)) => (Some(watcher), Windows::from_snapshot(snapshot)),
+    let (_window_watcher, window_sink, window_state) = match windows {
+        Ok((watcher, snapshot)) => {
+            let sink = watcher.sink();
+            (Some(watcher), Some(sink), Windows::from_snapshot(snapshot))
+        }
         Err(e) => {
             error!(error = %e, "window observation unavailable");
-            (None, Windows::default())
+            (None, None, Windows::default())
         }
     };
 
@@ -154,6 +152,7 @@ pub(crate) fn run(args: &DaemonArgs) {
         front_app: freddie_app_nav::frontmost()
             .map_or(App::Other, |bundle_id| App::from_bundle_id(&bundle_id)),
         windows: window_state,
+        window_sink,
     };
 
     let worker = std::thread::Builder::new()
@@ -193,6 +192,9 @@ struct Boot {
     /// Every window open when the watcher was installed, which one was focused, and the
     /// screens. Same reasoning: the observer reports changes, and none has happened yet.
     windows: Windows,
+    /// The handle placements are performed through. `None` when window observation could
+    /// not start, in which case a placement has nothing to act on and says so.
+    window_sink: Option<WindowSink>,
 }
 
 /// Everything mercury does, on the worker thread.
@@ -278,7 +280,7 @@ async fn serve(
 
     tokio::select! {
         () = run_event_loop(mercury, event_rx, effect_tx) => {}
-        () = run_effect_loop(effect_rx, emitter, event_tx, title_tx) => {}
+        () = run_effect_loop(effect_rx, emitter, event_tx, title_tx, boot.window_sink) => {}
     }
     drop(interceptor); // hold the grab until here
 }
@@ -324,9 +326,10 @@ async fn run_effect_loop(
     emitter: Emitter,
     event_tx: UnboundedSender<MercuryEvent>,
     title_tx: std::sync::mpsc::Sender<&'static str>,
+    windows: Option<WindowSink>,
 ) {
     while let Some(effect) = effect_rx.recv().await {
-        if perform_effect(effect, &emitter, &event_tx, &title_tx).is_break() {
+        if perform_effect(effect, &emitter, &event_tx, &title_tx, windows.as_ref()).is_break() {
             break;
         }
     }
@@ -343,6 +346,7 @@ fn perform_effect(
     emitter: &Emitter,
     event_tx: &UnboundedSender<MercuryEvent>,
     title_tx: &std::sync::mpsc::Sender<&'static str>,
+    windows: Option<&WindowSink>,
 ) -> ControlFlow<()> {
     match effect {
         MercuryEffect::Foreground(app) => foreground_app(app),
@@ -354,7 +358,7 @@ fn perform_effect(
             Ok(()) => debug!(key = ?ke.key, press = ?ke.press, "emitted"),
             Err(e) => warn!(key = ?ke.key, press = ?ke.press, error = %e, "emit failed"),
         },
-        MercuryEffect::Place(placement) => place_window(placement),
+        MercuryEffect::SetFrame(target) => set_frame(windows, target),
         MercuryEffect::Copy(what) => copy(what),
         MercuryEffect::Kill => {
             info!("kill: exiting");
@@ -395,19 +399,18 @@ fn schedule_timer(timer: TimerEffect<MercuryEvent>, event_tx: &UnboundedSender<M
     });
 }
 
-/// Place the focused window, fire-and-forget on its own thread. It takes tens of
-/// milliseconds, which is long enough to delay a key the effect loop is about to
-/// emit. A detached thread cannot hold up the exit path the way `spawn_blocking`
-/// would, which is the same reason `foreground_app` uses one.
-fn place_window(placement: Placement) {
-    let placement = match placement {
-        Placement::Maximize => freddie_windows::Placement::Maximize,
-        Placement::LeftHalf => freddie_windows::Placement::LeftHalf,
-        Placement::RightHalf => freddie_windows::Placement::RightHalf,
+/// Set one window's frame, fire-and-forget on its own thread. It takes tens of
+/// milliseconds, which is long enough to delay a key the effect loop is about to emit. A
+/// detached thread cannot hold up the exit path the way `spawn_blocking` would, which is
+/// the same reason `foreground_app` uses one.
+fn set_frame(windows: Option<&WindowSink>, target: WindowFrame) {
+    let Some(windows) = windows.cloned() else {
+        debug!(?target, "no window sink: nothing to place through");
+        return;
     };
-    std::thread::spawn(move || match freddie_windows::place(placement) {
-        Ok(()) => debug!(?placement, "placed the window"),
-        Err(e) => warn!(?placement, error = %e, "place failed"),
+    std::thread::spawn(move || match windows.set_frame(target) {
+        Ok(()) => debug!(?target, "set the window's frame"),
+        Err(e) => warn!(?target, error = %e, "set frame failed"),
     });
 }
 

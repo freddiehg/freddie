@@ -51,7 +51,7 @@ mod model;
 mod sources;
 mod state;
 
-pub use effect::{Chord, Copied, MercuryEffect, Placement, UrlPart};
+pub use effect::{Chord, Copied, MercuryEffect, UrlPart};
 pub use external::{DEFAULT_PORT, on_message};
 pub use model::{MercuryEvent, MercuryStruct, MercuryTrigger};
 pub use sources::{

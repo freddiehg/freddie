@@ -3,16 +3,9 @@
 use freddie::TimerEffect;
 use freddie_keys::{Key, KeyEvent, KeyPress, ModifierFlags, PressType};
 
-use crate::MercuryEvent;
+use freddie_windows::WindowFrame;
 
-/// Where a window should go. Mercury's own, mirroring `freddie_windows::Placement` so the
-/// model stays free of the OS crates, the way `App` is free of bundle ids.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Placement {
-    Maximize,
-    LeftHalf,
-    RightHalf,
-}
+use crate::MercuryEvent;
 
 /// One key carrying its modifiers as flags, which is how Mercury spells a chord.
 ///
@@ -67,8 +60,11 @@ pub enum MercuryEffect {
     /// a key through, where the model sees a down and an up as separate events and re-emits
     /// each. Building a chord out of these is a bug waiting to happen; use [`Tap`](Self::Tap).
     Emit(KeyEvent),
-    /// Move and resize the focused window of the frontmost app.
-    Place(Placement),
+    /// Move and resize one window, named by id, to a rectangle already worked out.
+    ///
+    /// The sink does not ask what is frontmost, what is focused, or what the screen looks
+    /// like. The handler that produced this read all of it out of the model.
+    SetFrame(WindowFrame),
     /// Put text on the clipboard, replacing what is there.
     Copy(Copied),
     /// Quit the program. The effect handler performs this by exiting.

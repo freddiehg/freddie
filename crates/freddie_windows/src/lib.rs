@@ -1,18 +1,26 @@
-//! Placing the focused window of the frontmost app on screen.
+//! Watching the windows on screen, and moving them.
 //!
-//! [`place`] moves and resizes the focused window through the Accessibility API,
-//! which is the only way to set a window's frame: `CGWindow` can read geometry but
-//! not write it. It happens immediately, with no animation, in single-digit to low
-//! tens of milliseconds.
+//! The shape `freddie_app_nav` has: a source, a sink, and a seed.
 //!
-//! [`init`] must be called once, on the main thread, before [`place`]. It reads
-//! every monitor's frame, which is `AppKit` and therefore main-thread-bound, caches
-//! them, and registers an observer that re-reads them whenever the screen
-//! arrangement changes (a monitor plugged, unplugged, or rearranged). [`place`] runs
-//! off the main thread against that cache: it finds the monitor the focused window
-//! is on and places the window within that monitor's visible frame. So a window on a
-//! second display, or on a display connected after launch, still fills its own
-//! screen rather than the one the app started on.
+//! - [`watch`] is the source. One `AXObserver` per app reports windows opening, moving,
+//!   resizing, and closing, plus which one is focused; an `NSWorkspace` observer keeps that
+//!   set current as apps launch and quit, and a screen observer reports the monitors. Every
+//!   callback runs on the main thread, from its run loop.
+//! - [`WindowSink::set_frame`] is the sink. It moves and resizes one window, named by id, to
+//!   a rectangle the caller already worked out. It decides nothing: it does not ask what is
+//!   frontmost, what is focused, or what the screen looks like.
+//! - [`Snapshot`] is the seed, returned by [`watch`] alongside the [`Watcher`]. The observer
+//!   reports changes, and at startup nothing has changed yet, so the state a consumer starts
+//!   from comes back with the registration that will report every change after it.
+//!
+//! A window is named by [`WindowId`], its `CGWindowID`, which outlives any one
+//! `AXUIElement` for it. The crate keeps the mapping back to an element and nothing outside
+//! it ever sees one.
+//!
+//! Setting a frame goes through the Accessibility API, which is the only way to write one:
+//! `CGWindow` can read geometry but not write it. It is immediate, with no animation, and
+//! costs single-digit to low tens of milliseconds, so a caller on a latency-sensitive loop
+//! should hand it to another thread.
 //!
 //! Requires the Accessibility permission, the same one the keyboard tap needs.
 //!
@@ -23,7 +31,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::sync::{Arc, Mutex, Weak};
 
 use accessibility_sys::{
     AXError, AXIsProcessTrusted, AXObserverAddNotification, AXObserverCreate,
@@ -48,16 +56,9 @@ use objc2_app_kit::{
     NSWorkspace, NSWorkspaceApplicationKey, NSWorkspaceDidLaunchApplicationNotification,
     NSWorkspaceDidTerminateApplicationNotification,
 };
-use objc2_foundation::{MainThreadMarker, NSNotification, NSNotificationCenter};
-
-/// Where a window should end up, as a fraction of the screen's visible frame.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Placement {
-    /// The whole visible frame.
-    Maximize,
-    LeftHalf,
-    RightHalf,
-}
+use objc2_foundation::{
+    MainThreadMarker, NSNotification, NSNotificationCenter, NSNotificationName,
+};
 
 /// A running app, by process id. `pid_t` is an `i32`, and an `i32` is not a process.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -185,36 +186,13 @@ pub struct Monitor {
     pub visible: Frame,
 }
 
-impl Placement {
-    /// The frame this placement occupies within `visible`.
-    const fn within(self, visible: Frame) -> Frame {
-        let half = visible.width / 2.0;
-        match self {
-            Self::Maximize => visible,
-            Self::LeftHalf => Frame {
-                width: half,
-                ..visible
-            },
-            Self::RightHalf => Frame {
-                x: visible.x + half,
-                width: half,
-                ..visible
-            },
-        }
-    }
-}
-
 /// Placing a window failed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WindowError {
-    /// [`init`] was not called, or it failed.
-    NotInitialized,
-    /// [`init`] was called off the main thread.
+    /// [`watch`] was called off the main thread.
     NotMainThread,
     /// The Accessibility permission has not been granted.
     NotTrusted,
-    /// There is no screen to place a window on.
-    NoScreen,
     /// Nothing is frontmost, or the frontmost app has no focused window.
     NoFocusedWindow,
     /// Nothing with that id is being observed: the window closed, or it never reported an
@@ -227,10 +205,8 @@ pub enum WindowError {
 impl std::fmt::Display for WindowError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::NotInitialized => "freddie_windows::init was not called",
-            Self::NotMainThread => "freddie_windows::init must run on the main thread",
+            Self::NotMainThread => "freddie_windows::watch must run on the main thread",
             Self::NotTrusted => "Accessibility is not granted",
-            Self::NoScreen => "no screen",
             Self::NoFocusedWindow => "no focused window",
             Self::UnknownWindow => "no such window",
             Self::NotWatching => "not watching windows",
@@ -239,40 +215,6 @@ impl std::fmt::Display for WindowError {
 }
 
 impl std::error::Error for WindowError {}
-
-/// Every monitor's frames, in Accessibility coordinates. Read on the main thread by
-/// [`init`] and refreshed there by the screen-change observer; read off the main
-/// thread by [`place`].
-static MONITORS: RwLock<Vec<Monitor>> = RwLock::new(Vec::new());
-
-/// Reads every monitor's frames and caches them.
-///
-/// Also registers an observer that re-reads them when the screen arrangement
-/// changes, so [`place`] can run off the main thread against a cache that never goes
-/// stale. Must be called on the main thread: `NSScreen` is `AppKit`.
-///
-/// # Errors
-///
-/// [`WindowError::NotMainThread`] if called elsewhere, [`WindowError::NotTrusted`]
-/// if Accessibility has not been granted, and [`WindowError::NoScreen`] if there is
-/// no monitor at all.
-pub fn init() -> Result<(), WindowError> {
-    let mtm = MainThreadMarker::new().ok_or(WindowError::NotMainThread)?;
-
-    // SAFETY: a plain C predicate over process state; takes no arguments.
-    #[expect(unsafe_code)]
-    if !unsafe { AXIsProcessTrusted() } {
-        return Err(WindowError::NotTrusted);
-    }
-
-    let monitors = read_monitors(mtm);
-    if monitors.is_empty() {
-        return Err(WindowError::NoScreen);
-    }
-    store_monitors(monitors);
-    register_screen_change_observer();
-    Ok(())
-}
 
 /// Reads every monitor's full and visible frame, in Accessibility coordinates.
 ///
@@ -306,88 +248,6 @@ fn read_monitors(mtm: MainThreadMarker) -> Vec<Monitor> {
             visible: to_ax(screen.visibleFrame()),
         })
         .collect()
-}
-
-/// Replaces the cached monitors.
-fn store_monitors(monitors: Vec<Monitor>) {
-    tracing::debug!(
-        count = monitors.len(),
-        ?monitors,
-        "monitors, in accessibility coordinates"
-    );
-    if let Ok(mut guard) = MONITORS.write() {
-        *guard = monitors;
-    }
-}
-
-/// Registers an observer that re-reads the monitors when the screen arrangement
-/// changes.
-///
-/// Leaked on purpose: the observation lasts the whole process, and deregistering
-/// would only matter at shutdown, when the process is going away regardless.
-fn register_screen_change_observer() {
-    let block = RcBlock::new(|_notif: NonNull<NSNotification>| {
-        // Delivered on the main thread, so reading `NSScreen` here is sound.
-        if let Some(mtm) = MainThreadMarker::new() {
-            store_monitors(read_monitors(mtm));
-            tracing::debug!("re-read monitors after a screen-arrangement change");
-        }
-    });
-
-    // SAFETY: `NSApplicationDidChangeScreenParametersNotification` is an immutable
-    // extern static. The block captures nothing and is invoked on the main thread.
-    // The token and block are leaked so the observation lasts the process.
-    #[expect(unsafe_code)]
-    let token = unsafe {
-        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
-            Some(NSApplicationDidChangeScreenParametersNotification),
-            None,
-            None,
-            &block,
-        )
-    };
-    std::mem::forget(token);
-    std::mem::forget(block);
-}
-
-/// Move and resize the focused window of the frontmost app.
-///
-/// Immediate, with no animation. Costs single-digit to low tens of milliseconds,
-/// so a caller on a latency-sensitive loop should hand this to another thread.
-///
-/// # Errors
-///
-/// [`WindowError::NotInitialized`] if [`init`] has not run, and
-/// [`WindowError::NoFocusedWindow`] if nothing is frontmost or the frontmost app
-/// has no focused window.
-pub fn place(placement: Placement) -> Result<(), WindowError> {
-    let window = focused_window().ok_or(WindowError::NoFocusedWindow)?;
-
-    let monitor = monitor_for(window_frame(window)).ok_or(WindowError::NotInitialized)?;
-    let target = placement.within(monitor.visible);
-    set_frame(window, target);
-
-    let id = window_id(window);
-
-    // SAFETY: `focused_window` returned a +1 reference; this balances it.
-    #[expect(unsafe_code)]
-    unsafe {
-        CFRelease(window.cast());
-    }
-    tracing::debug!(?placement, ?target, ?id, "placed the focused window");
-    Ok(())
-}
-
-/// The monitor a window is on: the one whose full frame contains the window's top-left
-/// corner, or the first monitor if none does or the frame could not be read. `None` only
-/// if [`init`] never cached any monitor.
-fn monitor_for(frame: Option<Frame>) -> Option<Monitor> {
-    let monitors = MONITORS.read().ok()?.clone();
-    let first = *monitors.first()?;
-    let chosen = frame
-        .and_then(|f| monitors.iter().find(|m| m.full.contains(f.x, f.y)).copied())
-        .unwrap_or(first);
-    Some(chosen)
 }
 
 /// A +1 CoreFoundation reference, released when it drops.
@@ -577,46 +437,8 @@ fn set_frame(window: AXUIElementRef, frame: Frame) {
 }
 
 #[cfg(test)]
-// The frames here are halves of integers, exactly representable, so the
-// placements are exact and comparing them exactly is the point.
-#[expect(clippy::float_cmp)]
 mod tests {
-    use super::{Frame, Placement};
-
-    const SCREEN: Frame = Frame {
-        x: 0.0,
-        y: 25.0,
-        width: 1600.0,
-        height: 900.0,
-    };
-
-    #[test]
-    fn maximize_is_the_whole_visible_frame() {
-        assert_eq!(Placement::Maximize.within(SCREEN), SCREEN);
-    }
-
-    #[test]
-    fn the_halves_split_the_width_and_keep_the_height() {
-        let left = Placement::LeftHalf.within(SCREEN);
-        let right = Placement::RightHalf.within(SCREEN);
-
-        assert_eq!(left.x, SCREEN.x);
-        assert_eq!(right.x, SCREEN.x + SCREEN.width / 2.0);
-        assert_eq!(left.width, right.width);
-        assert_eq!(left.width + right.width, SCREEN.width);
-        assert_eq!(left.y, SCREEN.y);
-        assert_eq!(right.y, SCREEN.y);
-        assert_eq!(left.height, SCREEN.height);
-        assert_eq!(right.height, SCREEN.height);
-    }
-
-    /// The halves meet exactly, leaving no gap and no overlap.
-    #[test]
-    fn the_halves_abut() {
-        let left = Placement::LeftHalf.within(SCREEN);
-        let right = Placement::RightHalf.within(SCREEN);
-        assert_eq!(left.x + left.width, right.x);
-    }
+    use super::Frame;
 
     #[test]
     fn contains_is_half_open() {
@@ -655,19 +477,6 @@ mod tests {
         assert_eq!(pick(10.0, 10.0), Some(0));
         assert_eq!(pick(1700.0, 10.0), Some(1));
         assert_eq!(pick(3000.0, 10.0), None, "off both monitors");
-    }
-
-    /// An offset screen (a second display, or a dock on the left) is respected.
-    #[test]
-    fn placements_are_relative_to_the_visible_frame() {
-        let offset = Frame {
-            x: 1600.0,
-            y: 0.0,
-            width: 1000.0,
-            height: 800.0,
-        };
-        assert_eq!(Placement::LeftHalf.within(offset).x, 1600.0);
-        assert_eq!(Placement::RightHalf.within(offset).x, 2100.0);
     }
 }
 
@@ -989,25 +798,56 @@ fn forget_app(state: &WatcherState, pid: Pid) {
     }
 }
 
-/// The `NSWorkspace` observation that keeps the observed app set current. Dropping it
-/// deregisters, the same way `freddie_app_nav::Watcher` does.
-struct LaunchWatcher {
-    tokens: Vec<Retained<ProtocolObject<dyn NSObjectProtocol>>>,
-    _blocks: Vec<RcBlock<dyn Fn(NonNull<NSNotification>)>>,
+/// One registered notification observer, deregistered when it drops.
+///
+/// The center is held with the token because deregistering needs the same one that
+/// registered: app launches come from `NSWorkspace`'s center and screen changes from the
+/// default one.
+struct Observation {
+    center: Retained<NSNotificationCenter>,
+    token: Retained<ProtocolObject<dyn NSObjectProtocol>>,
+    /// Held so the callback outlives the observation. The center copies the block, but the
+    /// closure it wraps is ours to keep alive.
+    _block: RcBlock<dyn Fn(NonNull<NSNotification>)>,
 }
 
-impl Drop for LaunchWatcher {
+impl Drop for Observation {
     fn drop(&mut self) {
-        let center = NSWorkspace::sharedWorkspace().notificationCenter();
-        for token in &self.tokens {
-            let observer: &AnyObject = (**token).as_ref();
-            // SAFETY: each token is what `addObserverForName...` returned and is still
-            // registered, so this is the documented way to deregister it.
-            #[expect(unsafe_code)]
-            unsafe {
-                center.removeObserver(observer);
-            }
+        let observer: &AnyObject = (*self.token).as_ref();
+        // SAFETY: `token` is what `addObserverForName...` returned on `center` and is still
+        // registered, so this is the documented way to deregister it.
+        #[expect(unsafe_code)]
+        unsafe {
+            self.center.removeObserver(observer);
         }
+    }
+}
+
+/// Register `on_notification` for `name` on `center`.
+fn observe_notification(
+    center: &Retained<NSNotificationCenter>,
+    name: &NSNotificationName,
+    on_notification: impl Fn(&NSNotification) + 'static,
+) -> Observation {
+    let block = RcBlock::new(move |notif: NonNull<NSNotification>| {
+        // SAFETY: Foundation hands the block a valid notification, live for this call.
+        #[expect(unsafe_code)]
+        let notif = unsafe { notif.as_ref() };
+        on_notification(notif);
+    });
+
+    // SAFETY: `name` is an immutable extern static. The block is invoked on the main
+    // thread, which is where the state it captures lives, and `Observation` owns both the
+    // token and the block and deregisters before either is dropped.
+    #[expect(unsafe_code)]
+    let token = unsafe {
+        center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block)
+    };
+
+    Observation {
+        center: center.clone(),
+        token,
+        _block: block,
     }
 }
 
@@ -1025,12 +865,12 @@ fn notified_pid(notif: &NSNotification) -> Option<Pid> {
     Some(Pid(app.processIdentifier()))
 }
 
-/// Watch apps as they come and go, so a window opened in an app launched later is still
-/// reported.
-fn watch_launches(state: &Rc<WatcherState>) -> LaunchWatcher {
-    let center = NSWorkspace::sharedWorkspace().notificationCenter();
-    let mut tokens = Vec::new();
-    let mut blocks = Vec::new();
+/// Watch what the workspace and the screens do: apps coming and going, so a window opened
+/// in an app launched later is still reported, and the monitor arrangement changing.
+fn watch_notifications(state: &Rc<WatcherState>) -> Vec<Observation> {
+    let workspace = NSWorkspace::sharedWorkspace().notificationCenter();
+    let default = NSNotificationCenter::defaultCenter();
+    let mut observations = Vec::new();
 
     for (name, launched) in [
         // SAFETY: both are immutable extern statics AppKit initializes at startup.
@@ -1043,10 +883,7 @@ fn watch_launches(state: &Rc<WatcherState>) -> LaunchWatcher {
         ),
     ] {
         let state = Rc::downgrade(state);
-        let block = RcBlock::new(move |notif: NonNull<NSNotification>| {
-            // SAFETY: Foundation hands the block a valid notification, live for this call.
-            #[expect(unsafe_code)]
-            let notif = unsafe { notif.as_ref() };
+        observations.push(observe_notification(&workspace, name, move |notif| {
             let (Some(state), Some(pid)) = (state.upgrade(), notified_pid(notif)) else {
                 return;
             };
@@ -1055,23 +892,22 @@ fn watch_launches(state: &Rc<WatcherState>) -> LaunchWatcher {
             } else {
                 forget_app(&state, pid);
             }
-        });
+        }));
+    }
 
-        // SAFETY: `name` is an immutable extern static. The block is invoked on the main
-        // thread, which is where the `Rc` it captures lives, and the `LaunchWatcher` owns
-        // both the token and the block and deregisters before either is dropped.
-        #[expect(unsafe_code)]
-        let token = unsafe {
-            center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block)
+    let state = Rc::downgrade(state);
+    // SAFETY: an immutable extern static AppKit initializes at startup.
+    #[expect(unsafe_code)]
+    let screens = unsafe { NSApplicationDidChangeScreenParametersNotification };
+    observations.push(observe_notification(&default, screens, move |_| {
+        // Delivered on the main thread, so reading `NSScreen` here is sound.
+        let (Some(state), Some(mtm)) = (state.upgrade(), MainThreadMarker::new()) else {
+            return;
         };
-        tokens.push(token);
-        blocks.push(block);
-    }
+        state.report(WindowChange::Screens(read_monitors(mtm)));
+    }));
 
-    LaunchWatcher {
-        tokens,
-        _blocks: blocks,
-    }
+    observations
 }
 
 /// Holds every registration that makes windows report. While one of these is alive,
@@ -1084,10 +920,10 @@ fn watch_launches(state: &Rc<WatcherState>) -> LaunchWatcher {
 /// `!Send`, like `freddie_menu_bar`'s `MenuBar`: it holds main-thread-only state and stays
 /// on the thread that built it.
 pub struct Watcher {
-    /// The `NSWorkspace` observation that keeps `apps` current as apps launch and quit.
-    /// Held for its `Drop`, and declared first so it stops before the map it writes into is
-    /// torn down: fields drop in declaration order.
-    _launches: LaunchWatcher,
+    /// The workspace and screen observations. Held for their `Drop`, and declared first so
+    /// they stop before the state they write into is torn down: fields drop in declaration
+    /// order.
+    _notifications: Vec<Observation>,
     state: Rc<WatcherState>,
 }
 
@@ -1137,7 +973,7 @@ pub fn watch(
         on_change: Box::new(on_change),
     });
 
-    let launches = watch_launches(&state);
+    let notifications = watch_notifications(&state);
     for app in NSWorkspace::sharedWorkspace().runningApplications() {
         observe_app(&state, Pid(app.processIdentifier()));
     }
@@ -1170,7 +1006,7 @@ pub fn watch(
     );
     Ok((
         Watcher {
-            _launches: launches,
+            _notifications: notifications,
             state,
         },
         snapshot,
