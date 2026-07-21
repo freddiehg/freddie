@@ -617,7 +617,7 @@ unsafe extern "C" fn on_notification(
     // Comparisons rather than match arms: these constants are lowercase, and a lowercase
     // path in a pattern binds rather than matches the moment it stops resolving.
     if name == kAXWindowCreatedNotification {
-        observe_window(&state, registration.observer, element);
+        observe_window(&state, registration.observer, refcon, element);
     } else if name == kAXWindowMovedNotification || name == kAXWindowResizedNotification {
         if let (Some(window), Some(frame)) = (window_id(element), window_frame(element)) {
             let moved = WindowFrame { window, frame };
@@ -638,7 +638,16 @@ unsafe extern "C" fn on_notification(
 }
 
 /// Watch one window: record its element, subscribe to what it does, and report it open.
-fn observe_window(state: &WatcherState, observer: AXObserverRef, element: AXUIElementRef) {
+///
+/// `refcon` is the app's [`Registration`], the same one its own notifications carry: the
+/// callback dereferences it whatever fired, so a window registered without it would crash
+/// the first time it moved.
+fn observe_window(
+    state: &WatcherState,
+    observer: AXObserverRef,
+    refcon: *mut c_void,
+    element: AXUIElementRef,
+) {
     let Some(window) = window_id(element) else {
         return;
     };
@@ -659,7 +668,7 @@ fn observe_window(state: &WatcherState, observer: AXObserverRef, element: AXUIEl
         kAXWindowResizedNotification,
         kAXUIElementDestroyedNotification,
     ] {
-        add_notification(observer, element, notification, std::ptr::null_mut());
+        add_notification(observer, element, notification, refcon);
     }
 
     if let Ok(mut table) = state.elements.0.lock() {
@@ -749,7 +758,7 @@ fn observe_app(state: &Rc<WatcherState>, pid: Pid) {
     );
 
     for window in app_windows(app_element) {
-        observe_window(state, observer, window.raw());
+        observe_window(state, observer, refcon, window.raw());
     }
 }
 

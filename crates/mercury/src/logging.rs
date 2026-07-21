@@ -132,7 +132,32 @@ pub fn init(terminal: &Terminal<'_>) -> PathBuf {
     for problem in setup {
         warn!("mercury: {problem}");
     }
+    log_panics();
     dir.join(LOG_FILE)
+}
+
+/// Send panics through `tracing` instead of straight to stderr.
+///
+/// The default hook prints and nothing else, which for a detached daemon means the one
+/// record of why it died goes to a terminal nobody is attached to. Routed through
+/// `error!`, it reaches the log file like everything else, and a client verb still shows
+/// it because `error!` is what goes to a client's stderr.
+///
+/// The backtrace follows `RUST_BACKTRACE`, the way the default hook's does.
+fn log_panics() {
+    std::panic::set_hook(Box::new(|info| {
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_owned())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panicked".to_owned());
+        let location = info
+            .location()
+            .map_or_else(|| "unknown".to_owned(), ToString::to_string);
+        let backtrace = std::backtrace::Backtrace::capture();
+        tracing::error!(%location, %backtrace, "panic: {message}");
+    }));
 }
 
 /// What the terminal shows, which is not the same for the process that is the daemon
