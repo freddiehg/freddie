@@ -231,18 +231,20 @@ Observation owns its own state. The table of elements comes into existence when 
 Until Change 4 registers the observers the table stays empty, and the daemon does not call the sink yet.
 
 ```rust
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::rc::Rc;
+use std::sync::{Arc, RwLock, Weak};
+// `Weak` here is `sync::Weak`; `Registration` uses `rc::Weak`, and both appear below.
 
-/// A retained `AXUIElement` for one window, keyed by the id everything else names it by.
+/// A retained `AXUIElement` for one window.
 struct Element(AXUIElementRef);
 
 // SAFETY: an `AXUIElementRef` may be used from any thread; what must not happen twice is
-// the release, which only `Drop` does and only once. The table is genuinely shared: the
-// callbacks run on the main thread and a placement runs on the effect loop's own thread.
+// the release, which only `Drop` does and only once.
 #[expect(unsafe_code)]
 unsafe impl Send for Element {}
-// SAFETY: as above. Every access goes through the `RwLock` holding the table.
+// SAFETY: as above.
 #[expect(unsafe_code)]
 unsafe impl Sync for Element {}
 
@@ -256,20 +258,13 @@ impl Drop for Element {
     }
 }
 
-/// The observation itself: what is being watched, and where changes go.
+/// Every window that can be addressed, and the element to address it through.
 ///
-/// The [`Watcher`] holds the only [`Arc`] to this. Everything else holds a [`Weak`], so
-/// the observation ends when the watcher drops and nothing can keep it alive past that.
-struct Observed {
-    /// Every window that can be addressed, and the element to address it through.
-    elements: RwLock<HashMap<WindowId, Element>>,
-    /// One entry per observed app. Held here rather than on the [`Watcher`] because the
-    /// launch and terminate callbacks are `'static` closures that cannot borrow it.
-    apps: Mutex<HashMap<pid_t, AppObserver>>,
-    /// Where a change goes. Boxed rather than generic, so [`Registration`] is one type
-    /// whatever closure [`watch`] was handed.
-    on_change: Box<dyn Fn(WindowChange) + Send + Sync>,
-}
+/// The one thing observation shares across threads: the callbacks write it on the main
+/// thread, and a placement reads it on the effect loop's own thread. Everything else the
+/// watcher owns stays on the main thread and needs no lock.
+#[derive(Default)]
+struct Elements(RwLock<HashMap<WindowId, Arc<Element>>>);
 
 /// The handle a placement is performed through.
 ///
@@ -277,7 +272,7 @@ struct Observed {
 /// hands each placement to a thread of its own.
 #[derive(Clone)]
 pub struct WindowSink {
-    observed: Weak<Observed>,
+    elements: Weak<Elements>,
 }
 
 impl WindowSink {
@@ -295,12 +290,14 @@ impl WindowSink {
     /// [`WindowError::UnknownWindow`] if nothing with that id is being observed, which is
     /// the case for a window that has closed or that never reported an id.
     pub fn set_frame(&self, window: WindowId, frame: Frame) -> Result<(), WindowError> {
-        let observed = self.observed.upgrade().ok_or(WindowError::NotWatching)?;
-        let elements = observed
-            .elements
-            .read()
-            .map_err(|_| WindowError::UnknownWindow)?;
-        let element = elements.get(&window).ok_or(WindowError::UnknownWindow)?;
+        let elements = self.elements.upgrade().ok_or(WindowError::NotWatching)?;
+        // Cloned out so the lock is released before the set: the set costs tens of
+        // milliseconds, and the main thread takes the write lock every time a window opens
+        // or closes.
+        let element = {
+            let table = elements.0.read().map_err(|_| WindowError::UnknownWindow)?;
+            Arc::clone(table.get(&window).ok_or(WindowError::UnknownWindow)?)
+        };
         set_frame(element.0, frame);
         tracing::debug!(?window, ?frame, "set a window's frame");
         Ok(())
@@ -375,14 +372,29 @@ pub fn watch(on_change: impl Fn(WindowChange) + Send + Sync + 'static) -> Watche
 
 /// The live observation. Dropping it stops everything.
 ///
-/// It holds the only [`Arc<Observed>`](Observed), so dropping it drops `apps`, which
-/// releases every `AXObserver` and removes its run loop source. No `Drop` impl needed.
+/// It holds the only [`Rc<Observed>`](Observed), so dropping it drops `apps`, which
+/// releases every `AXObserver` and removes its run loop source, and drops the last
+/// [`Arc<Elements>`](Elements), which is how a [`WindowSink`] learns it is over. No
+/// `Drop` impl needed.
 pub struct Watcher {
     /// The `NSWorkspace` observation that keeps `apps` current as apps launch and quit.
     /// Held for its `Drop`, and declared first so it stops before the map it writes into
     /// is torn down: fields drop in declaration order.
     _launches: LaunchWatcher,
-    observed: Arc<Observed>,
+    observed: Rc<Observed>,
+}
+
+/// Everything observation owns.
+///
+/// Main thread only, so nothing here is locked: `watch`, the launch and terminate
+/// callbacks, and every `AXObserver` notification all run there. [`Elements`] is the one
+/// part a placement reaches from another thread, and it carries its own lock.
+struct Observed {
+    elements: Arc<Elements>,
+    /// One entry per observed app. Held here rather than on the [`Watcher`] because the
+    /// launch and terminate callbacks are `'static` closures that cannot borrow it.
+    apps: RefCell<HashMap<pid_t, AppObserver>>,
+    on_change: Box<dyn Fn(WindowChange)>,
 }
 
 impl Watcher {
@@ -391,7 +403,7 @@ impl Watcher {
     #[must_use]
     pub fn sink(&self) -> WindowSink {
         WindowSink {
-            observed: Arc::downgrade(&self.observed),
+            elements: Arc::downgrade(&self.observed.elements),
         }
     }
 }
@@ -404,22 +416,25 @@ struct AppObserver {
     registration: Box<Registration>,
 }
 
-/// What a notification callback needs: which app fired it, and the observation to report
-/// into. A C callback has this instead of a closure.
+/// What a notification callback needs: the observer to register a new window on, and the
+/// observation to report into. A C callback has this instead of a closure.
 ///
-/// [`Weak`], not [`Arc`]: [`Observed`] owns `apps`, an [`AppObserver`] owns its
-/// registration, so a strong reference here would be a cycle that never frees.
+/// `observer` is held rather than a pid, so a window created later is registered without
+/// going back through `apps`; nothing in the callback path touches that map.
+///
+/// [`Weak`](std::rc::Weak), not [`Rc`]: [`Observed`] owns `apps`, an [`AppObserver`] owns
+/// its registration, so a strong reference here would be a cycle that never frees.
 struct Registration {
-    pid: pid_t,
-    observed: Weak<Observed>,
+    observer: AXObserverRef,
+    observed: std::rc::Weak<Observed>,
 }
 ```
 
 The pieces behind `watch`:
 
-- `observe_app(&Arc<Observed>, pid)` builds the `Registration` holding a `Weak` back, calls `AXObserverCreate`, adds `kAXFocusedWindowChangedNotification` and `kAXWindowCreatedNotification` on the app element with that `refcon`, adds the source to `CFRunLoop::get_main()` under `kCFRunLoopDefaultMode`, inserts the `AppObserver` into `apps`, then walks `kAXWindowsAttribute` once and calls `observe_window` for each.
-- `observe_window(&Observed, pid, element)` reads the id, inserts a retained `Element` into `elements`, adds `kAXWindowMovedNotification`, `kAXWindowResizedNotification`, and `kAXUIElementDestroyedNotification` on the window element, and reports `Opened`.
-- The app set is kept current from `NSWorkspace`'s `didLaunchApplication` and `didTerminateApplication`, whose closures capture a `Weak<Observed>` for the same reason a `Registration` does, seeded from `runningApplications`. On terminate, the app's `AppObserver` is removed from `apps` and every `elements` entry for its windows is removed, each reported as `Closed`.
+- `observe_app(&Rc<Observed>, pid)` calls `AXObserverCreate`, builds the `Registration` holding that observer and a `Weak` back, adds `kAXFocusedWindowChangedNotification` and `kAXWindowCreatedNotification` on the app element with that `refcon`, adds the source to `CFRunLoop::get_main()` under `kCFRunLoopDefaultMode`, inserts the `AppObserver` into `apps`, then walks `kAXWindowsAttribute` once and calls `observe_window` for each.
+- `observe_window(&Observed, observer, element)` reads the id, inserts a retained `Element` into `elements`, adds `kAXWindowMovedNotification`, `kAXWindowResizedNotification`, and `kAXUIElementDestroyedNotification` on the window element, and reports `Opened`.
+- The app set is kept current from `NSWorkspace`'s `didLaunchApplication` and `didTerminateApplication`, whose closures capture an `rc::Weak<Observed>` for the same reason a `Registration` does, seeded from `runningApplications`. On terminate, the app's `AppObserver` is removed from `apps` and every `elements` entry for its windows is removed, each reported as `Closed`.
 - An app that refuses Accessibility, or has not finished launching, fails `AXObserverCreate`. That is logged at `debug` and the app is skipped: its windows are never reported and cannot be addressed, and every other app goes on being observed.
 
 The C callback dispatches on the notification name:
@@ -452,7 +467,7 @@ unsafe extern "C" fn on_notification(
     let name = unsafe { CFString::wrap_under_get_rule(notification) }.to_string();
 
     match name.as_str() {
-        kAXWindowCreatedNotification => observe_window(&observed, registration.pid, element),
+        kAXWindowCreatedNotification => observe_window(&observed, registration.observer, element),
         kAXWindowMovedNotification | kAXWindowResizedNotification => {
             if let (Some(window), Some(frame)) = (window_id(element), window_frame(element)) {
                 let moved = WindowFrame { window, frame };
