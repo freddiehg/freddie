@@ -109,8 +109,11 @@
   --docusaurus-highlighted-code-line-bg: rgb(var(--freddie-white-rgb) / 0.08);
 }
 
-.footer--dark {
-  --ifm-footer-background-color: var(--freddie-ink);
+/* The homepage bands alternate and the last one is plain, so the footer takes
+   the tinted turn and the run continues past the end of the page. */
+.footer {
+  --ifm-footer-background-color: var(--ifm-alt-background);
+  border-top: 1px solid var(--ifm-alt-background-border);
 }
 
 /* Yellow is too light to carry white text, so the primary button inverts. */
