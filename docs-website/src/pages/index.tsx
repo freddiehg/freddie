@@ -129,8 +129,8 @@ function BendIt() {
           <Doable title="Open any link, anywhere">
             Press a key and search everything on your screens. A link in Slack, or a button in some native app, or a tab in the browser.
           </Doable>
-          <Doable title="I heard it on my radio">
-            Incorporate events from any source. Read events over a websocket, or from a file, or from system APIs - such as which window took focus.
+          <Doable title="Incorporate any event">
+            Read events over a websocket, or from a file, or from system APIs - such as which window took focus.
           </Doable>
         </div>
       </div>
@@ -184,7 +184,7 @@ function Video() {
             <iframe
               width="100%"
               height="444"
-              src="https://www.youtube-nocookie.com/embed/3GWZ9yiskFk"
+              src="https://www.youtube-nocookie.com/embed/eM3wmsUWsbo"
               title="Placeholder video"
               allow="autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share"
               allowFullScreen
@@ -205,13 +205,14 @@ function DontStopMeNow() {
         <h2 className={styles.centeredHeading}>For programmers, by programmers</h2>
         <Prose>
           <p>
-            Other programs for remapping keys are great, but they tend to be configuration-driven, and that makes it difficult or impossible to handle unanticipated use cases.
+            Other programs for remapping keys are configuration-driven, and that makes it difficult or impossible to handle unanticipated use cases.
           </p>
           <p>
             Want to bind keys? That's fine, because these apps allow that. But, want your windows to go back where they belong the moment you connect to a monitor? You're out of luck — that's a device event, not a keybinding, and these apps don't allow you to incorporate arbitrary streams of events.
           </p>
+          <h3>That&rsquo;s a sign of a deeper problem</h3>
           <p>
-            And there's a deeper problem: want these keybindings to do different things in different states? Well, you'd better hope that the app exposed that aspect of the state to you. Different keybindings for different active apps? That's doable, because it's anticipated and allowlisted. But, what about custom mute/unmute keybindings for when you're in an active Google Meet call? Not possible.
+            Want these keybindings to do different things in different states? Well, you'd better hope that the app exposed that aspect of the state to you. Different keybindings for different active apps? That's doable, because it's anticipated and allowlisted. But, what about custom mute/unmute keybindings for when you're in an active Google Meet call? Not possible.
           </p>
           <p>
             And, in configuration-driven frameworks, you don't write functions, so your handlers don't get access to the state at all! Want one key that maximizes a window and, pressed again, puts it back exactly where it was? Then something has to remember the window's old position, in other words, it needs to be a function that is passed state.
