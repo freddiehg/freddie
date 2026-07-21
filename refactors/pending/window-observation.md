@@ -2,7 +2,7 @@
 
 `freddie_windows` becomes a source as well as a sink, the shape `freddie_app_nav` already has: [`watch`] reports what windows are doing, `WindowSink::set_frame` asks for a change, `Watcher::snapshot` seeds the initial state, and nothing ties a call to a report.
 
-Mercury's model ends up holding the windows: every window's id and frame, which one is focused, and the monitors. It is filled by events like `foreground` and the Chrome tab URL are, so dispatch reads no OS state and an effect carries everything it needs.
+Mercury's model ends up holding the windows: every window's id and frame, which one is focused, and the monitors. Events fill it, the way they fill `foreground` and the Chrome tab URL, so dispatch reads no OS state.
 
 Nothing consumes the table when this doc is done. `Place(Placement)` still works exactly as it does now. `refactors/pending/placement-in-the-model.md` is what makes the placement path use it, and `refactors/pending/window-restore.md` is what adds `r`.
 
@@ -15,7 +15,7 @@ Per app, one `AXObserver` on the application element, created when the app appea
 
 On each window element, added as the window is seen:
 
-- `kAXWindowMovedNotification` and `kAXWindowResizedNotification`, one variant each. A consumer that treats them alike collapses them itself, which is not a decision the crate gets to make on its behalf.
+- `kAXWindowMovedNotification` and `kAXWindowResizedNotification`, one variant each. A consumer that treats them alike collapses them itself.
 - `kAXUIElementDestroyedNotification`.
 
 An `AXObserver` gives a `CFRunLoopSource`. It is added to the main run loop, which `freddie_main_loop` is already inside, so a callback runs there exactly as `freddie_app_nav`'s does. Observation is per-pid and costs no thread and no poll.
@@ -26,7 +26,7 @@ An app that refuses Accessibility, or has not finished launching, fails `AXObser
 
 A window's identity is its `CGWindowID`. An `AXUIElementRef` is not it: elements are created per call and two for the same window are different pointers.
 
-`_AXUIElementGetWindow` is the only way across. It is private, exported by HIServices, and has been there since 10.x. A window whose id cannot be read produces no events, so a future removal of the symbol costs window observation and leaves the rest of the crate standing.
+`_AXUIElementGetWindow` is the only way across. It is private, exported by HIServices, and has been there since 10.x. A window whose id cannot be read produces no events.
 
 The crate keeps the reverse direction too: a table from `WindowId` to the retained element observing it. That is what makes `WindowSink::set_frame` a lookup into a table the observer already maintains rather than a walk of every app's `kAXWindowsAttribute`. It is also the only place that mapping exists, so the model and the effects speak `WindowId` alone.
 
@@ -287,8 +287,7 @@ impl WindowSink {
     /// caller on a latency-sensitive loop should hand this to another thread.
     ///
     /// The frame is the caller's, already worked out. This does not consult the screen,
-    /// the frontmost app, or anything else: it is the sink, and everything it needs is in
-    /// its arguments.
+    /// the frontmost app, or anything else.
     ///
     /// # Errors
     ///
@@ -376,10 +375,8 @@ pub fn watch(on_change: impl Fn(WindowChange) + Send + Sync + 'static) -> Watche
 
 /// The live observation. Dropping it stops everything.
 ///
-/// It holds the only [`Arc<Observed>`](Observed), so the drop cascades: `apps` goes,
-/// which releases every `AXObserver` and removes its run loop source, and every
-/// [`Registration`] and [`Element`] goes with them. There is no `Drop` impl, because
-/// there is nothing left for one to do.
+/// It holds the only [`Arc<Observed>`](Observed), so dropping it drops `apps`, which
+/// releases every `AXObserver` and removes its run loop source. No `Drop` impl needed.
 pub struct Watcher {
     /// The `NSWorkspace` observation that keeps `apps` current as apps launch and quit.
     /// Held for its `Drop`, and declared first so it stops before the map it writes into
@@ -408,7 +405,7 @@ struct AppObserver {
 }
 
 /// What a notification callback needs: which app fired it, and the observation to report
-/// into. This is what a C callback has instead of a closure.
+/// into. A C callback has this instead of a closure.
 ///
 /// [`Weak`], not [`Arc`]: [`Observed`] owns `apps`, an [`AppObserver`] owns its
 /// registration, so a strong reference here would be a cycle that never frees.
@@ -508,7 +505,7 @@ impl Watcher {
 }
 ```
 
-A method on [`Watcher`] rather than a free function, because there is nothing to snapshot until observation has started: it reads `observed.elements` for the windows, which `watch` filled while registering. The focus comes from the frontmost app's `kAXFocusedWindowAttribute` and the screens from `read_monitors`. Having to hold a `Watcher` to call it is what replaces documenting that `watch` comes first.
+A method on [`Watcher`], because there is nothing to snapshot until observation has started. It reads `observed.elements` for the windows, which `watch` filled while registering, the frontmost app's `kAXFocusedWindowAttribute` for the focus, and `read_monitors` for the screens.
 
 # Change 6: the model holds the windows
 

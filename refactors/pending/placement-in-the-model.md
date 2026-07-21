@@ -32,11 +32,9 @@ pub enum Placement {
 Added to `crates/mercury/src/handlers/resize.rs`:
 
 ```rust
-/// Where a window goes, as a share of the screen it is on.
+/// Where a window goes, as a share of the screen it is on. One variant per resize key.
 ///
-/// The three resize keys are the three variants. It is not an effect payload: a handler
-/// turns it into the rectangle the effect carries, so nothing downstream has to know what
-/// "maximize" means.
+/// Not an effect payload: a handler turns it into the rectangle the effect carries.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Placement {
     /// The whole visible frame.
@@ -83,9 +81,8 @@ After:
 ```rust
     /// Move and resize one window, named by id, to a rectangle already worked out.
     ///
-    /// Everything the sink needs is here: it does not ask what is frontmost, what is
-    /// focused, or what the screen looks like. Whoever produced this knew all of that,
-    /// because the model does.
+    /// The sink does not ask what is frontmost, what is focused, or what the screen looks
+    /// like. The handler that produced this read all of it out of the model.
     SetFrame(WindowFrame),
 ```
 
@@ -118,9 +115,8 @@ with `left_half` and `right_half` the same shape, and the one function they shar
 ```rust
 /// Put the focused window where `placement` says, and return home.
 ///
-/// The effects are empty when there is no focused window, or no screen has been reported:
-/// there is nothing to place and nowhere to put it. The layer still returns home, because
-/// the key was a choice and it was made.
+/// The effects are empty when there is no focused window or no screen has been reported.
+/// The layer returns home either way.
 fn place<'a, P: Ascend<MercuryPath<'a>>>(path: P, placement: Placement) -> Vec<MercuryEffect> {
     let root = path.ascend();
     let effects = match target(&root.windows, placement) {
@@ -166,8 +162,7 @@ pub(crate) fn and_go_home<'a, P: Ascend<MercuryPath<'a>>>(
     and_go_home_from(path.ascend(), effects)
 }
 
-/// [`and_go_home`] for a caller that has already ascended, which a handler that read the
-/// root's state to build its effects has.
+/// [`and_go_home`] for a caller that has already ascended.
 pub(crate) fn and_go_home_from(
     root: &mut Mercury,
     effects: impl Into<Vec<MercuryEffect>>,
@@ -184,7 +179,7 @@ pub(crate) fn and_go_home_from(
 
 `MONITORS` goes with them. It is a cache of main-thread-only `NSScreen` data that exists because `place` runs off the main thread, and `place` is its only reader; the model holds `screens` now, so the model is the cache. `read_monitors` stays as a plain function, called by the screen-change observer to build a `Screens` report and by `Watcher::snapshot` for the seed.
 
-`init` is left holding the Accessibility check and the no-screen check, which is small enough that it folds into `watch`. So `freddie_windows` ends up with no statics at all: everything observation needs belongs to the `Watcher`, and everything a placement needs arrives in its arguments.
+`init` is left holding the Accessibility check and the no-screen check, small enough to fold into `watch`. `freddie_windows` ends up with no statics.
 
 `crates/mercury/src/daemon.rs`:
 
