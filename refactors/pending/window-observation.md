@@ -514,6 +514,8 @@ unsafe extern "C" fn on_notification(
 
 `kAXUIElementDestroyedNotification` fires for elements that are not windows, and for a destroyed window the id may already be unreadable. Both come out as no `WindowId` and no report, which is why the app-terminated path also forgets an app's windows: an app quitting is the reliable end of its windows.
 
+A frame that cannot be read produces no report either, which is the same shape and a different consequence. `window_frame` returns `None` when an app is unresponsive or the window is on its way out, and the model keeps whatever frame it last heard about. A stale frame means the next placement picks the monitor the window used to be on, and a restore goes back to a frame measured before the drift. The next move or resize resyncs it, and nothing accumulates. Retrying the read inside the callback is the wrong fix: it runs on the main thread, and an app that will not answer is exactly the one that would stall it.
+
 The screen-change observer that `init` registers belongs to the watcher too: the registration moves into `watch`, and the callback reports `Screens` as well as refreshing `MONITORS`.
 
 `MONITORS` outlives this doc and not the next one. It is a cache of main-thread-only `NSScreen` data for `place`, which runs off the main thread, and `place` is the only thing that reads it. `refactors/pending/placement-in-the-model.md` deletes `place` and puts `screens` in the model, at which point the static has no reader and goes with it, leaving `read_monitors` as a plain function the observer and [`Watcher::snapshot`] call.
