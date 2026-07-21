@@ -17,4 +17,12 @@ sidebar_position: 7
 - `freddie_single_instance`: the lock that keeps one mercury running.
 - `mercury`: the application.
 
-TODO: say which of these are platform-specific and which a non-macOS freddie program would still use.
+The split is between the crates that name a platform API and the ones that do not.
+
+`bind`, `bind_macro`, `derive_support`, `laserbeam`, `freddie_keys` and freddie itself name none. They depend on `syn`, `quote`, `tokio`'s sync primitives, and each other, and a freddie program on another OS keeps every one of them unchanged. `freddie_event_socket` is `tokio` and `tokio-tungstenite`, so it travels too, and `freddie_single_instance` already picks its lock directory per OS, with macOS, Windows and other-unix arms.
+
+`freddie_app_nav`, `freddie_main_loop`, `freddie_overlay` and `freddie_windows` are macOS and nothing else: `objc2` and AppKit, plus the Accessibility API for window placement. Each relaxes the workspace's `forbid(unsafe_code)` to `deny` for that reason, and allows the calls one at a time with a SAFETY comment at each site. `freddie_menu_bar` sits on `tray-icon`, which has backends beyond this one, but the contract it documents (create it on the main thread, after `NSApp` exists) is macOS's.
+
+`freddie_keyboard` is the one whose shape says the platform is meant to move. It has a `sys` module holding a single backend behind `#[cfg(target_os = "macos")]`, `core-graphics` gated to that target in its manifest, and a `compile_error!` for anything else. `Emitter`, `Interceptor` and `intercept` are the three names a second backend would have to supply.
+
+A non-macOS freddie program keeps the model, the derives, the paths and the keys, and rewrites the crates that talk to the window server.

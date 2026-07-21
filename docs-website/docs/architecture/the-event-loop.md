@@ -5,7 +5,26 @@ sidebar_position: 2
 
 # The Event Loop
 
-TODO: the setup side of a freddie program — subscribing the sources, the select that feeds one queue, one event dispatched per iteration, and the effect loop that follows.
+The setup side of a freddie program is ordinary code, and it is the same few steps every time.
+
+Subscribe each source, handing it a callback that does one thing: turn what arrived into a variant of the program's event enum and send it into one queue. Sources push, and nothing polls. A keyboard tap, an app watcher and a signal handler each run wherever the OS puts them, and the queue is where they meet.
+
+Drain that queue one event at a time. An iteration takes one event and hands it to `state.handle(&event)`, which dispatches it, mutates the state through the path the winning handler was given, and returns the effects that handler asked for. One thread owns the state and is the only one that calls `handle`, so nothing guards it.
+
+Then perform the effects, in the order dispatch produced them, which is why a modifier reaches the OS before the key carrying its flag. An effect that touches the world is performed here and never inside a handler. An effect with a result does not return it: the result arrives later as its own event, from whichever source observes it, which is why foregrounding an app and seeing it come up are two separate things to the model.
+
+The loop is small enough to read at once:
+
+```rust
+while let Some(event) = event_rx.recv().await {
+    let effects = state.handle(&event).unwrap_or_default();
+    for effect in effects {
+        let _ = effect_tx.send(effect);
+    }
+}
+```
+
+`handle` returns `None` when nothing on the active path bound the event, and that is the ordinary case rather than an error: a program subscribes to every event it may ever want, not to the ones its current state happens to bind. The effect loop is the second consumer, reading the effect channel and performing one effect per iteration until one of them says to stop. The two run together under a `select!`, so `Kill` ending the effect loop ends the program.
 
 ## Prior art
 
@@ -19,6 +38,6 @@ freddie's event loop follows two existing systems. [`isograph`](https://github.c
 - Creates the initial state.
 - Puts up the menu bar item.
 - Grabs the keyboard, which swallows every key and hands it to the model as an event. The grab also hands back an emitter, which is how keys get back out.
-- Subscribes to the other sources: the frontmost app, the event socket on `127.0.0.1:3883`, and SIGTERM.
+- Subscribes to the other sources: the frontmost app, external events, and SIGTERM.
 - For each event, calls `state.handle(event)`, which gives back a vector of effects.
 - For each effect, performs it.

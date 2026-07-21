@@ -30,4 +30,8 @@ When dispatch reaches `AppLayer`, it calls `app_data`, which walks up to the roo
 
 ## Persistence
 
-TODO: what happens to state held on a derived level between events.
+Nothing on a derived level survives the event. `app_data` runs again on the next dispatch, the derive moves what it returned into the `Node { parent, data }` the handler is given, and that node is dropped when dispatch returns. A handler that writes to `node.data` writes to a value with an event's lifetime.
+
+A derived level may have a `#[resolve_into]` child of its own, which gets a real path and a real `get_mut` and projects into that data. That compiles, and it is a legitimate program, and what it writes dies at the same moment, at any depth and through any number of projections.
+
+So there is one question, with two answers and no third. Data that has to survive the event is a field in the tree, reached with `#[resolve_into]`, and whoever holds it owns keeping it current. Data that has to be fresh is built by a derived child fn and owns nothing, which is how the frontmost app is read from the root on every dispatch, and how switching tabs changes what the site layer binds with no event of its own.

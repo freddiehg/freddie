@@ -9,7 +9,7 @@ const sidebars: SidebarsConfig = {
     'adding-an-effect',
     {
       type: 'category',
-      label: 'Architecture',
+      label: 'Architecture and Best Practices',
       items: [
         'architecture/index',
         'architecture/the-event-loop',
@@ -17,6 +17,8 @@ const sidebars: SidebarsConfig = {
         'architecture/dispatch-and-precedence',
         'architecture/typed-paths',
         'architecture/virtual-fields',
+        'architecture/timers',
+        'architecture/testing',
         'architecture/the-crates',
       ],
     },

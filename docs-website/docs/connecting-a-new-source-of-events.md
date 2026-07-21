@@ -17,11 +17,23 @@ pub enum MercuryEvent {
 }
 ```
 
-Adding a source is adding a variant and the triggers that read it. Nothing that binds a key has to hear about it.
+Adding a source is three things: the event, the trigger that reads it, and the subscription that produces it. Nothing that binds a key has to hear about any of them.
 
-## Triggers
+## The event
 
-A trigger answers one question: does this event run this handler? It names the variant it reads and says what matching means:
+An event is a plain struct carrying what the source knows and nothing else:
+
+```rust
+pub struct ForegroundEvent {
+    pub app: App,
+}
+```
+
+Then a variant on the enum. That variant is what `TryFrom` narrows on during dispatch, so the enum is the only place every source is listed together.
+
+## The trigger
+
+A trigger answers one question: does this event run this handler? It names the variant it reads and says what matching means.
 
 ```rust
 pub trait EventTrigger {
@@ -30,28 +42,72 @@ pub trait EventTrigger {
 }
 ```
 
-Dispatch narrows the event to `&Self::Event` first, with a `TryFrom`, and asks `is_matching` only if that succeeded. So a key binding never sees a tab event: the narrowing fails, the binding is skipped, and the trigger never runs.
+The simplest one matches every event of its kind:
 
-## Subscribing a new source
+```rust
+pub struct Foregrounded;
 
-TODO: show the setup side — where in `mercury daemon` a stream gets subscribed, how its items are turned into the event enum, and how it joins the other sources in the select.
+impl EventTrigger for Foregrounded {
+    type Event = ForegroundEvent;
+    fn is_matching(&self, _ev: &ForegroundEvent) -> bool {
+        true
+    }
+}
+```
 
-## Writing the trigger
+Dispatch narrows the event to `Self::Event` with a `TryFrom` before it asks `is_matching`. So a key binding never sees a foreground event: the narrowing fails, the binding is skipped, and the trigger is never consulted. That is why adding a variant does not disturb the bindings already written.
 
-TODO: implement `EventTrigger` for the new event, including the `TryFrom` that narrows to it.
+Keys are the interesting case, because several triggers read the same event and differ in how much of it they look at. `Key::KeyR` matches that key on either press with any modifiers held. `Key::KeyR.down()` matches the direction too. `Key::KeyL.down().with(ModifierFlags::COMMAND)` matches the modifiers exactly, which is why Chrome binds `l`, `shift-l` and `cmd-l` as three separate chords rather than one key.
 
-## Trigger closures
+Where the trigger and the event are the same thing, `self_trigger!` writes the impl:
 
-A trigger does not have to be a constant. It can be a closure over the state its node is bound on:
+```rust
+pub struct Quit;
+
+bind::self_trigger!(Quit);
+```
+
+`Quit` carries nothing and means one thing, so there is no matching left to do.
+
+## The subscription
+
+The daemon owns the streams. Each one turns its items into the enum and sends them down a single channel, and the loop takes one event at a time off the other end.
+
+```rust
+freddie_app_nav::watch(move |bundle_id| {
+    let app = App::from_bundle_id(&bundle_id);
+    let _ = event_tx.send(MercuryEvent::Foreground(ForegroundEvent { app }));
+});
+```
+
+A source that has to run to completion gets a task rather than a callback. SIGTERM is the one that does, because a `select!` arm that completed would drop the other futures and skip the shutdown it exists to run:
+
+```rust
+tokio::spawn(async move {
+    if term.recv().await.is_some() {
+        let _ = event_tx.send(quit_event());
+    }
+});
+```
+
+Sources may also be seeded rather than waited for. The model starts knowing which app is frontmost, so the in-app layer resolves correctly before the first foreground event arrives:
+
+```rust
+mercury.foreground.set_front_app(
+    freddie_app_nav::frontmost()
+        .map_or(App::Other, |id| App::from_bundle_id(&id)),
+);
+```
+
+## Handling it
+
+A binding for the new event goes wherever it is true, the same as a key. An event that keeps a piece of root state current binds at the root, and its handler returns no effect:
 
 ```rust
 #[bind(
-    |path| path.get().home_timeout.trigger() => to_home,
+    Foregrounded => record_front_app,
 )]
+pub struct Mercury { /* ... */ }
 ```
 
-Every timer fires the same `MercuryEvent::Timer`, so the event alone cannot say which one went off. The layer holds the guard for the timer it set, and that guard's `trigger()` matches its own firing and nothing else. The closure is handed a shared reference, so a trigger reads state and cannot write it.
-
-## The event socket
-
-TODO: the loopback WebSocket on `127.0.0.1:3883`, the frame format, and how the Chrome extension uses it.
+That is the usual shape for a source: the event updates state, and the bindings that care about that state were written somewhere else entirely.

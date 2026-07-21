@@ -27,9 +27,11 @@ mercury restart   # replace the running one
 mercury stop      # end it through the model
 mercury status    # report the running one and its pid
 mercury logs      # follow the log
-mercury install   # start mercury at login
-mercury uninstall # stop doing so
+mercury install   # optional: start mercury at login
+mercury uninstall # optional: stop doing so
 ```
+
+`install` and `uninstall` are optional. Nothing else needs them: `mercury` runs the same either way, and the only thing `install` changes is that macOS starts one for you at login instead of you typing `mercury`.
 
 ## Watching what it does
 
@@ -58,16 +60,6 @@ The **site** layer, `s` from home or from inapp, binds keys per site, and needs 
 In the **resize** layer, `r` from home, `up` maximizes the focused window, `right` takes the right half, and `left` the left half.
 
 The menu bar item shows the current layer and offers a quit option. If you iterate your way into an unresponsive keyboard, that is how you get out.
-
-## Where a binding leaves you
-
-Every binding decides which layer it ends in, and the decision follows from what you are expected to do next.
-
-- Something you would plausibly do again right away stays in the layer. Walking tmux's windows and refreshing Chrome both repeat, so they stay put.
-- Something that is a choice rather than a repetition leaves. Placing a window and jumping to a numbered tmux window are each one decision, so they go home. Nav's app-choosers leave too, into the inapp layer.
-- Anything followed by typing lands in the typing layer. Chrome's `l` focuses the address bar and claude.ai's `n` opens a prompt box, so both end there. A command layer would have swallowed whatever you typed next.
-
-Adding a binding means answering this question. One that does not answer it is unfinished.
 
 ## Next
 

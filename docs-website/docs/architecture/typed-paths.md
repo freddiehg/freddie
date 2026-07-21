@@ -34,4 +34,26 @@ A handler that needs more than its own level climbs. `node.parent.into_parent()`
 
 ## How the path is built
 
-TODO: what the derive generates, and how a `Path` type relates to the struct it addresses.
+Each node names its parent, and the derive turns that into the node's path type:
+
+```rust
+#[derive(Bind, Debug)]
+#[node(parent = LayerPath)]
+pub struct NavLayer {
+    pub(crate) home_timeout: TimerGuard,
+}
+```
+
+`#[derive(Bind)]` emits `impl Place for NavLayer`, whose `Path<'a>` is `PathMut<NavLayer, LayerPath<'a>>`. The root says `#[node(root)]` instead, and its path is `&'a mut Mercury`, because there is nothing above it to project out of. The aliases chain by hand in the state module, one line per level:
+
+```rust
+pub type MercuryPath<'a> = &'a mut Mercury;
+pub type LayerPath<'a> = PathMut<Layer, MercuryPath<'a>>;
+pub type AppLayerPath<'a> = PathMut<AppLayer, LayerPath<'a>>;
+```
+
+A path type therefore spells out the whole route from the root, and a handler's parameter type says where in the tree the binding sits.
+
+A `PathMut` is not a reference to the node it addresses. It owns the parent and a pair of projections, one `&mut Parent -> &mut Node` and one `&Parent -> &Node`, and re-derives the node each time you call `get_mut` or `get`. The parent's own `dispatch` builds it on the way down with `PathMut::from_fn`: a `#[resolve_into]` field projects to that field, an enum projects through whichever variant is active.
+
+Re-deriving is what keeps the borrows honest. `get_mut` borrows the whole path, so exactly one `&mut` is live at a time, and `into_parent` consumes the path, so the leaf cannot be held across the climb. `laserbeam` pins both with doctests that are required not to compile.

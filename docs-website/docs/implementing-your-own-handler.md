@@ -7,128 +7,119 @@ sidebar_position: 3
 
 A binding is a trigger and the handler it runs, written on the level where it applies.
 
-## A worked example
+## The simplest one there is
 
-Say we want a volume layer, where `up` and `down` change the volume and the layer remembers what it set it to. The volume lives on the layer, because that is the only place it is used:
+`mercury`'s nav layer foregrounds apps. `c` goes to Chrome, `g` goes to Ghostty. The bindings are a list on the layer they belong to:
 
 ```rust
 #[derive(Bind, Debug)]
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
-    Key::UpArrow.down() => louder,
-    Key::DownArrow.down() => quieter,
+    Key::KeyC.down() => open_chrome,
+    Key::KeyG.down() => open_ghostty,
 )]
-pub struct VolumeLayer {
-    volume: u8,
-}
+pub struct NavLayer {}
 ```
 
-And the handler:
+And a handler is a function:
 
 ```rust
-fn louder<'a>(_ev: &KeyEvent, node: Node<VolumeLayerPath<'a>, ()>) -> MercuryEffect {
-    let layer: &mut VolumeLayer = node.parent.get_mut();
-    layer.volume = layer.volume + 10;
-    MercuryEffect::SetVolume(layer.volume)
+fn open_chrome<'a>(
+    _ev: &KeyEvent,
+    _node: Node<NavLayerPath<'a>, ()>,
+) -> MercuryEffect {
+    MercuryEffect::Foreground(App::Chrome)
 }
 ```
 
-`node.parent` is the path to the level the binding was written on, so `get_mut` hands back this layer, unconditionally. There is no question of whether the volume layer is the active one: `louder` runs because it was, and the path is what says so.
+That is the whole thing. It reads neither the event nor the state, because it does not need to: it only runs when `c` went down in the nav layer, and dispatch already established both of those before calling it.
+
+## One that uses state
+
+Handlers that need state are handed a path to the level they were bound on. Say the resize layer, where `up` maximizes the focused window and `r` puts it back where it was. Where it was has to be remembered, so it lives on the root:
+
+```rust
+pub struct Mercury {
+    /// The focused window and where it sits.
+    focused: Option<(WindowId, Frame)>,
+    /// Where each window was before we moved it.
+    prior_locations: HashMap<WindowId, Frame>,
+
+    #[resolve_into]
+    layer: Layer,
+}
+```
+
+Maximizing writes it down:
+
+```rust
+fn maximize<'a>(
+    _ev: &KeyEvent,
+    node: Node<ResizeLayerPath<'a>, ()>,
+) -> Option<MercuryEffect> {
+    let root: &mut Mercury = node.parent.ascend();
+
+    let (id, frame) = root.focused?;
+    // Only the first maximize records anything. A second one
+    // finds the entry already there and leaves it alone, so
+    // `r` still goes back to where the window started.
+    root.prior_locations.entry(id).or_insert(frame);
+
+    Some(MercuryEffect::Place(Placement::Maximize))
+}
+```
+
+And restoring reads it back:
+
+```rust
+fn restore<'a>(
+    _ev: &KeyEvent,
+    node: Node<ResizeLayerPath<'a>, ()>,
+) -> Option<MercuryEffect> {
+    let root: &mut Mercury = node.parent.ascend();
+
+    let (id, _) = root.focused?;
+    let frame = root.prior_locations.remove(&id)?;
+
+    Some(MercuryEffect::Place(Placement::Exactly(frame)))
+}
+```
+
+`node.parent` is the path to the level the binding was written on, and `ascend` climbs from it to the root. There is no checking whether resize is the active layer, and no `unreachable!` for the case where it is not. `restore` runs because it was, and the path is what says so. A state a binding cannot be reached in is not an arm that panics, it is a value the handler is never handed.
+
+`remove` rather than a lookup, because restoring forgets: press `r` twice and the second press does nothing rather than placing the window again.
 
 ## What a handler returns
 
-`louder` asks for one thing, so it returns one thing. `Bindings::Output` is what dispatch returns, and for `mercury` that is still `Vec<MercuryEffect>`. A handler returns anything that is `Into` the output, and dispatch converts it.
+Return whatever suits the handler. `open_chrome` has exactly one effect, so it returns one. `restore` either has one or has none, so it returns an `Option`. A handler with several returns a `Vec`.
 
 ```rust
-/// One effect, returned bare.
-pub(crate) const fn refresh<E, N>(_ev: &E, _node: N) -> MercuryEffect {
-    tap(Key::KeyR, ModifierFlags::COMMAND)
-}
-
-/// Several, returned as the vector.
-pub(crate) fn replay(presses: Vec<KeyPress>) -> Vec<MercuryEffect> {
-    // ...
-}
+fn open_chrome(..) -> MercuryEffect          // always one
+fn restore(..) -> Option<MercuryEffect>      // one or none
+fn quit(..) -> Vec<MercuryEffect>            // several
 ```
 
-The conversion is the program's, not the framework's:
-
-```rust
-impl From<MercuryEffect> for Vec<MercuryEffect> {
-    fn from(effect: MercuryEffect) -> Self {
-        vec![effect]
-    }
-}
-```
-
-So the set of things a handler may return is something you extend. Writing `From<Option<MercuryEffect>>` lets a handler decline to produce one, and `From<()>` covers the handlers that only mutate state.
-
-## Climbing to a parent
-
-TODO: `node.parent.into_parent()` reaches the `Layer` above, and one more reaches the root `&mut Mercury`. Show `esc` setting the layer back to home from wherever it was pressed.
+Dispatch converts whatever comes back into the one type it hands the effect loop. Which return types are legal is a decision `mercury` makes rather than one freddie imposes, so if you want a new one you add it.
 
 ## Choosing the level to bind on
 
-TODO: explain how precedence works between a layer's bindings and the root's, and where to put a binding that should apply everywhere.
+Bind on the deepest level where the binding is true.
 
-## Testing a handler
+Levels nest, and dispatch walks them from the deepest outwards, taking the first handler whose trigger matches. So `r` bound on `ResizeLayer` beats `r` bound on `Mercury`, and the root's binding never runs while resize is active.
 
-`state.handle` takes state and event and returns the updated state and the effects. It performs none of them, so a test is a function call and an `assert_eq!`. There is no keyboard to drive, no daemon to start, and nothing to mock.
+That ordering is what lets a level be specific without every other level knowing about it:
 
-```rust
-#[test]
-fn home_n_enters_nav() {
-    let mut m = home();
-    assert_eq!(
-        m.handle(&key(Key::KeyN)),
-        Some(vec![shows("Nav"), return_home_timer()])
-    );
-    assert!(matches!(m.layer(), Layer::Nav(_)));
-}
-```
+- A key that only means something in one layer goes on that layer. `c` opening Chrome makes no sense outside nav, so it lives on `NavLayer` and nothing else has to exclude it.
+- A key that means the same thing everywhere goes on the root. `esc` returning home is bound once, and every layer inherits it by not overriding it.
+- A key that means one thing in most places and something else in one place is bound on both. The specific level wins wherever it applies, and the general one covers the rest.
 
-Three things are asserted, and the third is the one people forget:
+The root is also where the last resort goes. `AnyKey` matches every key event there is, and sits at the root so that anything no layer claimed still has somewhere to land: in the typing layer, that is what passes your keystrokes through.
 
-- The event was handled at all. `handle` returns `Option`, and `None` means no binding claimed it.
-- The exact effects, in order. Not that a `ShowLayer` appeared somewhere, but that these two came back and nothing else did.
-- The resulting state. `n` from home leaves you in nav, and a binding that produced the right effects while landing in the wrong layer is still wrong.
+## What happens next
 
-### Where a test starts
+Every binding decides which layer it ends in, and the decision follows from what you are expected to do next.
 
-Tests build the state they mean to exercise rather than pressing keys to get there:
-
-```rust
-// A mercury in Home, the command layer. The default is Typing (passthrough), but most
-// per-event tests exercise Home's command bindings, so they start here.
-fn home() -> Mercury {
-    Mercury::with_layer(Layer::Home(HomeLayer {}))
-}
-```
-
-A test that walks in from the typing layer is testing the walk as well as the binding, and fails for two reasons instead of one.
-
-### Timers
-
-A timer effect mints an id, so a test cannot write the id it expects. It rebuilds the effect and compares:
-
-```rust
-fn return_home_timer() -> MercuryEffect {
-    let (_guard, effect) = freddie::timer_effect_and_guard(RETURN_TO_HOME_TIMEOUT, fired);
-    MercuryEffect::Timer(effect)
-}
-```
-
-Under the `testing` feature, equality on a timer effect compares the delay and the event it will fire, not the id. To assert on a firing, read the id back off the effect that set it, since nothing else can know it.
-
-### The standard
-
-The standard for the model is exhaustive: every key in every reachable state, asserting exactly what dispatch produces. Because the model is a pure function of state and event, the full table is checkable, and it doubles as documentation of the keymap. `crates/mercury/tests/transitions.rs` holds 87 of these today, which is not the whole table. A new binding extends toward it rather than testing only the happy path.
-
-### Driving the loop
-
-The per-event tests above call `handle` directly. When a test needs several events to feed each other, it drives a `bind::SimpleRunner`, which records the effects and, for a `Foreground` effect, reports the app back the way the OS watcher would.
-
-## Where the binding leaves you
-
-TODO: `and_go_home`, `to_typing`, and staying in the layer, and how to pick.
+- Something you would plausibly do again right away stays put. Walking tmux's windows and refreshing a page both repeat, so they stay in the layer.
+- Something that is a choice rather than a repetition leaves. Placing a window is one decision, so it goes home.
+- Anything followed by typing lands in the typing layer. Chrome's `l` focuses the address bar, so it ends there. A command layer would have swallowed whatever you typed next.

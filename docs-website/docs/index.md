@@ -16,19 +16,23 @@ Want to ensure that when you connect a specific microphone, Wispr Flow uses that
 
 Example events include: this key was pressed, this app was foregrounded, this browser tab became active, this external device connected. Example effects include: emit this key, foreground this app, resize this window, run this arbitrary code. A program built on freddie is the central place where the decision of how to respond to an event is made.
 
-## Why not Karabiner, why not Hammerspoon?
+## freddie and `mercury`
 
-Karabiner and the other remappers are excellent programs, but they are configuration-driven, and that bounds what they can express. You can bind keys differently based on which app is foregrounded, but not on which Chrome tab is active or which devices are connected. So you either smuggle state through unused keypresses, bind everything everywhere and sort it out in the handler, or reach for an external program like Hammerspoon. All three spread the configuration out and make the overall state hard to reason about.
+freddie is a library. It has no keybindings, no opinion about what a layer is, and nothing to run. What it gives you is the machinery: a way to declare state, bind triggers to handlers on it, and dispatch an event through that state to the handler it selects.
 
-With freddie, you fork the repository, make the changes you want, and run `cargo build` to get a new binary. You respond to whatever events you want, you manage state however you choose, and your handlers receive that state.
+`mercury` is a program written with that library, and it lives in this repository. Its layers, its keymap, its event enum and its effect enum are all its own. None of it is freddie's, and none of it is a default you inherit.
 
-That costs more than a config file for very simple cases. It wins for the complicated ones, and LLMs make writing the program a lot cheaper than it used to be.
+So there are two things you can read here, and they answer different questions:
 
-## `mercury`
+| | freddie | `mercury` |
+| --- | --- | --- |
+| What it is | the library | one program using it |
+| Decides | how dispatch works | what your keys do |
+| You use it by | depending on it | forking it, or ignoring it |
 
-This repository ships one program built on freddie, called `mercury`. It is macOS-only and it is the working example: read it, run it, study it, fork it, modify it. You should not expect it to fit your use case.
+`mercury` is macOS-only and requires accessibility permissions. It exists to be read, run, studied, forked, and modified. **You should not expect its bindings to suit you.** They are one person's, and the point of the exercise is that yours are yours.
 
-[Getting Started with Mercury](./getting-started-with-mercury.md) walks through installing and driving it.
+Reading it is still the fastest way to learn freddie, because every freddie concept appears in it somewhere concrete. That is why the pages that follow teach with `mercury`'s code rather than with invented examples.
 
 ## Where to go next
 
@@ -36,5 +40,5 @@ This repository ships one program built on freddie, called `mercury`. It is macO
 - [Implementing Your Own Handler](./implementing-your-own-handler.md) writes the first binding.
 - [Connecting a New Source of Events](./connecting-a-new-source-of-events.md) adds a new event.
 - [Adding an Effect](./adding-an-effect.md) adds a new thing the program can do.
-- [Architecture](./architecture/index.md) explains how dispatch works.
+- [Architecture and Best Practices](./architecture/index.md) explains how dispatch works and how to test it.
 - [Interacting with macOS](./interacting-with-macos/index.md) covers the platform layer.
