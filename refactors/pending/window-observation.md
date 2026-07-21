@@ -661,7 +661,24 @@ The root binding, beside `Foregrounded`:
     Windowed => record_windows,
 ```
 
-The daemon wires the source beside the `freddie_app_nav::watch` call, seeds the model from the `Snapshot` that comes back with the watcher, and drains placements on every pass of the main loop:
+The daemon builds the watcher on the main thread, between the event channel and the worker spawn, because a `Watcher` is `!Send` and `drain` runs in the main loop:
+
+```rust
+    let (event_tx, event_rx) = unbounded_channel::<MercuryEvent>();
+
+    // Window observation, here rather than in `serve`: the `Watcher` is `!Send`, and
+    // `drain` runs on this thread. The worker gets the snapshot as data and a `WindowSink`
+    // to ask for placements through.
+    let (windows, snapshot) = freddie_windows::watch({
+        let event_tx = event_tx.clone();
+        move |change| {
+            let _ = event_tx.send(window(change));
+        }
+    });
+    let window_sink = windows.sink();
+```
+
+The worker takes `snapshot` and `window_sink` alongside what it takes today, and seeds the model from the snapshot before its first dispatch.
 
 ```rust
     main_loop.run(|| {
@@ -673,6 +690,10 @@ The daemon wires the source beside the `freddie_app_nav::watch` call, seeds the 
 ```
 
 `drain` is what performs a placement, so nothing moves without it. `WindowSink::set_frame` wakes the run loop, which is what gets this called promptly rather than at the end of the current 100ms slice.
+
+Nothing can arrive out of order across that seam. A notification is delivered by running the run loop, and the run loop does not run until `main_loop.run`, which is after the worker already holds the snapshot. So the snapshot is the state before any reported change, and every change reported after it is genuinely later.
+
+`freddie_windows::init` is called just above this today. It folds into `watch`, per `refactors/pending/placement-in-the-model.md`.
 
 Tests in `crates/mercury/tests/transitions.rs`, over `Windows::record`:
 
