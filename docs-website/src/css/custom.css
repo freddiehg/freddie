@@ -139,7 +139,7 @@
 code {
   vertical-align: baseline;
   position: relative;
-  top: -0.05em;
+  top: -0.025em;
 }
 
 /* Word wrap in all code blocks */
