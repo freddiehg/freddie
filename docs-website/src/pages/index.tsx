@@ -5,21 +5,45 @@ import type { ReactNode } from 'react';
 import HomepageHeader from '../components/Header';
 import styles from './index.module.css';
 
+const stateExample = `pub struct Mercury {
+    /// The focused window and where it sits, as the window events report it.
+    focused: Option<(WindowId, Frame)>,
+    /// Where each window goes back to, and \`None\` once it is back there.
+    restore: HashMap<WindowId, Option<Frame>>,
+
+    #[resolve_into]
+    layer: Layer,
+}`;
+
 const bindingExample = `#[derive(Bind, Debug)]
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
-    Key::UpArrow.down() => louder,
-    Key::DownArrow.down() => quieter,
+    Key::UpArrow.down() => maximize,
+    Key::KeyR.down() => restore,
 )]
-pub struct VolumeLayer {
-    volume: u8,
+pub struct ResizeLayer {}`;
+
+const maximizeExample = `fn maximize<'a>(_ev: &KeyEvent, node: Node<ResizeLayerPath<'a>, ()>) -> Option<MercuryEffect> {
+    // ResizeLayer -> Layer -> Mercury, where the frames are kept.
+    let root: &mut Mercury = node.parent.parent().parent().get_mut();
+
+    let (id, frame) = root.focused?;
+    // Only the first maximize records anything. A second one in a row finds
+    // the entry already there and leaves it alone, so \`r\` still goes back to
+    // where the window started rather than to the maximized frame.
+    root.restore.entry(id).or_insert(Some(frame));
+
+    Some(MercuryEffect::Place(Placement::Maximize))
 }`;
 
-const handlerExample = `fn louder<'a>(_ev: &KeyEvent, node: Node<VolumeLayerPath<'a>, ()>) -> MercuryEffect {
-    let layer: &mut VolumeLayer = node.parent.get_mut();
-    layer.volume = layer.volume + 10;
-    MercuryEffect::SetVolume(layer.volume)
+const handlerExample = `fn restore<'a>(_ev: &KeyEvent, node: Node<ResizeLayerPath<'a>, ()>) -> Option<MercuryEffect> {
+    let root: &mut Mercury = node.parent.parent().parent().get_mut();
+
+    let (id, _) = root.focused?;
+    let frame = root.restore.get_mut(&id)?.take()?;
+
+    Some(MercuryEffect::Place(Placement::Exactly(frame)))
 }`;
 
 function Prose({ children }: { children: ReactNode }) {
@@ -100,19 +124,16 @@ function DontStopMeNow() {
             Other programs for remapping keys are great, but they tend to be configuration-driven, and that makes it difficult or impossible to handle unanticipated use cases.
           </p>
           <p>
-            Want to bind different keys depending on which app is foregrounded? That's fine, because these programs tend to expose "the current foregrounded app" to you. But, want to bind keys based on what tab is active in Chrome? You can't incorporate arbitrary events, so you're out of luck. Want a binding that only exists while your good microphone is plugged in, or one that changes the moment you dock and the second monitor wakes up? Same answer.
+            Want to bind keys? That's fine, because these apps allow that. But, want your windows to go back where they belong the moment you connect to a monitor? You're out of luck — that's a device event, not a keybinding, and these apps don't allow you to incorporate arbitrary streams of events.
           </p>
           <p>
-            And there's a deeper problem: in other frameworks, your handlers never get access to the state. Want one key that maximizes a window and, pressed again, puts it back exactly where it was? Then something has to remember the window's old position. So, that's something that's impossible . In freddie the state is a struct you declared, so the handler reads the old rectangle out of it and writes the new one back.
+            And there's a deeper problem: want these keybindings to do different things in different states? Well, you'd better hope that the app exposed that aspect of the state to you. Different keybindings for different active apps? That's doable, because it's anticipated and allowlisted. But, what about custom mute/unmute keybindings for when you're in an active Google Meet call? Not possible.
           </p>
           <p>
-            arbitrary effect
+            And, in configuration-driven frameworks, you don't write functions, so your handlers don't get access to the state at all! Want one key that maximizes a window and, pressed again, puts it back exactly where it was? Then something has to remember the window's old position, in other words, it needs to be a function that is passed state.
           </p>
           <p>
-            cargo build
-          </p>
-          <p>
-            tradeoff
+            Now, more folks are willing to write configuration than to write and compile a Rust program. But guess what — freddie isn't for everyone. So, if you're willing to clone a repo, make some changes and run cargo build, freddie is here to give you incredible power. (And if you're not? Just ask an LLM to do it!)
           </p>
         </Prose>
       </div>
@@ -125,14 +146,25 @@ function BindingSection() {
     <section className="alt-background">
       <div className="container">
         <div className="kicker">It&rsquo;s a kind of magic</div>
-        <h2 className={styles.centeredHeading}>Guaranteed to blow your mind</h2>
+        <h2 className={styles.centeredHeading}>Great DevEx for complicated use cases</h2>
         <Prose>
           <p>
-            A binding is a trigger and the handler it runs, written on the level
-            where it applies. Say we want a volume layer, where <code>up</code>{' '}
-            and <code>down</code> change the volume and the layer remembers what
-            it set it to. The volume lives on the layer, because that is the only
-            place it is used:
+            The value of using a programming language and compiling our own program becomes apparent when we move beyond simple examples. Here, we'll build something that is impossible (or at least, awkward) in any other framework: the ability to maximize windows, and the ability to restore them to their previous location.
+          </p>
+          <p>
+            First, we add the appropriate pieces of state onto our root struct:
+          </p>
+        </Prose>
+        <Prose>
+          <div className={styles.codeBlockWrap}>
+            <CodeBlock language="rust">{stateExample}</CodeBlock>
+          </div>
+        </Prose>
+        <Prose>
+          <p>
+            A binding is a trigger and the handler it runs, written on the layer
+            where it applies. Up maximizes the focused window, and{' '}
+            <code>r</code> puts it back.
           </p>
         </Prose>
         <Prose>
@@ -141,7 +173,15 @@ function BindingSection() {
           </div>
         </Prose>
         <Prose>
-          <p>And the handler:</p>
+          <p>Maximizing writes down where the window was:</p>
+        </Prose>
+        <Prose>
+          <div className={styles.codeBlockWrap}>
+            <CodeBlock language="rust">{maximizeExample}</CodeBlock>
+          </div>
+        </Prose>
+        <Prose>
+          <p>And restoring reads it back out:</p>
         </Prose>
         <Prose>
           <div className={styles.codeBlockWrap}>
@@ -150,28 +190,29 @@ function BindingSection() {
         </Prose>
         <Prose>
           <p>
-            <code>node.parent</code> is the path to the level the binding was
-            written on, so <code>get_mut</code> hands back this layer,
-            unconditionally. There is no question of whether the volume layer is
-            the active one. <code>louder</code> runs because it was, and the path
-            is what says so. A state a binding cannot be reached in is not an arm
-            that panics, it is a value the handler is never handed.
+            <code>node.parent</code> is the path to the layer the binding was
+            written on, and climbing it reaches the root. There is no checking
+            whether resize is the active layer. <code>restore</code> runs because
+            it was, and the path is what says so. A state a binding cannot be
+            reached in is not an arm that panics, it is a value the handler is
+            never handed.
           </p>
           <p>
-            That is most of what the developer experience amounts to: the derive
-            writes the dispatch, and the types carry what dispatch already worked
-            out so your handler never re-derives it. A trigger that reads key
-            events cannot be hung on a tab event, because the narrowing is a{' '}
-            <code>TryFrom</code> that fails to compile rather than a branch that
-            fails at three in the morning.
+            It is <code>get_mut</code> rather than <code>get</code> because{' '}
+            <code>take</code> is the point: restoring forgets the frame, so a
+            second <code>r</code> does nothing instead of placing the window
+            twice. And the return type is whatever suits the handler. This one
+            has an effect or it has none, so it says so, and dispatch converts.
           </p>
           <p>
-            The loop is short too. <code>bacon restart</code> rebuilds and
-            replaces the running daemon, so an edited binding is live without you
-            touching a window, and <code>mercury logs</code> prints one record per
-            dispatched event carrying the event, the effects it produced, and the
-            resulting state. When something is bound wrong, the log already says
-            what happened.
+            The rest is the compiler. The derive writes the dispatch, and a
+            trigger that reads key events cannot be hung on a tab event, because
+            the narrowing is a <code>TryFrom</code> that fails to build rather
+            than a branch that fails at three in the morning. When you do get a
+            binding wrong, <code>bacon restart</code> has the daemon replaced
+            before you have switched windows, and <code>mercury logs</code> has
+            already printed the event, the effects it produced, and the state it
+            left behind.
           </p>
         </Prose>
       </div>
