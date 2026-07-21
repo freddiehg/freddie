@@ -96,9 +96,39 @@ function Prose({ children }: { children: ReactNode }) {
   );
 }
 
-function Features() {
+function Doable({ title }: { title: string }) {
+  return (
+    <div className="col col--4">
+      <h3 className={styles.doableTitle}>{title}</h3>
+      <img className={styles.doableImage} src="/img/placeholder.svg" alt="" />
+    </div>
+  );
+}
+
+function BendIt() {
   return (
     <section>
+      <div className="container">
+        <div className="kicker">It&rsquo;s your computer</div>
+        <h2 className={styles.centeredHeading}>Bend it to your will</h2>
+        <div className="row">
+          <Doable title="Mute yourself without hunting for the button" />
+          <Doable title="Clone the repo you’re looking at" />
+          <Doable title="Snap a window to half the screen, and back again" />
+        </div>
+        <div className="row">
+          <Doable title="Put every window back where it belongs when you dock" />
+          <Doable title="New chat, cursor already in the box" />
+          <Doable title="Copy a URL without the tracking junk" />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function Features() {
+  return (
+    <section className="alt-background">
       <div className="container">
         <div className="kicker">It&rsquo;s simple</div>
         <h2 className={styles.centeredHeading}>Events in, effects out</h2>
@@ -133,7 +163,7 @@ function Features() {
 
 function Video() {
   return (
-    <section className="alt-background">
+    <section>
       <div className="container">
         <div className="kicker">It&rsquo;s worth a look</div>
         <h2 className={styles.centeredHeading}>See it running</h2>
@@ -157,7 +187,7 @@ function Video() {
 
 function DontStopMeNow() {
   return (
-    <section>
+    <section className="alt-background">
       <div className="container">
         <div className="kicker">It&rsquo;s powerful</div>
         <h2 className={styles.centeredHeading}>For programmers, by programmers</h2>
@@ -185,7 +215,7 @@ function DontStopMeNow() {
 
 function BindingSection() {
   return (
-    <section className="alt-background">
+    <section>
       <div className="container">
         <div className="kicker">It&rsquo;s a kind of magic</div>
         <h2 className={styles.centeredHeading}>Handle complexity with ease</h2>
@@ -277,7 +307,7 @@ function BindingSection() {
 
 function Mercury() {
   return (
-    <section>
+    <section className="alt-background">
       <div className="container">
         <div className="kicker">It&rsquo;s ready for you</div>
         <h2 className={styles.centeredHeading}>Give mercury a try</h2>
@@ -324,7 +354,7 @@ function Mercury() {
 
 function AreYouReady() {
   return (
-    <section className="alt-background">
+    <section>
       <div className="container">
         <div className="kicker">It&rsquo;s time</div>
         <h2 className={styles.centeredHeading}>Are you ready, Freddie?</h2>
@@ -349,6 +379,7 @@ export default function Home(): ReactNode {
     >
       <HomepageHeader />
       <main>
+        <BendIt />
         <Features />
         <Video />
         <DontStopMeNow />
