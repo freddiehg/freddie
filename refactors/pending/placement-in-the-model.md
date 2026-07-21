@@ -170,7 +170,7 @@ pub(crate) fn and_go_home_from(
 
 `crates/freddie_windows/src/lib.rs` loses `place`, `monitor_for`, and `focused_window`, all of which existed to work out what the model now works out. `WindowSink::set_frame` from `refactors/pending/window-observation.md` is the whole sink.
 
-`MONITORS` goes with them. It is a cache of main-thread-only `NSScreen` data that exists because `place` runs off the main thread, and `place` is its only reader; the model holds `screens` now, so the model is the cache. `read_monitors` stays as a plain function, called by the screen-change observer to build a `Screens` report and by `Watcher::snapshot` for the seed.
+`MONITORS` goes with them. It is a cache of main-thread-only `NSScreen` data that exists because `place` runs off the main thread, and `place` is its only reader; the model holds `screens` now, so the model is the cache. `read_monitors` stays as a plain function, called by the screen-change observer to build a `Screens` report and by `watch` for the seed.
 
 `init` is left holding the Accessibility check and the no-screen check, small enough to fold into `watch`. `freddie_windows` ends up with no statics.
 

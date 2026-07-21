@@ -1,6 +1,6 @@
 # Window observation
 
-`freddie_windows` becomes a source as well as a sink, the shape `freddie_app_nav` already has: [`watch`] reports what windows are doing, `WindowSink::set_frame` asks for a change, `Watcher::snapshot` seeds the initial state, and nothing ties a call to a report.
+`freddie_windows` becomes a source as well as a sink, the shape `freddie_app_nav` already has: [`watch`] reports what windows are doing and hands back the starting state, `WindowSink::set_frame` asks for a change, and nothing ties a call to a report.
 
 Mercury's model ends up holding the windows: every window's id and frame, which one is focused, and the monitors. Events fill it, the way they fill `foreground` and the Chrome tab URL, so dispatch reads no OS state.
 
@@ -389,10 +389,15 @@ pub struct WindowFrame {
 /// so it must hand its work elsewhere and return. Sending on a channel is the intended
 /// body, which is what the daemon does.
 ///
+/// The [`Snapshot`] comes back with the watcher rather than from a second call, so no
+/// caller can let a report land between reading the starting state and using it. A
+/// `Moved` arriving before a snapshot taken after it would overwrite the newer frame with
+/// the older one.
+///
 /// Dropping the [`Watcher`] releases every observer and stops the reports. A
 /// [`WindowSink`] taken from it goes on existing and answers
 /// [`WindowError::NotWatching`].
-pub fn watch(on_change: impl Fn(WindowChange) + Send + Sync + 'static) -> Watcher {
+pub fn watch(on_change: impl Fn(WindowChange) + Send + Sync + 'static) -> (Watcher, Snapshot) {
     ...
 }
 
@@ -534,11 +539,11 @@ A frame that cannot be read produces no report either, which is the same shape a
 
 The screen-change observer that `init` registers belongs to the watcher too: the registration moves into `watch`, and the callback reports `Screens` as well as refreshing `MONITORS`.
 
-`MONITORS` outlives this doc and not the next one. It is a cache of main-thread-only `NSScreen` data for `place`, which runs off the main thread, and `place` is the only thing that reads it. `refactors/pending/placement-in-the-model.md` deletes `place` and puts `screens` in the model, at which point the static has no reader and goes with it, leaving `read_monitors` as a plain function the observer and [`Watcher::snapshot`] call.
+`MONITORS` outlives this doc and not the next one. It is a cache of main-thread-only `NSScreen` data for `place`, which runs off the main thread, and `place` is the only thing that reads it. `refactors/pending/placement-in-the-model.md` deletes `place` and puts `screens` in the model, at which point the static has no reader and goes with it, leaving `read_monitors` as a plain function the observer and [`watch`] call.
 
 # Change 5: the seed
 
-The model starts empty and the observer only reports changes, so nothing would tell it about the windows that were already open. `snapshot` is the analogue of `freddie_app_nav::frontmost`: good for seeding, and for nothing else.
+The model starts empty and the observer only reports changes, so nothing would tell it about the windows that were already open. The [`Snapshot`] `watch` returns is what does, and it is the analogue of `freddie_app_nav::frontmost`: the starting state, read once.
 
 ```rust
 /// Every window open right now, which one is focused, and the monitors.
@@ -552,13 +557,11 @@ pub struct Snapshot {
     pub screens: Vec<Monitor>,
 }
 
-impl Watcher {
-    #[must_use]
-    pub fn snapshot(&self) -> Snapshot { ... }
-}
 ```
 
-A method on [`Watcher`], because there is nothing to snapshot until observation has started. It reads `observed.elements` for the windows, which `watch` filled while registering, the frontmost app's `kAXFocusedWindowAttribute` for the focus, and `read_monitors` for the screens.
+Built inside [`watch`], after the observers are registered and before it returns, so there is no moment when a caller holds a watcher and not a snapshot. It reads `observed.elements` for the windows, which registering just filled, the frontmost app's `kAXFocusedWindowAttribute` for the focus, and `read_monitors` for the screens.
+
+That focus read is the one place this crate asks the OS a question outside a callback. It is the starting value the observer cannot report, because the observer reports changes and none has happened yet.
 
 # Change 6: the model holds the windows
 
@@ -658,7 +661,7 @@ The root binding, beside `Foregrounded`:
     Windowed => record_windows,
 ```
 
-The daemon wires the source beside the `freddie_app_nav::watch` call, seeds from `Watcher::snapshot` after registering, and drains placements on every pass of the main loop:
+The daemon wires the source beside the `freddie_app_nav::watch` call, seeds the model from the `Snapshot` that comes back with the watcher, and drains placements on every pass of the main loop:
 
 ```rust
     main_loop.run(|| {
