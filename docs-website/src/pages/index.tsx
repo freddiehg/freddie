@@ -8,8 +8,8 @@ import styles from './index.module.css';
 const stateExample = `pub struct Mercury {
     /// The focused window and where it sits, as the window events report it.
     focused: Option<(WindowId, Frame)>,
-    /// Where each window goes back to, and \`None\` once it is back there.
-    restore: HashMap<WindowId, Option<Frame>>,
+    /// Where each window was before we moved it.
+    prior_locations: HashMap<WindowId, Frame>,
 
     #[resolve_into]
     layer: Layer,
@@ -32,7 +32,7 @@ const maximizeExample = `fn maximize<'a>(_ev: &KeyEvent, node: Node<ResizeLayerP
     // Only the first maximize records anything. A second one in a row finds
     // the entry already there and leaves it alone, so \`r\` still goes back to
     // where the window started rather than to the maximized frame.
-    root.restore.entry(id).or_insert(Some(frame));
+    root.prior_locations.entry(id).or_insert(frame);
 
     Some(MercuryEffect::Place(Placement::Maximize))
 }`;
@@ -41,9 +41,27 @@ const handlerExample = `fn restore<'a>(_ev: &KeyEvent, node: Node<ResizeLayerPat
     let root: &mut Mercury = node.parent.parent().parent().get_mut();
 
     let (id, _) = root.focused?;
-    let frame = root.restore.get_mut(&id)?.take()?;
+    let frame = root.prior_locations.remove(&id)?;
 
     Some(MercuryEffect::Place(Placement::Exactly(frame)))
+}`;
+
+const eventExample = `pub enum MercuryEvent {
+    Key(KeyEvent),
+    Foreground(ForegroundEvent),
+    Timer(TimerFired),
+    /// Which window is focused and where it sits. New.
+    Window(WindowFocused),
+}`;
+
+const trackExample = `#[bind(
+    AnyWindowFocused => track_focus,
+)]
+pub struct MercuryStruct;
+
+fn track_focus(ev: &WindowFocused, node: Node<MercuryPath, ()>) -> Option<MercuryEffect> {
+    node.parent.get_mut().focused = Some((ev.window, ev.frame));
+    None
 }`;
 
 function Prose({ children }: { children: ReactNode }) {
@@ -190,29 +208,7 @@ function BindingSection() {
         </Prose>
         <Prose>
           <p>
-            <code>node.parent</code> is the path to the layer the binding was
-            written on, and climbing it reaches the root. There is no checking
-            whether resize is the active layer. <code>restore</code> runs because
-            it was, and the path is what says so. A state a binding cannot be
-            reached in is not an arm that panics, it is a value the handler is
-            never handed.
-          </p>
-          <p>
-            It is <code>get_mut</code> rather than <code>get</code> because{' '}
-            <code>take</code> is the point: restoring forgets the frame, so a
-            second <code>r</code> does nothing instead of placing the window
-            twice. And the return type is whatever suits the handler. This one
-            has an effect or it has none, so it says so, and dispatch converts.
-          </p>
-          <p>
-            The rest is the compiler. The derive writes the dispatch, and a
-            trigger that reads key events cannot be hung on a tab event, because
-            the narrowing is a <code>TryFrom</code> that fails to build rather
-            than a branch that fails at three in the morning. When you do get a
-            binding wrong, <code>bacon restart</code> has the daemon replaced
-            before you have switched windows, and <code>mercury logs</code> has
-            already printed the event, the effects it produced, and the state it
-            left behind.
+            Amazing! And, simple, even. We wrote handlers that accessed and mutated the state, and emitted effects that did the right thing. But wait — how did that <code>focused</code> and <code>restore</code> state get populated? We have to hook that up ourselves, too:
           </p>
         </Prose>
       </div>
