@@ -49,9 +49,13 @@ The doc comment on [`show`] gains the constraint that follows from a global hand
 /// first one's, and dropping either clears it. Build one and hold it.
 ```
 
-# Change 2: the overlay is a handle, not a thread-local
+# Change 2: the overlay's storage is reachable only through a handle
 
-`freddie_overlay` keeps its panel in a `thread_local!` and exposes free `show` and `hide`. `freddie_menu_bar` next door does the same job — a main-thread-only AppKit object with a lifetime — through a handle it returns.
+`freddie_overlay` exposes free `show` and `hide`, so calling them before anything built the panel is representable, and nothing says when the panel goes away. `freddie_menu_bar` next door answers both with a handle it returns.
+
+The `thread_local!` stays. It is what lets a block dispatched to the main queue reach the panel: the closure must be `'static` and `Send`, so it cannot carry an `NSPanel`, and it finds one already on main instead. That dispatch is also what makes the overlay appear immediately — the main queue is drained from inside `nextEventMatchingMask_untilDate`, without waiting for it to return.
+
+So the storage is not the problem; being able to reach it without proving it exists is. It becomes private, and a handle only [`overlay`] can mint is what reaches it.
 
 `crates/freddie_overlay/src/lib.rs`, before:
 
@@ -70,89 +74,96 @@ pub fn hide() { ... }
 After:
 
 ```rust
-/// The overlay panel. Holding it keeps the panel available; dropping it takes it down.
-///
-/// `!Send`, like `freddie_menu_bar`'s `MenuBar`: an `NSPanel` belongs to the main thread
-/// that built it.
-pub struct Overlay {
+thread_local! {
+    /// The panel and its label, on the main thread, reachable from a dispatched block.
+    ///
+    /// Private, and only an [`Overlay`] can reach it: a block dispatched to the main queue
+    /// has to be `'static` and `Send`, so it cannot carry an `NSPanel` and finds one here
+    /// instead. `None` before [`overlay`] builds it and after the handle drops.
+    static PANEL: RefCell<Option<Panel>> = const { RefCell::new(None) };
+}
+
+struct Panel {
     panel: Retained<NSPanel>,
     label: Retained<NSTextField>,
 }
 
-/// Build the overlay panel, hidden. Main thread only.
+/// The overlay. Holding it is what makes [`show`](Overlay::show) reach a panel.
+///
+/// `!Send`: it stands for main-thread-only state, and dropping it has to take that state
+/// down on the thread that built it.
+pub struct Overlay {
+    _main_thread_only: PhantomData<*const ()>,
+}
+
+/// Build the overlay panel, hidden, and return the handle that drives it.
 ///
 /// # Panics
 ///
 /// If called off the main thread, where `NSPanel` cannot be built.
 #[must_use]
-pub fn overlay() -> Overlay { ... }
+pub fn overlay() -> Overlay {
+    let mtm = MainThreadMarker::new().expect("overlay must be built on the main thread");
+    PANEL.with_borrow_mut(|slot| *slot = Some(build(mtm)));
+    Overlay {
+        _main_thread_only: PhantomData,
+    }
+}
 
 impl Overlay {
-    /// Show `text`, sizing the panel to it. Main thread only.
-    pub fn show(&self, text: &str) { ... }
+    /// Show the overlay with `text`, from any thread.
+    ///
+    /// The panel is sized to the text, so a keymap with more rows makes a taller panel
+    /// rather than a clipped one.
+    pub fn show(&self, text: String) {
+        DispatchQueue::main().exec_async(move || {
+            PANEL.with_borrow_mut(|slot| {
+                let Some(panel) = slot else { return };
+                // ... set the label, resize, place, order front, as today
+            });
+            debug!(text, "overlay shown");
+        });
+    }
 
-    /// Take the overlay down. A no-op if it is not up.
-    pub fn hide(&self) { ... }
+    /// Hide the overlay, from any thread. A no-op if it is not up.
+    pub fn hide(&self) {
+        DispatchQueue::main().exec_async(|| {
+            PANEL.with_borrow(|slot| {
+                if let Some(panel) = slot {
+                    panel.panel.orderOut(None);
+                }
+            });
+            debug!("overlay hidden");
+        });
+    }
 }
 
 impl Drop for Overlay {
-    /// Takes the panel off screen.
+    /// Takes the panel off screen and drops it.
     ///
-    /// Releasing the `Retained` is not enough: a panel that has been ordered front is
-    /// retained by AppKit's window machinery, so dropping the last reference here would
-    /// leave a visible overlay up with nothing able to hide it. `Overlay` is `!Send`, so
-    /// this runs on the main thread that built the panel.
+    /// Releasing the `Retained` alone is not enough: a panel that has been ordered front is
+    /// retained by AppKit's window machinery, so clearing the slot without ordering it out
+    /// would leave a visible overlay up with nothing able to hide it.
     fn drop(&mut self) {
-        self.panel.orderOut(None);
+        PANEL.with_borrow_mut(|slot| {
+            if let Some(panel) = slot.take() {
+                panel.panel.orderOut(None);
+            }
+        });
     }
 }
 ```
 
-`text` stops being `&'static str`. The bound existed because the dispatched block had to be `'static`; a method on a handle the caller already holds borrows it for the call instead.
+`text` becomes an owned `String` rather than `&'static str`. The `'static` bound was never about the panel; it was the dispatched block needing to own what it carries, and a `String` it owns satisfies that without every caller having to hand it a const.
 
-Building it eagerly rather than on first `show` is what removes the `Option`: an `Overlay` that exists has a panel.
-
-## What the caller does instead
-
-`Overlay` is `!Send` and its methods are main-thread-only, so the effect loop cannot call them directly. It sends, and the main thread applies — the same shape the menu-bar title already uses, and the same channel drained in the same place.
-
-`crates/mercury/src/daemon.rs`, before:
+Mercury's effect handler changes by one word at each site:
 
 ```rust
-        MercuryEffect::ShowOverlay(text) => freddie_overlay::show(text),
-        MercuryEffect::HideOverlay => freddie_overlay::hide(),
+        MercuryEffect::ShowOverlay(text) => overlay.show(text.to_owned()),
+        MercuryEffect::HideOverlay => overlay.hide(),
 ```
 
-After, sending on a channel built beside `title_tx`:
-
-```rust
-        MercuryEffect::ShowOverlay(text) => {
-            let _ = overlay_tx.send(Some(text));
-        }
-        MercuryEffect::HideOverlay => {
-            let _ = overlay_tx.send(None);
-        }
-```
-
-and drained in `main_loop.run`, beside the title:
-
-```rust
-    main_loop.run(|| {
-        if let Some(showing) = overlay_rx.try_iter().last() {
-            match showing {
-                Some(text) => overlay.show(text),
-                None => overlay.hide(),
-            }
-        }
-        if let Some(name) = title_rx.try_iter().last() {
-            menu_bar.set_title(Some(&format!(" {name}")));
-        }
-    });
-```
-
-Only the last showing in a batch is drawn, for the reason the title already gives: intermediate states in one batch are not worth putting on screen.
-
-This costs the overlay up to one `SLICE` of latency, where the dispatch to the main queue had none. `freddie_main_loop`'s `SLICE` is 100ms. If that shows, the answer is the `Waker` described in the note at the end of this doc, which the menu-bar title wants for the same reason.
+The `Overlay` is built on the main thread beside the `MenuBar`, and the effect loop holds a reference to it. Nothing goes through `main_loop.run`, and the overlay keeps appearing as promptly as it does today.
 
 # Change 3: dropping an `Interceptor` cannot hang
 
@@ -206,33 +217,3 @@ impl Drop for Interceptor {
 ```
 
 The keyboard comes back regardless: the tap dies with the process even if the thread never unwinds.
-
----
-
-## A note on waking the main loop
-
-Change 2 puts the overlay behind the same channel the menu-bar title uses, and both then wait up to one `SLICE` (100ms) for `on_wake` to run.
-
-`freddie_main_loop` should hand back a `Waker` alongside its `Stopper`, so a sender can make `on_wake` run now:
-
-```rust
-/// Wakes the main loop so its `on_wake` runs now rather than when the current slice
-/// expires. `Send`, so a worker can hold one.
-pub struct Waker { ... }
-
-impl Waker {
-    pub fn wake(&self) { ... }
-}
-```
-
-`CFRunLoop::wake_up` is not established to do it: the main thread is inside
-`nextEventMatchingMask_untilDate_inMode_dequeue`, which returns when an event is available
-or its deadline passes, and a bare wake makes neither true. Posting an application-defined
-`NSEvent` with `postEvent_atStart` makes an event available, which is the mechanism to
-verify first.
-
-It does not cover menu tracking: while a menu is open AppKit runs a modal loop and the outer
-pump does not iterate, so `on_wake` waits for the menu to close whatever is posted.
-
-This is worth doing only if the latency shows. It is written down here because Change 2 is
-what makes a second caller want it.
