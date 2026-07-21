@@ -23,15 +23,16 @@ use std::ptr::NonNull;
 use std::sync::RwLock;
 
 use accessibility_sys::{
-    AXIsProcessTrusted, AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
+    AXError, AXIsProcessTrusted, AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
     AXUIElementRef, AXUIElementSetAttributeValue, AXValueCreate, AXValueGetValue, AXValueType,
     kAXFocusedWindowAttribute, kAXPositionAttribute, kAXSizeAttribute, kAXValueTypeCGPoint,
-    kAXValueTypeCGSize,
+    kAXValueTypeCGSize, pid_t,
 };
 use block2::RcBlock;
 use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
 use core_foundation::string::CFString;
 use core_graphics::geometry::{CGPoint, CGSize};
+use core_graphics::window::{CGWindowID, kCGNullWindowID};
 use objc2_app_kit::{NSApplicationDidChangeScreenParametersNotification, NSScreen, NSWorkspace};
 use objc2_foundation::{MainThreadMarker, NSNotification, NSNotificationCenter};
 
@@ -42,6 +43,39 @@ pub enum Placement {
     Maximize,
     LeftHalf,
     RightHalf,
+}
+
+/// A running app, by process id. `pid_t` is an `i32`, and an `i32` is not a process.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Pid(pub pid_t);
+
+/// A window's `CGWindowID`: the identity that outlives any one `AXUIElement` naming it.
+///
+/// Elements are created per call, so two for the same window are different pointers and
+/// the element itself cannot be the key.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct WindowId(pub CGWindowID);
+
+// SAFETY: `_AXUIElementGetWindow` is exported by HIServices, inside ApplicationServices,
+// which this crate already links against for the rest of the Accessibility API. It reads
+// the element and writes one `CGWindowID` through the out-parameter.
+#[expect(unsafe_code)]
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    /// The `CGWindowID` behind an Accessibility window element. Private, and the only
+    /// route from an `AXUIElement` to the id the rest of the system names a window by.
+    fn _AXUIElementGetWindow(element: AXUIElementRef, out: *mut CGWindowID) -> AXError;
+}
+
+/// The window's id, or `None` if it cannot be read. A window without one is placed like
+/// any other and is never reported.
+fn window_id(window: AXUIElementRef) -> Option<WindowId> {
+    let mut id: CGWindowID = kCGNullWindowID;
+    // SAFETY: `window` is a live element; the call writes at most one `CGWindowID` into
+    // `id` and takes no ownership of either.
+    #[expect(unsafe_code)]
+    let status = unsafe { _AXUIElementGetWindow(window, &raw mut id) };
+    (status == 0 && id != kCGNullWindowID).then_some(WindowId(id))
 }
 
 /// A rectangle in Accessibility coordinates: origin top-left, y increasing down.
@@ -244,12 +278,14 @@ pub fn place(placement: Placement) -> Result<(), WindowError> {
     let target = placement.within(monitor.visible);
     set_frame(window, target);
 
+    let id = window_id(window);
+
     // SAFETY: `focused_window` returned a +1 reference; this balances it.
     #[expect(unsafe_code)]
     unsafe {
         CFRelease(window.cast());
     }
-    tracing::debug!(?placement, ?target, "placed the focused window");
+    tracing::debug!(?placement, ?target, ?id, "placed the focused window");
     Ok(())
 }
 
