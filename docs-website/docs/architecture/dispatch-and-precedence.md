@@ -26,19 +26,13 @@ Dispatch narrows the event to `&Self::Event` with a `TryFrom` before it asks a t
 
 ## Double handling
 
-freddie has the check that would catch it, and `mercury` does not run it.
+freddie has a check for it, and `mercury` does not run it.
 
-`bind::accumulate` walks the same active tree `dispatch` walks and inserts every live binding's trigger into a `HashSet`, returning `BindError::DuplicateTrigger` when the trigger is already there. It sits behind `bind`'s `check` feature, which is a test-only thing: `mercury` takes `bind` with `default-features = false` and turns `check` back on through a dev-dependency, so a shipped binary contains no `accumulate` at all. A clobber is a property of the program rather than of a run, so a test sees everything a running binary would, earlier.
+`bind::accumulate` walks the same active tree `dispatch` walks and inserts every live binding's trigger into a `HashSet`, returning `BindError::DuplicateTrigger` when the trigger is already there. It sits behind `bind`'s `check` feature, which is test-only: `mercury` takes `bind` with `default-features = false` and turns `check` back on through a dev-dependency, so a shipped binary contains no `accumulate` at all. A clobber is a property of the program rather than of a run, so a test sees everything a running binary would, earlier.
 
 Two holes keep it from being the guarantee it looks like. Triggers are compared as they are written, so `Key::KeyR` and `Key::KeyR.down()` are two entries and neither is reported, and `AnyKey` is one value that matches every key event while colliding with nothing. Closure triggers are skipped outright, because their value is read out of the state at dispatch rather than claimed statically.
 
-Closing those is planned, and none of it is built:
-
-- A trigger gains `fn expand(self) -> Vec<Trigger>`, the concrete triggers it claims, and the set holds those rather than triggers as written. `is_matching` stays the specification, and `expand` is tested against it over every trigger and every event.
-- `AnyKey` gains an except list and expands through a `Key::ALL` generated from the same declaration as the key enum, so a catch-all becomes an ordinary binding that visibly claims what it claims.
-- Press joins the concrete keyboard trigger, so `Key::KeyR` and `Key::KeyR.down()` stop shadowing each other silently.
-- Each binding declares its mode, on the binding doing the shadowing. No-clobber is the default and a collision is an error. `expects_clobber` says the shadowing is deliberate, and then shadowing nothing is the error, because an override written to beat a binding that has since moved still fires and no behavioral test goes red.
-- The check runs over every reachable state, which needs those states enumerated.
+So a binding that shadows another is your problem to notice today.
 
 ## The last resort
 
