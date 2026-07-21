@@ -188,7 +188,7 @@ function BindingSection() {
     <section className="alt-background">
       <div className="container">
         <div className="kicker">It&rsquo;s a kind of magic</div>
-        <h2 className={styles.centeredHeading}>Great DevEx for complicated use cases</h2>
+        <h2 className={styles.centeredHeading}>Handle complexity with ease</h2>
         <Prose>
           <p>
             The value of using a programming language and compiling our own program becomes apparent when we move beyond simple examples. Here, we'll build something that is impossible (or at least, awkward) in any other framework: the ability to maximize windows, and the ability to restore them to their previous location.
@@ -326,6 +326,7 @@ function AreYouReady() {
   return (
     <section className="alt-background">
       <div className="container">
+        <div className="kicker">It&rsquo;s time</div>
         <h2 className={styles.centeredHeading}>Are you ready, Freddie?</h2>
         <div className={styles.ctaContainer}>
           <Link
