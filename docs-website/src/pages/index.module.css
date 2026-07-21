@@ -25,7 +25,7 @@
 }
 
 .doableTitle {
-  font-size: 1.35rem;
+  font-size: 1.4rem;
 }
 
 /* Air between the heading and the first row of cells. */
@@ -34,11 +34,11 @@
 }
 
 /* Each cell carries the gap to the one below it, and adds to Infima's 1rem
-   column padding so neighbouring cells sit 4rem apart rather than 2rem. */
+   column padding so neighbouring cells sit 5rem apart rather than 2rem. */
 .doable {
   margin-bottom: 1rem;
-  padding-left: 1rem;
-  padding-right: 1rem;
+  padding-left: 1.5rem;
+  padding-right: 1.5rem;
 }
 
 @media screen and (max-width: 996px) {
