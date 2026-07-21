@@ -55,9 +55,8 @@ function Features() {
           <div className="col col--4">
             <h3>Testable, understandable</h3>
             <p>
-              All of this runs through one pure function: state and event in, new
-              state and a list of effects out. Nothing is performed along the
-              way, so a test is a call and an assertion.
+              A freddie program is centered around a single, pure function: state and event in, new
+              state and a list of effects out. And so a freddie program remains testable and easy to reason about, even as it scales and grows more complex.
             </p>
           </div>
         </div>
@@ -73,6 +72,12 @@ function DontStopMeNow() {
         <div className="kicker">It&rsquo;s powerful</div>
         <h2 className={styles.centeredHeading}>For programmers, by programmers</h2>
         <Prose>
+          <p>
+            Other programs for remapping keys are great, but they tend to be configuration-driven, and that makes it difficult or impossible to handle unanticipated use cases.
+          </p>
+          <p>
+            Want to bind different keys depending on which app is foregrounded? That's fine, because these programs tend to expose "the current foregrounded app" to you. But, want to bind keys based on what tab is active in Chrome? You can't incorporate arbitrary events, so you're out of luck. Want a binding that only exists while your good microphone is plugged in, or one that changes the moment you dock and the second monitor wakes up? Same answer.
+          </p>
           <p>
             You do not configure freddie. You write a program with
             it. There is no config file, no DSL, and no schema of somebody
@@ -114,7 +119,7 @@ function BindingSection() {
     <section>
       <div className="container">
         <div className="kicker">It&rsquo;s a kind of magic</div>
-        <h2 className={styles.centeredHeading}>It&rsquo;s a kind of magic.</h2>
+        <h2 className={styles.centeredHeading}>Guaranteed to blow your mind</h2>
         <Prose>
           <p>
             A binding is a trigger and the handler it runs, written on the level
@@ -172,6 +177,7 @@ function Mercury() {
   return (
     <section className="alt-background">
       <div className="container">
+        <div className="kicker">It&rsquo;s ready for you</div>
         <h2 className={styles.centeredHeading}>Mercury rising.</h2>
         <Prose>
           <p>
