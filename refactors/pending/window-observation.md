@@ -108,6 +108,15 @@ impl Drop for Owned {
     }
 }
 
+// SAFETY: the CoreFoundation types this crate owns are `AXUIElement` and `AXValue`, both
+// usable from any thread, and `CFRelease` is itself thread-safe. Access to a shared one
+// goes through the `Mutex` in `Elements`.
+#[expect(unsafe_code)]
+unsafe impl Send for Owned {}
+// SAFETY: as above.
+#[expect(unsafe_code)]
+unsafe impl Sync for Owned {}
+
 /// One `AXValue` attribute: the name it is read by, the `AXValueType` it holds, and the
 /// Rust type that type means.
 ///
@@ -358,18 +367,12 @@ struct Element(Owned);
 impl Element {
     /// The element, for the calls that take one. Borrowed, not owned: the release stays
     /// with the [`Owned`] inside.
-    fn as_ref(&self) -> AXUIElementRef {
+    ///
+    /// Not `as_ref`, which `Arc<Element>` already has from `AsRef` and would shadow this.
+    const fn raw(&self) -> AXUIElementRef {
         self.0.0.cast_mut().cast()
     }
 }
-
-// SAFETY: an `AXUIElementRef` may be used from any thread, and every access to one goes
-// through the `Mutex` in [`Elements`].
-#[expect(unsafe_code)]
-unsafe impl Send for Element {}
-// SAFETY: as above.
-#[expect(unsafe_code)]
-unsafe impl Sync for Element {}
 
 /// Every window that can be addressed, and the element to address it through.
 ///
@@ -414,7 +417,7 @@ impl WindowSink {
             let table = elements.0.lock().map_err(|_| WindowError::UnknownWindow)?;
             Arc::clone(table.get(&window).ok_or(WindowError::UnknownWindow)?)
         };
-        set_frame(element.as_ref(), frame);
+        set_frame(element.raw(), frame);
         tracing::debug!(?window, ?frame, "set a window's frame");
         Ok(())
     }

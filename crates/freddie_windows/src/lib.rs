@@ -18,9 +18,10 @@
 //!
 //! macOS only.
 
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use std::sync::RwLock;
+use std::sync::{Arc, Mutex, RwLock, Weak};
 
 use accessibility_sys::{
     AXError, AXIsProcessTrusted, AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
@@ -76,6 +77,68 @@ fn window_id(window: AXUIElementRef) -> Option<WindowId> {
     #[expect(unsafe_code)]
     let status = unsafe { _AXUIElementGetWindow(window, &raw mut id) };
     (status == 0 && id != kCGNullWindowID).then_some(WindowId(id))
+}
+
+/// A retained `AXUIElement` for one window.
+struct Element(Owned);
+
+impl Element {
+    /// The element, for the calls that take one. Borrowed, not owned: the release stays
+    /// with the [`Owned`] inside.
+    ///
+    /// Not `as_ref`, which `Arc<Element>` already has from `AsRef` and would shadow this.
+    const fn raw(&self) -> AXUIElementRef {
+        self.0.0.cast_mut().cast()
+    }
+}
+
+/// Every window that can be addressed, and the element to address it through.
+///
+/// A `Mutex` and not an `RwLock`: a window opening and a key being pressed are both rare,
+/// so there is nothing for concurrent readers to win. It is held for a lookup and an
+/// `Arc::clone`, never across an `AXUIElement` call.
+#[derive(Default)]
+struct Elements(Mutex<HashMap<WindowId, Arc<Element>>>);
+
+/// The handle a placement is performed through.
+///
+/// Cheap to clone and unattached to the thread that made it, because the effect loop
+/// hands each placement to a thread of its own.
+///
+/// A [`Weak`], so the watcher is the only thing keeping the table alive and a sink cannot
+/// outlive the observation it belongs to.
+#[derive(Clone)]
+pub struct WindowSink {
+    elements: Weak<Elements>,
+}
+
+impl WindowSink {
+    /// Move and resize one window, named by id.
+    ///
+    /// Immediate, with no animation. Costs single-digit to low tens of milliseconds, so a
+    /// caller on a latency-sensitive loop should hand this to another thread.
+    ///
+    /// The frame is the caller's, already worked out. This does not consult the screen,
+    /// the frontmost app, or anything else.
+    ///
+    /// # Errors
+    ///
+    /// [`WindowError::NotWatching`] if the watcher has been dropped, and
+    /// [`WindowError::UnknownWindow`] if nothing with that id is being observed, which is
+    /// the case for a window that has closed or that never reported an id.
+    pub fn set_frame(&self, window: WindowId, frame: Frame) -> Result<(), WindowError> {
+        let elements = self.elements.upgrade().ok_or(WindowError::NotWatching)?;
+        // Cloned out so the lock is released before the writes: those take tens of
+        // milliseconds, and the main thread takes this lock every time a window opens or
+        // closes.
+        let element = {
+            let table = elements.0.lock().map_err(|_| WindowError::UnknownWindow)?;
+            Arc::clone(table.get(&window).ok_or(WindowError::UnknownWindow)?)
+        };
+        set_frame(element.raw(), frame);
+        tracing::debug!(?window, ?frame, "set a window's frame");
+        Ok(())
+    }
 }
 
 /// A rectangle in Accessibility coordinates: origin top-left, y increasing down.
@@ -135,6 +198,11 @@ pub enum WindowError {
     NoScreen,
     /// Nothing is frontmost, or the frontmost app has no focused window.
     NoFocusedWindow,
+    /// Nothing with that id is being observed: the window closed, or it never reported an
+    /// id to begin with.
+    UnknownWindow,
+    /// The watcher has been dropped, so nothing is being observed at all.
+    NotWatching,
 }
 
 impl std::fmt::Display for WindowError {
@@ -145,6 +213,8 @@ impl std::fmt::Display for WindowError {
             Self::NotTrusted => "Accessibility is not granted",
             Self::NoScreen => "no screen",
             Self::NoFocusedWindow => "no focused window",
+            Self::UnknownWindow => "no such window",
+            Self::NotWatching => "not watching windows",
         })
     }
 }
@@ -330,6 +400,15 @@ impl Drop for Owned {
         }
     }
 }
+
+// SAFETY: the CoreFoundation types this crate owns are `AXUIElement` and `AXValue`, both
+// usable from any thread, and `CFRelease` is itself thread-safe. Access to a shared one
+// goes through the `Mutex` in `Elements`.
+#[expect(unsafe_code)]
+unsafe impl Send for Owned {}
+// SAFETY: as above.
+#[expect(unsafe_code)]
+unsafe impl Sync for Owned {}
 
 /// One `AXValue` attribute: the name it is read by, the `AXValueType` it holds, and the
 /// Rust type that type means.
