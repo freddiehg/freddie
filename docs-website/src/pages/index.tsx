@@ -37,27 +37,29 @@ function Features() {
         <h2 className={styles.centeredHeading}>Events in, effects out.</h2>
         <div className="row" style={{ paddingTop: '1.5rem' }}>
           <div className="col col--4">
-            <h3>Integrate the whole machine</h3>
+            <h3>Integrate anything</h3>
             <p>
-              Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do
-              eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut
-              enim ad minim veniam, quis nostrud exercitation ullamco laboris.
+              A freddie program responds to whatever you can observe. A key
+              going down, which app came to the front, which tab you are
+              looking at, what devices are plugged in, or something you have
+              not thought of yet. Adding a source is adding a variant.
             </p>
           </div>
           <div className="col col--4">
-            <h3>One place the decision is made</h3>
+            <h3>Centralized state</h3>
             <p>
-              Duis aute irure dolor in reprehenderit in voluptate velit esse
-              cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat
-              cupidatat non proident, sunt in culpa qui officia deserunt.
+              All of it is handled however you like, but in one place, against
+              one state. So a key can mean one thing on a given site and
+              nothing anywhere else, or a layer can change the moment you plug
+              in the good microphone.
             </p>
           </div>
           <div className="col col--4">
-            <h3>Pure, and therefore knowable</h3>
+            <h3>There&rsquo;s no stopping me</h3>
             <p>
-              Sed ut perspiciatis unde omnis iste natus error sit voluptatem
-              accusantium doloremque laudantium, totam rem aperiam, eaque ipsa
-              quae ab illo inventore veritatis et quasi architecto beatae.
+              What comes back out is just as open. Rearrange your windows, send
+              the selection to an LLM, foreground an app, clone the repository
+              you are reading, or run whatever you would have written anyway.
             </p>
           </div>
         </div>
@@ -112,7 +114,7 @@ function BindingSection() {
   return (
     <section>
       <div className="container">
-        <h2 className={styles.centeredHeading}>A kind of magic.</h2>
+        <h2 className={styles.centeredHeading}>It&rsquo;s a kind of magic.</h2>
         <Prose>
           <p>
             A binding is a trigger and the handler it runs, written on the level
