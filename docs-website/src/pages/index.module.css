@@ -26,13 +26,4 @@
 
 .doableTitle {
   font-size: 1.15rem;
-  min-height: 3.4em;
-}
-
-.doableImage {
-  display: block;
-  width: 100%;
-  height: auto;
-  border-radius: 8px;
-  margin-bottom: 2.5rem;
 }

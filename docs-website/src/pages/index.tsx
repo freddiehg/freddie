@@ -96,11 +96,11 @@ function Prose({ children }: { children: ReactNode }) {
   );
 }
 
-function Doable({ title }: { title: string }) {
+function Doable({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div className="col col--4">
       <h3 className={styles.doableTitle}>{title}</h3>
-      <img className={styles.doableImage} src="/img/placeholder.svg" alt="" />
+      <p>{children}</p>
     </div>
   );
 }
@@ -112,14 +112,32 @@ function BendIt() {
         <div className="kicker">It&rsquo;s your computer</div>
         <h2 className={styles.centeredHeading}>Bend it to your will</h2>
         <div className="row">
-          <Doable title="Mute yourself without hunting for the button" />
-          <Doable title="Clone the repo you’re looking at" />
-          <Doable title="Snap a window to half the screen, and back again" />
+          <Doable title="Remap keys however you like">
+            Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do
+            eiusmod tempor incididunt ut labore et dolore magna aliqua.
+          </Doable>
+          <Doable title="Open a pull request without leaving your editor">
+            Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris
+            nisi ut aliquip ex ea commodo consequat.
+          </Doable>
+          <Doable title="Clone a repo straight from github.com">
+            Duis aute irure dolor in reprehenderit in voluptate velit esse
+            cillum dolore eu fugiat nulla pariatur.
+          </Doable>
         </div>
         <div className="row">
-          <Doable title="Put every window back where it belongs when you dock" />
-          <Doable title="New chat, cursor already in the box" />
-          <Doable title="Copy a URL without the tracking junk" />
+          <Doable title="Mute yourself without hunting for the tab">
+            Excepteur sint occaecat cupidatat non proident, sunt in culpa qui
+            officia deserunt mollit anim id est laborum.
+          </Doable>
+          <Doable title="Rearrange your windows when you connect a monitor">
+            Sed ut perspiciatis unde omnis iste natus error sit voluptatem
+            accusantium doloremque laudantium, totam rem aperiam.
+          </Doable>
+          <Doable title="Copy a URL without the tracking junk">
+            Nemo enim ipsam voluptatem quia voluptas sit aspernatur aut odit
+            aut fugit, sed quia consequuntur magni dolores.
+          </Doable>
         </div>
       </div>
     </section>
