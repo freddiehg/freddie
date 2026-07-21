@@ -98,7 +98,7 @@ function Prose({ children }: { children: ReactNode }) {
 
 function Doable({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <div className="col col--4">
+    <div className={`col col--4 ${styles.doable}`}>
       <h3 className={styles.doableTitle}>{title}</h3>
       <p>{children}</p>
     </div>
@@ -113,30 +113,30 @@ function BendIt() {
         <h2 className={styles.centeredHeading}>Bend it to your will</h2>
         <div className="row">
           <Doable title="Remap keys however you like">
-            Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do
-            eiusmod tempor incididunt ut labore et dolore magna aliqua.
+            Layers, sequences, chords, keys that mean one thing here and
+            something else there. Bind whatever you want, however you want.
           </Doable>
           <Doable title="Open a pull request without leaving your editor">
-            Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris
-            nisi ut aliquip ex ea commodo consequat.
+            Three branches deep in a stack, one key works out which branch
+            yours sits on and opens the PR against that one.
           </Doable>
           <Doable title="Clone a repo straight from github.com">
-            Duis aute irure dolor in reprehenderit in voluptate velit esse
-            cillum dolore eu fugiat nulla pariatur.
+            You are looking at the repo. Press a key and it is cloned, and
+            you are in it, without ever reaching for the URL.
           </Doable>
         </div>
         <div className="row">
           <Doable title="Mute yourself without hunting for the tab">
-            Excepteur sint occaecat cupidatat non proident, sunt in culpa qui
-            officia deserunt mollit anim id est laborum.
+            One key mutes you, whether the meeting is Zoom in front of you or
+            Meet in a tab you would otherwise have to go find.
           </Doable>
           <Doable title="Rearrange your windows when you connect a monitor">
-            Sed ut perspiciatis unde omnis iste natus error sit voluptatem
-            accusantium doloremque laudantium, totam rem aperiam.
+            Nobody pressed anything. The monitor woke up, and everything went
+            back to where it belongs on it.
           </Doable>
           <Doable title="Copy a URL without the tracking junk">
-            Nemo enim ipsam voluptatem quia voluptas sit aspernatur aut odit
-            aut fugit, sed quia consequuntur magni dolores.
+            Copy what you are reading and get the address, not the address
+            plus whatever the last five sites decided to staple to it.
           </Doable>
         </div>
       </div>

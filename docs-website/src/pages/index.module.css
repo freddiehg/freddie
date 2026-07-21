@@ -27,3 +27,8 @@
 .doableTitle {
   font-size: 1.15rem;
 }
+
+/* The grid is two rows, so each cell carries the gap to the one below it. */
+.doable {
+  margin-bottom: 3rem;
+}
