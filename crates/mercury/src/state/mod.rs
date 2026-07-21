@@ -4,11 +4,13 @@
 //! this module glob-imports them: the derive generates a call to each named handler here, at
 //! the node's definition site.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use bind::Bind;
 use freddie::{KeySequence, TimerFired, TimerGuard, timer_effect_and_guard};
 use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
+use freddie_windows::{Frame, Monitor, Snapshot, WindowChange, WindowFrame, WindowId};
 use laserbeam::PathMut;
 
 // The derive generates a call to each named handler at its node's definition site below, so
@@ -19,7 +21,7 @@ use crate::effect::emit;
 use crate::handlers::*;
 use crate::{
     AnyKey, App, ForegroundEvent, Foregrounded, MercuryEffect, MercuryEvent, MercuryStruct, Quit,
-    Site, TabEvent, Tabbed,
+    Site, TabEvent, Tabbed, Windowed,
 };
 
 mod app;
@@ -74,6 +76,7 @@ pub(crate) fn arm_jk_timeout(window: Duration) -> (TimerGuard, MercuryEffect) {
 #[bind(
     Foregrounded => record_front_app,
     Tabbed => record_tab_url,
+    Windowed => record_windows,
     Quit => quit,
     // Only this run's window: a firing from a run that has since ended matches nothing, so the
     // handler never sees it.
@@ -85,6 +88,8 @@ pub(crate) fn arm_jk_timeout(window: Duration) -> (TimerGuard, MercuryEffect) {
 pub struct Mercury {
     /// The frontmost app and whether a nav is in flight. See [`Foreground`].
     pub foreground: Foreground,
+    /// Every window mercury knows about, and the monitors they sit on. See [`Windows`].
+    pub windows: Windows,
     /// The state the passthrough (typing) behavior needs. See [`TypingState`].
     pub typing_state: TypingState,
     /// The overlay currently up, if any: the guard for its pending hide. The overlay is an
@@ -156,6 +161,82 @@ impl ForegroundedApp {
             App::Ghostty => Self::Ghostty,
             App::Zed => Self::Zed,
             App::Other => Self::Other,
+        }
+    }
+}
+
+/// What mercury knows about the windows on screen.
+///
+/// Filled entirely by the window source: a snapshot at startup and a change per event after
+/// it. Handlers read it and never read the OS, so what a placement computes is a function of
+/// state and event like everything else.
+#[derive(Debug, Default)]
+pub struct Windows {
+    /// Every open window and where it is.
+    frames: HashMap<WindowId, Frame>,
+    /// The focused window, `None` when nothing is focused or its id is unreadable.
+    focused: Option<WindowId>,
+    /// The monitors, in the order the source reported them.
+    screens: Vec<Monitor>,
+}
+
+impl Windows {
+    /// The state the window source found when it started watching, before any change.
+    #[must_use]
+    pub fn from_snapshot(snapshot: Snapshot) -> Self {
+        Self {
+            frames: snapshot
+                .windows
+                .into_iter()
+                .map(|w| (w.window, w.frame))
+                .collect(),
+            focused: snapshot.focused,
+            screens: snapshot.screens,
+        }
+    }
+
+    /// The focused window and its frame, which is what every placement starts from.
+    ///
+    /// `None` when nothing is focused, or when the focused window has no frame on record:
+    /// a focus report can name a window no `Opened` ever did.
+    #[must_use]
+    pub fn focused(&self) -> Option<WindowFrame> {
+        let window = self.focused?;
+        Some(WindowFrame {
+            window,
+            frame: *self.frames.get(&window)?,
+        })
+    }
+
+    /// The monitor a frame's top-left corner is on, or the first monitor if it is on none.
+    /// `None` only before the first `Screens` report.
+    #[must_use]
+    pub fn monitor_for(&self, frame: Frame) -> Option<Monitor> {
+        self.screens
+            .iter()
+            .find(|m| m.full.contains(frame.x, frame.y))
+            .or_else(|| self.screens.first())
+            .copied()
+    }
+
+    /// Apply one reported change.
+    ///
+    /// Every arm assigns, replaces, or removes. None accumulates, so applying a change twice
+    /// lands where applying it once does, which is what makes the boot ordering safe: see the
+    /// idempotence rule in `CLAUDE.md`.
+    pub(crate) fn record(&mut self, change: &WindowChange) {
+        match change {
+            WindowChange::Opened(w) | WindowChange::Moved(w) | WindowChange::Resized(w) => {
+                self.frames.insert(w.window, w.frame);
+            }
+            WindowChange::Closed(window) => {
+                self.frames.remove(window);
+                if self.focused == Some(*window) {
+                    self.focused = None;
+                }
+            }
+            WindowChange::Focused(window) => self.focused = *window,
+            WindowChange::Screens(screens) => self.screens.clone_from(screens),
         }
     }
 }
@@ -327,9 +408,10 @@ impl Mercury {
     /// No `Default`, because a `Mercury` that has not been told what is frontmost would
     /// resolve its in-app layer against the wrong app until something corrected it.
     #[must_use]
-    pub fn new(front_app: App) -> Self {
+    pub fn new(front_app: App, windows: Windows) -> Self {
         Self {
             foreground: Foreground::new(front_app),
+            windows,
             typing_state: TypingState::default(),
             overlay: None,
             // Typing, the passthrough layer, so a fresh mercury (and one launched at login) leaves
@@ -344,7 +426,7 @@ impl Mercury {
     pub fn with_layer(layer: Layer) -> Self {
         Self {
             layer,
-            ..Self::new(App::Other)
+            ..Self::new(App::Other, Windows::default())
         }
     }
 

@@ -2,6 +2,7 @@
 
 use bind::EventTrigger;
 use freddie_keys::KeyEvent;
+use freddie_windows::WindowChange;
 
 // A specific key is its own trigger: `Key::KeyR` binds that key. The type and its
 // `EventTrigger` impl live in `freddie_keys`, so no wrapper is needed here.
@@ -33,6 +34,27 @@ pub struct ForegroundEvent {
 impl EventTrigger for Foregrounded {
     type Event = ForegroundEvent;
     fn is_matching(&self, _ev: &ForegroundEvent) -> bool {
+        true
+    }
+}
+
+/// A trigger that matches any window change, whichever kind it is.
+///
+/// One binding at the root answers all of them, the way [`Foregrounded`] does for app
+/// activation: every variant records into the same place, and nothing branches on the kind
+/// until it gets there.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct Windowed;
+
+/// The window source reported a change.
+#[cfg_attr(feature = "testing", derive(PartialEq))]
+#[derive(Debug)]
+pub struct WindowEvent {
+    pub change: WindowChange,
+}
+impl EventTrigger for Windowed {
+    type Event = WindowEvent;
+    fn is_matching(&self, _ev: &WindowEvent) -> bool {
         true
     }
 }

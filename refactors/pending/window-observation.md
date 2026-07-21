@@ -737,7 +737,8 @@ pub(crate) fn record_windows(
     ev: &WindowEvent,
     node: Node<&mut Mercury, ()>,
 ) -> Vec<MercuryEffect> {
-    node.parent.windows.record(&ev.change);
+    let root = node.parent;
+    root.windows.record(&ev.change);
     Vec::new()
 }
 ```
@@ -764,7 +765,7 @@ The daemon builds the watcher on the main thread, between the event channel and 
     let window_sink = windows.sink();
 ```
 
-`snapshot` and `window_sink` go into the `Boot` struct from `refactors/past/seed-at-construction.md`, which is what the worker already takes:
+The snapshot goes into the `Boot` struct from `refactors/past/seed-at-construction.md`, which is what the worker already takes. The `WindowSink` waits for `refactors/pending/placement-in-the-model.md`, which is what first has an effect to perform through it:
 
 ```rust
 struct Boot {

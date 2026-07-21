@@ -3,7 +3,10 @@
 use bind::Bindings;
 use freddie_keys::{Key, KeyChord, KeyEvent, KeyPress};
 
-use crate::{AnyKey, ForegroundEvent, Foregrounded, MercuryEffect, Quit, TabEvent, Tabbed};
+use crate::{
+    AnyKey, ForegroundEvent, Foregrounded, MercuryEffect, Quit, TabEvent, Tabbed, WindowEvent,
+    Windowed,
+};
 use freddie::TimerFired;
 
 /// Every trigger Mercury can register, one variant per source.
@@ -15,6 +18,7 @@ pub enum MercuryTrigger {
     AnyKey(AnyKey),
     Foregrounded(Foregrounded),
     Tabbed(Tabbed),
+    Windowed(Windowed),
     Quit(Quit),
 }
 
@@ -22,13 +26,17 @@ pub enum MercuryTrigger {
 ///
 /// `TryInto` gives the `TryFrom<&MercuryEvent> for &SourceEvent` that dispatch uses to narrow
 /// the unified event to the one a trigger cares about.
-#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
+///
+/// `PartialEq` but not `Eq` under `testing`: a window's frame is four `f64`s, so the window
+/// events this carries have no total equality to derive.
+#[cfg_attr(feature = "testing", derive(PartialEq))]
 #[derive(Debug, derive_more::TryInto)]
 #[try_into(ref)]
 pub enum MercuryEvent {
     Key(KeyEvent),
     Foreground(ForegroundEvent),
     Tab(TabEvent),
+    Window(WindowEvent),
     Quit(Quit),
     /// A timer fired, carrying which one. Every timer shares it: what tells them apart is which
     /// node still holds that guard, which its binding matches on.

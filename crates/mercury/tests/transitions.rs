@@ -4,10 +4,11 @@
 //! reporting the app back the way the OS watcher would.
 
 use bind::SimpleRunner;
+use freddie_windows::{Frame, Monitor, WindowChange, WindowFrame, WindowId};
 use mercury::{
     App, Chord, Copied, HomeLayer, JK_TIMEOUT, Key, KeyEvent, Layer, Mercury, MercuryEffect,
     MercuryEvent, MercuryStruct, ModifierFlags, OVERLAY_DWELL, Placement, PressType,
-    RETURN_TO_HOME_TIMEOUT, UrlPart, foreground, key, quit_event, tab,
+    RETURN_TO_HOME_TIMEOUT, UrlPart, WindowEvent, Windows, foreground, key, quit_event, tab,
 };
 
 // Entering nav, resize, or the in-app layer arms the return-to-home timer; this is the effect
@@ -110,7 +111,10 @@ fn in_app(mut effects: Vec<MercuryEffect>) -> Vec<MercuryEffect> {
 #[test]
 fn default_boots_into_typing() {
     // A fresh mercury is in typing (passthrough), the login-safe state, not command-mode Home.
-    assert!(matches!(Mercury::new(App::Other).layer(), Layer::Typing(_)));
+    assert!(matches!(
+        Mercury::new(App::Other, Windows::default()).layer(),
+        Layer::Typing(_)
+    ));
 }
 
 #[test]
@@ -1149,7 +1153,7 @@ fn jk_timer() -> MercuryEffect {
 
 // A mercury in typing, the passthrough layer, with the jk run idle.
 fn typing() -> Mercury {
-    Mercury::new(App::Other)
+    Mercury::new(App::Other, Windows::default())
 }
 
 #[test]
@@ -1506,4 +1510,144 @@ fn o_in_typing_is_typed() {
     // Typing binds nothing, so `o` falls to the root and reaches the app.
     let mut m = typing();
     assert_eq!(m.handle(&key(Key::KeyO)), Some(passed(Key::KeyO)));
+}
+
+// ---- the window source: `Windows` is a pure function of the changes reported to it ----
+
+const SCREEN: Monitor = Monitor {
+    full: Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 1600.0,
+        height: 925.0,
+    },
+    visible: Frame {
+        x: 0.0,
+        y: 25.0,
+        width: 1600.0,
+        height: 900.0,
+    },
+};
+const WINDOW: WindowId = WindowId(7);
+const WINDOW_FRAME: Frame = Frame {
+    x: 100.0,
+    y: 100.0,
+    width: 400.0,
+    height: 300.0,
+};
+
+const fn windows(change: WindowChange) -> MercuryEvent {
+    MercuryEvent::Window(WindowEvent { change })
+}
+
+const fn opened(window: WindowId, frame: Frame) -> WindowChange {
+    WindowChange::Opened(WindowFrame { window, frame })
+}
+
+// A mercury told about one screen and one focused window.
+fn home_with_a_window() -> Mercury {
+    let mut m = home();
+    let _ = m.handle(&windows(WindowChange::Screens(vec![SCREEN])));
+    let _ = m.handle(&windows(opened(WINDOW, WINDOW_FRAME)));
+    let _ = m.handle(&windows(WindowChange::Focused(Some(WINDOW))));
+    m
+}
+
+#[test]
+fn an_opened_window_is_recorded_with_its_frame() {
+    let m = home_with_a_window();
+    assert_eq!(
+        m.windows.focused(),
+        Some(WindowFrame {
+            window: WINDOW,
+            frame: WINDOW_FRAME
+        })
+    );
+}
+
+// A window event records and asks for nothing: the source keeps the state true, and a key is
+// what acts on it.
+#[test]
+fn a_window_change_produces_no_effects() {
+    let mut m = home();
+    assert_eq!(
+        m.handle(&windows(opened(WINDOW, WINDOW_FRAME))),
+        Some(vec![])
+    );
+    assert!(matches!(m.layer(), Layer::Home(_)));
+}
+
+// A move and a resize are the same to mercury, which keeps a frame and nothing else.
+#[test]
+fn a_move_and_a_resize_both_replace_the_frame() {
+    for change in [
+        WindowChange::Moved(WindowFrame {
+            window: WINDOW,
+            frame: SCREEN.visible,
+        }),
+        WindowChange::Resized(WindowFrame {
+            window: WINDOW,
+            frame: SCREEN.visible,
+        }),
+    ] {
+        let mut m = home_with_a_window();
+        let _ = m.handle(&windows(change));
+        assert_eq!(
+            m.windows.focused().expect("still focused").frame,
+            SCREEN.visible
+        );
+    }
+}
+
+#[test]
+fn a_closed_window_leaves_no_frame_and_no_focus() {
+    let mut m = home_with_a_window();
+    let _ = m.handle(&windows(WindowChange::Closed(WINDOW)));
+    assert_eq!(m.windows.focused(), None);
+}
+
+// A focus report can name a window no `Opened` ever did, and a window with no frame is not
+// something a placement can start from.
+#[test]
+fn focus_on_an_unknown_window_yields_nothing_focused() {
+    let mut m = home_with_a_window();
+    let _ = m.handle(&windows(WindowChange::Focused(Some(WindowId(999)))));
+    assert_eq!(m.windows.focused(), None);
+}
+
+// Applying a change twice lands where applying it once does, which is what makes the boot
+// ordering safe: a change during boot arrives in the snapshot and again as an event.
+#[test]
+fn recording_a_change_twice_is_recording_it_once() {
+    let mut once = home_with_a_window();
+    let mut twice = home_with_a_window();
+    let _ = twice.handle(&windows(opened(WINDOW, WINDOW_FRAME)));
+    assert_eq!(once.windows.focused(), twice.windows.focused());
+
+    let _ = once.handle(&windows(WindowChange::Focused(Some(WINDOW))));
+    let _ = twice.handle(&windows(WindowChange::Focused(Some(WINDOW))));
+    let _ = twice.handle(&windows(WindowChange::Focused(Some(WINDOW))));
+    assert_eq!(once.windows.focused(), twice.windows.focused());
+}
+
+// A window's corner picks the screen it is on, which is what a placement measures against.
+#[test]
+fn the_monitor_is_the_one_the_window_is_on() {
+    let m = home_with_a_window();
+    assert_eq!(m.windows.monitor_for(WINDOW_FRAME), Some(SCREEN));
+
+    // Off every screen: the first one, rather than nothing to place against.
+    let off = Frame {
+        x: 9000.0,
+        ..WINDOW_FRAME
+    };
+    assert_eq!(m.windows.monitor_for(off), Some(SCREEN));
+}
+
+// Before any `Screens` report there is no screen to measure against, and a placement has to
+// see that rather than invent one.
+#[test]
+fn no_screens_reported_means_no_monitor() {
+    let m = home();
+    assert_eq!(m.windows.monitor_for(WINDOW_FRAME), None);
 }

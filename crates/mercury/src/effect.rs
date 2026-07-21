@@ -53,8 +53,9 @@ pub enum Copied {
 /// What a handler asks the consumer to do. Inert data; performing it is the consumer's job,
 /// and it never mutates Mercury's state directly.
 // Effect equality is only ever asked for by the tests (dispatch never compares effects), so the
-// derive is gated behind `testing` and kept out of the normal build.
-#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
+// derive is gated behind `testing` and kept out of the normal build. `PartialEq` but not `Eq`,
+// because a timer carries a `MercuryEvent`, and a window event in one carries `f64` frames.
+#[cfg_attr(feature = "testing", derive(PartialEq))]
 #[derive(Debug)]
 pub enum MercuryEffect {
     Foreground(super::App),

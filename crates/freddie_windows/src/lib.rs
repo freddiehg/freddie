@@ -164,8 +164,10 @@ pub struct Frame {
 }
 
 impl Frame {
-    /// Whether `(x, y)` lies in this frame.
-    const fn contains(self, x: f64, y: f64) -> bool {
+    /// Whether `(x, y)` lies in this frame. Half-open: the left and top edges are in, the
+    /// right and bottom are not, so abutting frames do not both claim a point.
+    #[must_use]
+    pub const fn contains(self, x: f64, y: f64) -> bool {
         x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
     }
 }

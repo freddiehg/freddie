@@ -42,8 +42,8 @@ use std::ops::ControlFlow;
 use freddie::{AlwaysEqual, TimerEffect};
 use freddie_keyboard::Emitter;
 use mercury::{
-    App, Chord, Copied, Mercury, MercuryEffect, MercuryEvent, Placement, UrlPart, foreground, host,
-    quit_event,
+    App, Chord, Copied, Mercury, MercuryEffect, MercuryEvent, Placement, UrlPart, WindowEvent,
+    Windows, foreground, host, quit_event,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot::error::TryRecvError;
@@ -131,11 +131,29 @@ pub(crate) fn run(args: &DaemonArgs) {
         }
     });
 
+    // The window source. Here rather than in `serve` because a `Watcher` is `!Send` and its
+    // observers register against this thread's run loop. Installed before its snapshot is
+    // taken, which `watch` guarantees by returning both.
+    let windows = freddie_windows::watch({
+        let event_tx = event_tx.clone();
+        move |change| {
+            let _ = event_tx.send(MercuryEvent::Window(WindowEvent { change }));
+        }
+    });
+    let (_window_watcher, window_state) = match windows {
+        Ok((watcher, snapshot)) => (Some(watcher), Windows::from_snapshot(snapshot)),
+        Err(e) => {
+            error!(error = %e, "window observation unavailable");
+            (None, Windows::default())
+        }
+    };
+
     // Everything read from the OS before the main loop turns. After `main_loop.run`, every
     // fact reaches the model as an event; this is the only other way in.
     let boot = Boot {
         front_app: freddie_app_nav::frontmost()
             .map_or(App::Other, |bundle_id| App::from_bundle_id(&bundle_id)),
+        windows: window_state,
     };
 
     let worker = std::thread::Builder::new()
@@ -172,6 +190,9 @@ struct Boot {
     /// The app that was already frontmost. `freddie_app_nav::watch` reports changes, and at
     /// boot nothing has changed yet.
     front_app: App,
+    /// Every window open when the watcher was installed, which one was focused, and the
+    /// screens. Same reasoning: the observer reports changes, and none has happened yet.
+    windows: Windows,
 }
 
 /// Everything mercury does, on the worker thread.
@@ -249,7 +270,7 @@ async fn serve(
     // `select!` rather than `join!`: the effect loop ends on `Kill`, and the event
     // loop never does, because the tap thread holds a sender for as long as the
     // grab is alive.
-    let mercury = Mercury::new(boot.front_app);
+    let mercury = Mercury::new(boot.front_app, boot.windows);
 
     // Nothing has transitioned yet, so no `ShowLayer` has been produced: name the layer we boot
     // into, or the item stays blank until the first layer change.
