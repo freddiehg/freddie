@@ -5,7 +5,7 @@ sidebar_position: 4
 
 # Connecting to a New Source of Events
 
-A `freddie` program has one event type, whose variants are its sources:
+A freddie program has one event type, whose variants are its sources:
 
 ```rust
 pub enum MercuryEvent {

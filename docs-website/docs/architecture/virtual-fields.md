@@ -7,9 +7,9 @@ sidebar_position: 6
 
 Nesting enums runs into a limitation. How do you handle the currently foregrounded app, which is only relevant in the inapp layer?
 
-`struct AppLayer` could have `#[resolve_into] currently_foregrounded_app: CurrentlyForegroundedApp`, and that would work. But it means that when you navigate to the inapp layer, you must already know the foregrounded app. Discovering it at that moment is impure, and thus violates one of the basic tenets of `freddie`: `state.handle` is pure. Copying it into the layer on transition works, but then the state exists in two places and both have to be kept current.
+`struct AppLayer` could have `#[resolve_into] currently_foregrounded_app: CurrentlyForegroundedApp`, and that would work. But it means that when you navigate to the inapp layer, you must already know the foregrounded app. Discovering it at that moment is impure, and thus violates one of the basic tenets of freddie: `state.handle` is pure. Copying it into the layer on transition works, but then the state exists in two places and both have to be kept current.
 
-The solution `freddie` offers is virtual fields.
+The solution freddie offers is virtual fields.
 
 A virtual field is a child level computed during dispatch instead of stored in the state. `AppLayer` declares one with `#[derived_child(app_data)]`. `app_data` is a function that returns a struct implementing `Bind`:
 

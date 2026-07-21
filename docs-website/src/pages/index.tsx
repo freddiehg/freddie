@@ -73,7 +73,7 @@ function DontStopMeNow() {
         <h2 className={styles.centeredHeading}>Don&rsquo;t stop me now.</h2>
         <Prose>
           <p>
-            You do not configure <code>freddie</code>. You write a program with
+            You do not configure freddie. You write a program with
             it. There is no config file, no DSL, and no schema of somebody
             else&rsquo;s questions to answer.
           </p>
@@ -244,7 +244,7 @@ function Mercury() {
         <h2 className={styles.centeredHeading}>Mercury rising.</h2>
         <Prose>
           <p>
-            This repository ships one program built with <code>freddie</code>,
+            This repository ships one program built with freddie,
             called <code>mercury</code>. It is macOS-only and it requires
             accessibility permissions. You should not expect it to fit your use
             case: it is here to be read, run, studied, forked, and modified.

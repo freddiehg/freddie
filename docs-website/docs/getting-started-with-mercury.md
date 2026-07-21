@@ -5,7 +5,7 @@ sidebar_position: 2
 
 # Getting Started with Mercury
 
-`mercury` is the example program built with `freddie`, and it ships in this repository. It is macOS-only and requires accessibility permissions.
+`mercury` is the example program built with freddie, and it ships in this repository. It is macOS-only and requires accessibility permissions.
 
 ## Installing
 

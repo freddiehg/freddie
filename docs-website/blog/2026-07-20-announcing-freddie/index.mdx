@@ -8,27 +8,27 @@ image: /img/blog/announcing-freddie.png
 
 ![A newborn freddie](/img/blog/announcing-freddie.png)
 
-`freddie` is a set of tools for building a bespoke control plane for your computer, and it is ready for you to experiment with.
+freddie is a set of tools for building a bespoke control plane for your computer, and it is ready for you to experiment with.
 
 {/* truncate */}
 
 ## What it is
 
-A `freddie` program ingests a stream of events and produces a stream of effects. One such event is generated when you press a key, and one such effect is a simulated keypress, so `freddie` can be used to build a key remapper. But the events and effects are arbitrary, so it can be used to build something much more powerful.
+A freddie program ingests a stream of events and produces a stream of effects. One such event is generated when you press a key, and one such effect is a simulated keypress, so freddie can be used to build a key remapper. But the events and effects are arbitrary, so it can be used to build something much more powerful.
 
-Example events: this key was pressed, this app was foregrounded, this browser tab became active, this external device connected. Example effects: emit this key, foreground this app, resize this window, run this arbitrary code. A program built on `freddie` is the central place where the decision of how to respond to an event is made.
+Example events: this key was pressed, this app was foregrounded, this browser tab became active, this external device connected. Example effects: emit this key, foreground this app, resize this window, run this arbitrary code. A program built on freddie is the central place where the decision of how to respond to an event is made.
 
 ## Why not a config file
 
 Karabiner and the other remappers are excellent, but they are configuration-driven, and that bounds what they can express. You can bind keys differently based on which app is foregrounded, but not on which Chrome tab is active or which devices are connected. So you smuggle state through unused keypresses, or bind everything everywhere and sort it out in the handler, or reach for Hammerspoon. All three spread the configuration out and make the overall state hard to reason about.
 
-With `freddie` you fork the repository, make the changes you want, and run `cargo build`. You respond to whatever events you want, you manage state however you choose, and your handlers receive that state.
+With freddie you fork the repository, make the changes you want, and run `cargo build`. You respond to whatever events you want, you manage state however you choose, and your handlers receive that state.
 
 That costs more than a config file for the simple cases. It wins for the complicated ones, and LLMs make writing the program a lot cheaper than it used to be.
 
 ## `mercury`
 
-The repository ships one program built on `freddie`, called `mercury`. It is macOS-only, it requires accessibility permissions, and it is the working example: read it, run it, study it, fork it, modify it.
+The repository ships one program built on freddie, called `mercury`. It is macOS-only, it requires accessibility permissions, and it is the working example: read it, run it, study it, fork it, modify it.
 
 ```bash
 git clone https://github.com/freddiehg/freddie
@@ -43,4 +43,4 @@ mercury
 
 TODO: say what is next.
 
-Work is planned in `refactors/pending/` and moved to `refactors/past/` once it ships. `freddie` is moving fast — please reach out about what you want to see in it.
+Work is planned in `refactors/pending/` and moved to `refactors/past/` once it ships. freddie is moving fast — please reach out about what you want to see in it.

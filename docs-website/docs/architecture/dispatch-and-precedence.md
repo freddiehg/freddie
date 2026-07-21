@@ -15,7 +15,7 @@ Dispatch narrows the event to `&Self::Event` with a `TryFrom` before it asks a t
 
 ## Double handling
 
-TODO: ideally an event handled twice would be an error. That is not currently enabled in `freddie`; describe what is planned.
+TODO: ideally an event handled twice would be an error. That is not currently enabled in freddie; describe what is planned.
 
 ## The last resort
 

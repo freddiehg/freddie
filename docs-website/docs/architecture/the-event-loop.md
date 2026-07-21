@@ -5,11 +5,11 @@ sidebar_position: 2
 
 # The Event Loop
 
-TODO: the setup side of a `freddie` program — subscribing the sources, the select that feeds one queue, one event dispatched per iteration, and the effect loop that follows.
+TODO: the setup side of a freddie program — subscribing the sources, the select that feeds one queue, one event dispatched per iteration, and the effect loop that follows.
 
 ## Prior art
 
-`freddie`'s event loop follows two existing systems. [`isograph`](https://github.com/isographlabs/isograph)'s language server is the same shape: several sources feed one queue, one event is dispatched per iteration, and dispatch is a `ControlFlow` chain that takes the first matching handler. [`barnum`](https://github.com/barnum-circus/barnum) goes a step further with deferred effects run off a queue by an async scheduler, whose results feed back as events. `freddie`'s difference from `barnum` is that its handlers mutate state directly during dispatch, where `barnum`'s only return a value the engine writes back.
+freddie's event loop follows two existing systems. [`isograph`](https://github.com/isographlabs/isograph)'s language server is the same shape: several sources feed one queue, one event is dispatched per iteration, and dispatch is a `ControlFlow` chain that takes the first matching handler. [`barnum`](https://github.com/barnum-circus/barnum) goes a step further with deferred effects run off a queue by an async scheduler, whose results feed back as events. freddie's difference from `barnum` is that its handlers mutate state directly during dispatch, where `barnum`'s only return a value the engine writes back.
 
 ## `mercury`'s setup
 

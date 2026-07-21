@@ -254,7 +254,7 @@ Every record carries the pid of the process that wrote it, because a client verb
 
 - `bind`, `bind_macro`, `derive_support`: bindings from a trigger to a handler, and the derives that build them.
 - `laserbeam`: the typed mutable path the bindings are built over.
-- `freddie`: the framework itself, over the two above.
+- freddie: the framework itself, over the two above.
 - `freddie_keys`: keys, presses, and modifier flags.
 - `freddie_keyboard`: grabbing the keyboard and emitting keys.
 - `freddie_app_nav`: foregrounding an app, and watching which one is frontmost.
