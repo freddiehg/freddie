@@ -211,18 +211,12 @@ fn place<'a, P: Ascend<MercuryPath<'a>>>(path: P, placement: Placement) -> Vec<M
 
 ```rust
 impl Windows {
-    /// Record that `target` is about to be asked for, and return the effects that ask:
-    /// the placement itself and the timer that bounds the wait for it.
+    /// Ask for `target`, and wait for it to land.
     ///
-    /// The frame the window has now becomes the one a restore goes back to, unless one is
-    /// already remembered: a run of placements all restore to where the window was before
-    /// the first of them.
-    pub(crate) fn placing(&mut self, target: WindowFrame) -> Vec<MercuryEffect> {
-        let Some(state) = self.windows.get_mut(&target.window) else {
-            return Vec::new();
-        };
-        state.restore = state.restore.or(Some(state.frame));
-
+    /// The wait is what keeps the moves this causes from counting as the user's. Both
+    /// callers need it; what they differ on is the remembered frame, which this leaves
+    /// alone.
+    fn asking_for(&mut self, target: WindowFrame) -> Vec<MercuryEffect> {
         let (timer, effect) = timer_effect_and_guard(PLACEMENT_SETTLE, |id| {
             MercuryEvent::Timer(TimerFired(id))
         });
@@ -232,6 +226,20 @@ impl Windows {
             timer,
         });
         vec![MercuryEffect::SetFrame(target), MercuryEffect::Timer(effect)]
+    }
+
+    /// Remember where the window is now, then place it.
+    ///
+    /// The frame it has now becomes the one a restore goes back to, unless one is already
+    /// remembered: a run of placements all restore to where the window was before the
+    /// first of them.
+    pub(crate) fn placing(&mut self, target: WindowFrame) -> Vec<MercuryEffect> {
+        let Some(state) = self.windows.get_mut(&target.window) else {
+            return Vec::new();
+        };
+        let frame = state.frame;
+        state.restore.get_or_insert(frame);
+        self.asking_for(target)
     }
 }
 ```
@@ -253,12 +261,12 @@ impl Windows {
         let Some(frame) = self.windows.get_mut(&window).and_then(|s| s.restore.take()) else {
             return Vec::new();
         };
-        self.placing_without_remembering(WindowFrame { window, frame })
+        self.asking_for(WindowFrame { window, frame })
     }
 }
 ```
 
-`placing_without_remembering` is `placing` minus the `state.restore` line: a restore still arms the wait, so the moves it causes are not read as the user's, but it has nothing to remember.
+`restoring` takes the frame rather than reading it, so what it hands to `asking_for` is the last thing that window has to go back to. Placing again after a restore remembers afresh, from wherever the window ended up.
 
 The handler, beside the three arrows:
 
