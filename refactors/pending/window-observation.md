@@ -349,8 +349,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-use core_foundation::runloop::CFRunLoop;
-
 /// A retained `AXUIElement` for one window.
 struct Element(Owned);
 
@@ -375,9 +373,9 @@ unsafe impl Send for Element {}
 #[derive(Clone)]
 pub struct WindowSink {
     placements: Sender<WindowFrame>,
-    /// Wakes the run loop so [`Watcher::drain`] runs now rather than at the end of the
-    /// current slice. `CFRunLoop` is `Send` and `Sync`.
-    run_loop: CFRunLoop,
+    /// Wakes the main loop so [`Watcher::drain`] runs now rather than up to a slice
+    /// later. See the note below on what this has to be.
+    waker: Waker,
 }
 
 impl WindowSink {
@@ -396,7 +394,7 @@ impl WindowSink {
         self.placements
             .send(target)
             .map_err(|_| WindowError::NotWatching)?;
-        self.run_loop.wake_up();
+        self.waker.wake();
         Ok(())
     }
 }
@@ -532,11 +530,13 @@ struct Observed {
 impl Watcher {
     /// A handle to ask for placements through. Cheap to clone, `Send`, and safe to keep
     /// past the watcher, which it answers [`WindowError::NotWatching`] from.
+    ///
+    /// The `Waker` comes from `freddie_main_loop::main_loop`, so `watch` takes one.
     #[must_use]
     pub fn sink(&self) -> WindowSink {
         WindowSink {
             placements: self.placements_tx.clone(),
-            run_loop: CFRunLoop::get_main(),
+            waker: self.waker.clone(),
         }
     }
 }
@@ -794,7 +794,29 @@ struct Boot {
     });
 ```
 
-`drain` is what performs a placement, so nothing moves without it. `WindowSink::set_frame` wakes the run loop, which is what gets this called promptly rather than at the end of the current 100ms slice.
+`drain` is what performs a placement, so nothing moves without it.
+
+## Waking the main loop
+
+Without a wake, a placement waits for `freddie_main_loop`'s `SLICE` to expire, because `on_wake` runs after `nextEventMatchingMask_untilDate_inMode_dequeue` returns. That bounds the delay at 100ms rather than leaving it open-ended, but 100ms between the key and the window moving is visible, and the menu-bar title has the same lag today for the same reason.
+
+`CFRunLoop::wake_up` is not established to fix it. It wakes the loop from sleep, but `nextEventMatchingMask` returns when an event is available or its deadline passes, and a bare wake makes neither true. What reliably interrupts that call is posting an application-defined `NSEvent` with `postEvent_atStart`, which makes an event available.
+
+So `Waker` belongs in `freddie_main_loop`, beside the loop it wakes, and `main_loop()` hands one back the way it hands back a `Stopper`:
+
+```rust
+/// Wakes the main loop so its `on_wake` runs now rather than when the current slice
+/// expires. `Send`, so a worker can hold one.
+pub struct Waker { ... }
+
+impl Waker {
+    pub fn wake(&self) { ... }
+}
+```
+
+Both users want it: `WindowSink` holds one, and the title channel should use it rather than waiting out a slice.
+
+One case it does not cover. While a menu is open, AppKit runs a modal tracking loop and the outer pump does not iterate, so `on_wake` does not run until tracking ends whatever is posted. A placement asked for with the status-item menu open is delayed until the menu closes. Acceptable: the menu's only item is Quit.
 
 Nothing can arrive out of order across that seam. A notification is delivered by running the run loop, and the run loop does not run until `main_loop.run`, which is after the worker already holds the snapshot. So the snapshot is the state before any reported change, and every change reported after it is genuinely later.
 
