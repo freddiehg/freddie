@@ -7,7 +7,7 @@ sidebar_position: 6
 
 `mercury` creates a menu bar item, which shows the current layer name and exposes a quit option. If you end up with a non-responsive keyboard while iterating, that is how you save yourself.
 
-From any layer except typing, `o` shows an overlay of what is bound.
+From any layer except typing, `o` shows an overlay of the layer's keymap.
 
 ## The main thread
 

@@ -218,7 +218,7 @@ function DontStopMeNow() {
             And, in configuration-driven frameworks, you don't write functions, so your handlers don't get access to the state at all! Want one key that maximizes a window and, pressed again, puts it back exactly where it was? Then something has to remember the window's old position, in other words, it needs to be a function that is passed state.
           </p>
           <p>
-            Now, more folks are willing to write configuration than to write and compile a Rust program. But guess what — freddie isn't for everyone. So, if you're willing to clone a repo, make some changes and run cargo build, freddie is here to give you incredible power. (And if you're not? Just ask an LLM to do it!)
+            Now, more folks are willing to write configuration than to write and compile a Rust program. But guess what — freddie isn't for everyone. So, if you're willing to clone a repo, make some changes and run cargo build, freddie is here to give you incredible power.
           </p>
         </Prose>
       </div>
@@ -339,11 +339,9 @@ function Mercury() {
         </Prose>
         <Prose>
           <p>
-            <code>mercury</code> boots into the typing layer, where every
-            keystroke passes through. Typing <code>jk</code> takes you home. From
-            there, <code>n</code> is nav, <code>i</code> is in-app, <code>s</code>{' '}
+            <code>mercury</code> boots into the typing layer, which passes all keystrokes through. Typing <code>jk</code> takes you to the home layer. From there, <code>n</code> is nav, <code>i</code> is in-app, <code>s</code>{' '}
             is per-site, <code>r</code> is resize, and <code>o</code> shows you an
-            overlay of what is bound.
+            overlay of the layer&rsquo;s keymap.
           </p>
           <p>
             Once you want it there every time, <code>mercury install</code>{' '}

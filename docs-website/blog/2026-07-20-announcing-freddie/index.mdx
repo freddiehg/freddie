@@ -80,11 +80,11 @@ cargo install --path crates/mercury
 mercury
 ```
 
-`mercury` boots into the typing layer, where every keystroke passes through. Typing `jk` takes you home. From there, `n` is nav, `i` is in-app, `s` is per-site, `r` is resize, and `o` shows you an overlay of what is bound.
+`mercury` boots into the typing layer, where every keystroke passes through. Typing `jk` takes you home. From there, `n` is nav, `i` is in-app, `s` is per-site, `r` is resize, and `o` shows you an overlay of the layer's keymap.
 
 Then open `crates/mercury/src/state/` and change something. `bacon restart` rebuilds and replaces the running daemon, so an edited binding is live without you touching a window, and `mercury logs` prints one record per dispatched event carrying the event, the effects it produced, and the state it left behind.
 
-There is also [a demo of freddie](https://www.youtube.com/watch?v=eM3wmsUWsbo), if you would rather watch it than run it.
+There is also [a demo of freddie](https://www.youtube.com/watch?v=eM3wmsUWsbo)!
 
 So, are you ready, Freddie?
 

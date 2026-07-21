@@ -49,7 +49,7 @@ Read that closely and you can see it booted into the typing layer. The menu bar 
 
 In the **typing** layer, every keystroke passes through. The only way out is the sequence `jk`, which takes you to the home layer. Pause for 200ms after the `j` and you get to type the characters `jk` like anyone else.
 
-From any layer except typing, `o` shows an overlay of what is bound. Press it from **home** and you will find `n` for nav, `t` for typing, `i` for inapp, `s` for site, `r` for resize, and `q` for quit.
+From any layer except typing, `o` shows an overlay of the layer's keymap. Press it from **home** and you will find `n` for nav, `t` for typing, `i` for inapp, `s` for site, `r` for resize, and `q` for quit.
 
 From the **nav** layer, `t` returns to typing, `z` foregrounds Zed, `f` Finder, `g` Ghostty, `c` Google Chrome, and `space` opens Spotlight. `esc` goes home, as it does from every non-typing layer. These are not the apps you use, so fork it.
 
