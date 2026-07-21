@@ -14,34 +14,31 @@ He is receiving visitors, and he is ready for you to experiment with.
 
 {/* truncate */}
 
-## What it is
+## Events in, effects out
 
-A freddie program ingests a stream of events and produces a stream of effects. One such event is generated when you press a key, and one such effect is a simulated keypress, so freddie can be used to build a key remapper. But the events and effects are arbitrary, so it can be used to build something much more powerful: a control plane for your computer.
+A freddie program responds to whatever you can observe. A keypress, an app being foregrounded, which tab you are looking at, what devices are plugged in, or something you have not thought of yet.
 
-Some of what that gets you:
+Because we're integrating events from many sources, we can easily do crazy things, such as cloning the repository you're looking at without leaving GitHub.com, or muting your microphone on Google Meet (without finding the tab!). Or rearranging your windows the moment you connect a monitor, which isn't a keybinding at all: nobody typed anything, the display woke up, and that was the event.
 
-- A key that clones the repo whose page you are reading, drops you into it, and opens your editor.
-- One key that mutes you whether the meeting is Zoom in front of you or Meet in a tab you would otherwise have to go find.
-- Your windows going back where they belong the moment you connect a monitor. Nobody typed anything. The display woke up, and that was the event.
-- Maximize a window, press the same key again, and it returns to exactly the size and position it had.
+And a freddie program is centered around a single, pure function: state and event in, new state and a list of effects out. So it stays testable and easy to reason about, even as it scales and grows more complex.
 
-None of those are keybindings in the sense a remapper means. Two depend on something no config file can see, one involves no keypress at all, and one requires remembering a value between events.
+## For programmers, by programmers
 
-## Building a freddie program
+freddie is unlike most other keyboard remappers: instead of providing a configuration and running somebody else's program, you compile your own. In that sense it is closer to Hammerspoon or QMK than to Karabiner.
 
-Freddie is unlike most other keyboard remappers: instead of providing a configuration and running a program, you compile it yourself. In that sense, it is more similar to hammerspoon or QMK than to Karabiner.
+Other programs for remapping keys are configuration-driven, and that makes it difficult or impossible to handle unanticipated use cases.
 
-Configuration-driven programs inherently limit what you can do. If you are attempting to bind a key differently depending on which app is foregrounded, you are fine, because that is a question the author thought to ask. If you are attempting to bind it on which tab is active in Chrome, you are not, because nothing in the format has anywhere to put the answer.
+Want to bind keys? That's fine, because these apps allow that. But, want your windows to go back where they belong the moment you connect to a monitor? You're out of luck. That's a device event, not a keybinding, and these apps don't allow you to incorporate arbitrary streams of events.
 
-That is the shape of every wall you hit. A configuration format is a fixed set of questions somebody else decided to ask, and the moment you want something outside the set, your options are abusing whatever escape hatch exists or bolting a second program onto the side to do the part the first one cannot. That is how a keyboard setup turns into three files that disagree about what state you are in.
+That's a sign of a deeper problem. Want these keybindings to do different things in different states? Well, you'd better hope that the app exposed that aspect of the state to you. Different keybindings for different active apps? That's doable, because it's anticipated and allowlisted. But, what about custom mute/unmute keybindings for when you're in an active Google Meet call? Not possible.
 
-There is a deeper version of the same problem. In a configuration-driven tool you do not write functions, so your handlers never see the state at all. Putting a window back where it was needs somebody to have remembered where it used to be, and there is nowhere to keep that.
+And, in configuration-driven frameworks, you don't write functions, so your handlers don't get access to the state at all! Want one key that maximizes a window and, pressed again, puts it back exactly where it was? Then something has to remember the window's old position, in other words, it needs to be a function that is passed state.
 
-Compiling your own program removes the wall rather than moving it. The state is a struct you declared, so it holds whatever the job needs. The handlers are functions you wrote, so they can read and change it. Adding an event source is adding a variant to an enum. Nothing has to be expressible in someone else's format before you are allowed to do it.
+Now, more folks are willing to write configuration than to write and compile a Rust program. But guess what: freddie isn't for everyone. So, if you're willing to clone a repo, make some changes and run `cargo build`, freddie is here to give you incredible power.
 
 ## What a binding looks like
 
-A binding is a trigger and the handler it runs, written on the level where it applies.
+A binding is a trigger and the handler it runs, written on the layer where it applies. Here, `c` foregrounds Chrome:
 
 ```rust
 #[derive(Bind, Debug)]
@@ -65,13 +62,13 @@ fn open_chrome<'a>(
 }
 ```
 
-It reads neither the event nor the state, because it does not need to. It only runs when `c` went down in the nav layer, and dispatch established both of those before calling it. A handler that does need state is handed a path to the level it was bound on, so it never asks which layer it is in and never writes an arm that cannot be reached.
+It reads neither the event nor the state, because it doesn't need to. It only runs when `c` went down in the nav layer, and dispatch established both of those before calling it. A handler that does need state is handed a path to the layer it was bound on, so it never asks which layer it's in and never writes an arm that can't be reached.
 
-The whole model is one pure function: state and event in, updated state and a list of effects out. Nothing is performed along the way. What a key does in a given layer is something you read off rather than something you run the program to discover, and a test is a call and an assertion rather than a keyboard you have to drive.
+The front page builds the harder one out in full: maximizing a window, putting it back exactly where it was, and hooking up the event source that tells the model which window is focused in the first place.
 
-## Give it a try
+## Give mercury a try
 
-The repository ships one program built on freddie, called `mercury`. It is macOS-only and requires accessibility permissions. You should not expect its bindings to suit you, because they are one person's, and the point of the exercise is that yours are yours.
+This repository ships one program built with freddie, called `mercury`. It is macOS-only and it requires accessibility permissions. You should not expect it to fit your use case: it is here to be read, run, studied, forked, and modified.
 
 ```bash
 git clone https://github.com/freddiehg/freddie
@@ -80,10 +77,10 @@ cargo install --path crates/mercury
 mercury
 ```
 
-It boots into the typing layer, where every keystroke passes through, and `jk` takes you home. From there, `o` shows an overlay of everything bound, which is the fastest way to find out what it does.
+`mercury` boots into the typing layer, where every keystroke passes through. Typing `jk` takes you home. From there, `n` is nav, `i` is in-app, `s` is per-site, `r` is resize, and `o` shows you an overlay of what is bound.
 
 Then open `crates/mercury/src/state/` and change something. `bacon restart` rebuilds and replaces the running daemon, so an edited binding is live without you touching a window, and `mercury logs` prints one record per dispatched event carrying the event, the effects it produced, and the state it left behind.
 
-That loop is the whole pitch. Fork it, bind something nobody could have anticipated for you, and tell me what you built.
+So, are you ready, Freddie?
 
 [Getting Started with Mercury](/docs/getting-started-with-mercury) walks through the layers, and [Implementing Your Own Handler](/docs/implementing-your-own-handler) writes the first binding.
