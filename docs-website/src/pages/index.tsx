@@ -113,30 +113,35 @@ function BendIt() {
         <h2 className={styles.centeredHeading}>Bend it to your will</h2>
         <div className="row">
           <Doable title="Remap keys however you like">
-            Layers, sequences, chords, keys that mean one thing here and
-            something else there. Bind whatever you want, however you want.
+            Chords, sequences, one key that sends four. The part every remapper
+            does, except you write it rather than describe it.
           </Doable>
-          <Doable title="Open a pull request without leaving your editor">
-            Three branches deep in a stack, one key works out which branch
-            yours sits on and opens the PR against that one.
+          <Doable title="Modes you made up">
+            A window layer where the arrows move windows instead of the cursor.
+            A presenting mode where the keys that could embarrass you are dead.
+            Nothing exposes those, because they did not exist until you said so.
           </Doable>
-          <Doable title="Clone a repo straight from github.com">
-            You are looking at the repo. Press a key and it is cloned, and
-            you are in it, without ever reaching for the URL.
+          <Doable title="Keys that know what you are looking at">
+            One key mutes you whether the meeting is Zoom in front of you or
+            Meet in a tab. Another clones the repo whose page you are on, or
+            copies the address without whatever got stapled to it.
           </Doable>
         </div>
         <div className="row">
-          <Doable title="Mute yourself without hunting for the tab">
-            One key mutes you, whether the meeting is Zoom in front of you or
-            Meet in a tab you would otherwise have to go find.
+          <Doable title="Things that happen with no key pressed">
+            Connect the monitor and your windows go back where they belong on
+            it. Nobody typed anything. The display woke up, and that was the
+            event.
           </Doable>
-          <Doable title="Rearrange your windows when you connect a monitor">
-            Nobody pressed anything. The monitor woke up, and everything went
-            back to where it belongs on it.
+          <Doable title="Keys that remember">
+            Maximize a window, press the same key again, and it returns to
+            exactly the size and position it had. Something had to remember
+            where that was, and something did.
           </Doable>
-          <Doable title="Copy a URL without the tracking junk">
-            Copy what you are reading and get the address, not the address
-            plus whatever the last five sites decided to staple to it.
+          <Doable title="Anything can talk to it">
+            A browser extension, a build that just finished, whatever you wrote
+            last week. If it can open a socket it can hand you an event, and a
+            binding can be waiting for it.
           </Doable>
         </div>
       </div>
