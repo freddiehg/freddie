@@ -211,6 +211,29 @@ function BindingSection() {
             Amazing! And, simple, even. We wrote handlers that accessed and mutated the state, and emitted effects that did the right thing. But wait — how did that <code>focused</code> and <code>restore</code> state get populated? We have to hook that up ourselves, too:
           </p>
         </Prose>
+        <Prose>
+          <div className={styles.codeBlockWrap}>
+            <CodeBlock language="rust">{eventExample}</CodeBlock>
+          </div>
+        </Prose>
+        <Prose>
+          <p>
+            Then a binding at the root keeps the field current. It changes state
+            and asks for nothing, so it returns <code>None</code>.
+          </p>
+        </Prose>
+        <Prose>
+          <div className={styles.codeBlockWrap}>
+            <CodeBlock language="rust">{trackExample}</CodeBlock>
+          </div>
+        </Prose>
+        <Prose>
+          <p>
+            Dispatch narrows an event to the kind a trigger reads before asking
+            whether it matches, so the key bindings above never see a window
+            event and did not have to be told this one exists.
+          </p>
+        </Prose>
       </div>
     </section>
   );
@@ -233,7 +256,7 @@ function Mercury() {
         <Prose>
           <div className={styles.codeBlockWrap}>
             <CodeBlock language="bash">
-              {`git clone https://github.com/freddiehg/freddie
+              {`  git clone https://github.com/freddiehg/freddie
   cd freddie
   cargo install --path crates/mercury
   mercury`}
@@ -261,7 +284,7 @@ function Mercury() {
         <Prose>
           <div className={styles.codeBlockWrap}>
             <CodeBlock language="bash">
-              {`mercury install     # start it at login
+              {`  mercury install     # start it at login
   mercury restart     # replace the running one
   mercury logs        # follow what it is doing`}
             </CodeBlock>
