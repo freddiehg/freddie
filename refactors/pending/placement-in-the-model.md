@@ -180,7 +180,11 @@ pub(crate) fn and_go_home_from(
 
 # Change 3: the sink stops deciding
 
-`crates/freddie_windows/src/lib.rs` loses `place`, `Placement`, `monitor_for`, and `focused_window`, all of which existed to work out what the model now works out. `set_frame_of` from `refactors/pending/window-observation.md` is the whole sink. `MONITORS` stays: `read_monitors` still feeds the `Screens` report.
+`crates/freddie_windows/src/lib.rs` loses `place`, `Placement`, `monitor_for`, and `focused_window`, all of which existed to work out what the model now works out. `WindowSink::set_frame` from `refactors/pending/window-observation.md` is the whole sink.
+
+`MONITORS` goes with them. It is a cache of main-thread-only `NSScreen` data that exists because `place` runs off the main thread, and `place` is its only reader; the model holds `screens` now, so the model is the cache. `read_monitors` stays as a plain function, called by the screen-change observer to build a `Screens` report and by `Watcher::snapshot` for the seed.
+
+`init` is left holding the Accessibility check and the no-screen check, which is small enough that it folds into `watch`. So `freddie_windows` ends up with no statics at all: everything observation needs belongs to the `Watcher`, and everything a placement needs arrives in its arguments.
 
 `crates/mercury/src/daemon.rs`:
 
@@ -207,7 +211,7 @@ fn place_window(placement: Placement) {
 After:
 
 ```rust
-        MercuryEffect::SetFrame(target) => set_frame(target),
+        MercuryEffect::SetFrame(target) => set_frame(windows, target),
 ```
 
 ```rust
@@ -215,15 +219,19 @@ After:
 /// milliseconds, which is long enough to delay a key the effect loop is about to emit. A
 /// detached thread cannot hold up the exit path the way `spawn_blocking` would, which is
 /// the same reason `foreground_app` uses one.
-fn set_frame(target: WindowFrame) {
-    std::thread::spawn(move || {
-        match freddie_windows::set_frame_of(target.window, target.frame) {
-            Ok(()) => debug!(?target, "set the window's frame"),
-            Err(e) => warn!(?target, error = %e, "set frame failed"),
-        }
+///
+/// The sink is a clone of the one the `Watcher` handed out, which is what the thread
+/// carries instead of reaching for a global.
+fn set_frame(windows: &WindowSink, target: WindowFrame) {
+    let windows = windows.clone();
+    std::thread::spawn(move || match windows.set_frame(target.window, target.frame) {
+        Ok(()) => debug!(?target, "set the window's frame"),
+        Err(e) => warn!(?target, error = %e, "set frame failed"),
     });
 }
 ```
+
+The effect loop gains the `WindowSink` alongside the `Emitter` it already carries, taken from the `Watcher` the daemon holds for the life of the process.
 
 The `Placement` translation goes away with it: the mirrored enum existed so the model could name a placement without depending on the OS crate, and there is no placement to name any more.
 
