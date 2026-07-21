@@ -81,6 +81,9 @@ Three things stay unrouted, because none of them is mercury's own output. clap w
 - Anything the outside world knows and a handler needs arrives as an event first. A subscriber observes the change, sends an event, and the handler records it in state. That is what makes a dispatch reproducible from `(state, event)` alone, and what keeps the model testable as a table.
 - The effect side is dumb. `perform_effect` and the platform code under it carry out exactly what the payload says and decide nothing. They do not read state, do not consult the outside world to fill in a missing argument, and do not branch on anything but the effect's own variant.
 - So the effect payload carries everything performing it needs. If foregrounding a window needs its id, the id is in the payload rather than looked up at performance time. An effect that would have to go find something is a sign the handler dropped information it already had.
+- An event that reports state is idempotent: applying it twice lands where applying it once does. It assigns, replaces, or removes, and it never accumulates. `set_front_app` assigns the app, a window's frame is overwritten, a closed window is removed. A counter, a toggle, or an append would be wrong.
+
+  This is what makes the boot ordering safe. Every watcher is installed before any seed is read (see `refactors/past/seed-at-construction.md`), so a change happening in that window arrives twice: once in the seed the model is constructed with, and once as the event the watcher queued. Chrome comes forward, the snapshot already says Chrome, the queued `Foreground(Chrome)` dispatches into a model that agrees, and nothing moves. The other ordering loses the change entirely, so this is the ordering, and idempotence is its price.
 
 ## Coding standards
 
