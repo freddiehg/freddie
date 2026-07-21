@@ -18,53 +18,56 @@ He is receiving visitors, and he is ready for you to experiment with.
 
 A freddie program responds to whatever you can observe. A keypress, an app being foregrounded, which tab you are looking at, what devices are plugged in, or something you have not thought of yet.
 
-Because we're integrating events from many sources, we can easily do crazy things, such as cloning the repository you're looking at without leaving GitHub.com, or muting your microphone on Google Meet (without finding the tab!). Or rearranging your windows the moment you connect a monitor, which isn't a keybinding at all: nobody typed anything, the display woke up, and that was the event.
+Because we're integrating events from many sources, we can easily do crazy things, such as cloning the repository you're looking at without leaving GitHub.com, or muting your microphone on Google Meet (without finding the tab!)
 
-And a freddie program is centered around a single, pure function: state and event in, new state and a list of effects out. So it stays testable and easy to reason about, even as it scales and grows more complex.
+A freddie program is centered around a single, pure function: state and event in, new state and a list of effects out. And so a freddie program remains testable and easy to reason about, even as it scales and grows more complex.
 
 ## For programmers, by programmers
 
-freddie is unlike most other keyboard remappers: instead of providing a configuration and running somebody else's program, you compile your own. In that sense it is closer to Hammerspoon or QMK than to Karabiner.
-
 Other programs for remapping keys are configuration-driven, and that makes it difficult or impossible to handle unanticipated use cases.
 
-Want to bind keys? That's fine, because these apps allow that. But, want your windows to go back where they belong the moment you connect to a monitor? You're out of luck. That's a device event, not a keybinding, and these apps don't allow you to incorporate arbitrary streams of events.
+Want to bind keys? That's fine, because these apps allow that. But, want your windows to go back where they belong the moment you connect to a monitor? You're out of luck — that's a device event, not a keybinding, and these apps don't allow you to incorporate arbitrary streams of events.
 
-That's a sign of a deeper problem. Want these keybindings to do different things in different states? Well, you'd better hope that the app exposed that aspect of the state to you. Different keybindings for different active apps? That's doable, because it's anticipated and allowlisted. But, what about custom mute/unmute keybindings for when you're in an active Google Meet call? Not possible.
+That's a sign of a deeper problem.
+
+Want these keybindings to do different things in different states? Well, you'd better hope that the app exposed that aspect of the state to you. Different keybindings for different active apps? That's doable, because it's anticipated and allowlisted. But, what about custom mute/unmute keybindings for when you're in an active Google Meet call? Not possible.
 
 And, in configuration-driven frameworks, you don't write functions, so your handlers don't get access to the state at all! Want one key that maximizes a window and, pressed again, puts it back exactly where it was? Then something has to remember the window's old position, in other words, it needs to be a function that is passed state.
 
-Now, more folks are willing to write configuration than to write and compile a Rust program. But guess what: freddie isn't for everyone. So, if you're willing to clone a repo, make some changes and run `cargo build`, freddie is here to give you incredible power.
+Now, more folks are willing to write configuration than to write and compile a Rust program. But guess what — freddie isn't for everyone. So, if you're willing to clone a repo, make some changes and run cargo build, freddie is here to give you incredible power.
 
 ## What a binding looks like
 
-A binding is a trigger and the handler it runs, written on the layer where it applies. Here, `c` foregrounds Chrome:
+A binding is a trigger and the handler it runs, written on the layer where it applies. Up maximizes the focused window, and `r` puts it back.
 
 ```rust
 #[derive(Bind, Debug)]
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
-    Key::KeyC.down() => open_chrome,
-    Key::KeyG.down() => open_ghostty,
+    Key::UpArrow.down() => maximize,
+    Key::KeyR.down() => restore,
 )]
-pub struct NavLayer {}
+pub struct ResizeLayer {}
 ```
 
-And a handler is a function:
+Restoring reads back what maximizing wrote down:
 
 ```rust
-fn open_chrome<'a>(
+fn restore<'a>(
     _ev: &KeyEvent,
-    _node: Node<NavLayerPath<'a>, ()>,
-) -> MercuryEffect {
-    MercuryEffect::Foreground(App::Chrome)
+    node: Node<ResizeLayerPath<'a>, ()>,
+) -> Option<MercuryEffect> {
+    let root: &mut Mercury = node.parent.ascend();
+
+    let (id, _) = root.focused?;
+    let frame = root.prior_locations.remove(&id)?;
+
+    Some(MercuryEffect::Place(Placement::Exactly(frame)))
 }
 ```
 
-It reads neither the event nor the state, because it doesn't need to. It only runs when `c` went down in the nav layer, and dispatch established both of those before calling it. A handler that does need state is handed a path to the layer it was bound on, so it never asks which layer it's in and never writes an arm that can't be reached.
-
-The front page builds the harder one out in full: maximizing a window, putting it back exactly where it was, and hooking up the event source that tells the model which window is focused in the first place.
+The front page builds this out in full, including the event source that tells the model which window is focused in the first place.
 
 ## Give mercury a try
 
