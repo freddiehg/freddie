@@ -78,14 +78,34 @@ fn window_origin(window: AXUIElementRef) -> Option<CGPoint> {
 After:
 
 ```rust
-/// Read one `AXValue` attribute of `element` into `out`, which names the type to unwrap:
-/// a `CGPoint` for `kAXValueTypeCGPoint`, a `CGSize` for `kAXValueTypeCGSize`.
-fn ax_value<T: Copy>(
-    element: AXUIElementRef,
-    attribute: &str,
-    kind: AXValueType,
-    mut out: T,
-) -> Option<T> {
+/// A type an `AXValue` can carry, and the `AXValueType` that names it.
+///
+/// The pairing is the point: `AXValueGetValue` writes through an untyped pointer, so a
+/// kind that disagrees with the type it is written into is a mismatch nothing catches. An
+/// impl per type is what makes the two impossible to pass separately.
+trait AxValue: Copy {
+    const KIND: AXValueType;
+    /// A value to read over. `AXValueGetValue` overwrites it, or leaves it and returns
+    /// false, in which case the caller discards it.
+    fn zeroed() -> Self;
+}
+
+impl AxValue for CGPoint {
+    const KIND: AXValueType = kAXValueTypeCGPoint;
+    fn zeroed() -> Self {
+        Self::new(0.0, 0.0)
+    }
+}
+
+impl AxValue for CGSize {
+    const KIND: AXValueType = kAXValueTypeCGSize;
+    fn zeroed() -> Self {
+        Self::new(0.0, 0.0)
+    }
+}
+
+/// Read one `AXValue` attribute of `element`.
+fn ax_value<T: AxValue>(element: AXUIElementRef, attribute: &str) -> Option<T> {
     let attribute = CFString::new(attribute);
     let mut value: *const c_void = std::ptr::null();
     // SAFETY: `element` is live and `attribute` a live string. On success the
@@ -102,13 +122,14 @@ fn ax_value<T: Copy>(
         return None;
     }
 
-    // SAFETY: `value` is a +1 `AXValue` of `kind`, which the caller pairs with `T`;
-    // `AXValueGetValue` copies it into `out`. The value is released afterward.
+    let mut out = T::zeroed();
+    // SAFETY: `value` is a +1 `AXValue` of `T::KIND`, which the impl pairs with `T`, so
+    // `AXValueGetValue` writes a `T` into a `T`. The value is released afterward.
     #[expect(unsafe_code)]
     let got = unsafe {
         let ok = AXValueGetValue(
             value.cast_mut().cast(),
-            kind,
+            T::KIND,
             std::ptr::from_mut(&mut out).cast(),
         );
         CFRelease(value);
@@ -120,18 +141,8 @@ fn ax_value<T: Copy>(
 /// A window's frame, in Accessibility coordinates, or `None` if either half of it
 /// cannot be read.
 fn window_frame(window: AXUIElementRef) -> Option<Frame> {
-    let origin = ax_value(
-        window,
-        kAXPositionAttribute,
-        kAXValueTypeCGPoint,
-        CGPoint::new(0.0, 0.0),
-    )?;
-    let size = ax_value(
-        window,
-        kAXSizeAttribute,
-        kAXValueTypeCGSize,
-        CGSize::new(0.0, 0.0),
-    )?;
+    let origin: CGPoint = ax_value(window, kAXPositionAttribute)?;
+    let size: CGSize = ax_value(window, kAXSizeAttribute)?;
     Some(Frame {
         x: origin.x,
         y: origin.y,
