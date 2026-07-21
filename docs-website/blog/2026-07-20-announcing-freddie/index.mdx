@@ -28,7 +28,7 @@ Other programs for remapping keys are configuration-driven, and that makes it di
 
 Want to bind keys? That's fine, because these apps allow that. But, want your windows to go back where they belong the moment you connect to a monitor? You're out of luck — that's a device event, not a keybinding, and these apps don't allow you to incorporate arbitrary streams of events.
 
-That's a sign of a deeper problem.
+### And that's a sign of a deeper problem.
 
 Want these keybindings to do different things in different states? Well, you'd better hope that the app exposed that aspect of the state to you. Different keybindings for different active apps? That's doable, because it's anticipated and allowlisted. But, what about custom mute/unmute keybindings for when you're in an active Google Meet call? Not possible.
 
@@ -67,7 +67,7 @@ fn restore<'a>(
 }
 ```
 
-The front page builds this out in full, including the event source that tells the model which window is focused in the first place.
+[freddie.rs](https://www.freddie.rs) builds this out in full, including the event source that tells the model which window is focused in the first place.
 
 ## Give mercury a try
 
