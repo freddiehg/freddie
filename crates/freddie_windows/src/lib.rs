@@ -24,12 +24,12 @@ use std::sync::RwLock;
 
 use accessibility_sys::{
     AXIsProcessTrusted, AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
-    AXUIElementRef, AXUIElementSetAttributeValue, AXValueCreate, AXValueGetValue,
+    AXUIElementRef, AXUIElementSetAttributeValue, AXValueCreate, AXValueGetValue, AXValueType,
     kAXFocusedWindowAttribute, kAXPositionAttribute, kAXSizeAttribute, kAXValueTypeCGPoint,
     kAXValueTypeCGSize,
 };
 use block2::RcBlock;
-use core_foundation::base::{CFRelease, TCFType};
+use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
 use core_foundation::string::CFString;
 use core_graphics::geometry::{CGPoint, CGSize};
 use objc2_app_kit::{NSApplicationDidChangeScreenParametersNotification, NSScreen, NSWorkspace};
@@ -46,11 +46,11 @@ pub enum Placement {
 
 /// A rectangle in Accessibility coordinates: origin top-left, y increasing down.
 #[derive(Clone, Copy, PartialEq, Debug)]
-struct Frame {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
+pub struct Frame {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 impl Frame {
@@ -64,9 +64,9 @@ impl Frame {
 /// a placement fills (the full frame minus the menu bar and the dock). Both in
 /// Accessibility coordinates.
 #[derive(Clone, Copy, PartialEq, Debug)]
-struct Monitor {
-    full: Frame,
-    visible: Frame,
+pub struct Monitor {
+    pub full: Frame,
+    pub visible: Frame,
 }
 
 impl Placement {
@@ -240,7 +240,7 @@ fn register_screen_change_observer() {
 pub fn place(placement: Placement) -> Result<(), WindowError> {
     let window = focused_window().ok_or(WindowError::NoFocusedWindow)?;
 
-    let monitor = monitor_for(window).ok_or(WindowError::NotInitialized)?;
+    let monitor = monitor_for(window_frame(window)).ok_or(WindowError::NotInitialized)?;
     let target = placement.within(monitor.visible);
     set_frame(window, target);
 
@@ -253,51 +253,128 @@ pub fn place(placement: Placement) -> Result<(), WindowError> {
     Ok(())
 }
 
-/// The monitor the focused window is on: the one whose full frame contains the
-/// window's top-left corner, or the first monitor if none does or the position could
-/// not be read. `None` only if [`init`] never cached any monitor.
-fn monitor_for(window: AXUIElementRef) -> Option<Monitor> {
+/// The monitor a window is on: the one whose full frame contains the window's top-left
+/// corner, or the first monitor if none does or the frame could not be read. `None` only
+/// if [`init`] never cached any monitor.
+fn monitor_for(frame: Option<Frame>) -> Option<Monitor> {
     let monitors = MONITORS.read().ok()?.clone();
     let first = *monitors.first()?;
-    let chosen = window_origin(window)
-        .and_then(|p| monitors.iter().find(|m| m.full.contains(p.x, p.y)).copied())
+    let chosen = frame
+        .and_then(|f| monitors.iter().find(|m| m.full.contains(f.x, f.y)).copied())
         .unwrap_or(first);
     Some(chosen)
 }
 
-/// The focused window's top-left corner, in Accessibility coordinates, or `None` if
-/// it cannot be read.
-fn window_origin(window: AXUIElementRef) -> Option<CGPoint> {
-    let attribute = CFString::new(kAXPositionAttribute);
-    let mut value: *const c_void = std::ptr::null();
-    // SAFETY: `window` is a live element and `attribute` a live string. On success
-    // the out-parameter receives a +1 `AXValue`; on failure it is untouched.
+/// A +1 CoreFoundation reference, released when it drops.
+///
+/// CF's rule is that a function with `Create` or `Copy` in its name hands you ownership,
+/// so `AXUIElementCopyAttributeValue`, `AXUIElementCreateApplication`, and `AXValueCreate`
+/// all return one of these. Wrapping it is what makes the release impossible to forget
+/// when a `?` or an early return is added between the call and the end of the function.
+///
+/// Deliberately not `Copy` and not `Clone`: two of these naming one reference would
+/// release it twice.
+struct Owned(CFTypeRef);
+
+impl Owned {
+    /// Take ownership of what a `Create` or `Copy` returned, or `None` if it returned
+    /// nothing.
+    fn new(raw: CFTypeRef) -> Option<Self> {
+        (!raw.is_null()).then_some(Self(raw))
+    }
+}
+
+impl Drop for Owned {
+    fn drop(&mut self) {
+        // SAFETY: an `Owned` is only built from a +1 reference, and only here is it
+        // released, once.
+        #[expect(unsafe_code)]
+        unsafe {
+            CFRelease(self.0);
+        }
+    }
+}
+
+/// One `AXValue` attribute: the name it is read by, the `AXValueType` it holds, and the
+/// Rust type that type means.
+///
+/// All three together, because `AXValueGetValue` writes through an untyped pointer: an
+/// attribute read with the wrong kind, or into the wrong type, is a mismatch nothing would
+/// otherwise catch.
+trait AxAttribute {
+    const NAME: &'static str;
+    const KIND: AXValueType;
+    type Value: Copy + Default;
+}
+
+struct Position;
+impl AxAttribute for Position {
+    const NAME: &'static str = kAXPositionAttribute;
+    const KIND: AXValueType = kAXValueTypeCGPoint;
+    type Value = CGPoint;
+}
+
+struct Size;
+impl AxAttribute for Size {
+    const NAME: &'static str = kAXSizeAttribute;
+    const KIND: AXValueType = kAXValueTypeCGSize;
+    type Value = CGSize;
+}
+
+/// The value of one attribute of `element`, owned.
+fn copy_attribute(element: AXUIElementRef, name: &str) -> Option<Owned> {
+    let attribute = CFString::new(name);
+    let mut value: CFTypeRef = std::ptr::null();
+    // SAFETY: `element` is live and `attribute` a live string. On success the
+    // out-parameter receives a +1 reference; on failure it is untouched.
     #[expect(unsafe_code)]
     let status = unsafe {
         AXUIElementCopyAttributeValue(
-            window,
+            element,
             attribute.as_concrete_TypeRef(),
             std::ptr::from_mut(&mut value).cast(),
         )
     };
-    if status != 0 || value.is_null() {
-        return None;
-    }
+    (status == 0).then(|| Owned::new(value))?
+}
 
-    let mut point = CGPoint::new(0.0, 0.0);
-    // SAFETY: `value` is a +1 `AXValue` of CGPoint type; `AXValueGetValue` copies it
-    // into `point`. The value is released afterward.
+/// Read one `AXValue` attribute of `element`.
+fn ax_value<A: AxAttribute>(element: AXUIElementRef) -> Option<A::Value> {
+    let value = copy_attribute(element, A::NAME)?;
+    let mut out = A::Value::default();
+    // SAFETY: `value` is a live `AXValue`, and the impl pairs `A::KIND` with `A::Value`,
+    // so a successful read writes an `A::Value` into an `A::Value`.
     #[expect(unsafe_code)]
     let got = unsafe {
-        let ok = AXValueGetValue(
-            value.cast_mut().cast(),
-            kAXValueTypeCGPoint,
-            std::ptr::from_mut(&mut point).cast(),
-        );
-        CFRelease(value);
-        ok
+        AXValueGetValue(
+            value.0.cast_mut().cast(),
+            A::KIND,
+            std::ptr::from_mut(&mut out).cast(),
+        )
     };
-    got.then_some(point)
+    if !got {
+        // The attribute did not hold the type it is documented to hold, which is the app's
+        // Accessibility implementation misbehaving. Logged rather than fatal: a daemon that
+        // remaps the keyboard should not die because some app answered oddly.
+        tracing::warn!(
+            attribute = A::NAME,
+            "an AXValue was not the type it should be"
+        );
+    }
+    got.then_some(out)
+}
+
+/// A window's frame, in Accessibility coordinates, or `None` if either half of it
+/// cannot be read.
+fn window_frame(window: AXUIElementRef) -> Option<Frame> {
+    let origin = ax_value::<Position>(window)?;
+    let size = ax_value::<Size>(window)?;
+    Some(Frame {
+        x: origin.x,
+        y: origin.y,
+        width: size.width,
+        height: size.height,
+    })
 }
 
 /// The focused window of the frontmost app, as a +1 reference the caller releases.
