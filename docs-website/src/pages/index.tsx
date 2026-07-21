@@ -124,13 +124,17 @@ function BendIt() {
         </div>
         <div className="row">
           <Doable title="Rearrange windows automatically">
-            Connect a monitor and your have your windows go back to where they belong.
+            Connect a monitor and your windows go back where they belong.
           </Doable>
-          <Doable title="Open any link, anywhere">
-            Press a key and search everything on your screens. A link in Slack, or a button in some native app, or a tab in the browser.
+          <Doable title="Keys that remember">
+            Maximize a window, press the same key again, and it returns to
+            exactly the size and position it had. Something had to remember
+            where that was, and something did.
           </Doable>
-          <Doable title="I heard it on my radio">
-            Incorporate events from any source. Read events over a websocket, or from a file, or from system APIs - such as which window took focus.
+          <Doable title="Anything can talk to it">
+            A browser extension, a build that just finished, whatever you wrote
+            last week. If it can open a socket it can hand you an event, and a
+            binding can be waiting for it.
           </Doable>
         </div>
       </div>
