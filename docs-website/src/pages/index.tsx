@@ -101,7 +101,7 @@ function Features() {
     <section>
       <div className="container">
         <div className="kicker">It&rsquo;s simple</div>
-        <h2 className={styles.centeredHeading}>Events in, effects out.</h2>
+        <h2 className={styles.centeredHeading}>Events in, effects out</h2>
         <div className="row" style={{ paddingTop: '1.5rem' }}>
           <div className="col col--4">
             <h3>Integrate anything</h3>
@@ -136,7 +136,7 @@ function Video() {
     <section className="alt-background">
       <div className="container">
         <div className="kicker">It&rsquo;s worth a look</div>
-        <h2 className={styles.centeredHeading}>See it running.</h2>
+        <h2 className={styles.centeredHeading}>See it running</h2>
         <div className="row">
           <div className="col col--8 col--offset-2 margin-top--md">
             <iframe
