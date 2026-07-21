@@ -84,12 +84,15 @@ pub enum MercuryEffect {
     Timer(TimerEffect<MercuryEvent>),
 }
 
-/// One effect is a dispatch output of one effect, so a handler with a single thing to ask for
-/// returns it bare and dispatch wraps it. `Bindings::Output` stays the vector, since a handler
-/// that asks for several is the other half of the same trait.
-impl From<MercuryEffect> for Vec<MercuryEffect> {
-    fn from(effect: MercuryEffect) -> Self {
-        vec![effect]
+/// One effect iterates as itself, so a handler with a single thing to ask for returns it bare
+/// and dispatch collects it. `Bindings::Output` stays the vector, since a handler that asks for
+/// several is the other half of the same trait.
+impl IntoIterator for MercuryEffect {
+    type Item = Self;
+    type IntoIter = std::iter::Once<Self>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        std::iter::once(self)
     }
 }
 

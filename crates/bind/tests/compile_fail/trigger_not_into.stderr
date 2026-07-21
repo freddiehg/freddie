@@ -1,10 +1,10 @@
 error[E0277]: the trait bound `Trig: From<Weird>` is not satisfied
-  --> tests/compile_fail/trigger_not_into.rs:39:8
+  --> tests/compile_fail/trigger_not_into.rs:41:8
    |
-36 | #[derive(Bind)]
+38 | #[derive(Bind)]
    |          ---- required by a bound introduced by this call
 ...
-39 | #[bind(Weird => handler)]
+41 | #[bind(Weird => handler)]
    |        ^^^^^ unsatisfied trait bound
    |
 help: the trait `From<Weird>` is not implemented for `Trig`

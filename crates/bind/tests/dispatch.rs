@@ -32,7 +32,7 @@ fn typing_app() -> App {
 fn leaf_binding_fires() {
     let mut app = nav_app();
     let out = bind::dispatch::<Demo, App>(&mut app, &key("g"));
-    assert_eq!(out, Some(1)); // "g"
+    assert_eq!(out, Some(vec![1])); // "g"
     let Layer::Nav(nav) = &app.layer else {
         unreachable!()
     };
@@ -46,7 +46,7 @@ fn leaf_binding_fires() {
 fn ancestor_binding_fires_after_subtree_misses() {
     let mut app = nav_app();
     let out = bind::dispatch::<Demo, App>(&mut app, &key("esc"));
-    assert_eq!(out, Some(3)); // "esc"
+    assert_eq!(out, Some(vec![3])); // "esc"
     assert_eq!(app.hits, 1);
     let Layer::Nav(nav) = &app.layer else {
         unreachable!()
@@ -59,7 +59,7 @@ fn ancestor_binding_fires_after_subtree_misses() {
 fn enum_binding_fires() {
     let mut app = nav_app();
     let out = bind::dispatch::<Demo, App>(&mut app, &key("f1"));
-    assert_eq!(out, Some(2)); // "f1"
+    assert_eq!(out, Some(vec![2])); // "f1"
 }
 
 // Through the other enum variant, and on through the boxed `#[resolve_into]`.
@@ -67,7 +67,7 @@ fn enum_binding_fires() {
 fn through_typing_variant() {
     let mut app = typing_app();
     let out = bind::dispatch::<Demo, App>(&mut app, &key("bksp"));
-    assert_eq!(out, Some(4)); // "bksp"
+    assert_eq!(out, Some(vec![4])); // "bksp"
     let Layer::Typing(t) = &app.layer else {
         unreachable!()
     };
@@ -78,7 +78,7 @@ fn through_typing_variant() {
 fn through_box_to_deep() {
     let mut app = typing_app();
     let out = bind::dispatch::<Demo, App>(&mut app, &key("d"));
-    assert_eq!(out, Some(1)); // "d"
+    assert_eq!(out, Some(vec![1])); // "d"
     let Layer::Typing(t) = &app.layer else {
         unreachable!()
     };
@@ -90,7 +90,7 @@ fn through_box_to_deep() {
 fn foreground_binding_fires() {
     let mut app = nav_app();
     let out = bind::dispatch::<Demo, App>(&mut app, &foreground("Slack"));
-    assert_eq!(out, Some(5)); // "Slack"
+    assert_eq!(out, Some(vec![5])); // "Slack"
 }
 
 // An event no node binds returns `None` and mutates nothing.
@@ -130,7 +130,7 @@ fn multi_parent_leaf_via_album() {
         title: Title { hits: 0 },
     });
     let out = bind::dispatch::<Demo, Media>(&mut media, &key("t"));
-    assert_eq!(out, Some(1)); // "t"
+    assert_eq!(out, Some(vec![1])); // "t"
     let Media::Album(a) = &media else {
         unreachable!()
     };
@@ -143,7 +143,7 @@ fn multi_parent_leaf_via_song() {
         title: Title { hits: 0 },
     });
     let out = bind::dispatch::<Demo, Media>(&mut media, &key("t"));
-    assert_eq!(out, Some(1)); // "t"
+    assert_eq!(out, Some(vec![1])); // "t"
     let Media::Song(s) = &media else {
         unreachable!()
     };
@@ -158,7 +158,7 @@ fn multi_parent_ancestor_recover() {
         title: Title { hits: 0 },
     });
     let out = bind::dispatch::<Demo, Media>(&mut media, &key("a"));
-    assert_eq!(out, Some(1)); // "a"
+    assert_eq!(out, Some(vec![1])); // "a"
     let Media::Album(a) = &media else {
         unreachable!()
     };
@@ -178,7 +178,7 @@ fn a_closure_trigger_matches_only_what_its_node_waits_for() {
     };
     assert_eq!(
         bind::dispatch::<Demo, Armed>(&mut armed, &key("g")),
-        Some(1)
+        Some(vec![1])
     );
     assert_eq!(armed.waiting_for, None, "the handler ran and cleared it");
 }
@@ -214,7 +214,7 @@ fn a_constant_trigger_still_works_beside_a_closure_one() {
     };
     assert_eq!(
         bind::dispatch::<Demo, Armed>(&mut armed, &key("esc")),
-        Some(3)
+        Some(vec![3])
     );
 }
 
@@ -229,7 +229,7 @@ fn a_closure_trigger_on_a_deeper_node_reads_through_its_path() {
     };
     assert_eq!(
         bind::dispatch::<Demo, Armed>(&mut armed, &key("z")),
-        Some(1)
+        Some(vec![1])
     );
     assert_eq!(armed.child.wants, None, "the child's handler ran");
 }
@@ -246,7 +246,7 @@ fn a_closure_trigger_can_read_its_parent() {
     // the parent-reading one returns the key's length plus 100.
     assert_eq!(
         bind::dispatch::<Demo, Armed>(&mut armed, &key("up")),
-        Some(102)
+        Some(vec![102])
     );
 }
 
@@ -270,6 +270,6 @@ fn a_present_option_trigger_matches_its_key() {
     };
     assert_eq!(
         bind::dispatch::<Demo, Armed>(&mut armed, &key("z")),
-        Some(1)
+        Some(vec![1])
     );
 }

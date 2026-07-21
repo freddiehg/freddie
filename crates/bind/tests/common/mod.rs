@@ -78,43 +78,45 @@ pub struct Demo;
 impl Bindings for Demo {
     type Trigger = DemoTrigger;
     type Event = DemoEvent;
-    type Output = usize;
+    type Output = Vec<usize>;
 }
 
-// Handlers. Each takes its node's path and returns the fired key's length.
-pub const fn on_esc(ev: &KeyEvent, node: Node<&mut App, ()>) -> usize {
+// Handlers. Each takes its node's path and returns the fired key's length. The return types
+// vary on purpose: dispatch collects any iterable, so an array, a `Vec`, and a bare iterator
+// are all valid handler returns and each shape is exercised here.
+pub const fn on_esc(ev: &KeyEvent, node: Node<&mut App, ()>) -> [usize; 1] {
     let app = node.parent;
     app.hits += 1;
-    ev.key.len()
+    [ev.key.len()]
 }
-pub fn on_f1(ev: &KeyEvent, _node: Node<LayerPath, ()>) -> usize {
-    ev.key.len()
+pub fn on_f1(ev: &KeyEvent, _node: Node<LayerPath, ()>) -> Vec<usize> {
+    vec![ev.key.len()]
 }
-pub fn on_g(ev: &KeyEvent, mut node: Node<NavPath, ()>) -> usize {
+pub fn on_g(ev: &KeyEvent, mut node: Node<NavPath, ()>) -> impl Iterator<Item = usize> {
     node.parent.get_mut().hits += 1;
-    ev.key.len()
+    std::iter::once(ev.key.len())
 }
-pub fn on_slack(ev: &FgEvent, _node: Node<NavPath, ()>) -> usize {
-    ev.app.len()
+pub fn on_slack(ev: &FgEvent, _node: Node<NavPath, ()>) -> [usize; 1] {
+    [ev.app.len()]
 }
-pub fn on_bksp(ev: &KeyEvent, mut node: Node<TypingPath, ()>) -> usize {
+pub fn on_bksp(ev: &KeyEvent, mut node: Node<TypingPath, ()>) -> [usize; 1] {
     node.parent.get_mut().hits += 1;
-    ev.key.len()
+    [ev.key.len()]
 }
-pub fn on_d(ev: &KeyEvent, mut node: Node<DeepPath, ()>) -> usize {
+pub fn on_d(ev: &KeyEvent, mut node: Node<DeepPath, ()>) -> [usize; 1] {
     node.parent.get_mut().hits += 1;
-    ev.key.len()
+    [ev.key.len()]
 }
 /// A handler for the armed node: clears what it was waiting on, so a test can see it ran.
-pub const fn on_armed(ev: &KeyEvent, node: Node<&mut Armed, ()>) -> usize {
+pub const fn on_armed(ev: &KeyEvent, node: Node<&mut Armed, ()>) -> [usize; 1] {
     let armed = node.parent;
     armed.waiting_for = None;
-    ev.key.len()
+    [ev.key.len()]
 }
 
 /// A handler for nodes a dispatch test never fires (any path, ignored).
-pub fn ignore<P>(ev: &KeyEvent, _node: Node<P, ()>) -> usize {
-    ev.key.len()
+pub fn ignore<P>(ev: &KeyEvent, _node: Node<P, ()>) -> [usize; 1] {
+    [ev.key.len()]
 }
 
 // App -> Layer (enum) -> { Nav (leaf), Typing -> Box<Deep> (leaf) }.
@@ -184,7 +186,7 @@ pub struct Clash {
 #[node(parent = ClashPath)]
 #[binds(Demo)]
 #[bind(Keyboard("dup") => ignore)]
-pub struct ClashChild {}
+pub struct ClashChild;
 
 pub type ClashPath<'a> = &'a mut Clash;
 pub type ClashChildPath<'a> = PathMut<ClashChild, ClashPath<'a>>;
@@ -192,7 +194,7 @@ pub type ClashChildPath<'a> = PathMut<ClashChild, ClashPath<'a>>;
 #[derive(Bind)]
 #[node(root)]
 #[binds(Demo)]
-pub struct Empty {}
+pub struct Empty;
 
 // A multi-parent tree: `Title` is reached from both `Album` and `Song` through
 // the `TitleParent` route enum.
@@ -238,9 +240,9 @@ pub enum TitleParent<'a> {
     Song(SongPath<'a>),
 }
 pub type TitlePath<'a> = PathMut<Title, TitleParent<'a>>;
-pub fn on_title(ev: &KeyEvent, mut node: Node<TitlePath, ()>) -> usize {
+pub fn on_title(ev: &KeyEvent, mut node: Node<TitlePath, ()>) -> [usize; 1] {
     node.parent.get_mut().hits += 1;
-    ev.key.len()
+    [ev.key.len()]
 }
 
 /// A keyboard trigger, for accumulate assertions.
@@ -321,15 +323,15 @@ pub struct ArmedChild {
 }
 
 /// Fires for the key the child's PARENT is waiting for, read through `parent()`.
-pub fn on_parents_key(ev: &KeyEvent, _node: Node<ArmedChildPath, ()>) -> usize {
-    ev.key.len() + 100
+pub fn on_parents_key(ev: &KeyEvent, _node: Node<ArmedChildPath, ()>) -> [usize; 1] {
+    [ev.key.len() + 100]
 }
 
-pub const fn on_esc_armed(ev: &KeyEvent, _node: Node<&mut Armed, ()>) -> usize {
-    ev.key.len()
+pub const fn on_esc_armed(ev: &KeyEvent, _node: Node<&mut Armed, ()>) -> [usize; 1] {
+    [ev.key.len()]
 }
 
-pub fn on_child_armed(ev: &KeyEvent, mut node: Node<ArmedChildPath, ()>) -> usize {
+pub fn on_child_armed(ev: &KeyEvent, mut node: Node<ArmedChildPath, ()>) -> [usize; 1] {
     node.parent.get_mut().wants = None;
-    ev.key.len()
+    [ev.key.len()]
 }

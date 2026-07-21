@@ -66,9 +66,10 @@ pub trait Bindings {
     type Event;
     /// What dispatch returns: the effect data for the consumer to perform.
     ///
-    /// A handler returns anything that is `Into` this, which is what lets one handler produce
-    /// a whole `Vec<Effect>` and the next produce a single effect. The consumer owns the
-    /// conversions, so what a handler may return is its choice rather than this crate's.
+    /// A handler returns any `IntoIterator` this collects from, which is what lets one handler
+    /// produce a whole `Vec<Effect>` and the next produce a single effect. The consumer owns
+    /// the `IntoIterator` impls, so what a handler may return is its choice rather than this
+    /// crate's.
     type Output;
 }
 

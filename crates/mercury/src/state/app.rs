@@ -108,12 +108,12 @@ const fn app_data(path: &AppLayerPath) -> Option<AppData> {
     Key::KeyL.down().with(ModifierFlags::SHIFT) => copy_url,
     Key::KeyL.down().with(ModifierFlags::COMMAND) => copy_host,
 )]
-pub struct ChromeApp {}
+pub struct ChromeApp;
 
 impl ChromeApp {
     #[must_use]
     pub(crate) const fn new() -> Self {
-        Self {}
+        Self
     }
 }
 
@@ -135,11 +135,11 @@ impl ChromeApp {
     Key::Num9.down() => window_9,
     Key::Num0.down() => window_0,
 )]
-pub struct GhosttyApp {}
+pub struct GhosttyApp;
 
 impl GhosttyApp {
     #[must_use]
     pub(crate) const fn new() -> Self {
-        Self {}
+        Self
     }
 }

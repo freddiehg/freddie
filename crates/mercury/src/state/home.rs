@@ -24,11 +24,11 @@ pub(crate) const OVERLAY: &str = include_str!("overlays/home.txt");
     Key::KeyU.down() => to_site,
     Key::KeyQ.down() => quit,
 )]
-pub struct HomeLayer {}
+pub struct HomeLayer;
 
 impl HomeLayer {
     #[must_use]
     pub(crate) const fn new() -> Self {
-        Self {}
+        Self
     }
 }

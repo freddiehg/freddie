@@ -48,3 +48,8 @@ redundant_pub_crate = "allow"
 # `.map_err(|_| E)` reads fine; we do not want to spell the ignored unit as `|()|`. (Only fires
 # from clippy 1.97 on; kept explicit so the lint stays off whatever the toolchain.)
 ignored_unit_patterns = "allow"
+# A type with no data is spelled `struct Foo;`. Braces on an empty struct read as fields that
+# were removed or are coming, and a state node that genuinely gains one says so by gaining it.
+# From the `restriction` group, which no other group pulls in, so it needs its own line here and
+# in every crate that keeps its own lints table.
+empty_structs_with_brackets = "deny"

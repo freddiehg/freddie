@@ -26,3 +26,5 @@ nursery = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
 multiple_crate_versions = "allow"
 cargo_common_metadata = "allow"
+# Matches the workspace table, which this crate does not inherit.
+empty_structs_with_brackets = "deny"

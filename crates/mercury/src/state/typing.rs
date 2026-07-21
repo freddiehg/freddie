@@ -13,11 +13,11 @@ pub(crate) const OVERLAY: &str = include_str!("overlays/typing.txt");
 #[derive(Bind, Debug)]
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
-pub struct TypingLayer {}
+pub struct TypingLayer;
 
 impl TypingLayer {
     #[must_use]
     pub(crate) const fn new() -> Self {
-        Self {}
+        Self
     }
 }

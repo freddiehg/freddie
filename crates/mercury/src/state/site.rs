@@ -86,7 +86,7 @@ fn site_data(path: &SiteLayerPath) -> Option<SiteData> {
     let root = path.parent().parent();
     let url = root.foreground.confirmed_chrome()?.url.as_deref()?;
     match Site::from_url(url) {
-        Site::ClaudeAi => Some(SiteData::ClaudeAi(ClaudeAiSite {})),
+        Site::ClaudeAi => Some(SiteData::ClaudeAi(ClaudeAiSite)),
         Site::Other => None,
     }
 }
@@ -96,4 +96,4 @@ fn site_data(path: &SiteLayerPath) -> Option<SiteData> {
 #[derived_node(parent = SiteLayerPath)]
 #[binds(MercuryStruct)]
 #[bind(Key::KeyN.down() => new_chat)]
-pub struct ClaudeAiSite {}
+pub struct ClaudeAiSite;

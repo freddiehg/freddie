@@ -19,7 +19,7 @@ struct M;
 impl Bindings for M {
     type Trigger = Trig;
     type Event = Ev;
-    type Output = ();
+    type Output = Vec<usize>;
 }
 
 // `Weird` matches events but has no `From`/`Into` for `Trig`.
@@ -31,7 +31,9 @@ impl EventTrigger for Weird {
     }
 }
 
-fn handler(_: &KeyEv, _path: impl Sized) {}
+fn handler(_: &KeyEv, _path: impl Sized) -> [usize; 1] {
+    [0]
+}
 
 #[derive(Bind)]
 #[node(root)]

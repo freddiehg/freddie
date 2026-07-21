@@ -239,7 +239,9 @@ fn derived_node_impl(
                 let trigger = #trigger;
                 if ::bind::EventTrigger::is_matching(&trigger, ev) {
                     return ::core::ops::ControlFlow::Break(
-                        ::core::convert::Into::into(#handler(ev, node)),
+                        ::core::iter::Iterator::collect(
+                            ::core::iter::IntoIterator::into_iter(#handler(ev, node)),
+                        ),
                     );
                 }
             }
@@ -248,7 +250,6 @@ fn derived_node_impl(
     let triggers = claimed_triggers(binds);
     Ok(quote! {
         #[automatically_derived]
-        #[expect(clippy::useless_conversion)]
         impl<'a> ::bind::Descend<#marker> for ::bind::Node<#parent<'a>, #name> {
             fn dispatch(
                 self,
@@ -528,9 +529,9 @@ fn dispatch_impl(
     // (the key match). The trigger is built once into a local; `TryFrom` and the
     // handler pin the source-event type by inference.
     //
-    // The handler's return goes through `Into`, so a handler returns anything that converts to
-    // `M::Output` and each bind's call site is typed on its own. The reflexive impl covers a
-    // handler that already returns `M::Output` itself.
+    // The handler's return is iterated and collected, so a handler returns any iterable of
+    // effects and each bind's call site is typed on its own. A handler that already returns
+    // `M::Output` collects back into it, which std does in place for a `Vec`.
     let checks = binds.iter().map(|b| {
         let trigger = trigger_expr(&b.trigger, &quote!(path));
         let handler = &b.handler;
@@ -540,8 +541,10 @@ fn dispatch_impl(
             {
                 let trigger = #trigger;
                 if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                    return ::core::ops::ControlFlow::Break(::core::convert::Into::into(
-                        #handler(ev, ::bind::Node { parent: path, data: () }),
+                    return ::core::ops::ControlFlow::Break(::core::iter::Iterator::collect(
+                        ::core::iter::IntoIterator::into_iter(
+                            #handler(ev, ::bind::Node { parent: path, data: () }),
+                        ),
                     ));
                 }
             }
@@ -549,7 +552,6 @@ fn dispatch_impl(
     });
     Ok(quote! {
         #[automatically_derived]
-        #[expect(clippy::useless_conversion)]
         impl ::bind::Dispatch<#marker> for #name #where_clause {
             fn dispatch<'a>(
                 #binding: <Self as ::bind::Place>::Path<'a>,
