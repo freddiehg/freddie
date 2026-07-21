@@ -460,9 +460,6 @@ pub(crate) const fn overlay_for(site: Option<&Site>) -> &'static str {
 
 after:
 
-```rext
-```
-
 ```rust
             Self::Site(_) => site::overlay_for(
                 foreground
