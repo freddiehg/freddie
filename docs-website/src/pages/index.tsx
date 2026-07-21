@@ -296,7 +296,7 @@ function AreYouReady() {
   return (
     <section>
       <div className="container">
-        <h2 className={styles.centeredHeading}>So, are you ready, Freddie?</h2>
+        <h2 className={styles.centeredHeading}>Are you ready, Freddie?</h2>
         <div className={styles.ctaContainer}>
           <Link
             className="button button--primary button--lg"
