@@ -185,7 +185,7 @@ function Video() {
               width="100%"
               height="444"
               src="https://www.youtube-nocookie.com/embed/eM3wmsUWsbo"
-              title="Placeholder video"
+              title="A demo of freddie"
               allow="autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share"
               allowFullScreen
               frameBorder="0"
