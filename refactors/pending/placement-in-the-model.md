@@ -2,13 +2,13 @@
 
 The resize handlers compute the frame a window is going to, and the effect carries it. `MercuryEffect::Place(Placement)` becomes `MercuryEffect::SetFrame(WindowFrame)`: a window id and a rectangle, with nothing left to work out.
 
-Today the effect names an intent and the effect handler works out the rest, reading the frontmost app, the focused window, and the monitor list at effect time. After this, dispatch reads `Mercury.windows`, which `refactors/pending/window-observation.md` fills, and the effect handler does one thing: it sets that frame on that window.
+Today the effect names an intent and the effect handler works out the rest, reading the frontmost app, the focused window, and the monitor list at effect time. After this, dispatch reads `Mercury.windows`, which `refactors/past/window-observation.md` fills, and the effect handler does one thing: it sets that frame on that window.
 
 Behavior does not change. `r` then an arrow places the focused window exactly where it does now, and the resize layer's keymap is untouched.
 
 The visible gain is in the tests: `the_arrows_place_the_window_and_return_home` currently asserts an intent, so nothing checks that maximize means the visible frame or that the halves abut. With the windows and screens in the model, the transition tests assert the rectangle.
 
-Depends on `refactors/pending/window-observation.md`. Without it `Mercury.windows` is always empty and every placement is a no-op.
+Depends on `refactors/past/window-observation.md`. Without it `Mercury.windows` is always empty and every placement is a no-op.
 
 ---
 
@@ -168,7 +168,7 @@ pub(crate) fn and_go_home_from(
 
 # Change 3: the sink stops deciding
 
-`crates/freddie_windows/src/lib.rs` loses `place`, `monitor_for`, and `focused_window`, all of which existed to work out what the model now works out. `WindowSink::set_frame` from `refactors/pending/window-observation.md` is the whole sink.
+`crates/freddie_windows/src/lib.rs` loses `place`, `monitor_for`, and `focused_window`, all of which existed to work out what the model now works out. `WindowSink::set_frame` from `refactors/past/window-observation.md` is the whole sink.
 
 `MONITORS` goes with them. It is a cache of main-thread-only `NSScreen` data that exists because `place` runs off the main thread, and `place` is its only reader; the model holds `screens` now, so the model is the cache. `read_monitors` stays as a plain function, called by the screen-change observer to build a `Screens` report and by `watch` for the seed.
 

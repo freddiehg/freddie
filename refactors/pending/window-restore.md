@@ -6,7 +6,7 @@ Mercury keeps, per window, the frame it had when the first placement moved it. M
 
 All of it is `Mercury.windows`. The handler reads state, the effect is the `SetFrame` that already exists, and the whole rule is checkable in `transitions.rs`.
 
-Depends on `refactors/pending/window-observation.md` and `refactors/pending/placement-in-the-model.md`.
+Depends on `refactors/past/window-observation.md` and `refactors/pending/placement-in-the-model.md`.
 
 ## Telling mercury's move from the user's
 
@@ -22,7 +22,7 @@ The match is per-edge within two points, for the same clamping reason.
 
 # Change 1: the remembered frame
 
-`crates/mercury/src/state/` gains it, on the `Windows` that `refactors/pending/window-observation.md` introduced.
+`crates/mercury/src/state/` gains it, on the `Windows` that `refactors/past/window-observation.md` introduced.
 
 Before:
 
