@@ -280,7 +280,7 @@ function Mercury() {
     <section>
       <div className="container">
         <div className="kicker">It&rsquo;s ready for you</div>
-        <h2 className={styles.centeredHeading}>Mercury rising.</h2>
+        <h2 className={styles.centeredHeading}>Give mercury a try</h2>
         <Prose>
           <p>
             This repository ships one program built with freddie,
