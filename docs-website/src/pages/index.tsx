@@ -54,7 +54,10 @@ function Features() {
           <div className="col col--4">
             <h3>Testable, understandable</h3>
             <p>
-
+              It all runs through one pure function: state and event in, new
+              state and a list of effects out. Nothing is performed along the
+              way, so a test is a call and an assertion. You can check what
+              every key does in every layer without pressing one.
             </p>
           </div>
         </div>
