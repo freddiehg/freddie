@@ -338,7 +338,7 @@ The loop stays. Some apps clamp a move against their current size, so the first 
 
 # Change 4: the frame sink
 
-Observation owns its own state, and it stays on the main thread. The table of elements comes into existence when [`watch`] is called and dies with the [`Watcher`] it returns, the way `freddie_app_nav::watch` already works.\n\nA placement is asked for from the effect loop's thread and performed from the main thread, so nothing is shared and nothing is locked: the sink sends, the main thread looks up, and the `AXUIElement` writes go to a thread of their own.
+The table of elements comes into existence when [`watch`] is called and dies with the [`Watcher`] it returns, the way `freddie_app_nav::watch` already works, and it stays on the main thread.\n\nA placement is asked for from the effect loop's thread and performed from the main thread, so nothing is shared and nothing is locked: the sink sends, the main thread looks up, and the `AXUIElement` writes go to a thread of their own.
 
 Until Change 5 registers the observers the table stays empty, and the daemon does not call the sink yet.
 
@@ -468,8 +468,8 @@ pub struct WindowFrame {
 ```
 
 ```rust
-/// Report every window change to `on_change`, and return the watcher that owns the
-/// observation.
+/// Report every window change to `on_change`, and return the watcher holding the
+/// registrations that do it.
 ///
 /// Observes every running app, and every app that launches while the returned [`Watcher`]
 /// is alive. Registering is cheap and takes no thread: each `AXObserver` contributes a run
@@ -491,9 +491,12 @@ pub fn watch(on_change: impl Fn(WindowChange) + Send + Sync + 'static) -> (Watch
     ...
 }
 
-/// The live observation. Dropping it stops everything: `apps` goes, which releases every
-/// `AXObserver` and removes its run loop source, and the placement receiver goes, which is
-/// how a [`WindowSink`] learns it is over. No `Drop` impl needed.
+/// Holds every registration that makes windows report. While one of these is alive,
+/// changes reach the `on_change` it was built with; dropping it stops them.
+///
+/// Dropping it is all it takes: `apps` goes, which releases every `AXObserver` and removes
+/// its run loop source, and the placement receiver goes, which is how a [`WindowSink`]
+/// learns it is over. No `Drop` impl needed.
 ///
 /// `!Send`, like `freddie_menu_bar`'s `MenuBar`: it owns main-thread-only state and stays
 /// on the thread that built it.
@@ -511,7 +514,7 @@ pub struct Watcher {
     placements_tx: Sender<WindowFrame>,
 }
 
-/// Everything observation owns.
+/// What the [`Watcher`] holds, reachable from the callbacks as well as from it.
 ///
 /// Main thread only, so nothing here is locked: `watch`, the launch and terminate
 /// callbacks, every `AXObserver` notification, and [`Watcher::drain`] all run there.
@@ -541,7 +544,7 @@ impl Watcher {
     }
 }
 
-/// One app's observer, and the `refcon` its callbacks reach the observation through.
+/// One app's observer, and the `refcon` its callbacks reach the [`Watcher`]'s state through.
 struct AppObserver {
     observer: AXObserverRef,
     /// The `refcon` every notification for this app carries. Boxed so its address is
@@ -550,7 +553,7 @@ struct AppObserver {
 }
 
 /// What a notification callback needs: the observer to register a new window on, and the
-/// observation to report into. A C callback has this instead of a closure.
+/// state to report into. A C callback has this instead of a closure.
 ///
 /// `observer` is held rather than a pid, so a window created later is registered without
 /// going back through `apps`; nothing in the callback path touches that map.
@@ -574,7 +577,7 @@ The C callback dispatches on the notification name:
 
 ```rust
 /// The one `AXObserver` callback. `refcon` is the [`Registration`] the app's
-/// [`AppObserver`] owns, which is how a C callback reaches the observation without a
+/// [`AppObserver`] owns, which is how a C callback reaches the `Watcher`'s state without a
 /// global.
 ///
 /// Runs on the main thread, since that is the run loop the sources were added to.
