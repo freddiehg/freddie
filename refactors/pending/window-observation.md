@@ -236,6 +236,10 @@ No behavior change: `place` logs the id it read.
 ```rust
 use core_graphics::window::{CGWindowID, kCGNullWindowID};
 
+/// A running app, by process id. `libc::pid_t` is an `i32`, and an `i32` is not a process.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Pid(pub pid_t);
+
 /// A window's `CGWindowID`: the identity that outlives any one `AXUIElement` naming it.
 /// Elements are created per call, so two for the same window are different pointers and
 /// the element itself cannot be the key.
@@ -514,7 +518,7 @@ struct Observed {
     elements: Arc<Elements>,
     /// One entry per observed app. Held here rather than on the [`Watcher`] because the
     /// launch and terminate callbacks are `'static` closures that cannot borrow it.
-    apps: RefCell<HashMap<pid_t, AppObserver>>,
+    apps: RefCell<HashMap<Pid, AppObserver>>,
     on_change: Box<dyn Fn(WindowChange)>,
 }
 
@@ -553,7 +557,7 @@ struct Registration {
 
 The pieces behind `watch`:
 
-- `observe_app(&Rc<Observed>, pid)` calls `AXObserverCreate`, builds the `Registration` holding that observer and a `Weak` back, adds `kAXFocusedWindowChangedNotification` and `kAXWindowCreatedNotification` on the app element with that `refcon`, adds the source to `CFRunLoop::get_main()` under `kCFRunLoopDefaultMode`, inserts the `AppObserver` into `apps`, then walks `kAXWindowsAttribute` once and calls `observe_window` for each.
+- `observe_app(&Rc<Observed>, pid: Pid)` calls `AXObserverCreate`, builds the `Registration` holding that observer and a `Weak` back, adds `kAXFocusedWindowChangedNotification` and `kAXWindowCreatedNotification` on the app element with that `refcon`, adds the source to `CFRunLoop::get_main()` under `kCFRunLoopDefaultMode`, inserts the `AppObserver` into `apps`, then walks `kAXWindowsAttribute` once and calls `observe_window` for each.
 - `observe_window(&Observed, observer, element)` reads the id, inserts a retained `Element` into `elements`, adds `kAXWindowMovedNotification`, `kAXWindowResizedNotification`, and `kAXUIElementDestroyedNotification` on the window element, and reports `Opened`.
 - The app set is kept current from `NSWorkspace`'s `didLaunchApplication` and `didTerminateApplication`, whose closures capture an `rc::Weak<Observed>` for the same reason a `Registration` does, seeded from `runningApplications`. On terminate, the app's `AppObserver` is removed from `apps` and every `elements` entry for its windows is removed, each reported as `Closed`.
 - An app that refuses Accessibility, or has not finished launching, fails `AXObserverCreate`. That is logged at `debug` and the app is skipped: its windows are never reported and cannot be addressed, and every other app goes on being observed.
