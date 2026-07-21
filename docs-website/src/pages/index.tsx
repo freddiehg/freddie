@@ -22,7 +22,7 @@ const bindingExample = `#[derive(Bind, Debug)]
     Key::UpArrow.down() => maximize,
     Key::KeyR.down() => restore,
 )]
-pub struct ResizeLayer {}`;
+pub struct ResizeLayer;`;
 
 const maximizeExample = `fn maximize<'a>(
     _ev: &KeyEvent,
