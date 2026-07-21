@@ -44,7 +44,7 @@ After:
 #[derive(Debug, Default)]
 pub struct Windows {
     /// Every open window: where it is, and where it goes back to.
-    windows: HashMap<WindowId, WindowState>,
+    open: HashMap<WindowId, WindowState>,
     /// The focused window, `None` when nothing is focused or its id is unreadable.
     focused: Option<WindowId>,
     /// The monitors, in the order the source reported them.
@@ -174,7 +174,7 @@ pub(crate) fn placement_settled(
 
 ```rust
             WindowChange::Closed(window) => {
-                self.windows.remove(window);
+                self.open.remove(window);
                 if self.focused == Some(*window) {
                     self.focused = None;
                 }
@@ -234,7 +234,7 @@ impl Windows {
     /// remembered: a run of placements all restore to where the window was before the
     /// first of them.
     pub(crate) fn placing(&mut self, target: WindowFrame) -> Vec<MercuryEffect> {
-        let Some(state) = self.windows.get_mut(&target.window) else {
+        let Some(state) = self.open.get_mut(&target.window) else {
             return Vec::new();
         };
         let frame = state.frame;

@@ -26,6 +26,7 @@ pub(crate) const OVERLAY: &str = include_str!("overlays/resize.txt");
     Key::UpArrow.down() => maximize,
     Key::LeftArrow.down() => left_half,
     Key::RightArrow.down() => right_half,
+    Key::KeyR.down() => restore_window,
 )]
 pub struct ResizeLayer {
     // Read for the trigger matching its firing, and held for its `Drop`: dropping the guard cancels resize's return-home timer.

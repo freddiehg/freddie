@@ -83,6 +83,8 @@ pub(crate) fn arm_jk_timeout(window: Duration) -> (TimerGuard, MercuryEffect) {
     |mercury_path| mercury_path.typing_state.jk.window_timer().map(TimerGuard::trigger) => jk_timeout,
     // Only the showing that is up: a dwell from one already replaced matches nothing.
     |mercury_path| mercury_path.overlay_timer().map(TimerGuard::trigger) => hide_overlay,
+    // Only the placement still outstanding: a firing from one already landed matches nothing.
+    |mercury_path| mercury_path.windows.pending_timer().map(TimerGuard::trigger) => placement_settled,
     AnyKey => maybe_pass_through,
 )]
 pub struct Mercury {
@@ -172,12 +174,59 @@ impl ForegroundedApp {
 /// state and event like everything else.
 #[derive(Debug, Default)]
 pub struct Windows {
-    /// Every open window and where it is.
-    frames: HashMap<WindowId, Frame>,
+    /// Every open window: where it is, and where it goes back to.
+    open: HashMap<WindowId, WindowState>,
     /// The focused window, `None` when nothing is focused or its id is unreadable.
     focused: Option<WindowId>,
     /// The monitors, in the order the source reported them.
     screens: Vec<Monitor>,
+    /// The placement mercury has asked for and not yet seen land. See [`PendingPlacement`].
+    pending: Option<PendingPlacement>,
+}
+
+/// One window: where it is now, and where a restore would put it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct WindowState {
+    /// Where the window is, as the source last reported it.
+    frame: Frame,
+    /// Where the window was before mercury first moved it. `None` once it is back there, or
+    /// once the user has moved it since.
+    restore: Option<Frame>,
+}
+
+/// A [`MercuryEffect::SetFrame`] that has been asked for and not yet landed.
+///
+/// While one is outstanding, every move reported for its window is mercury's own doing, so
+/// the remembered frame survives it. One placement produces several reports, and only the
+/// last is the frame that was asked for.
+#[derive(Debug)]
+struct PendingPlacement {
+    window: WindowId,
+    /// The frame the effect asked for. A report matching it ends the wait.
+    frame: Frame,
+    /// Held for its `Drop` and for the trigger that matches its firing: the wait ends when
+    /// this fires, whatever has been reported.
+    timer: TimerGuard,
+}
+
+/// How long a placement has to land before the window is the user's again.
+///
+/// It bounds how long a drag can be mistaken for mercury's own placement, so shorter is
+/// better, but it has to cover two position-and-size writes and the reports they produce.
+pub const PLACEMENT_SETTLE: Duration = Duration::from_millis(250);
+
+/// How far apart two frames may be and still be the same placement, in points.
+///
+/// Apps clamp what they are given (a terminal snaps to whole character cells), so a frame
+/// reported after a set is near what was asked for rather than equal to it.
+const TOLERANCE: f64 = 2.0;
+
+/// Whether `a` is `b` to within [`TOLERANCE`] on every edge.
+fn same_placement(a: Frame, b: Frame) -> bool {
+    (a.x - b.x).abs() <= TOLERANCE
+        && (a.y - b.y).abs() <= TOLERANCE
+        && (a.width - b.width).abs() <= TOLERANCE
+        && (a.height - b.height).abs() <= TOLERANCE
 }
 
 impl Windows {
@@ -185,13 +234,22 @@ impl Windows {
     #[must_use]
     pub fn from_snapshot(snapshot: Snapshot) -> Self {
         Self {
-            frames: snapshot
+            open: snapshot
                 .windows
                 .into_iter()
-                .map(|w| (w.window, w.frame))
+                .map(|w| {
+                    (
+                        w.window,
+                        WindowState {
+                            frame: w.frame,
+                            restore: None,
+                        },
+                    )
+                })
                 .collect(),
             focused: snapshot.focused,
             screens: snapshot.screens,
+            pending: None,
         }
     }
 
@@ -204,7 +262,7 @@ impl Windows {
         let window = self.focused?;
         Some(WindowFrame {
             window,
-            frame: *self.frames.get(&window)?,
+            frame: self.open.get(&window)?.frame,
         })
     }
 
@@ -226,11 +284,26 @@ impl Windows {
     /// idempotence rule in `CLAUDE.md`.
     pub(crate) fn record(&mut self, change: &WindowChange) {
         match change {
-            WindowChange::Opened(w) | WindowChange::Moved(w) | WindowChange::Resized(w) => {
-                self.frames.insert(w.window, w.frame);
+            WindowChange::Opened(w) => {
+                self.open.insert(
+                    w.window,
+                    WindowState {
+                        frame: w.frame,
+                        restore: None,
+                    },
+                );
+            }
+            WindowChange::Moved(w) | WindowChange::Resized(w) => {
+                let ours = self.pending_covers(*w);
+                if let Some(state) = self.open.get_mut(&w.window) {
+                    state.frame = w.frame;
+                    if !ours {
+                        state.restore = None;
+                    }
+                }
             }
             WindowChange::Closed(window) => {
-                self.frames.remove(window);
+                self.open.remove(window);
                 if self.focused == Some(*window) {
                     self.focused = None;
                 }
@@ -238,6 +311,89 @@ impl Windows {
             WindowChange::Focused(window) => self.focused = *window,
             WindowChange::Screens(screens) => self.screens.clone_from(screens),
         }
+    }
+
+    /// Whether `moved` is a report of mercury's own outstanding placement, ending the wait
+    /// if it is the frame that was asked for.
+    ///
+    /// Every report for the pending window counts, not only the matching one: one placement
+    /// writes the position and the size, twice, so the frames in between are ones nobody
+    /// asked for and a drag they were mistaken for would be forgotten.
+    fn pending_covers(&mut self, moved: WindowFrame) -> bool {
+        let Some(pending) = &self.pending else {
+            return false;
+        };
+        if pending.window != moved.window {
+            return false;
+        }
+        if same_placement(pending.frame, moved.frame) {
+            self.pending = None;
+        }
+        true
+    }
+
+    /// The guard for the placement still outstanding, for the trigger that matches its
+    /// firing.
+    pub(crate) fn pending_timer(&self) -> Option<&TimerGuard> {
+        self.pending.as_ref().map(|p| &p.timer)
+    }
+
+    /// The placement mercury asked for has had its time: what the window does next is the
+    /// user's.
+    pub(crate) fn forget_pending(&mut self) {
+        self.pending = None;
+    }
+
+    /// Ask for `target`, and wait for it to land.
+    ///
+    /// The wait is what keeps the moves this causes from counting as the user's. Both
+    /// callers need it; what they differ on is the remembered frame, which this leaves
+    /// alone.
+    fn asking_for(&mut self, target: WindowFrame) -> Vec<MercuryEffect> {
+        let (timer, effect) =
+            timer_effect_and_guard(PLACEMENT_SETTLE, |id| MercuryEvent::Timer(TimerFired(id)));
+        self.pending = Some(PendingPlacement {
+            window: target.window,
+            frame: target.frame,
+            timer,
+        });
+        vec![
+            MercuryEffect::SetFrame(target),
+            MercuryEffect::Timer(effect),
+        ]
+    }
+
+    /// Remember where the window is now, then place it.
+    ///
+    /// The frame it has now becomes the one a restore goes back to, unless one is already
+    /// remembered: a run of placements all restore to where the window was before the first
+    /// of them.
+    pub(crate) fn placing(&mut self, target: WindowFrame) -> Vec<MercuryEffect> {
+        let Some(state) = self.open.get_mut(&target.window) else {
+            return Vec::new();
+        };
+        let frame = state.frame;
+        state.restore.get_or_insert(frame);
+        self.asking_for(target)
+    }
+
+    /// Take the focused window's remembered frame, and return the effects that put it back.
+    ///
+    /// Empty when nothing is focused or the window has no remembered frame: nothing placed
+    /// it, or it is already back. Taking, not reading: a restored window is where it
+    /// started, so there is nothing left to put it back to.
+    pub(crate) fn restoring(&mut self) -> Vec<MercuryEffect> {
+        let Some(window) = self.focused else {
+            return Vec::new();
+        };
+        let Some(frame) = self
+            .open
+            .get_mut(&window)
+            .and_then(|state| state.restore.take())
+        else {
+            return Vec::new();
+        };
+        self.asking_for(WindowFrame { window, frame })
     }
 }
 

@@ -61,8 +61,21 @@ fn place<'a, P: Ascend<MercuryPath<'a>>>(
     within: impl Fn(Frame) -> Frame,
 ) -> Vec<MercuryEffect> {
     let root = path.ascend();
-    let effects = target(&root.windows, within)
-        .map_or_else(Vec::new, |target| vec![MercuryEffect::SetFrame(target)]);
+    let effects =
+        target(&root.windows, within).map_or_else(Vec::new, |target| root.windows.placing(target));
+    and_go_home_from(root, effects)
+}
+
+/// Put the focused window back where it was before it was placed, and return home.
+///
+/// Restoring is one choice, not something to repeat, so it leaves the layer the way the
+/// arrows do.
+pub(crate) fn restore_window<'a, E, P: Ascend<MercuryPath<'a>>>(
+    _ev: &E,
+    node: Node<P, ()>,
+) -> Vec<MercuryEffect> {
+    let root = node.parent.ascend();
+    let effects = root.windows.restoring();
     and_go_home_from(root, effects)
 }
 

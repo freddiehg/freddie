@@ -7,8 +7,8 @@ use bind::SimpleRunner;
 use freddie_windows::{Frame, Monitor, WindowChange, WindowFrame, WindowId};
 use mercury::{
     App, Chord, Copied, HomeLayer, JK_TIMEOUT, Key, KeyEvent, Layer, Mercury, MercuryEffect,
-    MercuryEvent, MercuryStruct, ModifierFlags, OVERLAY_DWELL, PressType, RETURN_TO_HOME_TIMEOUT,
-    UrlPart, WindowEvent, Windows, foreground, key, quit_event, tab,
+    MercuryEvent, MercuryStruct, ModifierFlags, OVERLAY_DWELL, PLACEMENT_SETTLE, PressType,
+    RETURN_TO_HOME_TIMEOUT, UrlPart, WindowEvent, Windows, foreground, key, quit_event, tab,
 };
 
 // Entering nav, resize, or the in-app layer arms the return-to-home timer; this is the effect
@@ -16,6 +16,13 @@ use mercury::{
 // matches what a layer produced.
 fn return_home_timer() -> MercuryEffect {
     let (_guard, effect) = freddie::timer_effect_and_guard(RETURN_TO_HOME_TIMEOUT, fired);
+    MercuryEffect::Timer(effect)
+}
+
+// A placement arms the settle wait; this is the effect that schedules it. It bounds how long a
+// move reported for that window counts as mercury's own rather than the user's.
+fn settle_timer() -> MercuryEffect {
+    let (_guard, effect) = freddie::timer_effect_and_guard(PLACEMENT_SETTLE, fired);
     MercuryEffect::Timer(effect)
 }
 
@@ -926,10 +933,13 @@ fn the_arrows_place_the_window_and_return_home() {
 
         assert_eq!(
             m.handle(&key(k)),
-            Some(leaves(vec![MercuryEffect::SetFrame(WindowFrame {
-                window: WINDOW,
-                frame,
-            })])),
+            Some(leaves(vec![
+                MercuryEffect::SetFrame(WindowFrame {
+                    window: WINDOW,
+                    frame,
+                }),
+                settle_timer(),
+            ])),
             "{k:?}"
         );
         assert!(
@@ -967,21 +977,27 @@ fn placing_twice_re_enters_resize() {
     let _ = m.handle(&key(Key::KeyR));
     assert_eq!(
         m.handle(&key(Key::UpArrow)),
-        Some(leaves(vec![MercuryEffect::SetFrame(WindowFrame {
-            window: WINDOW,
-            frame: SCREEN.visible,
-        })]))
+        Some(leaves(vec![
+            MercuryEffect::SetFrame(WindowFrame {
+                window: WINDOW,
+                frame: SCREEN.visible,
+            }),
+            settle_timer(),
+        ]))
     );
     let _ = m.handle(&key(Key::KeyR));
     assert_eq!(
         m.handle(&key(Key::LeftArrow)),
-        Some(leaves(vec![MercuryEffect::SetFrame(WindowFrame {
-            window: WINDOW,
-            frame: Frame {
-                width: 800.0,
-                ..SCREEN.visible
-            },
-        })]))
+        Some(leaves(vec![
+            MercuryEffect::SetFrame(WindowFrame {
+                window: WINDOW,
+                frame: Frame {
+                    width: 800.0,
+                    ..SCREEN.visible
+                },
+            }),
+            settle_timer(),
+        ]))
     );
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
@@ -1718,9 +1734,163 @@ fn a_placement_uses_the_screen_the_window_is_on() {
 
     assert_eq!(
         m.handle(&key(Key::UpArrow)),
-        Some(leaves(vec![MercuryEffect::SetFrame(WindowFrame {
-            window: WINDOW,
-            frame: SECOND.visible,
-        })]))
+        Some(leaves(vec![
+            MercuryEffect::SetFrame(WindowFrame {
+                window: WINDOW,
+                frame: SECOND.visible,
+            }),
+            settle_timer(),
+        ]))
     );
+}
+
+// ---- restore: `r` in resize puts the window back ----
+
+// Maximize, let it land, then `r`: back to the frame it had before the placement.
+#[test]
+fn resize_r_restores_the_frame_from_before_the_placement() {
+    let mut m = home_with_a_window();
+    let _ = m.handle(&key(Key::KeyR));
+    let _ = m.handle(&key(Key::UpArrow));
+    let _ = m.handle(&windows(WindowChange::Moved(WindowFrame {
+        window: WINDOW,
+        frame: SCREEN.visible,
+    })));
+
+    let _ = m.handle(&key(Key::KeyR));
+    assert_eq!(
+        m.handle(&key(Key::KeyR)),
+        Some(leaves(vec![
+            MercuryEffect::SetFrame(WindowFrame {
+                window: WINDOW,
+                frame: WINDOW_FRAME,
+            }),
+            settle_timer(),
+        ]))
+    );
+    assert!(matches!(m.layer(), Layer::Home(_)));
+}
+
+// A run of placements restores to where the window was before the first of them, not to
+// the frame the previous placement left.
+#[test]
+fn a_second_placement_does_not_move_the_remembered_frame() {
+    let mut m = home_with_a_window();
+    let _ = m.handle(&key(Key::KeyR));
+    let _ = m.handle(&key(Key::UpArrow));
+    let _ = m.handle(&windows(WindowChange::Moved(WindowFrame {
+        window: WINDOW,
+        frame: SCREEN.visible,
+    })));
+    let _ = m.handle(&key(Key::KeyR));
+    let _ = m.handle(&key(Key::LeftArrow));
+
+    let _ = m.handle(&key(Key::KeyR));
+    assert_eq!(
+        m.handle(&key(Key::KeyR)),
+        Some(leaves(vec![
+            MercuryEffect::SetFrame(WindowFrame {
+                window: WINDOW,
+                frame: WINDOW_FRAME,
+            }),
+            settle_timer(),
+        ]))
+    );
+}
+
+// The reports one placement produces are the position and the size, each written twice, so
+// the frames in between are ones nobody asked for. None of them counts as a move by hand.
+#[test]
+fn the_intermediate_frames_of_a_placement_are_not_a_move_by_hand() {
+    let mut m = home_with_a_window();
+    let _ = m.handle(&key(Key::KeyR));
+    let _ = m.handle(&key(Key::UpArrow));
+
+    for frame in [
+        // The position landed, the size has not.
+        Frame {
+            x: 0.0,
+            y: 25.0,
+            ..WINDOW_FRAME
+        },
+        SCREEN.visible,
+    ] {
+        let _ = m.handle(&windows(WindowChange::Moved(WindowFrame {
+            window: WINDOW,
+            frame,
+        })));
+    }
+
+    let _ = m.handle(&key(Key::KeyR));
+    assert_eq!(
+        m.handle(&key(Key::KeyR)),
+        Some(leaves(vec![
+            MercuryEffect::SetFrame(WindowFrame {
+                window: WINDOW,
+                frame: WINDOW_FRAME,
+            }),
+            settle_timer(),
+        ]))
+    );
+}
+
+// A move mercury did not ask for forgets the remembered frame, so `r` afterwards does
+// nothing rather than dragging the window off where the user just put it.
+#[test]
+fn a_move_by_hand_forgets_the_remembered_frame() {
+    let mut m = home_with_a_window();
+    let _ = m.handle(&key(Key::KeyR));
+    let effects = m.handle(&key(Key::UpArrow)).expect("the placement");
+    // The settle wait ends, so the window is the user's again.
+    let _ = m.handle(&fired(timer_id(&effects)));
+
+    let _ = m.handle(&windows(WindowChange::Moved(WindowFrame {
+        window: WINDOW,
+        frame: Frame {
+            x: 700.0,
+            ..WINDOW_FRAME
+        },
+    })));
+
+    let _ = m.handle(&key(Key::KeyR));
+    assert_eq!(m.handle(&key(Key::KeyR)), Some(leaves(vec![])));
+}
+
+// Restoring takes the frame, so a second `r` has nothing to put back.
+#[test]
+fn restoring_twice_asks_for_nothing_the_second_time() {
+    let mut m = home_with_a_window();
+    let _ = m.handle(&key(Key::KeyR));
+    let _ = m.handle(&key(Key::UpArrow));
+    let _ = m.handle(&key(Key::KeyR));
+    let _ = m.handle(&key(Key::KeyR));
+
+    let _ = m.handle(&key(Key::KeyR));
+    assert_eq!(m.handle(&key(Key::KeyR)), Some(leaves(vec![])));
+}
+
+// `r` in resize is restore, not a second entry into resize.
+#[test]
+fn r_in_resize_does_not_re_enter_resize() {
+    let mut m = home();
+    let _ = m.handle(&key(Key::KeyR));
+    assert!(matches!(m.layer(), Layer::Resize(_)));
+    let _ = m.handle(&key(Key::KeyR));
+    assert!(matches!(m.layer(), Layer::Home(_)));
+}
+
+// A closed window takes its remembered frame with it, so a reused `CGWindowID` cannot
+// restore a new window to a closed one's frame.
+#[test]
+fn a_closed_window_is_forgotten() {
+    let mut m = home_with_a_window();
+    let _ = m.handle(&key(Key::KeyR));
+    let _ = m.handle(&key(Key::UpArrow));
+
+    let _ = m.handle(&windows(WindowChange::Closed(WINDOW)));
+    let _ = m.handle(&windows(opened(WINDOW, SCREEN.visible)));
+    let _ = m.handle(&windows(WindowChange::Focused(Some(WINDOW))));
+
+    let _ = m.handle(&key(Key::KeyR));
+    assert_eq!(m.handle(&key(Key::KeyR)), Some(leaves(vec![])));
 }
