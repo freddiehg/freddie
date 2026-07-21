@@ -38,36 +38,32 @@ Now, more folks are willing to write configuration than to write and compile a R
 
 ## What a binding looks like
 
-A binding is a trigger and the handler it runs, written on the layer where it applies. Up maximizes the focused window, and `r` puts it back.
+A binding is a trigger and the handler it runs, written on the layer where it applies. In the nav layer, `c` foregrounds Chrome:
 
 ```rust
-#[derive(Bind, Debug)]
-#[node(parent = LayerPath)]
-#[binds(MercuryStruct)]
 #[bind(
-    Key::UpArrow.down() => maximize,
-    Key::KeyR.down() => restore,
+    Key::KeyC.down() => open_chrome,
+    Key::KeyG.down() => open_ghostty,
 )]
-pub struct ResizeLayer {}
+pub struct NavLayer {}
 ```
 
-Restoring reads back what maximizing wrote down:
+And the handler asks for exactly one effect:
 
 ```rust
-fn restore<'a>(
+fn open_chrome<'a>(
     _ev: &KeyEvent,
-    node: Node<ResizeLayerPath<'a>, ()>,
-) -> Option<MercuryEffect> {
-    let root: &mut Mercury = node.parent.ascend();
-
-    let (id, _) = root.focused?;
-    let frame = root.prior_locations.remove(&id)?;
-
-    Some(MercuryEffect::Place(Placement::Exactly(frame)))
+    _node: Node<NavLayerPath<'a>, ()>,
+) -> MercuryEffect {
+    MercuryEffect::Foreground(App::Chrome)
 }
 ```
 
-[freddie.rs](https://www.freddie.rs) builds this out in full.
+That&rsquo;s the whole thing. It reads neither the event nor the state, because it doesn&rsquo;t need to: it only runs when `c` went down in the nav layer, and dispatch established both of those before calling it.
+
+Note that the effect isn&rsquo;t a keypress. Emitting `cmd`-`r` to refresh a page is one variant of `MercuryEffect`, and foregrounding an app is another, and you write as many as you need.
+
+Handlers that do need state are handed a path to the layer they were bound on. [freddie.rs](https://www.freddie.rs) builds one out in full: maximizing a window, putting it back exactly where it was, and hooking up the event source that tells the model which window is focused in the first place.
 
 ## Give mercury a try
 
