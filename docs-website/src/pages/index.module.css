@@ -28,10 +28,15 @@
   font-size: 1.15rem;
 }
 
+/* Air between the heading and the first row of cells. */
+.doableGrid {
+  padding-top: 3rem;
+}
+
 /* Each cell carries the gap to the one below it, and widens Infima's 1rem
    column padding so neighbouring cells are 5rem apart rather than 2rem. */
 .doable {
-  margin-bottom: 3rem;
+  margin-bottom: 2rem;
   padding-left: 2.5rem;
   padding-right: 2.5rem;
 }

@@ -111,7 +111,7 @@ function BendIt() {
       <div className="container">
         <div className="kicker">It’s your computer</div>
         <h2 className={styles.centeredHeading}>Bend it to your will</h2>
-        <div className="row">
+        <div className={`row ${styles.doableGrid}`}>
           <Doable title="Remap keys however you like">
             Remap keys. Bind them differently in different layers and in different states. Want layers, sequences, or chords? Go for it. Bind whatever you want, wherever you want, however you want.
           </Doable>
@@ -124,7 +124,7 @@ function BendIt() {
         </div>
         <div className="row">
           <Doable title="Rearrange windows automatically">
-            Connect the monitor and your windows go back where they belong.
+            Connect a monitor and your windows go back where they belong.
           </Doable>
           <Doable title="Keys that remember">
             Maximize a window, press the same key again, and it returns to
