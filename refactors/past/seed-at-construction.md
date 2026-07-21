@@ -77,14 +77,7 @@ Removed:
     }
 ```
 
-The comment above `watch` keeps the half that is still true:
-
-```rust
-    // `watch` reports changes, not the app that is already frontmost; that one went to
-    // `Mercury::new`. The block runs on the main thread, where callbacks are serialized,
-    // so it does one send and returns. The work happens back on this thread.
-    let _watcher = freddie_app_nav::watch({
-```
+The `watch` call moves out of `serve` and into `main`, per Change 3.
 
 Before:
 
@@ -112,6 +105,17 @@ One call to `frontmost`, one place the model learns what is frontmost, and no di
 
 Everything read before the loop goes into one value, so the boundary is a type and not a rule someone remembers. It lives in mercury: `freddie_main_loop` is generic and must not learn what an `App` is.
 
+Order matters within that phase: every watcher is installed before any seed is read. A change between the two orderings behaves differently, and only one of them converges.
+
+```
+watch, then read        a switch in the gap is in the read, or queued as an event, or both
+read, then watch        a switch in the gap is in neither; the model stays wrong until the next one
+```
+
+Notifications are delivered by the run loop, which does not run until `main_loop.run`, so nothing arrives during the boot phase at all. A seed read after the watcher is installed is therefore always the earlier picture, and anything that happened since is waiting in the queue.
+
+Today this is covered by accident: `frontmost` is read once before `watch` and once after, and the second read catches what the first missed. Reading it once is what makes the order matter.
+
 `crates/mercury/src/daemon.rs`:
 
 ```rust
@@ -127,16 +131,26 @@ struct Boot {
 }
 ```
 
-Built in `main`, beside the event channel it already builds there:
+Built in `main`, beside the event channel it already builds there, and after the watcher:
 
 ```rust
+    // Installed before the seed is read, so an app switch between the two is queued rather
+    // than lost. Delivery is on the main thread either way; registering here keeps the
+    // watcher and the read in one order that is visible in one place.
+    let _app_watcher = freddie_app_nav::watch({
+        let event_tx = event_tx.clone();
+        move |bundle_id| {
+            let _ = event_tx.send(foreground(App::from_bundle_id(bundle_id)));
+        }
+    });
+
     let boot = Boot {
         front_app: freddie_app_nav::frontmost()
             .map_or(App::Other, |bundle_id| App::from_bundle_id(&bundle_id)),
     };
 ```
 
-`serve` takes `boot` alongside the channels it already takes, and hands `boot.front_app` to `Mercury::new`. `freddie_app_nav::watch` stays on the worker: registering is thread-agnostic, and delivery is on main either way.
+The watcher is held for the life of `main`, next to the `MenuBar`, since dropping it deregisters. `serve` takes `boot` alongside the channels it already takes and hands `boot.front_app` to `Mercury::new`.
 
 `refactors/pending/window-observation.md` adds the window snapshot and the `WindowSink` to this struct rather than to `serve`'s parameter list, which is what keeps a growing set of sources from growing an argument list.
 

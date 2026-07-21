@@ -120,6 +120,24 @@ pub(crate) fn run(args: &DaemonArgs) {
         }
     };
 
+    // The app-navigation source, installed before the seed below is read: an app switch
+    // between the two is then queued as an event rather than lost, and the model converges.
+    // Delivery is on this thread either way. Held for the life of `main`, like `menu_bar`,
+    // because dropping it deregisters.
+    let _app_watcher = freddie_app_nav::watch({
+        let event_tx = event_tx.clone();
+        move |bundle_id| {
+            let _ = event_tx.send(foreground(App::from_bundle_id(bundle_id)));
+        }
+    });
+
+    // Everything read from the OS before the main loop turns. After `main_loop.run`, every
+    // fact reaches the model as an event; this is the only other way in.
+    let boot = Boot {
+        front_app: freddie_app_nav::frontmost()
+            .map_or(App::Other, |bundle_id| App::from_bundle_id(&bundle_id)),
+    };
+
     let worker = std::thread::Builder::new()
         .name("mercury-runtime".to_owned())
         .spawn(move || {
@@ -128,7 +146,7 @@ pub(crate) fn run(args: &DaemonArgs) {
                 .enable_all()
                 .build()
                 .expect("a current-thread runtime with no reactor cannot fail to build");
-            runtime.block_on(serve(event_tx, event_rx, title_tx, port));
+            runtime.block_on(serve(boot, event_tx, event_rx, title_tx, port));
         })
         .expect("spawning the runtime thread");
 
@@ -145,16 +163,23 @@ pub(crate) fn run(args: &DaemonArgs) {
     drop(menu_bar); // held until the loop returns, so the icon is up for the whole run
 }
 
+/// What the process read from the OS before the main loop started turning.
+///
+/// Reading the OS is allowed while this is being built and at no point after: once
+/// `main_loop.run` is going, every fact reaches the model as an event, so anything the
+/// model needs to start from has to be in here.
+struct Boot {
+    /// The app that was already frontmost. `freddie_app_nav::watch` reports changes, and at
+    /// boot nothing has changed yet.
+    front_app: App,
+}
+
 /// Everything mercury does, on the worker thread.
 ///
 /// `intercept` is called from here rather than from `main` because the tap and the effect loop
 /// belong with the state they drive, not because anything it returns is pinned to a thread.
-///
-/// This future is `!Send` because it holds the `Watcher` from `freddie_app_nav::watch`, and that
-/// is fine: it is `block_on`ed by the worker's current-thread runtime and never crosses a
-/// thread.
-#[expect(clippy::future_not_send)]
 async fn serve(
+    boot: Boot,
     event_tx: UnboundedSender<MercuryEvent>,
     event_rx: UnboundedReceiver<MercuryEvent>,
     title_tx: std::sync::mpsc::Sender<&'static str>,
@@ -199,20 +224,6 @@ async fn serve(
         }
     };
 
-    // The app-navigation source. `watch` reports changes, not the app that is
-    // already frontmost, so seed that one by hand.
-    if let Some(bundle_id) = freddie_app_nav::frontmost() {
-        let _ = event_tx.send(foreground(App::from_bundle_id(&bundle_id)));
-    }
-    // The block runs on the main thread, where callbacks are serialized, so it does
-    // one send and returns. The work happens back on this thread.
-    let _watcher = freddie_app_nav::watch({
-        let event_tx = event_tx.clone();
-        move |bundle_id| {
-            let _ = event_tx.send(foreground(App::from_bundle_id(bundle_id)));
-        }
-    });
-
     // `launchctl bootout` and `mercury stop` both send SIGTERM. Route it into the event channel as
     // the same Quit the menu bar sends, so a terminated mercury leaves the way it would have on
     // its own: the model turns it into `Kill`, the effect loop breaks, and the `Interceptor`
@@ -238,13 +249,7 @@ async fn serve(
     // `select!` rather than `join!`: the effect loop ends on `Kill`, and the event
     // loop never does, because the tap thread holds a sender for as long as the
     // grab is alive.
-    // Seed the model with the app that is actually frontmost, rather than defaulting to
-    // `Other`, so the in-app layer resolves correctly before the first foreground event.
-    let mut mercury = Mercury::default();
-    mercury.foreground.set_front_app(
-        freddie_app_nav::frontmost()
-            .map_or(App::Other, |bundle_id| App::from_bundle_id(&bundle_id)),
-    );
+    let mercury = Mercury::new(boot.front_app);
 
     // Nothing has transitioned yet, so no `ShowLayer` has been produced: name the layer we boot
     // into, or the item stays blank until the first layer change.

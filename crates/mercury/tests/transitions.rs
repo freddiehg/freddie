@@ -42,7 +42,7 @@ fn timer_id(effects: &[MercuryEffect]) -> freddie::TimerId {
 // A mercury in Home, the command layer. The default is Typing (passthrough), but most per-event
 // tests exercise Home's command bindings, so they start here.
 fn home() -> Mercury {
-    Mercury::with_layer(Layer::Home(HomeLayer {}))
+    Mercury::with_layer(Layer::Home(HomeLayer))
 }
 
 const fn emit(key: Key, press: PressType) -> MercuryEffect {
@@ -110,7 +110,7 @@ fn in_app(mut effects: Vec<MercuryEffect>) -> Vec<MercuryEffect> {
 #[test]
 fn default_boots_into_typing() {
     // A fresh mercury is in typing (passthrough), the login-safe state, not command-mode Home.
-    assert!(matches!(Mercury::default().layer(), Layer::Typing(_)));
+    assert!(matches!(Mercury::new(App::Other).layer(), Layer::Typing(_)));
 }
 
 #[test]
@@ -1149,7 +1149,7 @@ fn jk_timer() -> MercuryEffect {
 
 // A mercury in typing, the passthrough layer, with the jk run idle.
 fn typing() -> Mercury {
-    Mercury::default()
+    Mercury::new(App::Other)
 }
 
 #[test]

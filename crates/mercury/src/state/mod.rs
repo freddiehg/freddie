@@ -165,13 +165,25 @@ impl ForegroundedApp {
 /// While `navigating`, `app` is the PREVIOUS app: a nav choice foregrounded a new one, but the
 /// watcher has not reported it yet, so the in-app level binds nothing until it does (see
 /// [`app_data`]). The fields are private; the handlers drive it through the methods below.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Foreground {
     app: ForegroundedApp,
     navigating: bool,
 }
 
 impl Foreground {
+    /// The frontmost app at boot, with no navigation in flight.
+    ///
+    /// No `Default`: a `Foreground` that does not know which app is frontmost would answer
+    /// `App::Other`, and the in-app layer would resolve against the wrong app.
+    #[must_use]
+    pub const fn new(app: App) -> Self {
+        Self {
+            app: ForegroundedApp::from_identity(app),
+            navigating: false,
+        }
+    }
+
     /// A nav choice foregrounded an app; the watcher has not confirmed it, so `app` stays stale
     /// until it does. From the nav handlers, and undone by [`set_front_app`](Self::set_front_app).
     pub const fn start_navigating(&mut self) {
@@ -308,10 +320,16 @@ pub type LayerPath<'a> = PathMut<Layer, MercuryPath<'a>>;
 pub type AppLayerPath<'a> = PathMut<AppLayer, LayerPath<'a>>;
 pub type SiteLayerPath<'a> = PathMut<SiteLayer, LayerPath<'a>>;
 
-impl Default for Mercury {
-    fn default() -> Self {
+impl Mercury {
+    /// The model at boot, told what the sources already know.
+    ///
+    /// `front_app` is read before the main loop runs; see `refactors/pending/seed-at-construction.md`.
+    /// No `Default`, because a `Mercury` that has not been told what is frontmost would
+    /// resolve its in-app layer against the wrong app until something corrected it.
+    #[must_use]
+    pub fn new(front_app: App) -> Self {
         Self {
-            foreground: Foreground::default(),
+            foreground: Foreground::new(front_app),
             typing_state: TypingState::default(),
             overlay: None,
             // Typing, the passthrough layer, so a fresh mercury (and one launched at login) leaves
@@ -319,16 +337,14 @@ impl Default for Mercury {
             layer: Layer::Typing(TypingLayer::new()),
         }
     }
-}
 
-impl Mercury {
-    /// A fresh Mercury with `layer` active. For construction (tests, seeding); a live transition
-    /// goes through [`set_layer`](Self::set_layer).
+    /// A fresh Mercury with `layer` active, and no particular app frontmost. For tests; a live
+    /// transition goes through [`set_layer`](Self::set_layer).
     #[must_use]
     pub fn with_layer(layer: Layer) -> Self {
         Self {
             layer,
-            ..Self::default()
+            ..Self::new(App::Other)
         }
     }
 

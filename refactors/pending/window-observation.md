@@ -761,7 +761,7 @@ The daemon builds the watcher on the main thread, between the event channel and 
     let window_sink = windows.sink();
 ```
 
-`snapshot` and `window_sink` go into the `Boot` struct from `refactors/pending/seed-at-construction.md`, which is what the worker already takes:
+`snapshot` and `window_sink` go into the `Boot` struct from `refactors/past/seed-at-construction.md`, which is what the worker already takes:
 
 ```rust
 struct Boot {
@@ -788,7 +788,7 @@ The main loop is untouched: a placement never passes through it. The watcher is 
 
 Nothing can arrive out of order across that seam. A notification is delivered by running the run loop, and the run loop does not run until `main_loop.run`, which is after the worker already holds the snapshot. So the snapshot is the state before any reported change, and every change reported after it is genuinely later.
 
-This is the rule from `refactors/pending/seed-at-construction.md`: reading the OS is what happens before `main_loop.run`, and once it is turning, every fact arrives as an event.
+This is the rule from `refactors/past/seed-at-construction.md`: reading the OS is what happens before `main_loop.run`, and once it is turning, every fact arrives as an event.
 
 `freddie_windows::init` is called just above this today. It folds into `watch`, per `refactors/pending/placement-in-the-model.md`.
 
