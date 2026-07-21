@@ -8,6 +8,35 @@
  * rather than a new hex, so there is nothing here to keep in sync by hand.
  */
 
+@font-face {
+  font-family: GTEesti;
+  src: url('/fonts/GTEestiDisplay-Bold.woff2');
+}
+
+@font-face {
+  font-family: Maison;
+  src: url('/fonts/MaisonNeue-Book.woff2');
+  font-weight: 400;
+}
+
+@font-face {
+  font-family: Maison;
+  src: url('/fonts/MaisonNeue-Medium.woff2');
+  font-weight: 500;
+}
+
+@font-face {
+  font-family: Maison;
+  src: url('/fonts/MaisonNeue-Demi.woff2');
+  font-weight: 600;
+}
+
+@font-face {
+  font-family: Maison;
+  src: url('/fonts/MaisonNeue-Bold.woff2');
+  font-weight: 700;
+}
+
 :root {
   --freddie-white: #fefefe;
   --freddie-yellow: #fad449;
@@ -44,8 +73,9 @@
 
   --ifm-toc-border-color: rgb(var(--freddie-ink-rgb) / 0.12);
 
-  --ifm-h2-font-size: 2.5rem;
-  --ifm-h3-font-size: 1.4rem;
+  --ifm-font-family-base: Maison, system-ui, -apple-system, sans-serif;
+  --ifm-h2-font-size: 3rem;
+  --ifm-h3-font-size: 1.68rem;
   --ifm-code-font-size: 95%;
   --docusaurus-highlighted-code-line-bg: rgb(var(--freddie-ink-rgb) / 0.1);
 
@@ -54,7 +84,7 @@
 
 @media screen and (max-width: 996px) {
   :root {
-    --ifm-h2-font-size: 2rem;
+    --ifm-h2-font-size: 2.4rem;
   }
 }
 
@@ -116,6 +146,13 @@ pre {
 .navbar__logo img {
   border-radius: 50%;
   background-color: var(--freddie-white);
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: GTEesti;
 }
 
 main h2 {
