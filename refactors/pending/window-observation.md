@@ -236,7 +236,7 @@ Until Change 4 registers the observers the table stays empty, and the daemon doe
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Arc, RwLock, Weak};
+use std::sync::{Arc, Mutex, Weak};
 // `Weak` here is `sync::Weak`; `Registration` uses `rc::Weak`, and both appear below.
 
 /// A retained `AXUIElement` for one window.
@@ -265,8 +265,11 @@ impl Drop for Element {
 /// The one thing observation shares across threads: the callbacks write it on the main
 /// thread, and a placement reads it on the effect loop's own thread. Everything else the
 /// watcher owns stays on the main thread and needs no lock.
+///
+/// A `Mutex` and not an `RwLock`: a window opening and a key being pressed are both rare,
+/// so there is nothing for concurrent readers to win.
 #[derive(Default)]
-struct Elements(RwLock<HashMap<WindowId, Arc<Element>>>);
+struct Elements(Mutex<HashMap<WindowId, Arc<Element>>>);
 
 /// The handle a placement is performed through.
 ///
@@ -294,10 +297,10 @@ impl WindowSink {
     pub fn set_frame(&self, window: WindowId, frame: Frame) -> Result<(), WindowError> {
         let elements = self.elements.upgrade().ok_or(WindowError::NotWatching)?;
         // Cloned out so the lock is released before the set: the set costs tens of
-        // milliseconds, and the main thread takes the write lock every time a window opens
-        // or closes.
+        // milliseconds, and the main thread takes this lock every time a window opens or
+        // closes.
         let element = {
-            let table = elements.0.read().map_err(|_| WindowError::UnknownWindow)?;
+            let table = elements.0.lock().map_err(|_| WindowError::UnknownWindow)?;
             Arc::clone(table.get(&window).ok_or(WindowError::UnknownWindow)?)
         };
         set_frame(element.0, frame);
