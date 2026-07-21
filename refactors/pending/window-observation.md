@@ -80,28 +80,18 @@ After:
 ```rust
 /// A type an `AXValue` can carry, and the `AXValueType` that names it.
 ///
-/// The pairing is the point: `AXValueGetValue` writes through an untyped pointer, so a
-/// kind that disagrees with the type it is written into is a mismatch nothing catches. An
-/// impl per type is what makes the two impossible to pass separately.
-trait AxValue: Copy {
+/// `AXValueGetValue` writes through an untyped pointer, so a kind passed separately from
+/// the type it is written into can disagree and nothing catches it.
+trait AxValue: Copy + Default {
     const KIND: AXValueType;
-    /// A value to read over. `AXValueGetValue` overwrites it, or leaves it and returns
-    /// false, in which case the caller discards it.
-    fn zeroed() -> Self;
 }
 
 impl AxValue for CGPoint {
     const KIND: AXValueType = kAXValueTypeCGPoint;
-    fn zeroed() -> Self {
-        Self::new(0.0, 0.0)
-    }
 }
 
 impl AxValue for CGSize {
     const KIND: AXValueType = kAXValueTypeCGSize;
-    fn zeroed() -> Self {
-        Self::new(0.0, 0.0)
-    }
 }
 
 /// Read one `AXValue` attribute of `element`.
@@ -122,9 +112,10 @@ fn ax_value<T: AxValue>(element: AXUIElementRef, attribute: &str) -> Option<T> {
         return None;
     }
 
-    let mut out = T::zeroed();
+    let mut out = T::default();
     // SAFETY: `value` is a +1 `AXValue` of `T::KIND`, which the impl pairs with `T`, so
-    // `AXValueGetValue` writes a `T` into a `T`. The value is released afterward.
+    // `AXValueGetValue` writes a `T` into a `T`. The default is only returned if the write
+    // succeeded. The value is released afterward.
     #[expect(unsafe_code)]
     let got = unsafe {
         let ok = AXValueGetValue(
