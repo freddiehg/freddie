@@ -109,26 +109,22 @@ function BendIt() {
   return (
     <section>
       <div className="container">
-        <div className="kicker">It&rsquo;s your computer</div>
+        <div className="kicker">It’s your computer</div>
         <h2 className={styles.centeredHeading}>Bend it to your will</h2>
         <div className="row">
           <Doable title="Remap keys however you like">
             Remap keys. Bind them differently in different layers and in different states. Want layers, sequences, or chords? Go for it. Bind whatever you want, wherever you want, however you want.
           </Doable>
-          <Doable title="Clone what you are reading">
-            You are on a repo&rsquo;s page. One key clones it, drops you into it, and opens your editor. No copying the URL, no switching to the terminal, no typing the same four commands again.
+          <Doable title="Clone the repo you&rsquo;re viewing">
+            From a repo’s page, use one key to clone it, drop you into it, and open your editor. In today's fast paced environment, who has time to copy the URL, or switch to the terminal, and type the same four commands?
           </Doable>
-          <Doable title="Keys that know what you are looking at">
-            One key mutes you whether the meeting is Zoom in front of you
-            or Meet in a tab you would otherwise have to go find. Another
-            copies the address without whatever got stapled to it.
+          <Doable title="Mute Google Meet from anywhere">
+            A global keybinding can mute Google Meet from anywhere. No more scrounging around to find the tab when you receive a phone call.
           </Doable>
         </div>
         <div className="row">
-          <Doable title="Things that happen with no key pressed">
-            Connect the monitor and your windows go back where they belong on
-            it. Nobody typed anything. The display woke up, and that was the
-            event.
+          <Doable title="Rearrange windows automatically">
+            Connect the monitor and your windows go back where they belong.
           </Doable>
           <Doable title="Keys that remember">
             Maximize a window, press the same key again, and it returns to
@@ -150,7 +146,7 @@ function Features() {
   return (
     <section className="alt-background">
       <div className="container">
-        <div className="kicker">It&rsquo;s simple</div>
+        <div className="kicker">It’s simple</div>
         <h2 className={styles.centeredHeading}>Events in, effects out</h2>
         <div className="row" style={{ paddingTop: '1.5rem' }}>
           <div className="col col--4">
@@ -163,7 +159,7 @@ function Features() {
             </p>
           </div>
           <div className="col col--4">
-            <h3>There&rsquo;s no stopping me</h3>
+            <h3>There’s no stopping me</h3>
             <p>
               Because we're integrating events from many sources, we can easily do crazy things, such as cloning the repository you're looking at without leaving GitHub.com, or muting your microphone on Google Meet (without finding the tab!)
             </p>
@@ -185,7 +181,7 @@ function Video() {
   return (
     <section>
       <div className="container">
-        <div className="kicker">It&rsquo;s worth a look</div>
+        <div className="kicker">It’s worth a look</div>
         <h2 className={styles.centeredHeading}>See it running</h2>
         <div className="row">
           <div className="col col--8 col--offset-2 margin-top--md">
@@ -209,7 +205,7 @@ function DontStopMeNow() {
   return (
     <section className="alt-background">
       <div className="container">
-        <div className="kicker">It&rsquo;s powerful</div>
+        <div className="kicker">It’s powerful</div>
         <h2 className={styles.centeredHeading}>For programmers, by programmers</h2>
         <Prose>
           <p>
@@ -237,7 +233,7 @@ function BindingSection() {
   return (
     <section>
       <div className="container">
-        <div className="kicker">It&rsquo;s a kind of magic</div>
+        <div className="kicker">It’s a kind of magic</div>
         <h2 className={styles.centeredHeading}>Handle complexity with ease</h2>
         <Prose>
           <p>
@@ -329,7 +325,7 @@ function Mercury() {
   return (
     <section className="alt-background">
       <div className="container">
-        <div className="kicker">It&rsquo;s ready for you</div>
+        <div className="kicker">It’s ready for you</div>
         <h2 className={styles.centeredHeading}>Give mercury a try</h2>
         <Prose>
           <p>
@@ -376,7 +372,7 @@ function AreYouReady() {
   return (
     <section>
       <div className="container">
-        <div className="kicker">It&rsquo;s time</div>
+        <div className="kicker">It’s time</div>
         <h2 className={styles.centeredHeading}>Are you ready, Freddie?</h2>
         <div className={styles.ctaContainer}>
           <Link
