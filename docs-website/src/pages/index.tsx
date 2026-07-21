@@ -126,7 +126,7 @@ function BendIt() {
             Connect a monitor and your have your windows go back to where they belong.
           </Doable>
           <Doable title="Respond to scheduled events">
-            A time of day is an event source like any other. At nine on weekday mornings, your windows go back where they belong and the apps you work in are already open. After ten at night, the key that takes you to Twitter takes you somewhere else, because the schedule that fired set a field your per-site bindings read.
+            A timer is an event source like any other. Want to nudge yourself to stop using Twitter after 30 minutes? You can!
           </Doable>
           <Doable title="Incorporate any event">
             Read events over a websocket, or from a file, or from system APIs - such as which window took focus.
