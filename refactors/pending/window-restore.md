@@ -2,531 +2,284 @@
 
 `r` in the resize layer puts the focused window back where it was before mercury placed it.
 
-Mercury keeps, per window, the frame the window had the last time it was somewhere mercury did not put it. Maximizing a window and pressing `r` gives back the size it had before; maximizing, then left-halving, then `r` gives back that same pre-maximize frame, because neither placement was the user's own.
+Mercury keeps, per window, the frame it had when the first placement moved it. Maximizing and pressing `r` gives back the size it had before. Maximizing, then left-halving, then `r` gives back that same pre-maximize frame, because the second placement did not move the window away from anywhere the user chose. Moving the window by hand forgets the remembered frame: it is where the user wants it, so there is nothing to put it back to.
 
-The store lives in `freddie_windows`, beside `MONITORS`, keyed by `CGWindowID`. Mercury's model stays a pure function of state and event: it asks for `MercuryEffect::RestoreWindow` and knows nothing about frames or ids.
+All of it is `Mercury.windows`. The handler reads state, the effect is the `SetFrame` that already exists, and the whole rule is checkable in `transitions.rs`.
 
-## Identity
+Depends on `refactors/pending/window-observation.md` and `refactors/pending/placement-in-the-model.md`.
 
-A window's identity is its `CGWindowID`. An `AXUIElementRef` is not it: `place` creates a fresh element for the focused window on every call, and two elements for the same window are different pointers.
+## Telling mercury's move from the user's
 
-`_AXUIElementGetWindow` is the only way across. It is private, exported by HIServices, and has been there since 10.x. A window whose id cannot be read is placed as it is today and gets no store entry, so a future removal of the symbol costs restore and nothing else.
+`kAXWindowMovedNotification` and `kAXWindowResizedNotification` fire the same way whether a drag moved the window or mercury did, so the model has to know which of its own placements is in flight.
 
-## Which frame is the restore frame
+`Windows::pending` is that: the window a `SetFrame` was just asked for, the frame it asked for, and a timer guard. While it is set, every move reported for that window is mercury's own and the remembered frame is left alone. It clears when a reported frame matches the one asked for, and otherwise when the timer fires.
 
-Two frames are kept per window:
+The timer is what makes it safe rather than a guess. `set_frame` writes the position and the size, twice, so one placement produces up to four reports, and the intermediate ones are of frames nobody asked for. Waiting for the matching frame alone would strand `pending` forever on an app that clamps beyond tolerance (a terminal snapping to whole character cells), and every later drag of that window would be read as mercury's. The timer bounds it: after `PLACEMENT_SETTLE` the window is the user's again whatever arrived.
 
-- `restore`, where the window goes back to.
-- `placed`, where mercury's last placement actually left it.
-
-Before placing, `place` reads the window's current frame. If it matches `placed`, mercury put the window there and `restore` stays as it is. Otherwise the window is somewhere mercury did not put it, and that frame becomes the new `restore`.
-
-`placed` is read back after the set rather than taken from the target: apps clamp what they are given (a terminal snaps to whole character cells), so the frame a window settles at is near the target, not equal to it. The comparison is per-edge within two points for the same reason.
-
-`restore` removes the entry. The window is back where it started, so there is nothing left to put it back to.
-
-## Dead windows
-
-`CGWindowID`s are reused. Every write to the store first drops entries for ids that are no longer in `CGWindowListCreate`'s list, so an id handed to a new window cannot restore it to a closed window's frame. That is one Core Graphics call on a path that already costs tens of milliseconds and already runs on its own thread.
+The match is per-edge within two points, for the same clamping reason.
 
 ---
 
-# Change 1: read the whole frame, not just the origin
+# Change 1: the remembered frame
 
-`place` reads only the position today, to pick a monitor. Restore needs the size too, and both come from the same shaped call. No behavior change.
+`crates/mercury/src/state/` gains it, on the `Windows` that `refactors/pending/window-observation.md` introduced.
 
 Before:
 
 ```rust
-/// The focused window's top-left corner, in Accessibility coordinates, or `None` if
-/// it cannot be read.
-fn window_origin(window: AXUIElementRef) -> Option<CGPoint> {
-    let attribute = CFString::new(kAXPositionAttribute);
-    let mut value: *const c_void = std::ptr::null();
-    // SAFETY: `window` is a live element and `attribute` a live string. On success
-    // the out-parameter receives a +1 `AXValue`; on failure it is untouched.
-    #[expect(unsafe_code)]
-    let status = unsafe {
-        AXUIElementCopyAttributeValue(
-            window,
-            attribute.as_concrete_TypeRef(),
-            std::ptr::from_mut(&mut value).cast(),
-        )
-    };
-    if status != 0 || value.is_null() {
-        return None;
-    }
-
-    let mut point = CGPoint::new(0.0, 0.0);
-    // SAFETY: `value` is a +1 `AXValue` of CGPoint type; `AXValueGetValue` copies it
-    // into `point`. The value is released afterward.
-    #[expect(unsafe_code)]
-    let got = unsafe {
-        let ok = AXValueGetValue(
-            value.cast_mut().cast(),
-            kAXValueTypeCGPoint,
-            std::ptr::from_mut(&mut point).cast(),
-        );
-        CFRelease(value);
-        ok
-    };
-    got.then_some(point)
+#[derive(Debug, Default)]
+pub struct Windows {
+    /// Every open window and where it is.
+    frames: HashMap<WindowId, Frame>,
+    /// The focused window, `None` when nothing is focused or its id is unreadable.
+    focused: Option<WindowId>,
+    /// The monitors, in the order the source reported them.
+    screens: Vec<Monitor>,
 }
 ```
 
 After:
 
 ```rust
-/// Read one `AXValue` attribute of `window` into `out`, which names the type to unwrap:
-/// a `CGPoint` for `kAXValueTypeCGPoint`, a `CGSize` for `kAXValueTypeCGSize`.
-fn ax_value<T: Copy>(
-    window: AXUIElementRef,
-    attribute: &str,
-    kind: AXValueType,
-    mut out: T,
-) -> Option<T> {
-    let attribute = CFString::new(attribute);
-    let mut value: *const c_void = std::ptr::null();
-    // SAFETY: `window` is a live element and `attribute` a live string. On success
-    // the out-parameter receives a +1 `AXValue`; on failure it is untouched.
-    #[expect(unsafe_code)]
-    let status = unsafe {
-        AXUIElementCopyAttributeValue(
-            window,
-            attribute.as_concrete_TypeRef(),
-            std::ptr::from_mut(&mut value).cast(),
-        )
-    };
-    if status != 0 || value.is_null() {
-        return None;
-    }
-
-    // SAFETY: `value` is a +1 `AXValue` of `kind`, which the caller pairs with `T`;
-    // `AXValueGetValue` copies it into `out`. The value is released afterward.
-    #[expect(unsafe_code)]
-    let got = unsafe {
-        let ok = AXValueGetValue(
-            value.cast_mut().cast(),
-            kind,
-            std::ptr::from_mut(&mut out).cast(),
-        );
-        CFRelease(value);
-        ok
-    };
-    got.then_some(out)
+#[derive(Debug, Default)]
+pub struct Windows {
+    /// Every open window: where it is, and where it goes back to.
+    windows: HashMap<WindowId, WindowState>,
+    /// The focused window, `None` when nothing is focused or its id is unreadable.
+    focused: Option<WindowId>,
+    /// The monitors, in the order the source reported them.
+    screens: Vec<Monitor>,
+    /// The placement mercury has asked for and not yet seen land. See
+    /// [`PendingPlacement`].
+    pending: Option<PendingPlacement>,
 }
 
-/// The focused window's frame, in Accessibility coordinates, or `None` if either half
-/// of it cannot be read.
-fn window_frame(window: AXUIElementRef) -> Option<Frame> {
-    let origin = ax_value(
-        window,
-        kAXPositionAttribute,
-        kAXValueTypeCGPoint,
-        CGPoint::new(0.0, 0.0),
-    )?;
-    let size = ax_value(
-        window,
-        kAXSizeAttribute,
-        kAXValueTypeCGSize,
-        CGSize::new(0.0, 0.0),
-    )?;
-    Some(Frame {
-        x: origin.x,
-        y: origin.y,
-        width: size.width,
-        height: size.height,
-    })
+/// One window: where it is now, and where a restore would put it.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct WindowState {
+    /// Where the window is, as the source last reported it.
+    frame: Frame,
+    /// Where the window was before mercury first moved it, and `None` once it is back
+    /// there or the user has moved it since. An `Option` rather than a frame equal to the
+    /// current one, because "nothing to restore" is a real state and `r` says so.
+    restore: Option<Frame>,
 }
+
+/// A [`MercuryEffect::SetFrame`] that has been asked for and not yet landed.
+///
+/// While one is outstanding, every move reported for its window is mercury's own doing,
+/// so the remembered frame survives it. One placement produces several reports, and only
+/// the last is the frame that was asked for.
+#[derive(Debug)]
+struct PendingPlacement {
+    window: WindowId,
+    /// The frame the effect asked for. A report matching it ends the wait.
+    frame: Frame,
+    /// Held for its `Drop` and for the trigger that matches its firing: the wait ends
+    /// when this fires, whatever has been reported.
+    timer: TimerGuard,
+}
+
+/// How long a placement has to land before the window is the user's again.
+///
+/// It bounds how long a drag can be mistaken for mercury's own placement, so shorter is
+/// better, but it has to cover two position-and-size writes and the reports they produce.
+pub const PLACEMENT_SETTLE: Duration = Duration::from_millis(250);
 ```
 
-`monitor_for` takes the frame the caller already read rather than reading one itself, so `place` reads it once.
-
-Before:
+`Frame` gains the comparison, in `freddie_windows`:
 
 ```rust
-fn monitor_for(window: AXUIElementRef) -> Option<Monitor> {
-    let monitors = MONITORS.read().ok()?.clone();
-    let first = *monitors.first()?;
-    let chosen = window_origin(window)
-        .and_then(|p| monitors.iter().find(|m| m.full.contains(p.x, p.y)).copied())
-        .unwrap_or(first);
-    Some(chosen)
-}
-```
-
-After:
-
-```rust
-/// The monitor a window is on: the one whose full frame contains the window's top-left
-/// corner, or the first monitor if none does or the frame could not be read. `None` only
-/// if [`init`] never cached any monitor.
-fn monitor_for(frame: Option<Frame>) -> Option<Monitor> {
-    let monitors = MONITORS.read().ok()?.clone();
-    let first = *monitors.first()?;
-    let chosen = frame
-        .and_then(|f| monitors.iter().find(|m| m.full.contains(f.x, f.y)).copied())
-        .unwrap_or(first);
-    Some(chosen)
-}
-```
-
-`place` threads the frame through:
-
-```rust
-pub fn place(placement: Placement) -> Result<(), WindowError> {
-    let window = focused_window().ok_or(WindowError::NoFocusedWindow)?;
-
-    let monitor = monitor_for(window_frame(window)).ok_or(WindowError::NotInitialized)?;
-    let target = placement.within(monitor.visible);
-    set_frame(window, target);
-
-    // SAFETY: `focused_window` returned a +1 reference; this balances it.
-    #[expect(unsafe_code)]
-    unsafe {
-        CFRelease(window.cast());
-    }
-    tracing::debug!(?placement, ?target, "placed the focused window");
-    Ok(())
-}
-```
-
-Imports gained: `kAXValueTypeCGSize` and `AXValueType` from `accessibility_sys`. `CGSize` is already imported.
-
-Add to the test module:
-
-```rust
-#[test]
-fn a_frame_is_read_as_its_origin_and_size() {
-    let f = Frame {
-        x: 10.0,
-        y: 20.0,
-        width: 300.0,
-        height: 400.0,
-    };
-    assert!(f.contains(10.0, 20.0));
-    assert!(f.contains(309.0, 419.0));
-    assert!(!f.contains(310.0, 20.0));
-}
-```
-
-# Change 2: a window's id
-
-No behavior change: `place` logs the id it read.
-
-Add to `crates/freddie_windows/src/lib.rs`:
-
-```rust
-use core_graphics::window::{CGWindowID, kCGNullWindowID};
-
-/// A window's `CGWindowID`: the identity that outlives any one `AXUIElement` naming it.
-/// [`place`] creates a fresh element for the focused window on every call, so the element
-/// itself cannot be the key.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-struct WindowId(CGWindowID);
-
-// SAFETY: `_AXUIElementGetWindow` is exported by HIServices, inside ApplicationServices,
-// which this crate already links against for the rest of the Accessibility API. It reads
-// the element and writes one `CGWindowID` through the out-parameter.
-#[expect(unsafe_code)]
-#[link(name = "ApplicationServices", kind = "framework")]
-unsafe extern "C" {
-    /// The `CGWindowID` behind an Accessibility window element. Private, and the only
-    /// route from an `AXUIElement` to the id the rest of the system names a window by.
-    fn _AXUIElementGetWindow(element: AXUIElementRef, out: *mut CGWindowID) -> AXError;
-}
-
-/// The window's id, or `None` if it cannot be read. A window without one is placed like
-/// any other and simply never enters the restore store.
-fn window_id(window: AXUIElementRef) -> Option<WindowId> {
-    let mut id: CGWindowID = kCGNullWindowID;
-    // SAFETY: `window` is a live element; the call writes at most one `CGWindowID` into
-    // `id` and takes no ownership of either.
-    #[expect(unsafe_code)]
-    let status = unsafe { _AXUIElementGetWindow(window, &raw mut id) };
-    (status == 0 && id != kCGNullWindowID).then_some(WindowId(id))
-}
-```
-
-In `place`, after the placement:
-
-```rust
-    tracing::debug!(?placement, ?target, id = ?window_id(window), "placed the focused window");
-```
-
-placed above the `CFRelease`, since it reads the element.
-
-# Change 3: the restore store
-
-Add to `crates/freddie_windows/src/lib.rs`:
-
-```rust
-use std::collections::{HashMap, HashSet};
-use std::sync::LazyLock;
-
-use core_graphics::window::{create_window_list, kCGWindowListOptionAll};
-
 impl Frame {
-    /// How far apart two frames may be and still count as the same placement, in points.
-    /// Apps clamp what they are given (a terminal snaps to whole character cells), so a
-    /// frame read back after a set is near what was asked for rather than equal to it.
+    /// How far apart two frames may be and still be the same placement, in points. Apps
+    /// clamp what they are given (a terminal snaps to whole character cells), so a frame
+    /// reported after a set is near what was asked for rather than equal to it.
     const TOLERANCE: f64 = 2.0;
 
-    /// Whether this frame is `other` to within [`TOLERANCE`](Self::TOLERANCE) on every edge.
-    fn approx_eq(self, other: Self) -> bool {
+    /// Whether this frame is `other` to within [`TOLERANCE`](Self::TOLERANCE) on every
+    /// edge.
+    #[must_use]
+    pub fn approx_eq(self, other: Self) -> bool {
         (self.x - other.x).abs() <= Self::TOLERANCE
             && (self.y - other.y).abs() <= Self::TOLERANCE
             && (self.width - other.width).abs() <= Self::TOLERANCE
             && (self.height - other.height).abs() <= Self::TOLERANCE
     }
 }
-
-/// A window [`place`] has moved.
-#[derive(Clone, Copy, PartialEq, Debug)]
-struct Tracked {
-    /// Where [`restore`] puts the window back: the frame it had the last time [`place`]
-    /// found it somewhere no placement had put it.
-    restore: Frame,
-    /// Where the last placement left the window, read back rather than taken from the
-    /// target. Compared against the frame the next placement finds, which is how "the
-    /// user moved this" is told from "mercury put it here".
-    placed: Frame,
-}
-
-/// Every window [`place`] has moved and not yet put back. Written by [`place`], drained
-/// by [`restore`], and pruned of dead windows on both.
-static TRACKED: LazyLock<RwLock<HashMap<WindowId, Tracked>>> =
-    LazyLock::new(|| RwLock::new(HashMap::new()));
-
-/// Drop entries for windows that no longer exist. `CGWindowID`s are reused, so without
-/// this an id handed to a new window would restore it to a closed window's frame.
-fn prune(tracked: &mut HashMap<WindowId, Tracked>) {
-    let Some(live) = create_window_list(kCGWindowListOptionAll, kCGNullWindowID) else {
-        return;
-    };
-    let live: HashSet<WindowId> = live.iter().map(|id| WindowId(*id)).collect();
-    tracked.retain(|id, _| live.contains(id));
-}
-
-/// Record where `id` goes back to, and where this placement left it.
-///
-/// The restore frame only moves when the window was somewhere no placement had put it, so
-/// maximizing and then left-halving still restores to the frame the window had before the
-/// maximize.
-fn track(id: WindowId, before: Frame, landed: Frame) {
-    let Ok(mut tracked) = TRACKED.write() else {
-        return;
-    };
-    prune(&mut tracked);
-    let restore = match tracked.get(&id) {
-        Some(entry) if entry.placed.approx_eq(before) => entry.restore,
-        _ => before,
-    };
-    tracked.insert(
-        id,
-        Tracked {
-            restore,
-            placed: landed,
-        },
-    );
-}
-
-/// Take `id`'s entry, leaving nothing behind: a restored window is where it started, so
-/// there is nothing left to put it back to.
-fn take(id: WindowId) -> Option<Tracked> {
-    let mut tracked = TRACKED.write().ok()?;
-    prune(&mut tracked);
-    tracked.remove(&id)
-}
 ```
 
-`place` records what it did:
+# Change 2: recording a move decides whether to forget
+
+`Windows::record`'s `Moved` arm, before:
 
 ```rust
-pub fn place(placement: Placement) -> Result<(), WindowError> {
-    let window = focused_window().ok_or(WindowError::NoFocusedWindow)?;
-
-    let before = window_frame(window);
-    let monitor = monitor_for(before).ok_or(WindowError::NotInitialized)?;
-    let target = placement.within(monitor.visible);
-    set_frame(window, target);
-
-    let id = window_id(window);
-    if let (Some(id), Some(before), Some(landed)) = (id, before, window_frame(window)) {
-        track(id, before, landed);
-    }
-
-    // SAFETY: `focused_window` returned a +1 reference; this balances it.
-    #[expect(unsafe_code)]
-    unsafe {
-        CFRelease(window.cast());
-    }
-    tracing::debug!(?placement, ?target, ?id, ?before, "placed the focused window");
-    Ok(())
-}
+            WindowChange::Moved(moved) => {
+                self.frames.insert(moved.window, moved.frame);
+            }
 ```
 
-`restore` is the new public half:
+After:
 
 ```rust
-/// Put the focused window back where it was before it was placed.
-///
-/// The frame it goes to is the one it had the last time [`place`] found it somewhere no
-/// placement had put it, so a run of placements all restore to the same frame. Restoring
-/// forgets the window, so a second restore in a row is
-/// [`WindowError::NothingToRestore`].
-///
-/// Immediate, with no animation, and as costly as [`place`].
-///
-/// # Errors
-///
-/// [`WindowError::NoFocusedWindow`] if nothing is frontmost or the frontmost app has no
-/// focused window, and [`WindowError::NothingToRestore`] if that window has no remembered
-/// frame.
-pub fn restore() -> Result<(), WindowError> {
-    let window = focused_window().ok_or(WindowError::NoFocusedWindow)?;
+            WindowChange::Moved(moved) => {
+                let ours = self.pending_covers(moved);
+                if let Some(state) = self.windows.get_mut(&moved.window) {
+                    state.frame = moved.frame;
+                    if !ours {
+                        state.restore = None;
+                    }
+                }
+            }
+```
 
-    let entry = window_id(window).and_then(take);
-    if let Some(entry) = entry {
-        set_frame(window, entry.restore);
-    }
-
-    // SAFETY: `focused_window` returned a +1 reference; this balances it.
-    #[expect(unsafe_code)]
-    unsafe {
-        CFRelease(window.cast());
-    }
-
-    match entry {
-        Some(entry) => {
-            tracing::debug!(frame = ?entry.restore, "restored the focused window");
-            Ok(())
+```rust
+impl Windows {
+    /// Whether `moved` is a report of mercury's own outstanding placement, ending the
+    /// wait if it is the frame that was asked for.
+    ///
+    /// Every report for the pending window counts, not only the matching one: one
+    /// placement writes the position and the size, twice, so the frames in between are
+    /// ones nobody asked for and a drag they were mistaken for would be forgotten.
+    fn pending_covers(&mut self, moved: WindowFrame) -> bool {
+        let Some(pending) = &self.pending else {
+            return false;
+        };
+        if pending.window != moved.window {
+            return false;
         }
-        None => Err(WindowError::NothingToRestore),
+        if pending.frame.approx_eq(moved.frame) {
+            self.pending = None;
+        }
+        true
     }
 }
 ```
 
-The new error variant:
+The timer's firing clears it, bound at the root beside the other guard-matched triggers:
 
 ```rust
-pub enum WindowError {
-    /// [`init`] was not called, or it failed.
-    NotInitialized,
-    /// [`init`] was called off the main thread.
-    NotMainThread,
-    /// The Accessibility permission has not been granted.
-    NotTrusted,
-    /// There is no screen to place a window on.
-    NoScreen,
-    /// Nothing is frontmost, or the frontmost app has no focused window.
-    NoFocusedWindow,
-    /// The focused window has no remembered frame: nothing placed it, or it has already
-    /// been put back.
-    NothingToRestore,
+    // Only the placement still outstanding: a firing from one already landed matches nothing.
+    |mercury_path| mercury_path.windows.pending_timer().map(TimerGuard::trigger) => placement_settled,
+```
+
+```rust
+/// The placement mercury asked for has had its time: whatever the window has done since,
+/// what it does next is the user's.
+pub(crate) fn placement_settled(
+    _ev: &TimerFired,
+    node: Node<&mut Mercury, ()>,
+) -> Vec<MercuryEffect> {
+    node.parent.windows.forget_pending();
+    Vec::new()
+}
+```
+
+`Closed` drops the whole entry, so a `CGWindowID` handed to a new window arrives with no remembered frame:
+
+```rust
+            WindowChange::Closed(window) => {
+                self.windows.remove(window);
+                if self.focused == Some(*window) {
+                    self.focused = None;
+                }
+            }
+```
+
+# Change 3: a placement remembers, and arms the wait
+
+`crates/mercury/src/handlers/resize.rs`, before:
+
+```rust
+fn place<'a, P: Ascend<MercuryPath<'a>>>(path: P, placement: Placement) -> Vec<MercuryEffect> {
+    let root = path.ascend();
+    let effects = match target(&root.windows, placement) {
+        Some(target) => vec![MercuryEffect::SetFrame(target)],
+        None => Vec::new(),
+    };
+    and_go_home(root, effects)
+}
+```
+
+After:
+
+```rust
+fn place<'a, P: Ascend<MercuryPath<'a>>>(path: P, placement: Placement) -> Vec<MercuryEffect> {
+    let root = path.ascend();
+    let effects = match target(&root.windows, placement) {
+        Some(target) => root.windows.placing(target),
+        None => Vec::new(),
+    };
+    and_go_home_from(root, effects)
 }
 ```
 
 ```rust
-            Self::NoFocusedWindow => "no focused window",
-            Self::NothingToRestore => "nothing to restore",
-```
+impl Windows {
+    /// Record that `target` is about to be asked for, and return the effects that ask:
+    /// the placement itself and the timer that bounds the wait for it.
+    ///
+    /// The frame the window has now becomes the one a restore goes back to, unless one is
+    /// already remembered: a run of placements all restore to where the window was before
+    /// the first of them.
+    pub(crate) fn placing(&mut self, target: WindowFrame) -> Vec<MercuryEffect> {
+        let Some(state) = self.windows.get_mut(&target.window) else {
+            return Vec::new();
+        };
+        state.restore = state.restore.or(Some(state.frame));
 
-Tests, in the existing module:
-
-```rust
-#[test]
-fn approx_eq_absorbs_an_app_clamping_what_it_was_given() {
-    let asked = Frame {
-        x: 0.0,
-        y: 25.0,
-        width: 800.0,
-        height: 900.0,
-    };
-    let landed = Frame {
-        width: 799.0,
-        ..asked
-    };
-    assert!(asked.approx_eq(landed), "a point of clamping is the same frame");
-    assert!(
-        !asked.approx_eq(Frame {
-            width: 400.0,
-            ..asked
-        }),
-        "a half-width window is not the same frame"
-    );
-}
-
-/// The restore frame survives a run of placements and only moves when the window turns
-/// up somewhere no placement put it. This is `track`'s rule, spelled without the store.
-#[test]
-fn the_restore_frame_follows_the_user_and_not_the_placements() {
-    let original = Frame {
-        x: 100.0,
-        y: 100.0,
-        width: 400.0,
-        height: 300.0,
-    };
-    let maximized = Frame {
-        x: 0.0,
-        y: 25.0,
-        width: 1600.0,
-        height: 900.0,
-    };
-    let restore_after = |entry: Option<Tracked>, before: Frame| match entry {
-        Some(e) if e.placed.approx_eq(before) => e.restore,
-        _ => before,
-    };
-
-    let first = restore_after(None, original);
-    assert_eq!(first, original);
-
-    let entry = Tracked {
-        restore: first,
-        placed: maximized,
-    };
-    assert_eq!(
-        restore_after(Some(entry), maximized),
-        original,
-        "placing a placed window keeps the frame the user last had"
-    );
-
-    let dragged = Frame {
-        x: 700.0,
-        ..original
-    };
-    assert_eq!(
-        restore_after(Some(entry), dragged),
-        dragged,
-        "a window the user moved restores to where they left it"
-    );
+        let (timer, effect) = timer_effect_and_guard(PLACEMENT_SETTLE, |id| {
+            MercuryEvent::Timer(TimerFired(id))
+        });
+        self.pending = Some(PendingPlacement {
+            window: target.window,
+            frame: target.frame,
+            timer,
+        });
+        vec![MercuryEffect::SetFrame(target), MercuryEffect::Timer(effect)]
+    }
 }
 ```
 
-# Change 4: `r` restores, in the resize layer
-
-`crates/mercury/src/effect.rs`:
+# Change 4: `r` restores
 
 ```rust
-    /// Move and resize the focused window of the frontmost app.
-    Place(Placement),
-    /// Put the focused window back where it was before it was placed. A no-op if nothing
-    /// placed it.
-    RestoreWindow,
+impl Windows {
+    /// Take the focused window's remembered frame, and return the effects that put it
+    /// back. Empty when nothing is focused or the window has no remembered frame: nothing
+    /// placed it, or it is already back.
+    ///
+    /// Taking, not reading: a restored window is where it started, so there is nothing
+    /// left to put it back to.
+    pub(crate) fn restoring(&mut self) -> Vec<MercuryEffect> {
+        let Some(window) = self.focused else {
+            return Vec::new();
+        };
+        let Some(frame) = self.windows.get_mut(&window).and_then(|s| s.restore.take()) else {
+            return Vec::new();
+        };
+        self.placing_without_remembering(WindowFrame { window, frame })
+    }
+}
 ```
 
-`crates/mercury/src/handlers/resize.rs`:
+`placing_without_remembering` is `placing` minus the `state.restore` line: a restore still arms the wait, so the moves it causes are not read as the user's, but it has nothing to remember.
+
+The handler, beside the three arrows:
 
 ```rust
+/// Put the focused window back where it was, and return home.
+///
+/// Restoring is one choice, not something to repeat, so it leaves the layer the way the
+/// arrows do.
 pub(crate) fn restore_window<'a, E, P: Ascend<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
-    and_go_home(node.parent, MercuryEffect::RestoreWindow)
+    let root = node.parent.ascend();
+    let effects = root.windows.restoring();
+    and_go_home_from(root, effects)
 }
 ```
-
-Restoring is one choice, not something to repeat, so it leaves for home like the arrows.
 
 `crates/mercury/src/state/resize.rs`:
 
@@ -550,72 +303,110 @@ Restoring is one choice, not something to repeat, so it leaves for home like the
   esc  home
 ```
 
-`crates/mercury/src/daemon.rs`, beside `MercuryEffect::Place`:
+# Change 5: tests
+
+In `crates/mercury/tests/transitions.rs`, on top of `home_with_a_window` from `refactors/pending/placement-in-the-model.md`. A placement now produces two effects, the `SetFrame` and the settle timer, so the existing resize assertions gain the timer.
 
 ```rust
-        MercuryEffect::Place(placement) => place_window(placement),
-        MercuryEffect::RestoreWindow => restore_window(),
-```
-
-```rust
-/// Put the focused window back, fire-and-forget on its own thread, for the same reason
-/// [`place_window`] uses one.
-fn restore_window() {
-    std::thread::spawn(|| match freddie_windows::restore() {
-        Ok(()) => debug!("restored the window"),
-        Err(e) => debug!(error = %e, "nothing to restore"),
-    });
-}
-```
-
-`debug!` rather than `warn!`: pressing `r` on a window mercury never placed is an ordinary miss, not a failure the user has to see.
-
-`crates/mercury/tests/transitions.rs`:
-
-```rust
-// `r` in resize is the fourth placement choice: it puts the window back and, like the
-// arrows, returns home.
+// `r` in resize puts the window back where it was before the placement, and returns home
+// like the arrows.
 #[test]
-fn resize_r_restores_the_window_and_returns_home() {
-    let mut m = home();
+fn resize_r_restores_the_frame_from_before_the_placement() {
+    let mut m = home_with_a_window();
     let _ = m.handle(&key(Key::KeyR));
-    assert!(matches!(m.layer(), Layer::Resize(_)));
+    let _ = m.handle(&key(Key::UpArrow));
+    let _ = m.handle(&windows(WindowChange::Moved(WindowFrame {
+        window: WINDOW,
+        frame: SCREEN.visible,
+    })));
 
+    let _ = m.handle(&key(Key::KeyR));
     assert_eq!(
         m.handle(&key(Key::KeyR)),
-        Some(leaves(vec![MercuryEffect::RestoreWindow]))
+        Some(leaves(vec![
+            MercuryEffect::SetFrame(WindowFrame {
+                window: WINDOW,
+                frame: WINDOW_FRAME,
+            }),
+            settle_timer(),
+        ]))
     );
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
+// A run of placements restores to where the window was before the first of them, not to
+// the frame the previous placement left.
+#[test]
+fn a_second_placement_does_not_move_the_remembered_frame() { ... }
+
+// A move mercury did not ask for forgets the remembered frame, so `r` afterwards does
+// nothing rather than dragging the window off where the user just put it.
+#[test]
+fn a_move_by_hand_forgets_the_remembered_frame() {
+    let mut m = home_with_a_window();
+    let _ = m.handle(&key(Key::KeyR));
+    let _ = m.handle(&key(Key::UpArrow));
+    let effects = ...;
+    let _ = m.handle(&fired(timer_id(&effects)));
+
+    let dragged = Frame { x: 700.0, ..WINDOW_FRAME };
+    let _ = m.handle(&windows(WindowChange::Moved(WindowFrame {
+        window: WINDOW,
+        frame: dragged,
+    })));
+
+    let _ = m.handle(&key(Key::KeyR));
+    assert_eq!(m.handle(&key(Key::KeyR)), Some(leaves(vec![])));
+}
+
+// The reports a single placement produces are the position and the size, each written
+// twice, so the frames in between are ones nobody asked for. None of them counts as a
+// move by hand.
+#[test]
+fn the_intermediate_frames_of_a_placement_are_not_a_move_by_hand() {
+    let mut m = home_with_a_window();
+    let _ = m.handle(&key(Key::KeyR));
+    let _ = m.handle(&key(Key::UpArrow));
+
+    for frame in [
+        // The position landed, the size has not.
+        Frame { x: 0.0, y: 25.0, ..WINDOW_FRAME },
+        SCREEN.visible,
+    ] {
+        let _ = m.handle(&windows(WindowChange::Moved(WindowFrame {
+            window: WINDOW,
+            frame,
+        })));
+    }
+
+    let _ = m.handle(&key(Key::KeyR));
+    assert_eq!(
+        m.handle(&key(Key::KeyR)),
+        Some(leaves(vec![
+            MercuryEffect::SetFrame(WindowFrame {
+                window: WINDOW,
+                frame: WINDOW_FRAME,
+            }),
+            settle_timer(),
+        ]))
+    );
+}
+
+// An app that clamps past the tolerance never reports the frame that was asked for, so
+// the wait ends on the timer instead and the next drag is the user's again.
+#[test]
+fn a_placement_that_never_lands_settles_on_the_timer() { ... }
+
+// Restoring takes the frame, so a second `r` has nothing to put back.
+#[test]
+fn restoring_twice_asks_for_nothing_the_second_time() { ... }
+
 // `r r` is enter-resize then restore, so a second `r` does not re-enter resize.
 #[test]
-fn r_in_resize_does_not_re_enter_resize() {
-    let mut m = home();
-    let _ = m.handle(&key(Key::KeyR));
-    let _ = m.handle(&key(Key::KeyR));
-    assert!(matches!(m.layer(), Layer::Home(_)));
-}
-```
+fn r_in_resize_does_not_re_enter_resize() { ... }
 
-Extend the resize keymap table with every key the layer answers, `r` among them:
-
-```rust
+// A closed window takes its remembered frame with it, so a reused `CGWindowID` cannot
+// restore a new window to a closed one's frame.
 #[test]
-fn resize_answers_exactly_its_keymap() {
-    for (k, effects) in [
-        (Key::UpArrow, vec![MercuryEffect::Place(Placement::Maximize)]),
-        (Key::LeftArrow, vec![MercuryEffect::Place(Placement::LeftHalf)]),
-        (
-            Key::RightArrow,
-            vec![MercuryEffect::Place(Placement::RightHalf)],
-        ),
-        (Key::KeyR, vec![MercuryEffect::RestoreWindow]),
-    ] {
-        let mut m = home();
-        let _ = m.handle(&key(Key::KeyR));
-        assert_eq!(m.handle(&key(k)), Some(leaves(effects)), "{k:?}");
-        assert!(matches!(m.layer(), Layer::Home(_)), "{k:?} stayed in resize");
-    }
-}
+fn a_closed_window_is_forgotten() { ... }
 ```
