@@ -12,9 +12,9 @@ Depends on `refactors/pending/window-observation.md`. Without it `Mercury.window
 
 ---
 
-# Change 1: the placement arithmetic moves to mercury
+# Change 1: `Placement` goes away
 
-`Placement` stops being an effect payload and becomes what the three resize handlers share, so it moves out of `crates/mercury/src/effect.rs` into `crates/mercury/src/handlers/resize.rs` and gains the arithmetic `freddie_windows` is doing today.
+`Placement` exists because the effect had to name an intent that survived the trip to the sink. The handler computes the rectangle now, so the three resize keys are three expressions over the screen's visible frame and there is nothing left for an enum to stand for.
 
 Removed from `crates/mercury/src/effect.rs`:
 
@@ -29,41 +29,9 @@ pub enum Placement {
 }
 ```
 
-Added to `crates/mercury/src/handlers/resize.rs`:
+Removed from `crates/freddie_windows/src/lib.rs`: its `Placement`, and the `within` that turned one into a frame.
 
-```rust
-/// Where a window goes, as a share of the screen it is on. One variant per resize key.
-///
-/// Not an effect payload: a handler turns it into the rectangle the effect carries.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Placement {
-    /// The whole visible frame.
-    Maximize,
-    LeftHalf,
-    RightHalf,
-}
-
-impl Placement {
-    /// The frame this placement occupies within `visible`.
-    const fn within(self, visible: Frame) -> Frame {
-        let half = visible.width / 2.0;
-        match self {
-            Self::Maximize => visible,
-            Self::LeftHalf => Frame {
-                width: half,
-                ..visible
-            },
-            Self::RightHalf => Frame {
-                x: visible.x + half,
-                width: half,
-                ..visible
-            },
-        }
-    }
-}
-```
-
-The `within` tests move with it, out of `freddie_windows`'s test module and into `handlers/resize.rs`: `maximize_is_the_whole_visible_frame`, `the_halves_split_the_width_and_keep_the_height`, `the_halves_abut`, and `placements_are_relative_to_the_visible_frame`.
+`freddie_windows`'s `within` tests go with it. What replaced them is in Change 4: the transition tests assert the rectangle the handler produced, which is the same arithmetic checked one level up and through the keys that trigger it.
 
 # Change 2: the effect carries the rectangle
 
@@ -106,33 +74,58 @@ pub(crate) fn maximize<'a, E, P: Ascend<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
-    place(node.parent, Placement::Maximize)
+    place(node.parent, |visible| visible)
+}
+
+pub(crate) fn left_half<'a, E, P: Ascend<MercuryPath<'a>>>(
+    _ev: &E,
+    node: Node<P, ()>,
+) -> Vec<MercuryEffect> {
+    place(node.parent, |visible| Frame {
+        width: visible.width / 2.0,
+        ..visible
+    })
+}
+
+pub(crate) fn right_half<'a, E, P: Ascend<MercuryPath<'a>>>(
+    _ev: &E,
+    node: Node<P, ()>,
+) -> Vec<MercuryEffect> {
+    place(node.parent, |visible| Frame {
+        x: visible.x + visible.width / 2.0,
+        width: visible.width / 2.0,
+        ..visible
+    })
 }
 ```
 
-with `left_half` and `right_half` the same shape, and the one function they share:
+and the one function they share:
 
 ```rust
-/// Put the focused window where `placement` says, and return home.
+/// Put the focused window in the frame `within` picks out of its screen's visible frame,
+/// and return home.
 ///
 /// The effects are empty when there is no focused window or no screen has been reported.
 /// The layer returns home either way.
-fn place<'a, P: Ascend<MercuryPath<'a>>>(path: P, placement: Placement) -> Vec<MercuryEffect> {
+fn place<'a, P: Ascend<MercuryPath<'a>>>(
+    path: P,
+    within: impl Fn(Frame) -> Frame,
+) -> Vec<MercuryEffect> {
     let root = path.ascend();
-    let effects = match target(&root.windows, placement) {
+    let effects = match target(&root.windows, within) {
         Some(target) => vec![MercuryEffect::SetFrame(target)],
         None => Vec::new(),
     };
-    and_go_home(root, effects)
+    and_go_home_from(root, effects)
 }
 
-/// The window a placement moves and the frame it moves it to.
-fn target(windows: &Windows, placement: Placement) -> Option<WindowFrame> {
+/// The focused window and the frame it is going to.
+fn target(windows: &Windows, within: impl Fn(Frame) -> Frame) -> Option<WindowFrame> {
     let focused = windows.focused()?;
     let monitor = windows.monitor_for(focused.frame)?;
     Some(WindowFrame {
         window: focused.window,
-        frame: placement.within(monitor.visible),
+        frame: within(monitor.visible),
     })
 }
 ```
@@ -175,7 +168,7 @@ pub(crate) fn and_go_home_from(
 
 # Change 3: the sink stops deciding
 
-`crates/freddie_windows/src/lib.rs` loses `place`, `Placement`, `monitor_for`, and `focused_window`, all of which existed to work out what the model now works out. `WindowSink::set_frame` from `refactors/pending/window-observation.md` is the whole sink.
+`crates/freddie_windows/src/lib.rs` loses `place`, `monitor_for`, and `focused_window`, all of which existed to work out what the model now works out. `WindowSink::set_frame` from `refactors/pending/window-observation.md` is the whole sink.
 
 `MONITORS` goes with them. It is a cache of main-thread-only `NSScreen` data that exists because `place` runs off the main thread, and `place` is its only reader; the model holds `screens` now, so the model is the cache. `read_monitors` stays as a plain function, called by the screen-change observer to build a `Screens` report and by `Watcher::snapshot` for the seed.
 
@@ -227,8 +220,6 @@ fn set_frame(windows: &WindowSink, target: WindowFrame) {
 ```
 
 The effect loop gains the `WindowSink` alongside the `Emitter` it already carries, taken from the `Watcher` the daemon holds for the life of the process.
-
-The `Placement` translation goes away with it: the mirrored enum existed so the model could name a placement without depending on the OS crate, and there is no placement to name any more.
 
 # Change 4: the transition tests assert rectangles
 
