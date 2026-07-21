@@ -6,7 +6,7 @@ Mercury keeps, per window, the frame it had when the first placement moved it. M
 
 All of it is `Mercury.windows`. The handler reads state, the effect is the `SetFrame` that already exists, and the whole rule is checkable in `transitions.rs`.
 
-Depends on `refactors/past/window-observation.md` and `refactors/pending/placement-in-the-model.md`.
+Depends on `refactors/past/window-observation.md` and `refactors/past/placement-in-the-model.md`.
 
 ## Telling mercury's move from the user's
 
@@ -309,7 +309,7 @@ pub(crate) fn restore_window<'a, E, P: Ascend<MercuryPath<'a>>>(
 
 # Change 5: tests
 
-In `crates/mercury/tests/transitions.rs`, on top of `home_with_a_window` from `refactors/pending/placement-in-the-model.md`. A placement now produces two effects, the `SetFrame` and the settle timer, so the existing resize assertions gain the timer.
+In `crates/mercury/tests/transitions.rs`, on top of `home_with_a_window` from `refactors/past/placement-in-the-model.md`. A placement now produces two effects, the `SetFrame` and the settle timer, so the existing resize assertions gain the timer.
 
 ```rust
 // `r` in resize puts the window back where it was before the placement, and returns home
