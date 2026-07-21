@@ -313,7 +313,7 @@ function AreYouReady() {
 export default function Home(): ReactNode {
   return (
     <Layout
-      title="freddie - a bespoke control plane for your computer"
+      title="freddie - build a bespoke control plane for your computer"
       description="freddie is a set of tools for building a bespoke control plane for your computer. A freddie program ingests a stream of events and produces a stream of effects."
     >
       <HomepageHeader />

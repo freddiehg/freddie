@@ -16,7 +16,7 @@ export default function HomepageHeader() {
             <p
               className={`hero__subtitle margin-bottom--lg ${styles.heroSubtitle}`}
             >
-              A bespoke control plane for your computer.
+              Build a bespoke control plane for your computer.
             </p>
             <Buttons />
           </div>

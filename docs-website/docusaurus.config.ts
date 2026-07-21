@@ -4,7 +4,7 @@ import { themes as prismThemes } from 'prism-react-renderer';
 
 const config: Config = {
   title: 'freddie',
-  tagline: 'A bespoke control plane for your computer.',
+  tagline: 'Build a bespoke control plane for your computer.',
   favicon: 'img/mercury.png',
 
   url: 'https://www.freddie.rs',
