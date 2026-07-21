@@ -13,6 +13,8 @@ The event is the half to remove. A model seeded by event is built claiming `App:
 
 An event still means what it has always meant: something changed. A seed is not a change.
 
+The boundary is `main_loop.run`. Before it, the process is constructing itself, and reading the OS is how it finds out what to construct: `freddie_app_nav::frontmost`, the window snapshot, the screen list. Once the loop is running, no read is allowed and every fact arrives as an event. That is the rule the seeds have to satisfy, and it is why they are read on the main thread and handed to the worker as data rather than read by the worker while the loop is already turning.
+
 A source whose value is genuinely unknown at boot is unaffected and stays `None`. The Chrome tab URL is the example: no extension has connected, so there is nothing to seed, and `None` is the honest answer rather than a placeholder waiting to be corrected.
 
 ---
@@ -81,18 +83,31 @@ Before:
     );
 ```
 
-After:
+After, taking what `main` read and passed in:
 
 ```rust
-    let mercury = Mercury::new(
-        freddie_app_nav::frontmost()
-            .map_or(App::Other, |bundle_id| App::from_bundle_id(&bundle_id)),
-    );
+    let mercury = Mercury::new(front_app);
 ```
 
 One call to `frontmost`, one place the model learns what is frontmost, and no dispatch that changes nothing.
 
-# Change 3: the boot log stops being a separate kind of line
+# Change 3: the seed is read on main, before the loop runs
+
+`frontmost()` is called on the worker today. The worker is spawned before `main_loop.run`, but it runs alongside it, so the read is not ordered before the loop starts — it only usually happens first.
+
+`crates/mercury/src/daemon.rs`, in `main`, beside the event channel it already builds there:
+
+```rust
+    // Read before the loop turns, and handed to the worker as data. Everything the
+    // process learns after `main_loop.run` arrives as an event; everything it knows
+    // before is read here.
+    let front_app = freddie_app_nav::frontmost()
+        .map_or(App::Other, |bundle_id| App::from_bundle_id(&bundle_id));
+```
+
+`serve` takes it alongside the channels it already takes, and hands it to `Mercury::new`. `freddie_app_nav::watch` stays where it is, on the worker: registering is thread-agnostic and delivery is on main either way.
+
+# Change 4: the boot log stops being a separate kind of line
 
 `initial state` exists because the model was finished in two places and the log had to show the first one. With one, it is the same fact the first real dispatch already carries.
 
