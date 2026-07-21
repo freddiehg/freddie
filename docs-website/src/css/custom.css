@@ -133,6 +133,12 @@
   margin-bottom: 3rem !important;
 }
 
+/* Infima aligns inline code to the parent's midline rather than its baseline,
+   which sits the code low in a line of Maison. */
+code {
+  vertical-align: baseline;
+}
+
 /* Word wrap in all code blocks */
 pre {
   white-space: pre-wrap;
