@@ -83,8 +83,7 @@ mercury restart     # replace the running one
 mercury logs        # follow what it is doing`;
 
 const sourceExample = `// In \`mercury daemon\`, beside the other sources.
-freddie_windows::watch(move |window, frame| {
-    let focused = WindowFocused { window, frame };
+freddie_windows::watch(move |focused| {
     let _ = events.send(MercuryEvent::Window(focused));
 });`;
 
