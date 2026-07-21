@@ -78,25 +78,35 @@ fn window_origin(window: AXUIElementRef) -> Option<CGPoint> {
 After:
 
 ```rust
-/// A type an `AXValue` can carry, and the `AXValueType` that names it.
+/// One `AXValue` attribute: the name it is read by, the `AXValueType` it holds, and the
+/// Rust type that type means.
 ///
-/// `AXValueGetValue` writes through an untyped pointer, so a kind passed separately from
-/// the type it is written into can disagree and nothing catches it.
-trait AxValue: Copy + Default {
+/// All three together, because `AXValueGetValue` writes through an untyped pointer: an
+/// attribute read with the wrong kind, or into the wrong type, is a mismatch nothing would
+/// otherwise catch.
+trait AxAttribute {
+    const NAME: &'static str;
     const KIND: AXValueType;
+    type Value: Copy + Default;
 }
 
-impl AxValue for CGPoint {
+struct Position;
+impl AxAttribute for Position {
+    const NAME: &'static str = kAXPositionAttribute;
     const KIND: AXValueType = kAXValueTypeCGPoint;
+    type Value = CGPoint;
 }
 
-impl AxValue for CGSize {
+struct Size;
+impl AxAttribute for Size {
+    const NAME: &'static str = kAXSizeAttribute;
     const KIND: AXValueType = kAXValueTypeCGSize;
+    type Value = CGSize;
 }
 
 /// Read one `AXValue` attribute of `element`.
-fn ax_value<T: AxValue>(element: AXUIElementRef, attribute: &str) -> Option<T> {
-    let attribute = CFString::new(attribute);
+fn ax_value<A: AxAttribute>(element: AXUIElementRef) -> Option<A::Value> {
+    let attribute = CFString::new(A::NAME);
     let mut value: *const c_void = std::ptr::null();
     // SAFETY: `element` is live and `attribute` a live string. On success the
     // out-parameter receives a +1 `AXValue`; on failure it is untouched.
@@ -112,28 +122,34 @@ fn ax_value<T: AxValue>(element: AXUIElementRef, attribute: &str) -> Option<T> {
         return None;
     }
 
-    let mut out = T::default();
-    // SAFETY: `value` is a +1 `AXValue` of `T::KIND`, which the impl pairs with `T`, so
-    // `AXValueGetValue` writes a `T` into a `T`. The default is only returned if the write
-    // succeeded. The value is released afterward.
+    let mut out = A::Value::default();
+    // SAFETY: `value` is a +1 `AXValue`, and the impl pairs `A::KIND` with `A::Value`, so
+    // a successful read writes an `A::Value` into an `A::Value`. The default is only
+    // returned if the write succeeded. The value is released afterward.
     #[expect(unsafe_code)]
     let got = unsafe {
         let ok = AXValueGetValue(
             value.cast_mut().cast(),
-            T::KIND,
+            A::KIND,
             std::ptr::from_mut(&mut out).cast(),
         );
         CFRelease(value);
         ok
     };
+    if !got {
+        // The attribute did not hold the type it is documented to hold, which is the app's
+        // Accessibility implementation misbehaving. Logged rather than fatal: a daemon that
+        // remaps the keyboard should not die because some app answered oddly.
+        tracing::warn!(attribute = A::NAME, "an AXValue was not the type it should be");
+    }
     got.then_some(out)
 }
 
 /// A window's frame, in Accessibility coordinates, or `None` if either half of it
 /// cannot be read.
 fn window_frame(window: AXUIElementRef) -> Option<Frame> {
-    let origin: CGPoint = ax_value(window, kAXPositionAttribute)?;
-    let size: CGSize = ax_value(window, kAXSizeAttribute)?;
+    let origin = ax_value::<Position>(window)?;
+    let size = ax_value::<Size>(window)?;
     Some(Frame {
         x: origin.x,
         y: origin.y,
