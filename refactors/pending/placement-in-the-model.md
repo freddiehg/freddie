@@ -209,7 +209,7 @@ After:
 /// the same reason `foreground_app` uses one.
 fn set_frame(windows: &WindowSink, target: WindowFrame) {
     let windows = windows.clone();
-    std::thread::spawn(move || match windows.set_frame(target.window, target.frame) {
+    std::thread::spawn(move || match windows.set_frame(target) {
         Ok(()) => debug!(?target, "set the window's frame"),
         Err(e) => warn!(?target, error = %e, "set frame failed"),
     });

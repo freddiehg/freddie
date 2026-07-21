@@ -126,7 +126,7 @@ pub struct WindowSink {
 }
 
 impl WindowSink {
-    /// Move and resize one window, named by id.
+    /// Move and resize one window: `target` names which, and the rectangle it goes to.
     ///
     /// Immediate, with no animation. Costs single-digit to low tens of milliseconds, so a
     /// caller on a latency-sensitive loop should hand this to another thread.
@@ -139,17 +139,21 @@ impl WindowSink {
     /// [`WindowError::NotWatching`] if the watcher has been dropped, and
     /// [`WindowError::UnknownWindow`] if nothing with that id is being observed, which is
     /// the case for a window that has closed or that never reported an id.
-    pub fn set_frame(&self, window: WindowId, frame: Frame) -> Result<(), WindowError> {
+    pub fn set_frame(&self, target: WindowFrame) -> Result<(), WindowError> {
         let elements = self.elements.upgrade().ok_or(WindowError::NotWatching)?;
         // Cloned out so the lock is released before the writes: those take tens of
         // milliseconds, and the main thread takes this lock every time a window opens or
         // closes.
         let element = {
             let table = elements.0.lock().map_err(|_| WindowError::UnknownWindow)?;
-            Arc::clone(table.get(&window).ok_or(WindowError::UnknownWindow)?)
+            Arc::clone(
+                table
+                    .get(&target.window)
+                    .ok_or(WindowError::UnknownWindow)?,
+            )
         };
-        set_frame(element.raw(), frame);
-        tracing::debug!(?window, ?frame, "set a window's frame");
+        set_frame(element.raw(), target.frame);
+        tracing::debug!(?target, "set a window's frame");
         Ok(())
     }
 }
