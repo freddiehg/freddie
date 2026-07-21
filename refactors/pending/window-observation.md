@@ -508,14 +508,14 @@ pub struct Watcher {
     /// Held for its `Drop`, and declared first so it stops before the map it writes into
     /// is torn down: fields drop in declaration order.
     _launches: LaunchWatcher,
-    observed: Rc<Observed>,
+    state: Rc<WatcherState>,
 }
 
 /// What the [`Watcher`] holds, reachable from the callbacks as well as from it.
 ///
 /// Everything but `elements` is main thread only and unlocked: `watch`, the launch and
 /// terminate callbacks, and every `AXObserver` notification all run there.
-struct Observed {
+struct WatcherState {
     /// The one thing shared off the main thread. The [`Watcher`] holds the only strong
     /// reference, so dropping it is what ends a [`WindowSink`]'s access.
     elements: Arc<Elements>,
@@ -531,7 +531,7 @@ impl Watcher {
     #[must_use]
     pub fn sink(&self) -> WindowSink {
         WindowSink {
-            elements: Arc::downgrade(&self.observed.elements),
+            elements: Arc::downgrade(&self.state.elements),
         }
     }
 }
@@ -550,19 +550,19 @@ struct AppObserver {
 /// `observer` is held rather than a pid, so a window created later is registered without
 /// going back through `apps`; nothing in the callback path touches that map.
 ///
-/// [`Weak`](std::rc::Weak), not [`Rc`]: [`Observed`] owns `apps`, an [`AppObserver`] owns
+/// [`Weak`](std::rc::Weak), not [`Rc`]: [`WatcherState`] owns `apps`, an [`AppObserver`] owns
 /// its registration, so a strong reference here would be a cycle that never frees.
 struct Registration {
     observer: AXObserverRef,
-    observed: std::rc::Weak<Observed>,
+    state: std::rc::Weak<WatcherState>,
 }
 ```
 
 The pieces behind `watch`:
 
-- `observe_app(&Rc<Observed>, pid: Pid)` calls `AXObserverCreate`, builds the `Registration` holding that observer and a `Weak` back, adds `kAXFocusedWindowChangedNotification` and `kAXWindowCreatedNotification` on the app element with that `refcon`, adds the source to `CFRunLoop::get_main()` under `kCFRunLoopDefaultMode`, inserts the `AppObserver` into `apps`, then walks `kAXWindowsAttribute` once and calls `observe_window` for each.
+- `observe_app(&Rc<WatcherState>, pid: Pid)` calls `AXObserverCreate`, builds the `Registration` holding that observer and a `Weak` back, adds `kAXFocusedWindowChangedNotification` and `kAXWindowCreatedNotification` on the app element with that `refcon`, adds the source to `CFRunLoop::get_main()` under `kCFRunLoopDefaultMode`, inserts the `AppObserver` into `apps`, then walks `kAXWindowsAttribute` once and calls `observe_window` for each.
 - `observe_window(&Observed, observer, element)` reads the id, inserts a retained `Element` into `elements`, adds `kAXWindowMovedNotification`, `kAXWindowResizedNotification`, and `kAXUIElementDestroyedNotification` on the window element, and reports `Opened`.
-- The app set is kept current from `NSWorkspace`'s `didLaunchApplication` and `didTerminateApplication`, whose closures capture an `rc::Weak<Observed>` for the same reason a `Registration` does, seeded from `runningApplications`. On terminate, the app's `AppObserver` is removed from `apps` and every `elements` entry for its windows is removed, each reported as `Closed`.
+- The app set is kept current from `NSWorkspace`'s `didLaunchApplication` and `didTerminateApplication`, whose closures capture an `rc::Weak<WatcherState>` for the same reason a `Registration` does, seeded from `runningApplications`. On terminate, the app's `AppObserver` is removed from `apps` and every `elements` entry for its windows is removed, each reported as `Closed`.
 - An app that refuses Accessibility, or has not finished launching, fails `AXObserverCreate`. That is logged at `debug` and the app is skipped: its windows are never reported and cannot be addressed, and every other app goes on being observed.
 
 The C callback dispatches on the notification name:
@@ -586,7 +586,7 @@ unsafe extern "C" fn on_notification(
     let registration = unsafe { &*refcon.cast::<Registration>() };
 
     // The watcher is gone, so there is nothing to report into.
-    let Some(observed) = registration.observed.upgrade() else {
+    let Some(state) = registration.state.upgrade() else {
         return;
     };
 
@@ -595,11 +595,11 @@ unsafe extern "C" fn on_notification(
     let name = unsafe { CFString::wrap_under_get_rule(notification) }.to_string();
 
     match name.as_str() {
-        kAXWindowCreatedNotification => observe_window(&observed, registration.observer, element),
+        kAXWindowCreatedNotification => observe_window(state, registration.observer, element),
         kAXWindowMovedNotification | kAXWindowResizedNotification => {
             if let (Some(window), Some(frame)) = (window_id(element), window_frame(element)) {
                 let moved = WindowFrame { window, frame };
-                observed.report(if name == kAXWindowMovedNotification {
+                state.report(if name == kAXWindowMovedNotification {
                     WindowChange::Moved(moved)
                 } else {
                     WindowChange::Resized(moved)
@@ -608,12 +608,12 @@ unsafe extern "C" fn on_notification(
         }
         kAXUIElementDestroyedNotification => {
             if let Some(window) = window_id(element) {
-                observed.forget(window);
-                observed.report(WindowChange::Closed(window));
+                state.forget(window);
+                state.report(WindowChange::Closed(window));
             }
         }
         kAXFocusedWindowChangedNotification => {
-            observed.report(WindowChange::Focused(window_id(element)));
+            state.report(WindowChange::Focused(window_id(element)));
         }
         _ => {}
     }
@@ -646,7 +646,7 @@ pub struct Snapshot {
 
 ```
 
-Built inside [`watch`], after the observers are registered and before it returns, so there is no moment when a caller holds a watcher and not a snapshot. It reads `observed.elements` for the windows, which registering just filled, the frontmost app's `kAXFocusedWindowAttribute` for the focus, and `read_monitors` for the screens.
+Built inside [`watch`], after the observers are registered and before it returns, so there is no moment when a caller holds a watcher and not a snapshot. It reads `state.elements` for the windows, which registering just filled, the frontmost app's `kAXFocusedWindowAttribute` for the focus, and `read_monitors` for the screens.
 
 That focus read is the one place this crate asks the OS a question outside a callback. It is the starting value the observer cannot report, because the observer reports changes and none has happened yet.
 
