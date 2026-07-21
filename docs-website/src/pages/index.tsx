@@ -113,17 +113,14 @@ function BendIt() {
         <h2 className={styles.centeredHeading}>Bend it to your will</h2>
         <div className="row">
           <Doable title="Remap keys however you like">
-            Chords, sequences, one key that sends four. The part every remapper
-            does, except you write it rather than describe it.
+            Remap keys. Bind them differently in different layers and in different states. Want layers, sequences, or chords? Go for it. Bind whatever you want, wherever you want, however you want.
           </Doable>
-          <Doable title="Modes you made up">
-            A window layer where the arrows move windows instead of the cursor.
-            A presenting mode where the keys that could embarrass you are dead.
-            Nothing exposes those, because they did not exist until you said so.
+          <Doable title="Clone what you are reading">
+            You are on a repo&rsquo;s page. One key clones it, drops you into it, and opens your editor. No copying the URL, no switching to the terminal, no typing the same four commands again.
           </Doable>
           <Doable title="Keys that know what you are looking at">
-            One key mutes you whether the meeting is Zoom in front of you or
-            Meet in a tab. Another clones the repo whose page you are on, or
+            One key mutes you whether the meeting is Zoom in front of you
+            or Meet in a tab you would otherwise have to go find. Another
             copies the address without whatever got stapled to it.
           </Doable>
         </div>
