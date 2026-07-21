@@ -34,17 +34,32 @@ impl Mercury {
     /// the in-app layer would resolve against the wrong app until something corrected it.
     #[must_use]
     pub fn new(front_app: App) -> Self {
-        let mut mercury = Self {
-            foreground: Foreground::default(),
+        Self {
+            foreground: Foreground::new(front_app),
             typing_state: TypingState::default(),
             overlay: None,
             layer: Layer::default(),
-        };
-        mercury.foreground.set_front_app(front_app);
-        mercury
+        }
     }
 }
 ```
+
+`Foreground` gains the same treatment, for the same reason. `set_front_app` sets the app and ends a pending navigation; at construction there is no navigation to end, so calling it would be a no-op clear pretending to be part of the build.
+
+```rust
+impl Foreground {
+    /// The frontmost app at boot, with no navigation in flight.
+    #[must_use]
+    pub(crate) const fn new(app: App) -> Self {
+        Self {
+            app,
+            navigating: false,
+        }
+    }
+}
+```
+
+`#[derive(Default)]` comes off `Foreground` too: a `Foreground` that does not know which app is frontmost is the state this whole change exists to remove.
 
 `#[derive(Default)]` comes off `Mercury`. The tests build one through `Mercury::new(App::Other)`, which says what they mean: no particular app is frontmost.
 
