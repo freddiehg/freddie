@@ -6,7 +6,7 @@ import HomepageHeader from '../components/Header';
 import styles from './index.module.css';
 
 const stateExample = `pub struct Mercury {
-    /// The focused window and where it sits, as the window events report it.
+    /// The focused window and where it sits.
     focused: Option<(WindowId, Frame)>,
     /// Where each window was before we moved it.
     prior_locations: HashMap<WindowId, Frame>,
@@ -24,21 +24,27 @@ const bindingExample = `#[derive(Bind, Debug)]
 )]
 pub struct ResizeLayer {}`;
 
-const maximizeExample = `fn maximize<'a>(_ev: &KeyEvent, node: Node<ResizeLayerPath<'a>, ()>) -> Option<MercuryEffect> {
+const maximizeExample = `fn maximize<'a>(
+    _ev: &KeyEvent,
+    node: Node<ResizeLayerPath<'a>, ()>,
+) -> Option<MercuryEffect> {
     // ResizeLayer -> Layer -> Mercury, where the frames are kept.
-    let root: &mut Mercury = node.parent.parent().parent().get_mut();
+    let root: &mut Mercury = node.parent.ascend();
 
     let (id, frame) = root.focused?;
-    // Only the first maximize records anything. A second one in a row finds
-    // the entry already there and leaves it alone, so \`r\` still goes back to
-    // where the window started rather than to the maximized frame.
+    // Only the first maximize records anything. A second one
+    // finds the entry already there and leaves it alone, so
+    // \`r\` still goes back to where the window started.
     root.prior_locations.entry(id).or_insert(frame);
 
     Some(MercuryEffect::Place(Placement::Maximize))
 }`;
 
-const handlerExample = `fn restore<'a>(_ev: &KeyEvent, node: Node<ResizeLayerPath<'a>, ()>) -> Option<MercuryEffect> {
-    let root: &mut Mercury = node.parent.parent().parent().get_mut();
+const handlerExample = `fn restore<'a>(
+    _ev: &KeyEvent,
+    node: Node<ResizeLayerPath<'a>, ()>,
+) -> Option<MercuryEffect> {
+    let root: &mut Mercury = node.parent.ascend();
 
     let (id, _) = root.focused?;
     let frame = root.prior_locations.remove(&id)?;
@@ -59,7 +65,10 @@ const trackExample = `#[bind(
 )]
 pub struct MercuryStruct;
 
-fn track_focus(ev: &WindowFocused, node: Node<MercuryPath, ()>) -> Option<MercuryEffect> {
+fn track_focus(
+    ev: &WindowFocused,
+    node: Node<MercuryPath, ()>,
+) -> Option<MercuryEffect> {
     node.parent.get_mut().focused = Some((ev.window, ev.frame));
     None
 }`;
@@ -73,9 +82,10 @@ const verbsExample = `mercury install     # start it at login
 mercury restart     # replace the running one
 mercury logs        # follow what it is doing`;
 
-const sourceExample = `// In \`mercury daemon\`, beside the keyboard grab and the frontmost-app watcher.
+const sourceExample = `// In \`mercury daemon\`, beside the other sources.
 freddie_windows::watch(move |window, frame| {
-    let _ = events.send(MercuryEvent::Window(WindowFocused { window, frame }));
+    let focused = WindowFocused { window, frame };
+    let _ = events.send(MercuryEvent::Window(focused));
 });`;
 
 function Prose({ children }: { children: ReactNode }) {
