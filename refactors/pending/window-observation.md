@@ -28,7 +28,7 @@ A window's identity is its `CGWindowID`. An `AXUIElementRef` is not it: elements
 
 `_AXUIElementGetWindow` is the only way across. It is private, exported by HIServices, and has been there since 10.x. A window whose id cannot be read produces no events.
 
-The crate keeps the reverse direction too: a table from `WindowId` to the retained element observing it. That is what makes `WindowSink::set_frame` a lookup into a table the observer already maintains rather than a walk of every app's `kAXWindowsAttribute`. It is also the only place that mapping exists, so the model and the effects speak `WindowId` alone.
+The crate keeps the reverse direction too: a table from `WindowId` to the retained element observing it, maintained by the observer and read on the main thread when a placement is performed. Without it, addressing a window would mean walking every app's `kAXWindowsAttribute` to find the one with a matching id. It is the only place that mapping exists, so the model and the effects speak `WindowId` alone.
 
 ---
 
@@ -226,7 +226,7 @@ In `place`, before the `CFRelease`, since it reads the element:
     tracing::debug!(?placement, ?target, id = ?window_id(window), "placed the focused window");
 ```
 
-# Change 3: the watcher's element table and the frame sink
+# Change 3: the frame sink
 
 Observation owns its own state, and it stays on the main thread. The table of elements comes into existence when [`watch`] is called and dies with the [`Watcher`] it returns, the way `freddie_app_nav::watch` already works.\n\nA placement is asked for from the effect loop's thread and performed from the main thread, so nothing is shared and nothing is locked: the sink sends, the main thread looks up, and the `AXUIElement` writes go to a thread of their own.
 
@@ -516,7 +516,7 @@ unsafe extern "C" fn on_notification(
 
 The screen-change observer that `init` registers belongs to the watcher too: the registration moves into `watch`, and the callback reports `Screens` as well as refreshing `MONITORS`.
 
-`MONITORS` outlives this doc and not the next one. It is a cache of main-thread-only `NSScreen` data for `place`, which runs off the main thread, and `place` is the only thing that reads it. `refactors/pending/placement-in-the-model.md` deletes `place` and puts `screens` in the model, at which point the static has no reader and goes with it, leaving `read_monitors` as a plain function the observer and [`snapshot`] call.
+`MONITORS` outlives this doc and not the next one. It is a cache of main-thread-only `NSScreen` data for `place`, which runs off the main thread, and `place` is the only thing that reads it. `refactors/pending/placement-in-the-model.md` deletes `place` and puts `screens` in the model, at which point the static has no reader and goes with it, leaving `read_monitors` as a plain function the observer and [`Watcher::snapshot`] call.
 
 # Change 5: the seed
 
@@ -640,7 +640,18 @@ The root binding, beside `Foregrounded`:
     Windowed => record_windows,
 ```
 
-The daemon wires the source, beside the `freddie_app_nav::watch` call, and seeds from the snapshot after registering.
+The daemon wires the source beside the `freddie_app_nav::watch` call, seeds from `Watcher::snapshot` after registering, and drains placements on every pass of the main loop:
+
+```rust
+    main_loop.run(|| {
+        windows.drain();
+        if let Some(name) = title_rx.try_iter().last() {
+            menu_bar.set_title(Some(&format!(" {name}")));
+        }
+    });
+```
+
+`drain` is what performs a placement, so nothing moves without it. `WindowSink::set_frame` wakes the run loop, which is what gets this called promptly rather than at the end of the current 100ms slice.
 
 Tests in `crates/mercury/tests/transitions.rs`, over `Windows::record`:
 

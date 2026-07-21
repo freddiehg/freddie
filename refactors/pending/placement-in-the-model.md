@@ -203,23 +203,17 @@ After:
 ```
 
 ```rust
-/// Set one window's frame, fire-and-forget on its own thread. It takes tens of
-/// milliseconds, which is long enough to delay a key the effect loop is about to emit. A
-/// detached thread cannot hold up the exit path the way `spawn_blocking` would, which is
-/// the same reason `foreground_app` uses one.
-///
-/// The sink is a clone of the one the `Watcher` handed out, which is what the thread
-/// carries instead of reaching for a global.
+/// Ask for one window's frame to be set. Returns as soon as the request is queued: the
+/// main thread looks the window up and hands the `AXUIElement` writes to a thread of their
+/// own, so nothing here waits on them.
 fn set_frame(windows: &WindowSink, target: WindowFrame) {
-    let windows = windows.clone();
-    std::thread::spawn(move || match windows.set_frame(target.window, target.frame) {
-        Ok(()) => debug!(?target, "set the window's frame"),
-        Err(e) => warn!(?target, error = %e, "set frame failed"),
-    });
+    if let Err(e) = windows.set_frame(target) {
+        warn!(?target, error = %e, "set frame failed");
+    }
 }
 ```
 
-The effect loop gains the `WindowSink` alongside the `Emitter` it already carries, taken from the `Watcher` the daemon holds for the life of the process.
+The effect loop gains the `WindowSink` alongside the `Emitter` it already carries, taken from the `Watcher` the daemon holds for the life of the process. No `std::thread::spawn` here any more: `WindowSink::set_frame` does not block, and the thread that would have been spawned is spawned by `Watcher::drain` instead.
 
 # Change 4: the transition tests assert rectangles
 
