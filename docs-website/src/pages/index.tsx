@@ -39,27 +39,22 @@ function Features() {
           <div className="col col--4">
             <h3>Integrate anything</h3>
             <p>
-              A freddie program responds to whatever you can observe. A key
-              going down, which app came to the front, which tab you are
+              A freddie program responds to whatever you can observe. A keypress,
+              an app being foregrounded, which tab you are
               looking at, what devices are plugged in, or something you have
-              not thought of yet. Adding a source is adding a variant.
-            </p>
-          </div>
-          <div className="col col--4">
-            <h3>Centralized state</h3>
-            <p>
-              All of it is handled however you like, but in one place, against
-              one state. So a key can mean one thing on a given site and
-              nothing anywhere else, or a layer can change the moment you plug
-              in the good microphone.
+              not thought of yet.
             </p>
           </div>
           <div className="col col--4">
             <h3>There&rsquo;s no stopping me</h3>
             <p>
-              What comes back out is just as open. Rearrange your windows, send
-              the selection to an LLM, foreground an app, clone the repository
-              you are reading, or run whatever you would have written anyway.
+              Because we're integrating events from many sources, we can do things that would be hard or impossible with other tools, such as cloning the repository you're looking at in GitHub, or muting your microphone on Google Meet (without finding the tab!)
+            </p>
+          </div>
+          <div className="col col--4">
+            <h3>Testable, understandable</h3>
+            <p>
+
             </p>
           </div>
         </div>

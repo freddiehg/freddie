@@ -74,7 +74,60 @@ TODO: explain how precedence works between a layer's bindings and the root's, an
 
 ## Testing a handler
 
-TODO: `state.handle` is a pure state transformer, so a test asserts exactly what a given state and event produce. Show one test and describe the exhaustive-table standard.
+`state.handle` takes state and event and returns the updated state and the effects. It performs none of them, so a test is a function call and an `assert_eq!`. There is no keyboard to drive, no daemon to start, and nothing to mock.
+
+```rust
+#[test]
+fn home_n_enters_nav() {
+    let mut m = home();
+    assert_eq!(
+        m.handle(&key(Key::KeyN)),
+        Some(vec![shows("Nav"), return_home_timer()])
+    );
+    assert!(matches!(m.layer(), Layer::Nav(_)));
+}
+```
+
+Three things are asserted, and the third is the one people forget:
+
+- The event was handled at all. `handle` returns `Option`, and `None` means no binding claimed it.
+- The exact effects, in order. Not that a `ShowLayer` appeared somewhere, but that these two came back and nothing else did.
+- The resulting state. `n` from home leaves you in nav, and a binding that produced the right effects while landing in the wrong layer is still wrong.
+
+### Where a test starts
+
+Tests build the state they mean to exercise rather than pressing keys to get there:
+
+```rust
+// A mercury in Home, the command layer. The default is Typing (passthrough), but most
+// per-event tests exercise Home's command bindings, so they start here.
+fn home() -> Mercury {
+    Mercury::with_layer(Layer::Home(HomeLayer {}))
+}
+```
+
+A test that walks in from the typing layer is testing the walk as well as the binding, and fails for two reasons instead of one.
+
+### Timers
+
+A timer effect mints an id, so a test cannot write the id it expects. It rebuilds the effect and compares:
+
+```rust
+fn return_home_timer() -> MercuryEffect {
+    let (_guard, effect) = freddie::timer_effect_and_guard(RETURN_TO_HOME_TIMEOUT, fired);
+    MercuryEffect::Timer(effect)
+}
+```
+
+Under the `testing` feature, equality on a timer effect compares the delay and the event it will fire, not the id. To assert on a firing, read the id back off the effect that set it, since nothing else can know it.
+
+### The standard
+
+The standard for the model is exhaustive: every key in every reachable state, asserting exactly what dispatch produces. Because the model is a pure function of state and event, the full table is checkable, and it doubles as documentation of the keymap. `crates/mercury/tests/transitions.rs` holds 87 of these today, which is not the whole table. A new binding extends toward it rather than testing only the happy path.
+
+### Driving the loop
+
+The per-event tests above call `handle` directly. When a test needs several events to feed each other, it drives a `bind::SimpleRunner`, which records the effects and, for a `Foreground` effect, reports the app back the way the OS watcher would.
 
 ## Where the binding leaves you
 
