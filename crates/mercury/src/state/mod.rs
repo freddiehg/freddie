@@ -5,6 +5,7 @@
 //! the node's definition site.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::time::Duration;
 
 use bind::Bind;
@@ -172,7 +173,7 @@ impl ForegroundedApp {
 /// Filled entirely by the window source: a snapshot at startup and a change per event after
 /// it. Handlers read it and never read the OS, so what a placement computes is a function of
 /// state and event like everything else.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Windows {
     /// Every open window: where it is, and where it goes back to.
     open: HashMap<WindowId, WindowState>,
@@ -182,6 +183,18 @@ pub struct Windows {
     screens: Vec<Monitor>,
     /// The placement mercury has asked for and not yet seen land. See [`PendingPlacement`].
     pending: Option<PendingPlacement>,
+}
+
+/// Every dispatched event logs the whole state on one line, and the derived `Debug` for this puts
+/// every open window, its frame, and its restore frame on that line. That is a hundred numbers
+/// nobody reads, and it buries the fields of the record that are the point of it.
+///
+/// So this prints its name and nothing else. What a window is doing is already in the log: the
+/// window source logs each change as it arrives, and a placement logs the frame it asked for.
+impl fmt::Debug for Windows {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Windows")
+    }
 }
 
 /// One window: where it is now, and where a restore would put it.
