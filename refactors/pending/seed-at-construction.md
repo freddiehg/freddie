@@ -95,17 +95,35 @@ One call to `frontmost`, one place the model learns what is frontmost, and no di
 
 `frontmost()` is called on the worker today. The worker is spawned before `main_loop.run`, but it runs alongside it, so the read is not ordered before the loop starts — it only usually happens first.
 
-`crates/mercury/src/daemon.rs`, in `main`, beside the event channel it already builds there:
+Everything read before the loop goes into one value, so the boundary is a type and not a rule someone remembers. It lives in mercury: `freddie_main_loop` is generic and must not learn what an `App` is.
+
+`crates/mercury/src/daemon.rs`:
 
 ```rust
-    // Read before the loop turns, and handed to the worker as data. Everything the
-    // process learns after `main_loop.run` arrives as an event; everything it knows
-    // before is read here.
-    let front_app = freddie_app_nav::frontmost()
-        .map_or(App::Other, |bundle_id| App::from_bundle_id(&bundle_id));
+/// What the process read from the OS before the main loop started turning.
+///
+/// Reading the OS is allowed while this is being built and at no point after. Once
+/// `main_loop.run` is going, every fact reaches the model as an event, so anything the
+/// model needs to start from has to be in here.
+struct Boot {
+    /// The app that was already frontmost. `freddie_app_nav::watch` reports changes, and
+    /// at boot nothing has changed yet.
+    front_app: App,
+}
 ```
 
-`serve` takes it alongside the channels it already takes, and hands it to `Mercury::new`. `freddie_app_nav::watch` stays where it is, on the worker: registering is thread-agnostic and delivery is on main either way.
+Built in `main`, beside the event channel it already builds there:
+
+```rust
+    let boot = Boot {
+        front_app: freddie_app_nav::frontmost()
+            .map_or(App::Other, |bundle_id| App::from_bundle_id(&bundle_id)),
+    };
+```
+
+`serve` takes `boot` alongside the channels it already takes, and hands `boot.front_app` to `Mercury::new`. `freddie_app_nav::watch` stays on the worker: registering is thread-agnostic, and delivery is on main either way.
+
+`refactors/pending/window-observation.md` adds the window snapshot and the `WindowSink` to this struct rather than to `serve`'s parameter list, which is what keeps a growing set of sources from growing an argument list.
 
 # Change 4: the boot log stops being a separate kind of line
 

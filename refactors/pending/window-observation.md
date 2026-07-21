@@ -678,7 +678,20 @@ The daemon builds the watcher on the main thread, between the event channel and 
     let window_sink = windows.sink();
 ```
 
-The worker takes `snapshot` and `window_sink` alongside what it takes today, and seeds the model from the snapshot before its first dispatch.
+`snapshot` and `window_sink` go into the `Boot` struct from `refactors/pending/seed-at-construction.md`, which is what the worker already takes:
+
+```rust
+struct Boot {
+    front_app: App,
+    /// Every window open when the watcher was installed, which one was focused, and the
+    /// screens. The observer reports changes, and at boot nothing has changed yet.
+    windows: Snapshot,
+    /// The handle placements are asked for through.
+    window_sink: WindowSink,
+}
+```
+
+`Mercury::new` takes the snapshot alongside the front app and starts with `Windows` already filled.
 
 ```rust
     main_loop.run(|| {
