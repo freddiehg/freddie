@@ -1,6 +1,6 @@
 # the command line is freddie's, the daemon is the app's
 
-Every freddie app is one process that owns the keyboard, plus a handful of verbs for finding it, starting it, and stopping it. Those verbs are the same whatever the app does, and all of them now live in mercury, where a second app cannot reach them.
+Every freddie app is one process that owns the keyboard, plus a handful of verbs for finding it, starting it, and stopping it. Those verbs are the same whatever the app does, and all of them live in mercury, where a second app cannot reach them.
 
 `freddie_cli` is a new crate holding the whole command surface. An app supplies its name, its daemon body, and whatever extra flags that body takes; it gets `start`, `restart`, `status`, `logs`, `stop`, `install`, `uninstall`, and the hidden `daemon` for free, keyed to its own name and writing to its own log file. mercury becomes an implementation of one trait and a `main` that is a single call.
 
@@ -20,10 +20,9 @@ A new crate rather than a dependency, and that is settled rather than assumed: `
 
 The app owns:
 
-- its name, which keys the lock file, the log directory, and the help text
+- its name, which keys the lock file, the log directory, the launchd label, the help text, and every line a verb prints
 - what the daemon does, which is everything `mercury::daemon` holds today
 - any flag beyond `--log-level` that its daemon takes
-- what stopping means, because only the app knows what has to be undone first
 
 ## The seam
 
@@ -37,7 +36,8 @@ pub trait App {
     /// [`NoArgs`] for an app that takes none.
     type Args: clap::Args + fmt::Debug;
 
-    /// The name the lock file, the log directory, and `--help` are all keyed to.
+    /// The name the lock file, the log directory, the launchd label, `--help`, and every message a
+    /// verb writes are all keyed to.
     ///
     /// One name, so a client cannot look for the daemon under a name the daemon did not
     /// register under.
@@ -46,11 +46,11 @@ pub trait App {
     /// The one-line description at the top of `--help`.
     const ABOUT: &'static str;
 
-    /// Be the daemon. Returns when it has quit.
+    /// Be the daemon. Returns the process's exit code when it has quit.
     ///
     /// Called with the lock held and logging initialized. Returning drops the lock, so an app
     /// that wants to stay running stays inside this call.
-    fn run(args: &Self::Args);
+    fn run(args: &Self::Args) -> i32;
 }
 
 /// The daemon flags of an app that adds none.
@@ -58,13 +58,17 @@ pub trait App {
 pub struct NoArgs {}
 ```
 
+`freddie-daemon-runtime.md` replaces `run` with an associated `Daemon` type once the process arrangement is a crate too, so an app writes no function to be the daemon at all. Until then `run` is the app's whole daemon.
+
 ## The generic command line
 
 clap's derive accepts generic parameters, so the app's flags flatten into the shared `daemon` verb. Verified on the pinned 1.96.0 against clap 4.6.2: `app daemon --port 4001` parses into the flattened struct, and the shared defaults resolve.
 
+Only `DaemonArgs` is generic. Every client verb takes flags that belong to the verb rather than to the app, so their arg structs move across unchanged from `crates/mercury/src/cli.rs`.
+
 ```rust
 #[derive(Parser, Debug)]
-#[command(version)]
+#[command(version, long_about = None)]
 pub struct Args<A: clap::Args> {
     #[command(subcommand)]
     pub verb: Option<Verb<A>>,
@@ -76,7 +80,22 @@ pub struct Args<A: clap::Args> {
 /// verbs. Declaration order is help order.
 #[derive(Subcommand, Debug)]
 pub enum Verb<A: clap::Args> {
-    /// Run the daemon in this terminal, in the foreground.
+    /// Start the daemon if it is not running, and exit.
+    Start,
+    /// Stop the running daemon and start a fresh one.
+    Restart(RestartArgs),
+    /// Report whether the daemon is running, and its pid.
+    Status,
+    /// Follow the log, starting nothing.
+    Logs(LogsArgs),
+    /// Ask the running daemon to quit.
+    Stop(StopArgs),
+    /// Register this binary as a login agent, so the app starts with the session.
+    Install,
+    /// Take the login agent back out.
+    Uninstall,
+    /// Run the daemon in this process. Not for typing: `start` spawns it.
+    #[command(hide = true)]
     Daemon(DaemonArgs<A>),
 }
 
@@ -95,6 +114,8 @@ pub struct DaemonArgs<A: clap::Args> {
     pub app: A,
 }
 ```
+
+The `Start` and `Daemon` doc comments lose the binary's name, since the derive writes them into every app's `--help`. `RestartArgs`, `LogsArgs`, and `StopArgs` move across as they are.
 
 `#[command(name = ...)]` cannot carry `A::NAME`, because a derive macro reads only what is written beside it. The name is set on the built `Command` instead, which is also where `A::ABOUT` goes. Verified on the pinned 1.96.0: `--help` prints `Usage: mercury [COMMAND]` with the app's about line above it.
 
@@ -119,8 +140,14 @@ fn parse<A: App>() -> Args<A::Args> {
 /// Do what the command line asked, and report the exit code for it.
 fn dispatch<A: App>(verb: Option<Verb<A::Args>>) -> i32 {
     match verb {
-        // The bare invocation. `mercury-start.md` makes this start the daemon and follow its log.
-        None => daemon::run::<A>(&DaemonArgs::default_for::<A>()),
+        // The bare invocation is `start`: one behaviour, not two that agree.
+        None | Some(Verb::Start) => client::start::<A>(),
+        Some(Verb::Restart(args)) => client::restart::<A>(&args),
+        Some(Verb::Status) => client::status::<A>(),
+        Some(Verb::Logs(args)) => client::logs::<A>(&args),
+        Some(Verb::Stop(args)) => client::stop::<A>(&args),
+        Some(Verb::Install) => client::install::<A>(),
+        Some(Verb::Uninstall) => client::uninstall::<A>(),
         Some(Verb::Daemon(args)) => daemon::run::<A>(&args),
     }
 }
@@ -147,75 +174,135 @@ The lock and the logging move ahead of the app, so an app cannot forget either a
 ```rust
 /// Run `A`'s daemon in the foreground: set up logging, take the lock, and hand over.
 pub(crate) fn run<A: App>(args: &DaemonArgs<A::Args>) -> i32 {
-    let log_path = logging::init(A::NAME, &args.log_level);
-    println!("{}: logging to {}", A::NAME, log_path.display());
+    let log_path = logging::init(A::NAME, &Terminal::Daemon(LogLevel(&args.log_level)));
+    info!(path = %log_path.display(), "logging");
 
     // Before anything that touches the machine. Two instances swallow and re-emit each other's
-    // keys forever, which wedges the keyboard. Held for the length of this call, so the lock
-    // outlives the daemon body.
+    // keys forever, which wedges the keyboard. The binding must outlive the call (`let _instance`,
+    // never `let _`): dropping it releases the lock.
     let _instance = match freddie_single_instance::acquire(A::NAME) {
         Ok(instance) => instance,
         Err(e) => {
-            eprintln!("{}: {e}", A::NAME);
-            error!(error = %e, "another instance holds the lock; not starting");
+            error!(name = A::NAME, error = %e, "another instance holds the lock; `stop` ends it");
             return 1;
         }
     };
 
-    A::run(&args.app);
-    0
+    A::run(&args.app)
 }
 ```
 
-`logging::init` gains the app name and derives `~/Library/Logs/<name>/<name>.log` from it, replacing the two `mercury` literals in `crates/mercury/src/logging.rs`. Everything else in that module moves across unchanged.
+The daemon verb reports a code where mercury's exits 0 whatever happened: a lock it could not take and a menu bar it could not create are both a daemon that did not run, and `install`'s launch agent is tuned to the exit code.
 
-## Stopping stays the app's
+## Logging keyed to the name
 
-Superseded by `freddie-daemon-runtime.md`, which makes the stop request a `From<Stop>` bound on the app's event type and installs the handler itself. The `on_stop` helper below is what this doc proposed before that existed; it is kept because the reasoning for why stopping cannot be the shared crate's is unchanged.
+`crates/mercury/src/logging.rs` moves to `freddie_cli` and takes the name it currently spells twice. Its `Terminal`/`LogLevel` split, its pid stamp, its file level, and its client layers cross unchanged.
 
-`freddie_cli` delivers the request; the app decides what it means. mercury's answer is the event it already has: `quit_event()` opens the modifiers a command layer swallowed and pushes `Kill`, and no shared crate can know that has to happen.
-
-In `freddie_cli`, for an app to call from inside its own runtime:
+Before:
 
 ```rust
-/// Call `on_stop` when the process is asked to terminate.
-///
-/// `launchctl bootout` and `<app> stop` both send SIGTERM. This routes it to the app rather than
-/// acting on it, because the way out is the app's: only it knows what its model has to undo before
-/// the process may go.
-///
-/// Requires a tokio runtime with the signal driver enabled, and so is called from inside the
-/// app's `run`. A failure to install is logged and not fatal: the app runs, and a terminated
-/// process simply does not get the graceful path.
-pub fn on_stop(on_stop: impl Fn() + Send + 'static) {
-    match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-        Ok(mut term) => {
-            tokio::spawn(async move {
-                if term.recv().await.is_some() {
-                    info!("SIGTERM: stopping");
-                    on_stop();
-                }
-            });
+/// The log file, written under [`log_dir`].
+const LOG_FILE: &str = "mercury.log";
+
+fn log_dir() -> PathBuf {
+    std::env::var_os("HOME").map_or_else(
+        || PathBuf::from("."),
+        |home| PathBuf::from(home).join("Library/Logs/mercury"),
+    )
+}
+
+pub fn init(terminal: &Terminal<'_>) -> PathBuf {
+    let dir = log_dir();
+```
+
+After:
+
+```rust
+/// Where the log file lives: the macOS per-user log directory, or the current
+/// directory when `HOME` is unset.
+fn log_dir(name: &str) -> PathBuf {
+    std::env::var_os("HOME").map_or_else(
+        || PathBuf::from("."),
+        |home| PathBuf::from(home).join("Library/Logs").join(name),
+    )
+}
+
+pub fn init(name: &str, terminal: &Terminal<'_>) -> PathBuf {
+    let dir = log_dir(name);
+    let file_name = format!("{name}.log");
+```
+
+`LOG_FILE` is deleted; `rolling::never(&dir, &file_name)` and `dir.join(file_name)` take its place. The one message `init` writes itself is keyed the same way:
+
+```rust
+    for problem in setup {
+        warn!("{name}: {problem}");
+    }
+```
+
+## The client verbs
+
+`crates/mercury/src/client.rs` becomes `freddie_cli`'s `client` module. No verb changes what it does, what it prints, or what it exits with. Three things change throughout:
+
+- `const APP: &str = "mercury"` is deleted, and each of its seven use sites becomes `A::NAME`.
+- Every function that reads the name, or calls one that does, gains `<A: App>`.
+- Every message that spells "mercury" spells `A::NAME`, which is what makes a fork's output its own.
+
+The name reaches the lock:
+
+```rust
+fn ensure_started<A: App>() -> Result<Running, NotStarted> {
+    match freddie_single_instance::holder(A::NAME) {
+```
+
+the launchd label:
+
+```rust
+/// The launchd job's name, keyed to the same name as the lock and the log directory, so a fork
+/// gets its own job rather than fighting this one over a label.
+fn label<A: App>() -> String {
+    format!("{AGENT_PREFIX}{}", A::NAME)
+}
+
+/// The reverse-DNS prefix every freddie app's launch agent sits under. The name after it is the
+/// app's, so two of them cannot collide.
+const AGENT_PREFIX: &str = "hg.freddie.";
+```
+
+and every line a verb writes:
+
+```rust
+pub(crate) fn status<A: App>() -> i32 {
+    logging::init(A::NAME, &Terminal::Client);
+    match freddie_single_instance::holder(A::NAME) {
+        Ok(Held::Free) => {
+            info!("{} is not running", A::NAME);
+            1
         }
-        Err(e) => {
-            warn!(error = %e, "no SIGTERM handler; a terminated process will not stop gracefully");
+        Ok(Held::By(pid)) => {
+            info!("{} is running (pid {pid})", A::NAME);
+            0
         }
+```
+
+The tests move with the module and pick the name up from a test app:
+
+```rust
+#[cfg(test)]
+struct TestApp;
+
+#[cfg(test)]
+impl App for TestApp {
+    type Args = NoArgs;
+    const NAME: &'static str = "testapp";
+    const ABOUT: &'static str = "A test app.";
+    fn run(_: &Self::Args) -> i32 {
+        unreachable!("the parse tests never run the daemon")
     }
 }
 ```
 
-mercury's call, in `serve`:
-
-```rust
-    freddie_cli::on_stop({
-        let event_tx = event_tx.clone();
-        move || {
-            let _ = event_tx.send(quit_event());
-        }
-    });
-```
-
-`mercury-stop.md`'s change 1 becomes this call rather than the handler written out there, and its account of what installing the handler costs applies unchanged.
+`label`'s test asserts `hg.freddie.testapp`; `cli.rs`'s parse tests become `Args::<NoArgs>::try_parse_from`, and the two that assert a port move to mercury, which is the crate that has one.
 
 ## What mercury becomes
 
@@ -243,8 +330,8 @@ impl App for Mercury {
     const NAME: &'static str = "mercury";
     const ABOUT: &'static str = "A layered keyboard remapper.";
 
-    fn run(args: &Self::Args) {
-        daemon::run(args.port);
+    fn run(args: &Self::Args) -> i32 {
+        daemon::run(args.port)
     }
 }
 
@@ -253,20 +340,40 @@ fn main() -> ! {
 }
 ```
 
-`crates/mercury/src/cli.rs` and `crates/mercury/src/logging.rs` are deleted; their contents live in `freddie_cli`. `crates/mercury/src/daemon.rs` keeps everything it holds today except the logging call and the lock, which `freddie_cli` does before calling it, so `pub(crate) fn run(port: u16)` starts at the `freddie_windows::init()` line.
+`crates/mercury/src/cli.rs`, `crates/mercury/src/client.rs`, and `crates/mercury/src/logging.rs` are deleted; their contents live in `freddie_cli`.
+
+`crates/mercury/src/daemon.rs` keeps everything it holds today except the logging call and the lock, which `freddie_cli` does before calling it. Before:
+
+```rust
+pub(crate) fn run(args: &DaemonArgs) {
+    let log_path = logging::init(&Terminal::Daemon(LogLevel(&args.log_level)));
+    info!(path = %log_path.display(), "logging");
+
+    let _instance = match freddie_single_instance::acquire(crate::client::APP) {
+        Ok(instance) => instance,
+        Err(e) => {
+            error!(error = %e, "another mercury holds the lock; `mercury stop` ends it");
+            return;
+        }
+    };
+
+    if let Err(e) = freddie_windows::init() {
+```
+
+After:
+
+```rust
+pub(crate) fn run(port: u16) -> i32 {
+    if let Err(e) = freddie_windows::init() {
+```
+
+Its two early returns become `1` and its end becomes `0`, so a menu bar that could not be created is a daemon that did not run. `use crate::cli::DaemonArgs;` and `use crate::logging::{self, LogLevel, Terminal};` go with the modules they name.
+
+`freddie_cli`'s dependencies are the ones those three files already pull in: `clap`, `tracing`, `tracing-subscriber`, `tracing-appender`, `serde` and `plist` for the launch agent, and `freddie_single_instance`. mercury drops `tracing-subscriber`, `tracing-appender`, `plist`, and `freddie_single_instance`, and keeps `clap` for its own `Args` derive, `tracing` for the daemon, and `serde` for the wire types in `external.rs`.
 
 ## The changes, in order
 
-1. **`freddie_cli` with the daemon verb only.** The trait, the generic `Args`/`Verb`/`DaemonArgs`, `parse`, `main`, `dispatch`, `daemon::run`, and `logging` moved across and keyed to `A::NAME`. mercury shrinks to the `main.rs` above. No verb is added and no behaviour changes: `mercury`, `mercury daemon`, and `mercury daemon --log-level` do exactly what they do now, and `mercury --help` prints the same thing.
-2. **`on_stop`.** The signal helper, and mercury calling it. This is `mercury-stop.md`'s change 1, landing in the shared crate.
-3. **The client verbs.** `start`, `restart`, `status`, `logs`, `stop`, `install`, and `uninstall`, moved into `freddie_cli`'s own `client` module and keyed to `A::NAME` rather than to a `const APP` of mercury's.
+1. **Logging takes a name.** `log_dir(name)`, the file name derived from it, and `init(name, terminal)`, in mercury, with `client::APP` passed at each of the four call sites. No behaviour changes: the name passed is the name that was written.
+2. **`freddie_cli`, holding the whole command surface.** The trait, the generic `Args`/`Verb`/`DaemonArgs`, `parse`, `main`, `dispatch`, the daemon verb, `logging`, and the `client` module, all keyed to `A::NAME`. mercury shrinks to the `main.rs` above and a `daemon.rs` that starts at `freddie_windows::init()`. Every verb does what it does now, and `mercury --help` prints what it prints now.
 
-   `install` and `uninstall` generalize without a decision to make: the launchd label is already `format!("hg.freddie.{APP}")`, the plist path is derived from it, and the `Agent` struct's program comes from `current_exe`. Only the `hg.freddie.` prefix is a constant worth a second look, since a fork that is not freddie-derived may want its own.
-
-## The verbs mercury already has by then
-
-`mercury-stop.md`, `mercury-status-and-logs.md`, and `mercury-start.md` ship first, into `crates/mercury/src/client.rs` as they are written. This doc moves that file across.
-
-The move is mechanical, and it is the reason those docs put every verb in one module and keyed all of them to a single `APP` constant. `client.rs` becomes `freddie_cli`'s client module, `const APP: &str = "mercury"` becomes `A::NAME` at each of its use sites, and each verb's function gains the `<A: App>` its name lookup now needs. No verb changes what it does, what it prints, or what it exits with.
-
-What does change is the `Verb` enum those docs each add a variant to: the variants move onto the generic `Verb<A>` here, and `dispatch` gains their arms. The parse tests move with them.
+One change rather than one per verb: `Verb` is a single enum and `dispatch` a single match, so a `freddie_cli` holding some of the verbs would leave mercury without the rest.
