@@ -78,6 +78,36 @@ fn window_origin(window: AXUIElementRef) -> Option<CGPoint> {
 After:
 
 ```rust
+/// A +1 CoreFoundation reference, released when it drops.
+///
+/// CF's rule is that a function with `Create` or `Copy` in its name hands you ownership,
+/// so `AXUIElementCopyAttributeValue`, `AXUIElementCreateApplication`, and `AXValueCreate`
+/// all return one of these. Wrapping it is what makes the release impossible to forget
+/// when a `?` or an early return is added between the call and the end of the function.
+///
+/// Deliberately not `Copy` and not `Clone`: two of these naming one reference would
+/// release it twice.
+struct Owned(CFTypeRef);
+
+impl Owned {
+    /// Take ownership of what a `Create` or `Copy` returned, or `None` if it returned
+    /// nothing.
+    fn new(raw: CFTypeRef) -> Option<Self> {
+        (!raw.is_null()).then_some(Self(raw))
+    }
+}
+
+impl Drop for Owned {
+    fn drop(&mut self) {
+        // SAFETY: an `Owned` is only built from a +1 reference, and only here is it
+        // released, once.
+        #[expect(unsafe_code)]
+        unsafe {
+            CFRelease(self.0);
+        }
+    }
+}
+
 /// One `AXValue` attribute: the name it is read by, the `AXValueType` it holds, and the
 /// Rust type that type means.
 ///
@@ -104,12 +134,12 @@ impl AxAttribute for Size {
     type Value = CGSize;
 }
 
-/// Read one `AXValue` attribute of `element`.
-fn ax_value<A: AxAttribute>(element: AXUIElementRef) -> Option<A::Value> {
-    let attribute = CFString::new(A::NAME);
-    let mut value: *const c_void = std::ptr::null();
+/// The value of one attribute of `element`, owned.
+fn copy_attribute(element: AXUIElementRef, name: &str) -> Option<Owned> {
+    let attribute = CFString::new(name);
+    let mut value: CFTypeRef = std::ptr::null();
     // SAFETY: `element` is live and `attribute` a live string. On success the
-    // out-parameter receives a +1 `AXValue`; on failure it is untouched.
+    // out-parameter receives a +1 reference; on failure it is untouched.
     #[expect(unsafe_code)]
     let status = unsafe {
         AXUIElementCopyAttributeValue(
@@ -118,23 +148,22 @@ fn ax_value<A: AxAttribute>(element: AXUIElementRef) -> Option<A::Value> {
             std::ptr::from_mut(&mut value).cast(),
         )
     };
-    if status != 0 || value.is_null() {
-        return None;
-    }
+    (status == 0).then(|| Owned::new(value))?
+}
 
+/// Read one `AXValue` attribute of `element`.
+fn ax_value<A: AxAttribute>(element: AXUIElementRef) -> Option<A::Value> {
+    let value = copy_attribute(element, A::NAME)?;
     let mut out = A::Value::default();
-    // SAFETY: `value` is a +1 `AXValue`, and the impl pairs `A::KIND` with `A::Value`, so
-    // a successful read writes an `A::Value` into an `A::Value`. The default is only
-    // returned if the write succeeded. The value is released afterward.
+    // SAFETY: `value` is a live `AXValue`, and the impl pairs `A::KIND` with `A::Value`,
+    // so a successful read writes an `A::Value` into an `A::Value`.
     #[expect(unsafe_code)]
     let got = unsafe {
-        let ok = AXValueGetValue(
-            value.cast_mut().cast(),
+        AXValueGetValue(
+            value.0.cast_mut().cast(),
             A::KIND,
             std::ptr::from_mut(&mut out).cast(),
-        );
-        CFRelease(value);
-        ok
+        )
     };
     if !got {
         // The attribute did not hold the type it is documented to hold, which is the app's
@@ -242,11 +271,76 @@ In `place`, before the `CFRelease`, since it reads the element:
     tracing::debug!(?placement, ?target, id = ?window_id(window), "placed the focused window");
 ```
 
-# Change 3: the frame sink
+# Change 3: the write direction uses the same pairing
+
+`set_frame` boxes a `CGPoint` and a `CGSize` with `AXValueCreate` and releases both by hand, twice per call. [`AxAttribute`] already knows the name and the kind for each, so the same trait serves the write.
+
+Before:
+
+```rust
+    for _ in 0..2 {
+        // SAFETY: `AXValueCreate` copies out of the pointer it is given, and both
+        // values live for the call. Each returned value is +1 and released here.
+        // `window` is a live element; setting an attribute takes no ownership.
+        #[expect(unsafe_code)]
+        unsafe {
+            let position = AXValueCreate(kAXValueTypeCGPoint, (&raw const origin).cast());
+            let extent = AXValueCreate(kAXValueTypeCGSize, (&raw const size).cast());
+            AXUIElementSetAttributeValue(
+                window,
+                CFString::new(kAXPositionAttribute).as_concrete_TypeRef(),
+                position.cast(),
+            );
+            AXUIElementSetAttributeValue(
+                window,
+                CFString::new(kAXSizeAttribute).as_concrete_TypeRef(),
+                extent.cast(),
+            );
+            CFRelease(position.cast());
+            CFRelease(extent.cast());
+        }
+    }
+```
+
+After:
+
+```rust
+    for _ in 0..2 {
+        set_attribute::<Position>(window, origin);
+        set_attribute::<Size>(window, size);
+    }
+```
+
+```rust
+/// Set one `AXValue` attribute of `element`.
+fn set_attribute<A: AxAttribute>(element: AXUIElementRef, value: A::Value) {
+    // SAFETY: `AXValueCreate` copies out of the pointer it is given, which lives for the
+    // call, and returns a +1 reference `Owned` takes responsibility for.
+    #[expect(unsafe_code)]
+    let Some(boxed) = (unsafe { Owned::new(AXValueCreate(A::KIND, (&raw const value).cast()).cast()) })
+    else {
+        return;
+    };
+    // SAFETY: `element` is live, and setting an attribute takes ownership of neither
+    // argument. `boxed` is released when it drops at the end of this function.
+    #[expect(unsafe_code)]
+    unsafe {
+        AXUIElementSetAttributeValue(
+            element,
+            CFString::new(A::NAME).as_concrete_TypeRef(),
+            boxed.0,
+        );
+    }
+}
+```
+
+The loop stays. Some apps clamp a move against their current size, so the first position lands short of where it was asked to go and the second lands true.
+
+# Change 4: the frame sink
 
 Observation owns its own state, and it stays on the main thread. The table of elements comes into existence when [`watch`] is called and dies with the [`Watcher`] it returns, the way `freddie_app_nav::watch` already works.\n\nA placement is asked for from the effect loop's thread and performed from the main thread, so nothing is shared and nothing is locked: the sink sends, the main thread looks up, and the `AXUIElement` writes go to a thread of their own.
 
-Until Change 4 registers the observers the table stays empty, and the daemon does not call the sink yet.
+Until Change 5 registers the observers the table stays empty, and the daemon does not call the sink yet.
 
 ```rust
 use std::cell::RefCell;
@@ -258,23 +352,21 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use core_foundation::runloop::CFRunLoop;
 
 /// A retained `AXUIElement` for one window.
-struct Element(AXUIElementRef);
+struct Element(Owned);
+
+impl Element {
+    /// The element, for the calls that take one. Borrowed, not owned: the release stays
+    /// with the [`Owned`] inside.
+    fn as_ref(&self) -> AXUIElementRef {
+        self.0.0.cast_mut().cast()
+    }
+}
 
 // SAFETY: an `AXUIElementRef` may be used from any thread. Only `Send` is claimed: an
 // `Element` is handed to the thread that performs one placement and is not shared with it,
 // so nothing reaches the same one from two threads at once.
 #[expect(unsafe_code)]
 unsafe impl Send for Element {}
-
-impl Drop for Element {
-    fn drop(&mut self) {
-        // SAFETY: every `Element` is built from a +1 reference; this balances it.
-        #[expect(unsafe_code)]
-        unsafe {
-            CFRelease(self.0.cast());
-        }
-    }
-}
 
 /// The handle a placement is asked for through.
 ///
@@ -327,7 +419,7 @@ impl Watcher {
                 continue;
             };
             std::thread::spawn(move || {
-                set_frame(element.0, target.frame);
+                set_frame(element.as_ref(), target.frame);
                 tracing::debug!(?target, "set a window's frame");
             });
         }
@@ -346,7 +438,7 @@ The new error variants:
             Self::NotWatching => "not watching windows",
 ```
 
-# Change 4: the observer
+# Change 5: the observer
 
 One `AXObserver` per app, all of them owned by the watcher, and the events they produce.
 
@@ -541,7 +633,7 @@ The screen-change observer that `init` registers belongs to the watcher too: the
 
 `MONITORS` outlives this doc and not the next one. It is a cache of main-thread-only `NSScreen` data for `place`, which runs off the main thread, and `place` is the only thing that reads it. `refactors/pending/placement-in-the-model.md` deletes `place` and puts `screens` in the model, at which point the static has no reader and goes with it, leaving `read_monitors` as a plain function the observer and [`watch`] call.
 
-# Change 5: the seed
+# Change 6: the seed
 
 The model starts empty and the observer only reports changes, so nothing would tell it about the windows that were already open. The [`Snapshot`] `watch` returns is what does, and it is the analogue of `freddie_app_nav::frontmost`: the starting state, read once.
 
@@ -563,7 +655,7 @@ Built inside [`watch`], after the observers are registered and before it returns
 
 That focus read is the one place this crate asks the OS a question outside a callback. It is the starting value the observer cannot report, because the observer reports changes and none has happened yet.
 
-# Change 6: the model holds the windows
+# Change 7: the model holds the windows
 
 Mercury gains the source, in `crates/mercury/src/sources.rs`, beside `Foregrounded` and `Tabbed`:
 
