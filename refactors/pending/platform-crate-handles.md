@@ -94,6 +94,18 @@ impl Overlay {
     /// Take the overlay down. A no-op if it is not up.
     pub fn hide(&self) { ... }
 }
+
+impl Drop for Overlay {
+    /// Takes the panel off screen.
+    ///
+    /// Releasing the `Retained` is not enough: a panel that has been ordered front is
+    /// retained by AppKit's window machinery, so dropping the last reference here would
+    /// leave a visible overlay up with nothing able to hide it. `Overlay` is `!Send`, so
+    /// this runs on the main thread that built the panel.
+    fn drop(&mut self) {
+        self.panel.orderOut(None);
+    }
+}
 ```
 
 `text` stops being `&'static str`. The bound existed because the dispatched block had to be `'static`; a method on a handle the caller already holds borrows it for the call instead.
