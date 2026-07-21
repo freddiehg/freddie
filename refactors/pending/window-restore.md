@@ -59,9 +59,8 @@ pub struct Windows {
 struct WindowState {
     /// Where the window is, as the source last reported it.
     frame: Frame,
-    /// Where the window was before mercury first moved it, and `None` once it is back
-    /// there or the user has moved it since. An `Option` rather than a frame equal to the
-    /// current one, because "nothing to restore" is a real state and `r` says so.
+    /// Where the window was before mercury first moved it. `None` once it is back there,
+    /// or once the user has moved it since.
     restore: Option<Frame>,
 }
 
@@ -114,8 +113,6 @@ fn same_placement(a: Frame, b: Frame) -> bool {
                 self.frames.insert(moved.window, moved.frame);
             }
 ```
-
-Mercury keeps a frame and nothing else, so a move and a resize are the same to it and it says so with one arm. The source reports them apart because another consumer will want them apart.
 
 After:
 

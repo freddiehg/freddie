@@ -338,10 +338,6 @@ pub enum WindowChange {
     /// A window moved, with the frame it moved to.
     Moved(WindowFrame),
     /// A window was resized, with the frame it was resized to.
-    ///
-    /// Separate from [`Moved`](Self::Moved) because the OS reports them separately. A
-    /// consumer keeping only a frame handles the two the same way; one that cares which
-    /// happened can tell, and could not if this crate had merged them.
     Resized(WindowFrame),
     /// A window went away.
     Closed(WindowId),
