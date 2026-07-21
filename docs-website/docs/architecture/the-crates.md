@@ -13,7 +13,7 @@ sidebar_position: 7
 - `freddie_app_nav`: foregrounding an app, and watching which one is frontmost.
 - `freddie_windows`: placing the focused window.
 - `freddie_menu_bar`, `freddie_overlay`, `freddie_main_loop`: the menu-bar item, the keymap overlay, and the run loop they need.
-- `freddie_event_socket`: the loopback WebSocket external events arrive on.
+- `freddie_event_socket`: the loopback listener external events arrive on.
 - `freddie_single_instance`: the lock that keeps one mercury running.
 - `mercury`: the application.
 
