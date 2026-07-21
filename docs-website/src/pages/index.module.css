@@ -26,12 +26,6 @@
 
 .doableTitle {
   font-size: 1.4rem;
-  color: var(--freddie-red);
-}
-
-/* The red is 1.4:1 on the dark page, so dark mode takes the clay instead. */
-[data-theme='dark'] .doableTitle {
-  color: var(--freddie-clay);
 }
 
 /* Air between the heading and the first row of cells. */
