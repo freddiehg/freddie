@@ -416,6 +416,10 @@ impl Watcher {
                 tracing::debug!(window = ?target.window, "no such window to place");
                 continue;
             };
+            // Off the main thread: `set_frame` writes the position and the size twice
+            // each, which is tens of milliseconds, and this runs inside `on_wake`. Inline,
+            // it would hold the run loop for that long and no AppKit event, observer
+            // callback, or menu click would be serviced meanwhile.
             std::thread::spawn(move || {
                 set_frame(element.as_ref(), target.frame);
                 tracing::debug!(?target, "set a window's frame");
