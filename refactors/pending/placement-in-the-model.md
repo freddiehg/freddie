@@ -6,13 +6,13 @@ Today the effect names an intent and the effect handler works out the rest, read
 
 Behavior does not change. `r` then an arrow places the focused window exactly where it does now, and the resize layer's keymap is untouched.
 
-The visible gain is in the tests: `the_arrows_place_the_window_and_return_home` currently asserts an intent, so nothing checks that maximize means the visible frame or that the halves abut. With the geometry in the model, the transition tests assert the rectangle.
+The visible gain is in the tests: `the_arrows_place_the_window_and_return_home` currently asserts an intent, so nothing checks that maximize means the visible frame or that the halves abut. With the windows and screens in the model, the transition tests assert the rectangle.
 
 Depends on `refactors/pending/window-observation.md`. Without it `Mercury.windows` is always empty and every placement is a no-op.
 
 ---
 
-# Change 1: the placement geometry moves to mercury
+# Change 1: the placement arithmetic moves to mercury
 
 `Placement` stops being an effect payload and becomes what the three resize handlers share, so it moves out of `crates/mercury/src/effect.rs` into `crates/mercury/src/handlers/resize.rs` and gains the arithmetic `freddie_windows` is doing today.
 

@@ -2,7 +2,7 @@
 
 `freddie_windows` becomes a source as well as a sink, the shape `freddie_app_nav` already has: [`watch`] reports what windows are doing, `WindowSink::set_frame` asks for a change, `Watcher::snapshot` seeds the initial state, and nothing ties a call to a report.
 
-Mercury's model ends up holding the geometry: every window's id and frame, which one is focused, and the monitors. It is filled by events like `foreground` and the Chrome tab URL are, so dispatch reads no OS state and an effect carries everything it needs.
+Mercury's model ends up holding the windows: every window's id and frame, which one is focused, and the monitors. It is filled by events like `foreground` and the Chrome tab URL are, so dispatch reads no OS state and an effect carries everything it needs.
 
 Nothing consumes the table when this doc is done. `Place(Placement)` still works exactly as it does now. `refactors/pending/placement-in-the-model.md` is what makes the placement path use it, and `refactors/pending/window-restore.md` is what adds `r`.
 
@@ -232,8 +232,7 @@ Until Change 4 registers the observers the table stays empty, and the daemon doe
 
 ```rust
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 
 /// A retained `AXUIElement` for one window, keyed by the id everything else names it by.
 struct Element(AXUIElementRef);
@@ -257,13 +256,16 @@ impl Drop for Element {
     }
 }
 
-/// What the watcher and every sink it hands out share.
+/// The observation itself: what is being watched, and where changes go.
+///
+/// The [`Watcher`] holds the only [`Arc`] to this. Everything else holds a [`Weak`], so
+/// the observation ends when the watcher drops and nothing can keep it alive past that.
 struct Observed {
     /// Every window that can be addressed, and the element to address it through.
     elements: RwLock<HashMap<WindowId, Element>>,
-    /// Cleared by [`Watcher`]'s `Drop`. A sink outliving its watcher answers
-    /// [`WindowError::NotWatching`] rather than quietly doing nothing.
-    watching: AtomicBool,
+    /// One entry per observed app. Held here rather than on the [`Watcher`] because the
+    /// launch and terminate callbacks are `'static` closures that cannot borrow it.
+    apps: Mutex<HashMap<pid_t, AppObserver>>,
     /// Where a change goes. Boxed rather than generic, so [`Registration`] is one type
     /// whatever closure [`watch`] was handed.
     on_change: Box<dyn Fn(WindowChange) + Send + Sync>,
@@ -275,7 +277,7 @@ struct Observed {
 /// hands each placement to a thread of its own.
 #[derive(Clone)]
 pub struct WindowSink {
-    observed: Arc<Observed>,
+    observed: Weak<Observed>,
 }
 
 impl WindowSink {
@@ -294,11 +296,8 @@ impl WindowSink {
     /// [`WindowError::UnknownWindow`] if nothing with that id is being observed, which is
     /// the case for a window that has closed or that never reported an id.
     pub fn set_frame(&self, window: WindowId, frame: Frame) -> Result<(), WindowError> {
-        if !self.observed.watching.load(Ordering::Acquire) {
-            return Err(WindowError::NotWatching);
-        }
-        let elements = self
-            .observed
+        let observed = self.observed.upgrade().ok_or(WindowError::NotWatching)?;
+        let elements = observed
             .elements
             .read()
             .map_err(|_| WindowError::UnknownWindow)?;
@@ -375,15 +374,18 @@ pub fn watch(on_change: impl Fn(WindowChange) + Send + Sync + 'static) -> Watche
     ...
 }
 
-/// The live observation. Everything it owns is released when it drops.
+/// The live observation. Dropping it stops everything.
+///
+/// It holds the only [`Arc<Observed>`](Observed), so the drop cascades: `apps` goes,
+/// which releases every `AXObserver` and removes its run loop source, and every
+/// [`Registration`] and [`Element`] goes with them. There is no `Drop` impl, because
+/// there is nothing left for one to do.
 pub struct Watcher {
-    observed: Arc<Observed>,
-    /// One entry per observed app. Dropping one releases its `AXObserver`, which removes
-    /// its run loop source.
-    apps: Mutex<HashMap<pid_t, AppObserver>>,
     /// The `NSWorkspace` observation that keeps `apps` current as apps launch and quit.
-    /// Held for its `Drop`.
+    /// Held for its `Drop`, and declared first so it stops before the map it writes into
+    /// is torn down: fields drop in declaration order.
     _launches: LaunchWatcher,
+    observed: Arc<Observed>,
 }
 
 impl Watcher {
@@ -392,20 +394,12 @@ impl Watcher {
     #[must_use]
     pub fn sink(&self) -> WindowSink {
         WindowSink {
-            observed: Arc::clone(&self.observed),
+            observed: Arc::downgrade(&self.observed),
         }
     }
 }
 
-impl Drop for Watcher {
-    /// Stops the reports. `apps` dropping releases every `AXObserver`, and each
-    /// [`Registration`] with it, so no callback can arrive afterwards.
-    fn drop(&mut self) {
-        self.observed.watching.store(false, Ordering::Release);
-    }
-}
-
-/// One app's observer, and the `refcon` its callbacks reach the watcher through.
+/// One app's observer, and the `refcon` its callbacks reach the observation through.
 struct AppObserver {
     observer: AXObserverRef,
     /// The `refcon` every notification for this app carries. Boxed so its address is
@@ -413,26 +407,30 @@ struct AppObserver {
     registration: Box<Registration>,
 }
 
-/// What a notification callback needs: which app fired it, and the state to report into.
-/// This is what a C callback has instead of a closure.
+/// What a notification callback needs: which app fired it, and the observation to report
+/// into. This is what a C callback has instead of a closure.
+///
+/// [`Weak`], not [`Arc`]: [`Observed`] owns `apps`, an [`AppObserver`] owns its
+/// registration, so a strong reference here would be a cycle that never frees.
 struct Registration {
     pid: pid_t,
-    observed: Arc<Observed>,
+    observed: Weak<Observed>,
 }
 ```
 
 The pieces behind `watch`:
 
-- `observe_app(&Watcher, pid)` builds the `Registration`, calls `AXObserverCreate`, adds `kAXFocusedWindowChangedNotification` and `kAXWindowCreatedNotification` on the app element with that `refcon`, adds the source to `CFRunLoop::get_main()` under `kCFRunLoopDefaultMode`, then walks `kAXWindowsAttribute` once and calls `observe_window` for each.
-- `observe_window(&Registration, element)` reads the id, inserts a retained `Element` into `observed.elements`, adds `kAXWindowMovedNotification`, `kAXWindowResizedNotification`, and `kAXUIElementDestroyedNotification` on the window element, and reports `Opened`.
-- The app set is kept current from `NSWorkspace`'s `didLaunchApplication` and `didTerminateApplication`, seeded from `runningApplications`. On terminate, the app's `AppObserver` is dropped and every `elements` entry for its windows is removed, each reported as `Closed`.
+- `observe_app(&Arc<Observed>, pid)` builds the `Registration` holding a `Weak` back, calls `AXObserverCreate`, adds `kAXFocusedWindowChangedNotification` and `kAXWindowCreatedNotification` on the app element with that `refcon`, adds the source to `CFRunLoop::get_main()` under `kCFRunLoopDefaultMode`, inserts the `AppObserver` into `apps`, then walks `kAXWindowsAttribute` once and calls `observe_window` for each.
+- `observe_window(&Observed, pid, element)` reads the id, inserts a retained `Element` into `elements`, adds `kAXWindowMovedNotification`, `kAXWindowResizedNotification`, and `kAXUIElementDestroyedNotification` on the window element, and reports `Opened`.
+- The app set is kept current from `NSWorkspace`'s `didLaunchApplication` and `didTerminateApplication`, whose closures capture a `Weak<Observed>` for the same reason a `Registration` does, seeded from `runningApplications`. On terminate, the app's `AppObserver` is removed from `apps` and every `elements` entry for its windows is removed, each reported as `Closed`.
 - An app that refuses Accessibility, or has not finished launching, fails `AXObserverCreate`. That is logged at `debug` and the app is skipped: its windows are never reported and cannot be addressed, and every other app goes on being observed.
 
 The C callback dispatches on the notification name:
 
 ```rust
 /// The one `AXObserver` callback. `refcon` is the [`Registration`] the app's
-/// [`AppObserver`] owns, which is how a C callback reaches the watcher without a global.
+/// [`AppObserver`] owns, which is how a C callback reaches the observation without a
+/// global.
 ///
 /// Runs on the main thread, since that is the run loop the sources were added to.
 unsafe extern "C" fn on_notification(
@@ -447,16 +445,21 @@ unsafe extern "C" fn on_notification(
     #[expect(unsafe_code)]
     let registration = unsafe { &*refcon.cast::<Registration>() };
 
+    // The watcher is gone, so there is nothing to report into.
+    let Some(observed) = registration.observed.upgrade() else {
+        return;
+    };
+
     // SAFETY: `notification` is a live string owned by the caller for this call.
     #[expect(unsafe_code)]
     let name = unsafe { CFString::wrap_under_get_rule(notification) }.to_string();
 
     match name.as_str() {
-        kAXWindowCreatedNotification => observe_window(registration, element),
+        kAXWindowCreatedNotification => observe_window(&observed, registration.pid, element),
         kAXWindowMovedNotification | kAXWindowResizedNotification => {
             if let (Some(window), Some(frame)) = (window_id(element), window_frame(element)) {
                 let moved = WindowFrame { window, frame };
-                registration.report(if name == kAXWindowMovedNotification {
+                observed.report(if name == kAXWindowMovedNotification {
                     WindowChange::Moved(moved)
                 } else {
                     WindowChange::Resized(moved)
@@ -465,12 +468,12 @@ unsafe extern "C" fn on_notification(
         }
         kAXUIElementDestroyedNotification => {
             if let Some(window) = window_id(element) {
-                registration.forget(window);
-                registration.report(WindowChange::Closed(window));
+                observed.forget(window);
+                observed.report(WindowChange::Closed(window));
             }
         }
         kAXFocusedWindowChangedNotification => {
-            registration.report(WindowChange::Focused(window_id(element)));
+            observed.report(WindowChange::Focused(window_id(element)));
         }
         _ => {}
     }
@@ -507,7 +510,7 @@ impl Watcher {
 
 A method on [`Watcher`] rather than a free function, because there is nothing to snapshot until observation has started: it reads `observed.elements` for the windows, which `watch` filled while registering. The focus comes from the frontmost app's `kAXFocusedWindowAttribute` and the screens from `read_monitors`. Having to hold a `Watcher` to call it is what replaces documenting that `watch` comes first.
 
-# Change 6: the model holds the geometry
+# Change 6: the model holds the windows
 
 Mercury gains the source, in `crates/mercury/src/sources.rs`, beside `Foregrounded` and `Tabbed`:
 
