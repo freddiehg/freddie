@@ -202,10 +202,8 @@ struct WindowState {
 #[derive(Debug)]
 struct PendingPlacement {
     window: WindowId,
-    /// The frame the effect asked for. A report matching it ends the wait.
-    frame: Frame,
     /// Held for its `Drop` and for the trigger that matches its firing: the wait ends when
-    /// this fires, whatever has been reported.
+    /// this fires, and only then.
     timer: TimerGuard,
 }
 
@@ -214,20 +212,6 @@ struct PendingPlacement {
 /// It bounds how long a drag can be mistaken for mercury's own placement, so shorter is
 /// better, but it has to cover two position-and-size writes and the reports they produce.
 pub const PLACEMENT_SETTLE: Duration = Duration::from_millis(250);
-
-/// How far apart two frames may be and still be the same placement, in points.
-///
-/// Apps clamp what they are given (a terminal snaps to whole character cells), so a frame
-/// reported after a set is near what was asked for rather than equal to it.
-const TOLERANCE: f64 = 2.0;
-
-/// Whether `a` is `b` to within [`TOLERANCE`] on every edge.
-fn same_placement(a: Frame, b: Frame) -> bool {
-    (a.x - b.x).abs() <= TOLERANCE
-        && (a.y - b.y).abs() <= TOLERANCE
-        && (a.width - b.width).abs() <= TOLERANCE
-        && (a.height - b.height).abs() <= TOLERANCE
-}
 
 impl Windows {
     /// The state the window source found when it started watching, before any change.
@@ -313,23 +297,17 @@ impl Windows {
         }
     }
 
-    /// Whether `moved` is a report of mercury's own outstanding placement, ending the wait
-    /// if it is the frame that was asked for.
+    /// Whether `moved` is a report of mercury's own outstanding placement.
     ///
-    /// Every report for the pending window counts, not only the matching one: one placement
-    /// writes the position and the size, twice, so the frames in between are ones nobody
-    /// asked for and a drag they were mistaken for would be forgotten.
-    fn pending_covers(&mut self, moved: WindowFrame) -> bool {
-        let Some(pending) = &self.pending else {
-            return false;
-        };
-        if pending.window != moved.window {
-            return false;
-        }
-        if same_placement(pending.frame, moved.frame) {
-            self.pending = None;
-        }
-        true
+    /// Every report for the pending window counts, and the wait ends on the timer rather
+    /// than on the frame that was asked for. One placement writes the position and the size
+    /// twice, so the frame asked for is reported more than once; ending the wait on the
+    /// first of them would leave the rest looking like the user dragging the window, and
+    /// they would forget the frame the restore needs.
+    fn pending_covers(&self, moved: WindowFrame) -> bool {
+        self.pending
+            .as_ref()
+            .is_some_and(|pending| pending.window == moved.window)
     }
 
     /// The guard for the placement still outstanding, for the trigger that matches its
@@ -354,7 +332,6 @@ impl Windows {
             timer_effect_and_guard(PLACEMENT_SETTLE, |id| MercuryEvent::Timer(TimerFired(id)));
         self.pending = Some(PendingPlacement {
             window: target.window,
-            frame: target.frame,
             timer,
         });
         vec![

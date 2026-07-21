@@ -1834,6 +1834,39 @@ fn the_intermediate_frames_of_a_placement_are_not_a_move_by_hand() {
     );
 }
 
+// `set_frame` writes the position and the size twice, so the frame that was asked for is
+// reported more than once. Every one of those is still mercury's own: ending the wait on the
+// first would leave the rest looking like a drag, and `r` would have nothing to go back to.
+#[test]
+fn the_target_frame_reported_twice_is_still_not_a_move_by_hand() {
+    let mut m = home_with_a_window();
+    let _ = m.handle(&key(Key::KeyR));
+    let _ = m.handle(&key(Key::UpArrow));
+
+    for _ in 0..2 {
+        let _ = m.handle(&windows(WindowChange::Moved(WindowFrame {
+            window: WINDOW,
+            frame: SCREEN.visible,
+        })));
+        let _ = m.handle(&windows(WindowChange::Resized(WindowFrame {
+            window: WINDOW,
+            frame: SCREEN.visible,
+        })));
+    }
+
+    let _ = m.handle(&key(Key::KeyR));
+    assert_eq!(
+        m.handle(&key(Key::KeyR)),
+        Some(leaves(vec![
+            MercuryEffect::SetFrame(WindowFrame {
+                window: WINDOW,
+                frame: WINDOW_FRAME,
+            }),
+            settle_timer(),
+        ]))
+    );
+}
+
 // A move mercury did not ask for forgets the remembered frame, so `r` afterwards does
 // nothing rather than dragging the window off where the user just put it.
 #[test]
