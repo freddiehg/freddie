@@ -62,7 +62,7 @@ pub struct NoArgs {}
 
 ## The generic command line
 
-clap's derive accepts generic parameters, so the app's flags flatten into the shared `daemon` verb. Verified on the pinned 1.96.0 against clap 4.6.2: `app daemon --port 4001` parses into the flattened struct, and the shared defaults resolve.
+clap's derive accepts generic parameters, so the app's flags flatten into the shared `daemon` verb. Verified on the pinned 1.96.0 against clap 4.6.2: a `Subcommand` enum whose variants are a mix of generic and not derives, `app daemon --port 4001` parses into the flattened struct, the shared defaults resolve, and `NoArgs` gives an app with no flags of its own.
 
 Only `DaemonArgs` is generic. Every client verb takes flags that belong to the verb rather than to the app, so their arg structs move across unchanged from `crates/mercury/src/cli.rs`.
 
