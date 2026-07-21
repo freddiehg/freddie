@@ -64,6 +64,20 @@ fn track_focus(ev: &WindowFocused, node: Node<MercuryPath, ()>) -> Option<Mercur
     None
 }`;
 
+const installExample = `git clone https://github.com/freddiehg/freddie
+cd freddie
+cargo install --path crates/mercury
+mercury`;
+
+const verbsExample = `mercury install     # start it at login
+mercury restart     # replace the running one
+mercury logs        # follow what it is doing`;
+
+const sourceExample = `// In \`mercury daemon\`, beside the keyboard grab and the frontmost-app watcher.
+freddie_windows::watch(move |window, frame| {
+    let _ = events.send(MercuryEvent::Window(WindowFocused { window, frame }));
+});`;
+
 function Prose({ children }: { children: ReactNode }) {
   return (
     <div className="row">
@@ -207,8 +221,9 @@ function BindingSection() {
           </div>
         </Prose>
         <Prose>
+          <h3>But wait &mdash; how did that state get there?</h3>
           <p>
-            Amazing! And, simple, even. We wrote handlers that accessed and mutated the state, and emitted effects that did the right thing. But wait — how did that <code>focused</code> and <code>restore</code> state get populated? We have to hook that up ourselves, too:
+            Amazing! And, simple, even. We wrote handlers that accessed and mutated the state, and emitted effects that did the right thing. But that <code>focused</code> field did not fill itself in. We have to hook that up ourselves, too:
           </p>
         </Prose>
         <Prose>
@@ -218,7 +233,18 @@ function BindingSection() {
         </Prose>
         <Prose>
           <p>
-            Then a binding at the root keeps the field current. It changes state
+            Something has to make one. A source is a stream you subscribe to,
+            turning whatever it hands you into that variant:
+          </p>
+        </Prose>
+        <Prose>
+          <div className={styles.codeBlockWrap}>
+            <CodeBlock language="rust">{sourceExample}</CodeBlock>
+          </div>
+        </Prose>
+        <Prose>
+          <p>
+            And a binding at the root keeps the field current. It changes state
             and asks for nothing, so it returns <code>None</code>.
           </p>
         </Prose>
@@ -255,12 +281,7 @@ function Mercury() {
         </Prose>
         <Prose>
           <div className={styles.codeBlockWrap}>
-            <CodeBlock language="bash">
-              {`  git clone https://github.com/freddiehg/freddie
-  cd freddie
-  cargo install --path crates/mercury
-  mercury`}
-            </CodeBlock>
+            <CodeBlock language="bash">{installExample}</CodeBlock>
           </div>
         </Prose>
         <Prose>
@@ -283,11 +304,7 @@ function Mercury() {
         </Prose>
         <Prose>
           <div className={styles.codeBlockWrap}>
-            <CodeBlock language="bash">
-              {`  mercury install     # start it at login
-  mercury restart     # replace the running one
-  mercury logs        # follow what it is doing`}
-            </CodeBlock>
+            <CodeBlock language="bash">{verbsExample}</CodeBlock>
           </div>
         </Prose>
       </div>
