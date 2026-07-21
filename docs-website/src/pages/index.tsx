@@ -34,6 +34,7 @@ function Features() {
   return (
     <section>
       <div className="container">
+        <div className="kicker">It&rsquo;s simple</div>
         <h2 className={styles.centeredHeading}>Events in, effects out.</h2>
         <div className="row" style={{ paddingTop: '1.5rem' }}>
           <div className="col col--4">
@@ -48,16 +49,15 @@ function Features() {
           <div className="col col--4">
             <h3>There&rsquo;s no stopping me</h3>
             <p>
-              Because we're integrating events from many sources, we can do things that would be hard or impossible with other tools, such as cloning the repository you're looking at in GitHub, or muting your microphone on Google Meet (without finding the tab!)
+              Because we're integrating events from many sources, we can easily do crazy things, such as cloning the repository you're looking at without leaving GitHub.com, or muting your microphone on Google Meet (without finding the tab!)
             </p>
           </div>
           <div className="col col--4">
             <h3>Testable, understandable</h3>
             <p>
-              It all runs through one pure function: state and event in, new
+              All of this runs through one pure function: state and event in, new
               state and a list of effects out. Nothing is performed along the
-              way, so a test is a call and an assertion. You can check what
-              every key does in every layer without pressing one.
+              way, so a test is a call and an assertion.
             </p>
           </div>
         </div>
@@ -70,7 +70,7 @@ function DontStopMeNow() {
   return (
     <section className="alt-background">
       <div className="container">
-        <h2 className={styles.centeredHeading}>Don&rsquo;t stop me now.</h2>
+        <h2 className={styles.centeredHeading}>For programmers, by programmers</h2>
         <Prose>
           <p>
             You do not configure freddie. You write a program with

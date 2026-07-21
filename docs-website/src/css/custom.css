@@ -158,6 +158,22 @@ h4 {
   font-family: GTEesti;
 }
 
+/* The small line above a section heading, as isograph does it. Ink and white
+   at an alpha, so it sits back from the heading in either theme. */
+.kicker {
+  text-align: center;
+  text-transform: uppercase;
+  font-size: 0.6em;
+  letter-spacing: 2.2px;
+  margin-bottom: 1.5em;
+  font-weight: 600;
+  color: rgb(var(--freddie-ink-rgb) / 0.65);
+}
+
+[data-theme='dark'] .kicker {
+  color: rgb(var(--freddie-white-rgb) / 0.6);
+}
+
 main h2 {
   margin-bottom: 2rem;
 }
