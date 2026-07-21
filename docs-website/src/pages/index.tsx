@@ -70,6 +70,7 @@ function DontStopMeNow() {
   return (
     <section className="alt-background">
       <div className="container">
+        <div className="kicker">It&rsquo;s powerful</div>
         <h2 className={styles.centeredHeading}>For programmers, by programmers</h2>
         <Prose>
           <p>
@@ -112,6 +113,7 @@ function BindingSection() {
   return (
     <section>
       <div className="container">
+        <div className="kicker">It&rsquo;s a kind of magic</div>
         <h2 className={styles.centeredHeading}>It&rsquo;s a kind of magic.</h2>
         <Prose>
           <p>
@@ -161,77 +163,6 @@ function BindingSection() {
             what happened.
           </p>
         </Prose>
-      </div>
-    </section>
-  );
-}
-
-function EventsCanBeAnything() {
-  return (
-    <section className="alt-background">
-      <div className="container">
-        <h2 className={styles.centeredHeading}>Events can be anything.</h2>
-        <div className="row" style={{ paddingTop: '1.5rem' }}>
-          <div className="col col--4">
-            <h3>Keys, before the app sees them</h3>
-            <p>
-              The grab hands you every key with its modifiers first, which is
-              the whole reason a remapper can exist at all.
-            </p>
-          </div>
-          <div className="col col--4">
-            <h3>Anything that can open a socket</h3>
-            <p>
-              A frame arriving on <code>127.0.0.1:3883</code> becomes an event
-              like any other. That is how a Chrome extension tells{' '}
-              <code>mercury</code> which tab you are looking at.
-            </p>
-          </div>
-          <div className="col col--4">
-            <h3>Hardware coming and going</h3>
-            <p>
-              Both directions count: a monitor connecting, a headset
-              disconnecting, an app quitting out from under the layer that was
-              bound to it.
-            </p>
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function EffectsCanBeAnything() {
-  return (
-    <section>
-      <div className="container">
-        <h2 className={styles.centeredHeading}>Effects can be anything.</h2>
-        <div className="row" style={{ paddingTop: '1.5rem' }}>
-          <div className="col col--4">
-            <h3>Emit a key</h3>
-            <p>
-              Swallow <code>caps</code> and send <code>esc</code>, or turn one
-              chord into four. The keyboard is just another thing the program
-              can drive.
-            </p>
-          </div>
-          <div className="col col--4">
-            <h3>Move windows and apps</h3>
-            <p>
-              Foreground an app, throw the focused window at the left half of
-              the screen, retitle the menu bar, put an overlay up saying what is
-              bound right now.
-            </p>
-          </div>
-          <div className="col col--4">
-            <h3>Run arbitrary code</h3>
-            <p>
-              Call an API, shell out, clone the repository whose page you are
-              sitting on. An effect is a variant and the arm that performs
-              it.
-            </p>
-          </div>
-        </div>
       </div>
     </section>
   );
@@ -321,8 +252,6 @@ export default function Home(): ReactNode {
         <Features />
         <DontStopMeNow />
         <BindingSection />
-        <EventsCanBeAnything />
-        <EffectsCanBeAnything />
         <Mercury />
         <AreYouReady />
       </main>
