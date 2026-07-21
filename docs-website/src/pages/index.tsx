@@ -119,7 +119,7 @@ function BendIt() {
             From a repo’s page, use one key to clone it, drop you into it, and open your editor. In today's fast paced environment, who has time to copy the URL, or switch to the terminal, and type the same four commands?
           </Doable>
           <Doable title="Mute Google Meet from anywhere">
-            A global keybinding can mute Google Meet from anywhere. No more scrounging around to find the tab when you receive a phone call.
+            A global keybinding can mute Google Meet from anywhere. No more panicking, and scrounging around to find the tab when you receive a phone call.
           </Doable>
         </div>
         <div className="row">
@@ -392,9 +392,9 @@ export default function Home(): ReactNode {
       <HomepageHeader />
       <main>
         <BendIt />
-        <Features />
-        <Video />
         <DontStopMeNow />
+        <Video />
+        <Features />
         <BindingSection />
         <Mercury />
         <AreYouReady />
