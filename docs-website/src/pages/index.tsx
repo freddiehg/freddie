@@ -35,16 +35,6 @@ function Features() {
     <section>
       <div className="container">
         <h2 className={styles.centeredHeading}>Events in, effects out.</h2>
-        <Prose>
-  <p>
-            A <code>freddie</code> program ingests a stream of events and produces
-            a stream of effects. One such event is generated when you press a key
-            on your keyboard, and one such effect is a simulated keypress, so{' '}
-            <code>freddie</code> can be used to build a key remapper. But the
-            events and effects are arbitrary, and so <code>freddie</code> can be
-            used to build something much more powerful: a control plane for your computer.
-          </p>
-        </Prose>
         <div className="row" style={{ paddingTop: '1.5rem' }}>
           <div className="col col--4">
             <h3>Integrate the whole machine</h3>
@@ -82,7 +72,7 @@ function DontStopMeNow() {
       <div className="container">
         <h2 className={styles.centeredHeading}>Don&rsquo;t stop me now.</h2>
         <Prose>
-  <p>
+          <p>
             You do not configure <code>freddie</code>. You write a program with
             it. There is no config file, no DSL, and no schema of somebody
             else&rsquo;s questions to answer.
@@ -124,7 +114,7 @@ function BindingSection() {
       <div className="container">
         <h2 className={styles.centeredHeading}>A kind of magic.</h2>
         <Prose>
-  <p>
+          <p>
             A binding is a trigger and the handler it runs, written on the level
             where it applies. Say we want a volume layer, where <code>up</code>{' '}
             and <code>down</code> change the volume and the layer remembers what
@@ -146,7 +136,7 @@ function BindingSection() {
           </div>
         </Prose>
         <Prose>
-  <p>
+          <p>
             <code>node.parent</code> is the path to the level the binding was
             written on, so <code>get_mut</code> hands back this layer,
             unconditionally. There is no question of whether the volume layer is
@@ -181,15 +171,6 @@ function EventsCanBeAnything() {
     <section className="alt-background">
       <div className="container">
         <h2 className={styles.centeredHeading}>Events can be anything.</h2>
-        <Prose>
-  <p>
-            A key going down is an event. So is an app coming to the front, a tab
-            changing its URL, a display waking up, a microphone being plugged in,
-            a timer going off, and a frame arriving on a socket from a program
-            you wrote last week. The event type is an enum you own, and adding a
-            source is adding a variant to it.
-          </p>
-        </Prose>
         <div className="row" style={{ paddingTop: '1.5rem' }}>
           <div className="col col--4">
             <h3>Keys, before the app sees them</h3>
@@ -225,14 +206,6 @@ function EffectsCanBeAnything() {
     <section>
       <div className="container">
         <h2 className={styles.centeredHeading}>Effects can be anything.</h2>
-        <Prose>
-  <p>
-            A handler does not do things. It returns a list of things to be done,
-            and the run loop does them. That split is what keeps{' '}
-            <code>state.handle</code> a pure function, and it means the list can
-            hold whatever you are willing to write.
-          </p>
-        </Prose>
         <div className="row" style={{ paddingTop: '1.5rem' }}>
           <div className="col col--4">
             <h3>Emit a key</h3>
@@ -259,12 +232,6 @@ function EffectsCanBeAnything() {
             </p>
           </div>
         </div>
-        <Prose>
-  <p style={{ paddingTop: '1rem' }}>
-            Nothing in that list runs during dispatch, so a test asserts on what
-            came back rather than on what happened. The show goes on afterwards.
-          </p>
-        </Prose>
       </div>
     </section>
   );
@@ -276,7 +243,7 @@ function Mercury() {
       <div className="container">
         <h2 className={styles.centeredHeading}>Mercury rising.</h2>
         <Prose>
-  <p>
+          <p>
             This repository ships one program built with <code>freddie</code>,
             called <code>mercury</code>. It is macOS-only and it requires
             accessibility permissions. You should not expect it to fit your use
@@ -294,7 +261,7 @@ function Mercury() {
           </div>
         </Prose>
         <Prose>
-  <p>
+          <p>
             <code>mercury</code> boots into the typing layer, where every
             keystroke passes through. Typing <code>jk</code> takes you home. From
             there, <code>n</code> is nav, <code>i</code> is in-app, <code>s</code>{' '}
@@ -320,8 +287,17 @@ function Mercury() {
             </CodeBlock>
           </div>
         </Prose>
+      </div>
+    </section>
+  );
+}
+
+function AreYouReady() {
+  return (
+    <section>
+      <div className="container">
+        <h2 className={styles.centeredHeading}>So, are you ready, Freddie?</h2>
         <div className={styles.ctaContainer}>
-          <p className={styles.ctaLine}>So, are you ready, Freddie?</p>
           <Link
             className="button button--primary button--lg"
             to="/docs/getting-started-with-mercury"
@@ -348,6 +324,7 @@ export default function Home(): ReactNode {
         <EventsCanBeAnything />
         <EffectsCanBeAnything />
         <Mercury />
+        <AreYouReady />
       </main>
     </Layout>
   );
