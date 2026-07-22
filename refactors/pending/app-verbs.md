@@ -80,7 +80,7 @@ An app verb that asks something of the running daemon needs to know there is one
 /// What `status` reports, for an app verb that has something to ask of a daemon and needs to know
 /// whether one is there. A daemon that has taken the lock but not yet recorded its pid reads as
 /// running with no pid, which is the same window `status` reports.
-pub fn daemon<A: App>() -> Result<Option<Pid>, LockError>;
+pub fn running<A: App>() -> Result<Option<Pid>, LockError>;
 ```
 
 How an app then reaches it is the app's: the socket, its port, and what a frame means are all things `freddie_cli` does not know. An app verb declares whatever it needs to say that, in its own args.
@@ -135,7 +135,7 @@ On the pinned 1.96.0 against clap 4.6.2, against a `Verb<A: App>` holding freddi
 
 ## The changes, in order
 
-`freddie-cli.md` lands first, since this adds a parameter to the types it introduces.
+`freddie-cli.md` lands first, since this adds an associated type to the trait it introduces and an arm to its dispatch.
 
 1. **`App::Verb`, `NoVerbs`, and `run_verb`**, the flattened variant, and the `dispatch` arm. mercury and figaro take `NoVerbs`, so no binary gains a verb and no `--help` changes.
-2. **`daemon::<A>()` and `assert_verbs_are_unique::<A>()`**, exposed for the first app that has a verb to write.
+2. **`running::<A>()` and `assert_verbs_are_unique::<A>()`**, exposed for the first app that has a verb to write. `running` rather than `daemon`, which is already the module the daemon verb lives in.
