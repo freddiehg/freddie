@@ -40,15 +40,15 @@ pub trait App {
     /// What names one of this app's daemons, as flags every verb takes.
     ///
     /// [`NoArgs`] for an app with one global daemon, which every verb then means without saying
-    /// so. isograph's is its `--config`, so `isograph status --config ./a.json` asks about one
-    /// daemon and `--config ./b.json` asks about another.
+    /// so. An app with more than one says which in a flag, and two values of that flag are two
+    /// daemons, each with its own lock, log, and pid.
     type Id: clap::Args + fmt::Debug;
 
     /// The flags this app's daemon takes beyond the shared ones and beyond [`Id`](Self::Id).
     ///
-    /// [`NoArgs`] for an app that takes none. Separate from `Id` so the verbs that only find a
-    /// daemon take only what names one: `isograph status --port 4001` is refused rather than
-    /// accepted and ignored.
+    /// [`NoArgs`] for an app that takes none. Separate from `Id` so that the verbs which only
+    /// find a daemon take only what names one, and refuse the flags that configure one rather
+    /// than accepting and ignoring them.
     type DaemonArgs: clap::Args + fmt::Debug;
 
     /// The name of the binary, which is what the log directory is called.
@@ -59,9 +59,9 @@ pub trait App {
     /// Which daemon the command line named.
     ///
     /// Fallible and allowed to touch the filesystem, because naming a daemon can mean reading
-    /// one. isograph's id comes from the config, not from the text of the flag: `./foo.json` and
-    /// `/abs/foo.json` are one daemon, so it resolves the path before it keys anything to it, and
-    /// a config that is not there names no daemon at all.
+    /// one. An id names what the flag points at rather than what it says: two paths to one file
+    /// are one daemon, so an app resolves before it keys anything to the result, and a target
+    /// that is not there names no daemon at all.
     ///
     /// Returns why rather than saying why. This runs before the log file has a name, since the
     /// name comes from what it returns, so an app that wrote to the log here would write before
@@ -182,7 +182,7 @@ pub enum Verb<TApp: App> {
 pub struct DaemonVerbArgs<I: clap::Args, F: clap::Args> {
     /// What the terminal shows. The log file always records `debug`, whatever this says.
     ///
-    /// A `tracing_subscriber` filter directive, so `info` and `mercury=debug,bind=warn` are both
+    /// A `tracing_subscriber` filter directive, so `info` and `warn,some_crate=debug` are both
     /// accepted. Only the foreground daemon has a terminal to show anything on.
     #[arg(long, env = "LOG_LEVEL", default_value = DEFAULT_LOG_LEVEL)]
     pub log_level: String,
@@ -313,8 +313,8 @@ pub fn dispatch<TApp: App>(verb: Verb<TApp>, matches: &ArgMatches) -> i32 {
 /// Built by parsing an empty command line rather than by a `Default` this crate cannot ask an app
 /// for. An app whose `Id` has a required flag has no bare invocation, and clap is what says so, in
 /// the same words it uses for a missing flag anywhere else, then exits. Verified on the pinned
-/// 1.96.0: a bare `mercury` resolves to its global instance, and a bare `isograph` exits with
-/// `the following required arguments were not provided: --config`.
+/// 1.96.0: an app whose `Id` is [`NoArgs`] resolves its global instance, and one whose `Id` has a
+/// required flag exits with `the following required arguments were not provided`.
 pub fn bare<TApp: App>() -> Verb<TApp> {
     let command = StartArgs::<TApp::Id, TApp::DaemonArgs>::augment_args(Command::new(TApp::NAME));
     let matches = match command.try_get_matches_from([TApp::NAME]) {
@@ -463,9 +463,8 @@ pub(crate) fn run<TApp: App>(
     let log_path = logging::init(instance, &Terminal::Daemon(LogLevel(&args.log_level)));
     info!(path = %log_path.display(), "logging");
 
-    // Before anything that touches the machine. Two of one instance fight over whatever there is
-    // only one of, and for mercury that is the keyboard: two of them swallow and re-emit each
-    // other's keys forever. The binding must outlive the call (`let _held`, never `let _`):
+    // Before anything that touches the machine, because two of one instance fight over whatever
+    // there is only one of. The binding must outlive the call (`let _held`, never `let _`):
     // dropping it releases the lock.
     let _held = match freddie_single_instance::acquire(instance.lock()) {
         Ok(held) => held,
