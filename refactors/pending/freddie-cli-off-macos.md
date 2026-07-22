@@ -13,8 +13,8 @@ The app's `run` is the app's, so an app bound to one platform and an app that ru
 Before:
 
 ```rust
-fn log_dir(app: &str) -> Result<PathBuf, NoLogDir> {
-    let home = std::env::var_os("HOME").ok_or(NoLogDir)?;
+fn log_dir(app: &str) -> Result<PathBuf, NoUserDir> {
+    let home = std::env::var_os("HOME").ok_or(NoUserDir)?;
     Ok(PathBuf::from(home).join("Library/Logs").join(app))
 }
 ```
@@ -24,27 +24,27 @@ After:
 ```rust
 /// This user's home, which is the only environment variable this crate reads.
 #[cfg(unix)]
-fn home() -> Result<PathBuf, NoLogDir> {
-    std::env::var_os("HOME").map(PathBuf::from).ok_or(NoLogDir)
+fn home() -> Result<PathBuf, NoUserDir> {
+    std::env::var_os("HOME").map(PathBuf::from).ok_or(NoUserDir)
 }
 
 #[cfg(windows)]
-fn home() -> Result<PathBuf, NoLogDir> {
-    std::env::var_os("USERPROFILE").map(PathBuf::from).ok_or(NoLogDir)
+fn home() -> Result<PathBuf, NoUserDir> {
+    std::env::var_os("USERPROFILE").map(PathBuf::from).ok_or(NoUserDir)
 }
 
 /// The per-user directory `app`'s logs go in: the platform's place for logs a person is expected
 /// to read. Each sits beside where `freddie_single_instance` puts the lock, so a daemon that can
 /// take its lock can write its log.
 #[cfg(target_os = "macos")]
-fn log_dir(app: &str) -> Result<PathBuf, NoLogDir> {
+fn log_dir(app: &str) -> Result<PathBuf, NoUserDir> {
     Ok(home()?.join("Library/Logs").join(app))
 }
 
 /// `$XDG_STATE_HOME`, defaulting to `~/.local/state`. The base directory specification has no log
 /// directory of its own and names state as where a log belongs.
 #[cfg(all(unix, not(target_os = "macos")))]
-fn log_dir(app: &str) -> Result<PathBuf, NoLogDir> {
+fn log_dir(app: &str) -> Result<PathBuf, NoUserDir> {
     let base = match std::env::var_os("XDG_STATE_HOME") {
         Some(base) => PathBuf::from(base),
         None => home()?.join(".local/state"),
@@ -54,8 +54,8 @@ fn log_dir(app: &str) -> Result<PathBuf, NoLogDir> {
 
 /// `%LOCALAPPDATA%`, per-machine: a roaming profile must not sync one machine's log onto another.
 #[cfg(target_os = "windows")]
-fn log_dir(app: &str) -> Result<PathBuf, NoLogDir> {
-    let base = std::env::var_os("LOCALAPPDATA").ok_or(NoLogDir)?;
+fn log_dir(app: &str) -> Result<PathBuf, NoUserDir> {
+    let base = std::env::var_os("LOCALAPPDATA").ok_or(NoUserDir)?;
     Ok(PathBuf::from(base).join(app).join("logs"))
 }
 
@@ -170,7 +170,7 @@ The daemon end belongs to `freddie_daemon`, beside the SIGTERM handler it alread
 /// this crate's runtime, and it keeps the `unsafe` a binding would need out of here.
 #[cfg(windows)]
 fn forward_pipe(instance: &Instance, stop_tx: &UnboundedSender<()>) {
-    let name = format!(r"\\.\pipe\{}", instance.lock());
+    let name = format!(r"\\.\pipe\{}", instance.slug());
     // .. serve `name`, and send `()` for each client that connects ..
 }
 ```
@@ -180,7 +180,7 @@ The client end is `std::fs`, because Windows opens a named pipe as a file, so `f
 ```rust
 #[cfg(windows)]
 fn ask_to_stop(instance: &Instance) -> io::Result<()> {
-    let name = format!(r"\\.\pipe\{}", instance.lock());
+    let name = format!(r"\\.\pipe\{}", instance.slug());
     std::fs::OpenOptions::new().write(true).open(name)?.write_all(b"stop")
 }
 
@@ -190,7 +190,7 @@ fn ask_to_stop(pid: Pid) -> io::Result<()> {
 }
 ```
 
-Both ends key off `instance.lock()`, which is the one string that already names one daemon.
+Both ends key off `instance.slug()`, which is the one string that already names one daemon.
 
 `stop` then waits for the lock to go free exactly as it does now, on both platforms, and that wait is what tells it the daemon left. Nothing about `stop`'s reporting, its timeout, or its exit codes changes.
 

@@ -104,12 +104,13 @@ One daemon of one app: what its lock is under, what its log is called, and what 
 pub struct Instance {
     slug: String,
     display_name: String,
+    lock_file: PathBuf,
     log_file: PathBuf,
 }
 
 impl Instance {
     /// The one daemon of an app that has one, keyed to the app itself.
-    pub fn global(app: &str) -> Result<Self, NoLogDir> {
+    pub fn global(app: &str) -> Result<Self, NoUserDir> {
         Self::named(app, app, app)
     }
 
@@ -122,21 +123,25 @@ impl Instance {
     /// becomes one.
     ///
     /// Fails when the environment does not say where this user's files go, which is the one thing
-    /// about placing a daemon that can fail. It fails here, once, rather than at each call that
-    /// wants the path: an instance that exists is one whose files have a place to be.
+    /// about placing a daemon that can fail. Both paths resolve here, once, rather than at each
+    /// call that wants one: an instance that exists is one whose files have a place to be.
     pub fn named(
         app: &str,
         slug: impl Into<String>,
         display_name: impl Into<String>,
-    ) -> Result<Self, NoLogDir> {
+    ) -> Result<Self, NoUserDir> {
         let slug = slug.into();
-        let log_file = log_dir(app)?.join(format!("{slug}.log"));
-        Ok(Self { slug, display_name: display_name.into(), log_file })
+        Ok(Self {
+            lock_file: freddie_single_instance::lock_path(&slug).ok_or(NoUserDir)?,
+            log_file: log_dir(app)?.join(format!("{slug}.log")),
+            display_name: display_name.into(),
+            slug,
+        })
     }
 
-    /// What the single-instance lock is keyed to.
-    pub fn lock(&self) -> &str {
-        &self.slug
+    /// The file whose exclusive lock is this daemon's claim to being the only one of itself.
+    pub fn lock_file(&self) -> &Path {
+        &self.lock_file
     }
 
     /// Where this daemon's log goes. One directory per app, one file per daemon in it.
@@ -150,31 +155,30 @@ impl Instance {
     }
 }
 
-/// The environment names no per-user directory to keep the log in.
+/// The environment names no per-user directory to keep this daemon's lock and log in.
 ///
-/// The call this fails on is the one that makes `freddie_single_instance::acquire` return
-/// `LockError::NoStateDir`, so a daemon that cannot find its home cannot take its lock either and
-/// was never going to run.
+/// One error for both, because one environment answers for both: the lookup that places the lock
+/// is the lookup that places the log, and a daemon missing either was never going to run.
 #[derive(Debug)]
-pub struct NoLogDir;
+pub struct NoUserDir;
 
-impl fmt::Display for NoLogDir {
+impl fmt::Display for NoUserDir {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("no per-user directory to keep the log in; is HOME set?")
+        f.write_str("no per-user directory to keep the lock and the log in; is HOME set?")
     }
 }
 
-impl std::error::Error for NoLogDir {}
+impl std::error::Error for NoUserDir {}
 
 /// The per-user directory this app's logs go in, which is the one platform-shaped thing here.
 /// `freddie-cli-off-macos.md` is where it gains its other arms.
-fn log_dir(app: &str) -> Result<PathBuf, NoLogDir> {
-    let home = std::env::var_os("HOME").ok_or(NoLogDir)?;
+fn log_dir(app: &str) -> Result<PathBuf, NoUserDir> {
+    let home = std::env::var_os("HOME").ok_or(NoUserDir)?;
     Ok(PathBuf::from(home).join("Library/Logs").join(app))
 }
 ```
 
-An app reaches this through `?`, since `NoLogDir` is an `Error` and `instance` returns a boxed one:
+An app reaches this through `?`, since `NoUserDir` is an `Error` and `instance` returns a boxed one:
 
 ```rust
     fn instance(_: &NoArgs) -> Result<Instance, Box<dyn std::error::Error + Send + Sync>> {
@@ -510,7 +514,7 @@ pub(crate) fn run<TApp: App>(
     // Before anything that touches the machine, because two of one instance fight over whatever
     // there is only one of. The binding must outlive the call (`let _held`, never `let _`):
     // dropping it releases the lock.
-    let _held = match freddie_single_instance::acquire(instance.lock()) {
+    let _held = match freddie_single_instance::acquire_at(instance.lock_file()) {
         Ok(held) => held,
         Err(e) => {
             error!(daemon = instance.display_name(), error = %e, "already running; `stop` ends it");
@@ -571,7 +575,7 @@ pub fn init(instance: &Instance, terminal: &Terminal<'_>) -> PathBuf {
 What does move is every verb that only reads a lock, spawns a binary, signals a pid, or tails a log. No verb changes what it does, what it prints, or what it exits with. Four things change throughout:
 
 - `const APP: &str = "mercury"` is deleted. Five of its use sites become the instance the verb was given; the two under `label` stay in mercury with the launch agent.
-- Every function that reads the instance, or calls one that does, takes an `&Instance`, and every one that resolves a name gains `<TApp: App>`.
+- Every function that reads the instance, or calls one that does, takes an `&Instance`, and the `holder`/`acquire`/`await_free` calls become their `_at` counterparts, which take the path the instance already resolved.
 - Every message that spells "mercury" spells `instance.display_name()`, which is what makes both a fork's output its own and isograph's name the config it means.
 - `start` and `restart` take a `TypedArgs<'_>` and pass it down to `spawn_daemon`, which forwards the id along with the flags.
 
@@ -579,7 +583,7 @@ The instance reaches the lock, in place of the app's name:
 
 ```rust
 fn ensure_started<TApp: App>(instance: &Instance, typed: TypedArgs<'_>) -> Result<Running, NotStarted> {
-    match freddie_single_instance::holder(instance.lock()) {
+    match freddie_single_instance::holder_at(instance.lock_file()) {
 ```
 
 and every line a verb writes:
@@ -587,7 +591,7 @@ and every line a verb writes:
 ```rust
 pub(crate) fn status(instance: &Instance) -> i32 {
     logging::init(instance, &Terminal::Client);
-    match freddie_single_instance::holder(instance.lock()) {
+    match freddie_single_instance::holder_at(instance.lock_file()) {
         Ok(Held::Free) => {
             info!("{} is not running", instance.display_name());
             1
