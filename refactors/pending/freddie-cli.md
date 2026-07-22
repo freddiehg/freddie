@@ -245,14 +245,21 @@ This is what `TApp::ABOUT` and the runtime `Command::name` were for, and both ar
 
 ## Doing a lifecycle verb
 
-`dispatch` takes the matches beside the verb, because the three verbs that put a daemon somewhere have to hand it the flags this invocation was given, and that is read off the matches rather than off the parsed struct. `Typed` is what carries them.
+`dispatch` takes the app's whole `ArgMatches` beside the verb, because the three verbs that put a daemon somewhere have to hand it the flags this invocation was given, and those are read off the matches rather than off the parsed struct. `Typed` is what carries them, and it is this crate's own: an app passes what it already has and never builds one.
 
 ```rust
 /// Do one lifecycle verb, and report the exit code for it.
 ///
 /// Resolves which daemon it means before it does anything, and an id that names none is the one
 /// failure this level reports itself.
-pub fn dispatch<TApp: App>(verb: Verb<TApp>, typed: Typed<'_>) -> i32 {
+///
+/// Takes the whole `ArgMatches` rather than the flags read off it, so that reading them is not a
+/// step an app can leave out. One that did would spawn a daemon without the id it was given,
+/// which resolves a different instance, takes a different lock, and reports success having
+/// started something else.
+pub fn dispatch<TApp: App>(verb: Verb<TApp>, matches: &ArgMatches) -> i32 {
+    let typed = Typed::of(matches);
+
     let Some(instance) = TApp::instance(verb.id()) else {
         return 1;
     };
@@ -303,7 +310,7 @@ impl<TApp: App> Verb<TApp> {
 
 ```
 
-`Typed` is read off the app's own matches, so the app hands it over in one line:
+`Typed` is read off the app's own matches, and stays private so that reading it is not something an app does at all:
 
 ```rust
 impl<'a> Typed<'a> {
@@ -311,7 +318,7 @@ impl<'a> Typed<'a> {
     ///
     /// Taken through `subcommand` so no verb's name is spelled here. `None` is the bare binary,
     /// which typed nothing.
-    pub fn of(matches: &'a ArgMatches) -> Self {
+    fn of(matches: &'a ArgMatches) -> Self {
         Self(matches.subcommand().map(|(_name, verb)| verb))
     }
 }
@@ -559,7 +566,7 @@ impl App for TestApp {
 //! The mercury binary: its command line, with freddie's lifecycle verbs folded into it.
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
-use freddie_cli::{App, Instance, NoArgs, Typed};
+use freddie_cli::{App, Instance, NoArgs};
 
 mod agent;
 mod daemon;
@@ -611,17 +618,16 @@ impl App for Mercury {
 
 fn main() -> ! {
     // First, so `--help` prints and a bad flag exits before the lock, the keyboard, or the icon.
-    // The matches are kept beside the parse because `Typed` reads what was written from them.
+    // The matches are kept beside the parse because `dispatch` reads what was written from them.
     let matches = MercuryCli::command().get_matches();
     let cli = MercuryCli::from_arg_matches(&matches)
         .expect("the derived type matches the command it derived");
-    let typed = Typed::of(&matches);
 
     let code = match cli.verb {
-        Some(MercuryVerb::Lifecycle(verb)) => freddie_cli::dispatch::<Mercury>(verb, typed),
+        Some(MercuryVerb::Lifecycle(verb)) => freddie_cli::dispatch::<Mercury>(verb, &matches),
         Some(MercuryVerb::Install) => agent::install(),
         Some(MercuryVerb::Uninstall) => agent::uninstall(),
-        None => freddie_cli::dispatch::<Mercury>(freddie_cli::bare::<Mercury>(), typed),
+        None => freddie_cli::dispatch::<Mercury>(freddie_cli::bare::<Mercury>(), &matches),
     };
     // Every path above has returned, so the daemon's locals are already dropped by the time this
     // skips the rest of the destructors.
@@ -663,6 +669,6 @@ Its two early returns become `1` and its end becomes `0`, so a menu bar that cou
 ## The changes, in order
 
 1. **Logging takes a name.** `log_dir(name)`, the file name derived from it, and `init(name, terminal)`, in mercury, with `client::APP` passed at each of the four call sites. No behaviour changes: the name passed is the name that was written.
-2. **`freddie_cli`, holding the lifecycle verbs.** The trait, `Instance`, `Verb` and the arg structs, `dispatch`, `bare`, `Typed`, the daemon verb, `logging`, and the `client` module, all keyed to the instance the command line named. mercury gains a `Parser` of its own that flattens `Verb<Mercury>` in beside `install` and `uninstall`. mercury shrinks to the `main.rs` above, a `daemon.rs` that starts at `freddie_windows::init()`, and an `agent.rs` holding `install` and `uninstall`. Every verb does what it does now, and `mercury --help` prints what it prints now, because mercury's instance is its name and its `Id` is empty.
+2. **`freddie_cli`, holding the lifecycle verbs.** The trait, `Instance`, `Verb` and the arg structs, `dispatch`, `bare`, the daemon verb, `logging`, and the `client` module, all keyed to the instance the command line named. mercury gains a `Parser` of its own that flattens `Verb<Mercury>` in beside `install` and `uninstall`. mercury shrinks to the `main.rs` above, a `daemon.rs` that starts at `freddie_windows::init()`, and an `agent.rs` holding `install` and `uninstall`. Every verb does what it does now, and `mercury --help` prints what it prints now, because mercury's instance is its name and its `Id` is empty.
 
 One change rather than one per verb: `Verb` is a single enum and `dispatch` a single match, so a `freddie_cli` holding some of the verbs would leave mercury without the rest.
