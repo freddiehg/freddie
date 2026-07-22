@@ -245,7 +245,7 @@ This is what `TApp::ABOUT` and the runtime `Command::name` were for, and both ar
 
 ## Doing a lifecycle verb
 
-`dispatch` takes the app's whole `ArgMatches` beside the verb, because the three verbs that put a daemon somewhere have to hand it the flags this invocation was given, and those are read off the matches rather than off the parsed struct. `Typed` is what carries them, and it is this crate's own: an app passes what it already has and never builds one.
+`dispatch` takes the app's whole `ArgMatches` beside the verb, because the three verbs that put a daemon somewhere have to hand it the flags this invocation was given, and those are read off the matches rather than off the parsed struct. `TypedArgs` is what carries them, and it is this crate's own: an app passes what it already has and never builds one.
 
 ```rust
 /// Do one lifecycle verb, and report the exit code for it.
@@ -258,7 +258,7 @@ This is what `TApp::ABOUT` and the runtime `Command::name` were for, and both ar
 /// which resolves a different instance, takes a different lock, and reports success having
 /// started something else.
 pub fn dispatch<TApp: App>(verb: Verb<TApp>, matches: &ArgMatches) -> i32 {
-    let typed = Typed::of(matches);
+    let typed = TypedArgs::of(matches);
 
     let Some(instance) = TApp::instance(verb.id()) else {
         return 1;
@@ -310,10 +310,10 @@ impl<TApp: App> Verb<TApp> {
 
 ```
 
-`Typed` is read off the app's own matches, and stays private so that reading it is not something an app does at all:
+`TypedArgs` is read off the app's own matches, and stays private so that reading it is not something an app does at all:
 
 ```rust
-impl<'a> Typed<'a> {
+impl<'a> TypedArgs<'a> {
     /// The flags the invocation typed, wherever the app's parser put them.
     ///
     /// Taken through `subcommand` so no verb's name is spelled here. `None` is the bare binary,
@@ -336,9 +336,9 @@ clap parses argv into a struct and does not write one back out, so the flags are
 /// `None` is the bare binary, which typed nothing. Borrowed from the matches rather than parsed
 /// out of them, because what has to be re-emitted is what was written, not what it resolved to.
 #[derive(Clone, Copy)]
-pub(crate) struct Typed<'a>(Option<&'a ArgMatches>);
+pub(crate) struct TypedArgs<'a>(Option<&'a ArgMatches>);
 
-impl Typed<'_> {
+impl TypedArgs<'_> {
     /// Re-emit the app's flags as argv for the daemon this process is about to spawn.
     ///
     /// Only what was typed. A default is left out because the daemon resolves the same one, and a
@@ -400,7 +400,7 @@ fn spawn_daemon() -> io::Result<Pid> {
 after:
 
 ```rust
-fn spawn_daemon<TApp: App>(typed: Typed<'_>) -> io::Result<Pid> {
+fn spawn_daemon<TApp: App>(typed: TypedArgs<'_>) -> io::Result<Pid> {
     let exe = std::env::current_exe()?;
     let child = Command::new(exe)
         .arg("daemon")
@@ -506,12 +506,12 @@ What does move is every verb that only reads a lock, spawns a binary, signals a 
 - `const APP: &str = "mercury"` is deleted. Five of its use sites become the instance the verb was given; the two under `label` stay in mercury with the launch agent.
 - Every function that reads the instance, or calls one that does, takes an `&Instance`, and every one that resolves a name gains `<TApp: App>`.
 - Every message that spells "mercury" spells `instance.label()`, which is what makes both a fork's output its own and isograph's name the config it means.
-- `start` and `restart` take a `Typed<'_>` and pass it down to `spawn_daemon`, which forwards the id along with the flags.
+- `start` and `restart` take a `TypedArgs<'_>` and pass it down to `spawn_daemon`, which forwards the id along with the flags.
 
 The instance reaches the lock, in place of the app's name:
 
 ```rust
-fn ensure_started<TApp: App>(instance: &Instance, typed: Typed<'_>) -> Result<Running, NotStarted> {
+fn ensure_started<TApp: App>(instance: &Instance, typed: TypedArgs<'_>) -> Result<Running, NotStarted> {
     match freddie_single_instance::holder(instance.key()) {
 ```
 
