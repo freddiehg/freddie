@@ -85,6 +85,10 @@ Three things stay unrouted, because none of them is mercury's own output. clap w
 
   This is what makes the boot ordering safe. Every watcher is installed before any seed is read (see `refactors/past/seed-at-construction.md`), so a change happening in that window arrives twice: once in the seed the model is constructed with, and once as the event the watcher queued. Chrome comes forward, the snapshot already says Chrome, the queued `Foreground(Chrome)` dispatches into a model that agrees, and nothing moves. The other ordering loses the change entirely, so this is the ordering, and idempotence is its price.
 
+## Wrapping an operating system API
+
+`docs/platform-apis.md` is what the `freddie_*` crates do when they hold something the OS gave them: which traits to claim and which to refuse, where `Drop` belongs, how a C callback reaches its state, and what the main thread is for. Read it before writing a new one or changing how an existing one holds a resource.
+
 ## Coding standards
 
 - Maintainability is the most important standard. And that specifically means one thing: make impossible states unrepresentable and use the correct underlying representation or building blocks. If a field is not used when a boolean is true/false, use an option, for example.
@@ -96,6 +100,10 @@ Three things stay unrouted, because none of them is mercury's own output. clap w
 - Never poll and loop. Always select! or the like, unless there is a specific, unavoidable need.
 - Never rely on discipline what we can enforce with newtypes.
 
-### Coding standards: nits
+### Wrapping an operating system API
+
+`docs/platform-apis.md` is what the `freddie_*` crates do when they hold something the OS gave them: which traits to claim and which to refuse, where `Drop` belongs, how a C callback reaches its state, and what the main thread is for. Read it before writing a new one or changing how an existing one holds a resource.
+
+## Coding standards: nits
 
 - Rust enums should take one of two forms: `enum Foo { NoData }` or `enum Foo { NamedStruct(Struct) }`, and not `Tuple(A, B)` or `Curlies { foo: Bar }`. `Tuple((A, B))` is appropriate, though.
