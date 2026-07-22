@@ -15,9 +15,21 @@
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
-/// A live status item. Holding it keeps the icon up; dropping it takes the icon down.
+/// A live status item. Holding it keeps the icon up; dropping it takes the icon down and
+/// clears the menu handler.
 pub struct MenuBar {
     tray: TrayIcon,
+}
+
+impl Drop for MenuBar {
+    /// Clears the global menu handler this `MenuBar` installed.
+    ///
+    /// `MenuEvent::set_event_handler` is one handler for the whole process, so leaving it
+    /// installed would keep `on_quit` alive after the icon is gone. The icon itself needs
+    /// nothing here: `TrayIcon` removes it when it drops.
+    fn drop(&mut self) {
+        MenuEvent::set_event_handler(None::<fn(MenuEvent)>);
+    }
 }
 
 impl MenuBar {
@@ -31,6 +43,9 @@ impl MenuBar {
 }
 
 /// Shows the menu-bar status item with a single Quit entry.
+///
+/// One at a time: the menu handler is process-global, so a second `MenuBar` replaces the
+/// first one's and dropping either clears it. Build one and hold it.
 ///
 /// `on_quit` runs, on the main thread, when the user chooses Quit. The caller supplies
 /// its own branding: `tooltip` is the hover text, and `icon_png` is the raw PNG bytes of

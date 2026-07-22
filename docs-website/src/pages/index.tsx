@@ -111,14 +111,14 @@ function BendIt() {
         <div className="kicker">It’s your computer</div>
         <h2 className={styles.centeredHeading}>Bend it to your will</h2>
         <div className={`row ${styles.doableGrid}`}>
-          <Doable title="Remap keys however you like">
-            Remap keys. Bind them differently in different layers and in different states. Want layers, sequences, or chords? Go for it. Bind whatever you want, wherever you want, however you want.
+          <Doable title="Send commands to your agent">
+            Send a screenshot or the contents of your clipboard to an agent. Or, select all, cut, send to your agent ("please fix"), and paste the result, all without ever leaving your app.
           </Doable>
-          <Doable title="Clone the repo you&rsquo;re viewing">
-            From a repo’s page, use one key to clone it, drop you into it, and open your editor. In today's fast paced environment, who has time to copy the URL, or switch to the terminal, and type the same four commands?
+          <Doable title="Check out a branch from GitHub">
+            Press one key to check out the branch you&rsquo;re reviewing on GitHub, open your editor, and open the changed files. Then press one key to jump back.
           </Doable>
-          <Doable title="Mute Google Meet from anywhere">
-            A global keybinding can mute Google Meet from anywhere. No more panicking, and scrounging around to find the tab when you receive a phone call.
+          <Doable title="Mute your microphone">
+            Mute your microphone and disable your camera from anywhere. No more panicking and scrounging around to find the Google Meet tab when you receive a phone call.
           </Doable>
         </div>
         <div className="row">
@@ -126,10 +126,10 @@ function BendIt() {
             Connect a monitor and your have your windows go back to where they belong, without any futzing on your part.
           </Doable>
           <Doable title="Respond to scheduled events">
-            A timer is an event source like any other. Want to nudge yourself to stop using Twitter after 30 minutes? Or decrease screen brightness at sundown? You can!
+            Nudge yourself to stop doomscrolling after 30 minutes or decrease your screen&rsquo;s brightness at sundown.
           </Doable>
-          <Doable title="Incorporate any event">
-            Read events over a websocket, or from a file, or from system APIs - such as which window took focus.
+          <Doable title="Dispatch links to specific windows">
+            Every link on your machine can go through freddie, so you can reliably open work GitHub links exclusively in your work Chrome profile.
           </Doable>
         </div>
       </div>
@@ -156,7 +156,7 @@ function Features() {
           <div className="col col--4">
             <h3>There’s no stopping me</h3>
             <p>
-              Because we're integrating events from many sources, we can easily do crazy things, such as cloning the repository you're looking at without leaving GitHub.com, or muting your microphone on Google Meet (without finding the tab!)
+              Because we're integrating events from many sources, we can easily do crazy things, such as cloning the repository you're looking at without leaving GitHub, or muting your microphone on Google Meet (without finding the tab!)
             </p>
           </div>
           <div className="col col--4">
