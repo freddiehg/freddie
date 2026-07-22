@@ -230,9 +230,14 @@ The `Start` and `Daemon` doc comments lose the binary's name, since the derive w
 /// Every arm resolves which daemon it means before it does anything, and an id that names none is
 /// the one failure this level reports itself.
 fn dispatch<A: App>(verb: Option<Verb<A>>, typed: Typed<'_>) -> i32 {
-    // The bare invocation is `start` with no id: one behaviour, not two that agree. An app whose
-    // `Id` has a required flag has no bare invocation, and clap says so.
-    let verb = verb.unwrap_or_else(|| Verb::Start(StartArgs::default_for::<A>()));
+    let verb = match verb {
+        Some(verb) => verb,
+        // The bare invocation is `start` with nothing said: one behaviour, not two that agree.
+        None => match bare::<A>() {
+            Ok(args) => Verb::Start(args),
+            Err(e) => e.exit(),
+        },
+    };
 
     let Some(instance) = A::instance(verb.id()) else {
         return 1;
@@ -246,6 +251,19 @@ fn dispatch<A: App>(verb: Option<Verb<A>>, typed: Typed<'_>) -> i32 {
         Verb::Stop(args) => client::stop::<A>(&instance, &args),
         Verb::Daemon(args) => daemon::run::<A>(&instance, &args),
     }
+}
+
+/// What the bare binary means: `start`, with every flag left unsaid.
+///
+/// Built by parsing an empty command line rather than by a `Default` this crate cannot ask an app
+/// for. An app whose `Id` has a required flag has no bare invocation, and clap is what says so, in
+/// the same words it uses for a missing flag anywhere else. Verified on the pinned 1.96.0: a bare
+/// `mercury` resolves to its global instance, and a bare `isograph` exits with `the following
+/// required arguments were not provided: --config`.
+fn bare<A: App>() -> Result<StartArgs<A::Id, A::DaemonArgs>, clap::Error> {
+    let command = StartArgs::<A::Id, A::DaemonArgs>::augment_args(Command::new(A::NAME));
+    let matches = command.try_get_matches_from([A::NAME])?;
+    StartArgs::<A::Id, A::DaemonArgs>::from_arg_matches(&matches)
 }
 
 impl<A: App> Verb<A> {
