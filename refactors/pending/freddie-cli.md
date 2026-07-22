@@ -1,6 +1,8 @@
 # the command line is freddie's, the daemon is the app's
 
-A freddie app is one process holding something there can only be one of, plus a handful of verbs for finding it, starting it, and stopping it. mercury owns the keyboard; isograph v2 watches a set of project directories. What the single process is for differs, and the verbs that manage it do not. All of them live in mercury today, where a second app cannot reach them.
+An app built here is one process holding something there can only be one of, plus a handful of verbs for finding it, starting it, and stopping it. mercury owns the keyboard; isograph v2 watches a set of project directories. What the single process is for differs, and the verbs that manage it do not. All of them live in mercury today, where a second app cannot reach them.
+
+The verbs are the same because none of them looks inside the process. They read a lock file, spawn a binary, send a signal, and tail a log, and every one of those works the same for a program that has nothing to do with keys or events.
 
 `freddie_cli` is a new crate holding the whole command surface. An app supplies its name, its daemon body, and whatever extra flags that body takes; it gets `start`, `restart`, `status`, `logs`, `stop`, `install`, `uninstall`, and the hidden `daemon` for free, keyed to its own name and writing to its own log file. mercury becomes an implementation of one trait and a `main` that is a single call.
 
@@ -63,7 +65,7 @@ pub trait App: fmt::Debug {
 pub struct NoArgs {}
 ```
 
-`freddie-daemon-runtime.md` replaces `run` with an associated `Daemon` type once the process arrangement is a crate too, so an app writes no function to be the daemon at all. Until then `run` is the app's whole daemon.
+That is the whole trait, and nothing in it is about freddie. A name, an about line, some flags, and a function that runs until it is done: any program that wants one instance of itself and the verbs to manage it fits, whether or not it has a model, an event, or a keyboard. `freddie-daemon-runtime.md` is what mercury calls inside `run`, and this crate never learns that it exists.
 
 ## The generic command line
 

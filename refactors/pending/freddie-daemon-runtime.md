@@ -15,7 +15,7 @@ Generic, and moving to `freddie_daemon`:
 - the worker thread and its current-thread tokio runtime
 - the event channel, the effect channel, and the loop over both
 - the dispatch record: one `info!` per event carrying the event and the effects it produced
-- SIGTERM, delivered as the same event the menu bar's Quit sends
+- catching the signals that mean leave, and the menu bar's Quit, and asking the app what to do about them
 
 The app's, and staying in mercury:
 
@@ -34,12 +34,7 @@ The app's, and staying in mercury:
 /// drops it on the way out, so releasing those is a `Drop` impl rather than a shutdown step.
 pub trait Daemon: Sized {
     /// What its sources produce and its model dispatches.
-    ///
-    /// `From<Stop>` because the runtime has to ask this model to quit without knowing anything
-    /// else about its vocabulary. The bound sits on the event rather than on the daemon: it is the
-    /// event type that has to be able to say it, and the runtime needs one built before any daemon
-    /// value exists, for the menu bar's Quit closure.
-    type Event: fmt::Debug + Send + From<Stop> + 'static;
+    type Event: fmt::Debug + Send + 'static;
 
     /// What dispatch produces and [`perform`](Self::perform) carries out.
     type Effect: fmt::Debug + Send + 'static;
@@ -82,18 +77,19 @@ pub trait Daemon: Sized {
 
     /// Perform one effect. `Break` ends the daemon and returns through `run`.
     fn perform(&mut self, effect: Self::Effect) -> ControlFlow<()>;
+
+    /// The process was asked to leave. Say what to dispatch about it, in the app's own vocabulary.
+    ///
+    /// SIGTERM (`launchctl bootout`, `<app> stop`), SIGINT (ctrl-c in a foreground daemon), and
+    /// the menu bar's Quit all arrive here, because all three mean the same thing. SIGKILL does
+    /// not and cannot: the kernel destroys the process without asking anyone.
+    ///
+    /// What comes back is dispatched the way any event is, so the effects it produces are
+    /// performed in order and one of them ending the run is how the process leaves. An app that
+    /// returns nothing is asking to stay up, and the signal is then a thing that happened to it
+    /// and nothing more.
+    fn on_stop(&mut self) -> Vec<Self::Event>;
 }
-```
-
-`Stop` is the one thing the runtime says to a model it otherwise knows nothing about:
-
-```rust
-/// The ask to quit, which the menu bar's Quit and SIGTERM both deliver.
-///
-/// It goes through the model rather than ending the process, so whatever has to be undone first,
-/// a held modifier reopened or a grab released, is the model's own business, and happens the same
-/// way however the ask arrived.
-pub struct Stop;
 ```
 
 `MenuBar` is the handle the effect loop writes titles through:
@@ -139,15 +135,16 @@ where
 
     let (main_loop, stopper) = freddie_main_loop::main_loop();
 
-    // Created here, not on the worker: the menu bar's Quit handler runs on THIS thread and needs a
-    // sender, while the event loop on the worker owns the receiver.
+    // Created here, not on the worker: the menu bar's Quit handler runs on THIS thread and needs
+    // the senders, while the loop on the worker owns the receivers.
     let (event_tx, event_rx) = unbounded_channel::<D::Event>();
+    let (stop_tx, stop_rx) = unbounded_channel::<()>();
     let (title_tx, title_rx) = std::sync::mpsc::channel::<&'static str>();
 
     let menu_bar = match freddie_menu_bar::show(D::TITLE, D::ICON_PNG, {
-        let event_tx = event_tx.clone();
+        let stop_tx = stop_tx.clone();
         move || {
-            let _ = event_tx.send(Stop.into());
+            let _ = stop_tx.send(());
         }
     }) {
         Ok(bar) => bar,
@@ -165,7 +162,14 @@ where
                 .enable_all()
                 .build()
                 .expect("a current-thread runtime with no reactor cannot fail to build");
-            runtime.block_on(serve::<D>(&config, event_tx, event_rx, MenuBar { titles: title_tx }))
+            runtime.block_on(serve::<D>(
+                &config,
+                event_tx,
+                event_rx,
+                stop_tx,
+                stop_rx,
+                MenuBar { titles: title_tx },
+            ))
         })
         .expect("spawning the runtime thread");
 
@@ -193,16 +197,18 @@ async fn serve<D: Daemon>(
     config: &D::Config,
     event_tx: UnboundedSender<D::Event>,
     event_rx: UnboundedReceiver<D::Event>,
+    stop_tx: UnboundedSender<()>,
+    stop_rx: UnboundedReceiver<()>,
     menu_bar: MenuBar,
 ) -> i32 {
     let Some(mut daemon) = D::start(config, &event_tx, &menu_bar) else {
         return 1;
     };
 
-    on_terminate::<D>(&event_tx);
+    forward_signals(&stop_tx);
 
     let (effect_tx, effect_rx) = unbounded_channel::<D::Effect>();
-    run_loop::<D>(&mut daemon, event_rx, effect_tx, effect_rx).await;
+    run_loop::<D>(&mut daemon, event_rx, stop_rx, effect_tx, effect_rx).await;
     0
 }
 ```
@@ -214,13 +220,15 @@ The two loops mercury runs today become one, because they now drive one value. `
 ```rust
 /// Dispatch events and perform what they produce, until an effect says to stop.
 ///
-/// `biased`, so a pending effect is always performed before the next event is dispatched: a
-/// modifier reaches the OS before the key carrying its flag. The effect channel is drained to
-/// empty between events, since a dispatch's effects are all queued before this returns to the
-/// event arm.
+/// `biased`, so the arms are tried in order. A pending effect is performed before anything else:
+/// a modifier reaches the OS before the key carrying its flag. An ask to leave comes next, since
+/// dispatching more input into a model that has been told to go is work nobody wanted. The effect
+/// channel is drained to empty between the others, because a dispatch queues all of its effects
+/// before this returns to the top.
 async fn run_loop<D: Daemon>(
     daemon: &mut D,
     mut event_rx: UnboundedReceiver<D::Event>,
+    mut stop_rx: UnboundedReceiver<()>,
     effect_tx: UnboundedSender<D::Effect>,
     mut effect_rx: UnboundedReceiver<D::Effect>,
 ) {
@@ -234,57 +242,79 @@ async fn run_loop<D: Daemon>(
                 }
             }
 
-            Some(event) = event_rx.recv() => {
-                // One record per dispatch, carrying the event and the effects it produced, so a
-                // single line tells the whole story of one event.
-                let effects = daemon.handle(&event);
-                info!(event = ?event, effects = ?effects, "dispatch");
-                for effect in effects {
-                    let _ = effect_tx.send(effect);
+            Some(()) = stop_rx.recv() => {
+                for event in daemon.on_stop() {
+                    dispatch(daemon, &event, &effect_tx);
                 }
             }
 
-            // Both channels closed. `effect_tx` lives here, so this is unreachable while the loop
-            // runs; `select!` panics without it rather than taking the branch.
+            Some(event) = event_rx.recv() => dispatch(daemon, &event, &effect_tx),
+
+            // Every channel closed. `effect_tx` and `stop_tx` live outside this, so it is
+            // unreachable while the loop runs; `select!` panics without it rather than taking it.
             else => break,
         }
+    }
+}
+
+/// Dispatch one event and queue what it produced.
+///
+/// One record per dispatch, carrying the event and the effects it produced, so a single line
+/// tells the whole story of one event.
+fn dispatch<D: Daemon>(daemon: &mut D, event: &D::Event, effect_tx: &UnboundedSender<D::Effect>) {
+    let effects = daemon.handle(event);
+    info!(event = ?event, effects = ?effects, "dispatch");
+    for effect in effects {
+        let _ = effect_tx.send(effect);
     }
 }
 ```
 
 The dispatch record loses the state it carries today, because the runtime cannot format a model it does not know. `Daemon` gains nothing for it: mercury logs its own state inside `handle`, where it has it, and the runtime logs the event and the effects, which it has. The single line stays single.
 
-## SIGTERM
+## The signals that mean leave
+
+The runtime catches them and pushes on the same channel the menu bar's Quit pushes on, so `on_stop` is the one place an app answers for all three.
 
 ```rust
-/// Send [`Stop`] into the model when the process is asked to terminate.
+/// Push an ask to leave whenever the process is signalled to.
 ///
-/// `launchctl bootout` and `<app> stop` both send SIGTERM. It goes through the model like every
-/// other ask to quit, so a terminated process leaves the way it would have on its own.
+/// SIGTERM is `launchctl bootout` and `<app> stop`. SIGINT is ctrl-c in a foreground daemon,
+/// which without this dies on the default disposition and leaves whatever the app would have
+/// undone undone. Both mean the same thing here.
 ///
-/// A spawned task rather than a third `select!` arm, because an arm that completed would drop the
-/// other futures and skip the graceful path this exists to run.
-fn on_terminate<D: Daemon>(event_tx: &UnboundedSender<D::Event>) {
-    match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-        Ok(mut term) => {
-            let event_tx = event_tx.clone();
-            tokio::spawn(async move {
-                if term.recv().await.is_some() {
-                    info!("SIGTERM: stopping");
-                    let _ = event_tx.send(Stop.into());
-                }
-            });
-        }
-        Err(e) => {
-            warn!(error = %e, "no SIGTERM handler; a terminated process will not stop gracefully");
+/// A failure to install is logged and not fatal: the daemon runs, and a signalled process simply
+/// does not get the graceful path.
+fn forward_signals(stop_tx: &UnboundedSender<()>) {
+    use tokio::signal::unix::SignalKind;
+
+    for (name, kind) in [
+        ("SIGTERM", SignalKind::terminate()),
+        ("SIGINT", SignalKind::interrupt()),
+    ] {
+        match tokio::signal::unix::signal(kind) {
+            Ok(mut signal) => {
+                let stop_tx = stop_tx.clone();
+                tokio::spawn(async move {
+                    while signal.recv().await.is_some() {
+                        info!(signal = name, "asked to stop");
+                        let _ = stop_tx.send(());
+                    }
+                });
+            }
+            Err(e) => {
+                warn!(signal = name, error = %e, "no handler; this signal will not stop gracefully");
+            }
         }
     }
 }
 ```
 
-mercury's own handler, which this replaces, is deleted from `serve`; its `From<Stop>` impl is what remains.
+SIGKILL is absent because it cannot be caught: the kernel destroys the process without running a destructor, which is what `--force` is for and why it says what it costs.
 
-Installing the handler replaces SIGTERM's default disposition, which the kernel honours unconditionally, with one that depends on the runtime being scheduled. A worker blocked inside a synchronous `perform` never completes `term.recv().await`, so such a process survives the `kill` it dies to today. `refactors/past/mercury-stop.md` records the measurement, and `--force` is the answer.
+Catching a signal replaces its default disposition, which the kernel honours unconditionally, with one that depends on the runtime being scheduled. A worker blocked inside a synchronous `perform` never completes `signal.recv().await`, so such a process survives the `kill` it dies to today. `refactors/past/mercury-stop.md` records the measurement, and `--force` is the answer.
+
+mercury's own SIGTERM handler is deleted from `serve`; what replaces it is `on_stop` below.
 
 ## What mercury becomes
 
@@ -335,15 +365,11 @@ impl Daemon for MercuryDaemon {
     }
 
     fn perform(&mut self, effect: MercuryEffect) -> ControlFlow<()> { .. }
-}
-```
 
-mercury spells the ask in its own vocabulary, which it already has a variant for:
-
-```rust
-impl From<Stop> for MercuryEvent {
-    fn from(_: Stop) -> Self {
-        quit_event()
+    /// The way out, in mercury's own vocabulary: `quit_event` opens the modifiers a command layer
+    /// swallowed and produces `Kill`, which ends the run through the effect arm.
+    fn on_stop(&mut self) -> Vec<MercuryEvent> {
+        vec![quit_event()]
     }
 }
 ```
@@ -352,24 +378,17 @@ impl From<Stop> for MercuryEvent {
 
 `perform` is today's `perform_effect` with the free functions it calls, `schedule_timer`, `place_window`, `copy`, and `foreground_app`, moving with it, and `title_tx.send(name)` becoming `self.menu_bar.set_title(name)`.
 
-## Where the port comes from
+## The two crates do not know each other
 
-`freddie_cli::App` maps the flags it parsed onto the config its daemon starts from, so `freddie_daemon` never sees a `clap` type and mercury never repeats the port.
+`freddie_cli` has no idea this crate exists, and gains nothing when it lands. Its `App` asks for a name, an about line, some flags, and a function that is the daemon and returns an exit code. Nothing in it mentions an event, an effect, or a model, and nothing should: a program with none of those, wanting one instance and the verbs to manage it, is a `freddie_cli::App` too.
+
+So this crate is something an app reaches for inside `run`, not something the command line dispatches to. mercury's `App::run` is one line, and the port goes straight from the flags it was handed into `Config`:
 
 ```rust
-pub trait App {
-    type Args: clap::Args + fmt::Debug;
-    type Daemon: Daemon;
-
-    const NAME: &'static str;
-    const ABOUT: &'static str;
-
-    /// What this app's daemon needs from the flags it was given.
-    fn config(args: &Self::Args) -> <Self::Daemon as Daemon>::Config;
-}
+    fn run(args: &MercuryArgs) -> i32 {
+        freddie_daemon::run::<MercuryDaemon>(args.port)
+    }
 ```
-
-`App::run` is gone: the daemon verb calls `freddie_daemon::run::<A::Daemon>(A::config(&args.app))` once the lock is held, and an app writes no function to be the daemon at all.
 
 `crates/mercury/src/main.rs`, entire:
 
@@ -390,17 +409,17 @@ pub struct MercuryArgs {
     pub port: u16,
 }
 
+#[derive(Debug)]
 struct Mercury;
 
 impl App for Mercury {
     type Args = MercuryArgs;
-    type Daemon = MercuryDaemon;
 
     const NAME: &'static str = "mercury";
     const ABOUT: &'static str = "A layered keyboard remapper.";
 
-    fn config(args: &MercuryArgs) -> u16 {
-        args.port
+    fn run(args: &MercuryArgs) -> i32 {
+        freddie_daemon::run::<MercuryDaemon>(args.port)
     }
 }
 
@@ -409,9 +428,8 @@ fn main() -> ! {
 }
 ```
 
-## The changes, in order
+## The change
 
 `freddie-cli.md` lands first, so the lock and the logging are already out of `daemon.rs` and `run` has one thing left to become.
 
-1. **`freddie_daemon` with the trait and the runtime**, and mercury implementing it. `freddie_cli::App` keeps `run`, and mercury's is `freddie_daemon::run::<MercuryDaemon>(args.port)`.
-2. **`App::Daemon` replaces `App::run`**, folding the two traits together at `config`, so the daemon verb reaches `freddie_daemon::run` itself and mercury's `main.rs` is the file above.
+One change: `freddie_daemon` with the trait and the runtime, and mercury implementing it. `freddie_cli` is not touched, and mercury's `main.rs` is the file above.
