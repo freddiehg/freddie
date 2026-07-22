@@ -300,3 +300,30 @@ impl Drop for Interceptor {
 ```
 
 The keyboard comes back regardless: the tap dies with the process even if the thread never unwinds.
+
+# Change 4: write down what the platform crates are doing
+
+The three changes above are the same two ideas applied three times. They go in `CLAUDE.md`, as a section after "Best Practices for Handlers and Freddie Apps", so the next crate that wraps an OS API starts from them.
+
+```markdown
+## Wrapping an operating system API
+
+A type that owns an OS resource asks for as little as it can and gives back exactly what it took.
+
+### Ask for the least
+
+- Claim the traits the type actually needs, not the ones that would be convenient. `Element` is `Send` because one is handed to the thread performing a placement; it is not `Sync`, because two threads never reach the same one. Every `unsafe impl` is a claim you have to defend, and the narrower claim is the easier one.
+- `!Send` is a feature when the resource is thread-bound. An `NSPanel` belongs to the main thread, so `Overlay` is `!Send` and cannot be moved somewhere its `Drop` would silently do nothing. `Watcher` and `MenuBar` are the same. Reach for `PhantomData<*const ()>` rather than a runtime check.
+- When a worker needs to reach a thread-bound thing, split the type rather than loosening it: an owner that stays put, and a `Send` handle that carries a message to it. `Watcher` and `WindowSink`, `Overlay` and `OverlaySink`.
+- `RefCell`, `Mutex`, and `RwLock` are for state that is genuinely shared, and each is a borrow check moved to runtime. Take one only when something crosses a thread or is aliased. `WatcherState` holds its apps in a `RefCell` because every writer is on the main thread; the window table is a `Mutex` because a placement reads it from another. Neither is there to make a lifetime problem go away.
+- A lock is not a substitute for the field being in the wrong struct. If a callback cannot reach a field, moving it to what the callback can reach is the fix; wrapping it in a `Mutex` is not.
+
+### Give back what you took
+
+- Put `Drop` on a newtype around the one resource, not on the struct that happens to hold several. `Owned` wraps a single +1 CoreFoundation reference and releases it, so `freddie_windows` has exactly one `CFRelease` and no path that can skip it. A `Drop` on a large struct releasing five things in order is where the order becomes load-bearing and a reordered field becomes a bug.
+- With the resources wrapped, the outer type usually needs no `Drop` at all. `Watcher` has none: dropping it drops the map, which drops each `AppObserver`, which removes its run loop source and releases its observer.
+- A missing `Drop` is only correct when what you hold already undoes itself. `TrayIcon` removes its icon when dropped, so `MenuBar` needs nothing for the icon; `Retained<NSPanel>` does not take the panel off screen, so `Overlay` does need one. Check which kind you have rather than assuming.
+- Registering with the OS returns something to hold. A notification observer, a run loop source, a global event handler: each has a deregistration, and it belongs in the `Drop` of whatever owns the registration. `Observation` holds its notification centre alongside its token, because deregistering needs the centre that registered.
+- Where a `Drop` order matters despite the above, say so at the field. Fields drop in declaration order, and `Watcher` declares its observations first so they stop before the state their callbacks write into is torn down.
+- Prefer a resource that survives being reused to one rebuilt each time, and make the difference explicit in the API. `Overlay::hide` orders the panel out and keeps it, because it will be shown again; `Overlay::drop` closes it, because it will not.
+```
