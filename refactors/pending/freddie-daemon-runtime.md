@@ -75,7 +75,7 @@ pub trait Daemon: Sized {
     /// Dispatch one event through the model, returning what it produced.
     fn handle(&mut self, event: &Self::Event) -> Vec<Self::Effect>;
 
-    /// Perform one effect. `Break` ends the daemon and returns through `run`.
+    /// Perform one effect. `Break` ends the daemon and returns through `run_until_stopped`.
     fn perform(&mut self, effect: Self::Effect) -> ControlFlow<()>;
 
     /// The process was asked to leave. Say what to dispatch about it, in the app's own vocabulary.
@@ -126,7 +126,7 @@ impl MenuBar {
 ///
 /// Dropping the worker's `Stopper` stops main's loop, so a normal return, a refused start, and a
 /// panic all exit. Declaration order matters: the runtime drops before the `Stopper`.
-pub fn run<D: Daemon>(config: D::Config) -> i32
+pub fn run_until_stopped<D: Daemon>(config: D::Config) -> i32
 where
     D::Config: Send + 'static,
 {
@@ -382,11 +382,11 @@ impl Daemon for MercuryDaemon {
 
 `freddie_cli` has no idea this crate exists, and gains nothing when it lands. Its `App` asks for a name, an about line, some flags, and a function that is the daemon and returns an exit code. Nothing in it mentions an event, an effect, or a model, and nothing should: a program with none of those, wanting one instance and the verbs to manage it, is a `freddie_cli::App` too.
 
-So this crate is something an app reaches for inside `run`, not something the command line dispatches to. mercury's `App::run` is one line, and the port goes straight from the flags it was handed into `Config`:
+So this crate is something an app reaches for inside `run_daemon`, not something the command line routes to. mercury's `App::run` is one line, and the port goes straight from the flags it was handed into `Config`:
 
 ```rust
-    fn run(args: &MercuryArgs) -> i32 {
-        freddie_daemon::run::<MercuryDaemon>(args.port)
+    fn run_daemon(_: &NoArgs, args: &MercuryArgs) {
+        freddie_daemon::run_until_stopped::<MercuryDaemon>(args.port);
     }
 ```
 
@@ -418,8 +418,8 @@ impl App for Mercury {
     const NAME: &'static str = "mercury";
     const ABOUT: &'static str = "A layered keyboard remapper.";
 
-    fn run(args: &MercuryArgs) -> i32 {
-        freddie_daemon::run::<MercuryDaemon>(args.port)
+    fn run_daemon(_: &NoArgs, args: &MercuryArgs) {
+        freddie_daemon::run_until_stopped::<MercuryDaemon>(args.port);
     }
 }
 
@@ -430,6 +430,6 @@ fn main() -> ! {
 
 ## The change
 
-`freddie-cli.md` lands first, so the lock and the logging are already out of `daemon.rs` and `run` has one thing left to become.
+`freddie-cli.md` lands first, so the lock and the logging are already out of `daemon.rs` and its `run` has one thing left to become.
 
 One change: `freddie_daemon` with the trait and the runtime, and mercury implementing it. `freddie_cli` is not touched, and mercury's `main.rs` is the file above.

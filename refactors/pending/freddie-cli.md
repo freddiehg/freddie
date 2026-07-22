@@ -76,6 +76,7 @@ pub trait App {
 
     /// Be the daemon. Returns when it has stopped, or when it could not start.
     ///
+    ///
     /// Called with the lock held and logging initialized. Returning drops the lock, so an app
     /// that wants to stay running stays inside this call.
     ///
@@ -84,7 +85,7 @@ pub trait App {
     /// to start, since the next attempt fails the same way, so both of those exit zero. A panic
     /// never reaches here and exits nonzero on its own, which leaves it the only outcome worth
     /// starting the daemon again for.
-    fn run(id: &Self::Id, args: &Self::DaemonArgs);
+    fn run_daemon(id: &Self::Id, args: &Self::DaemonArgs);
 }
 
 /// The daemon flags, or the id, of an app that has none.
@@ -186,7 +187,7 @@ An app reaches this through `?`, since `NoUserDir` is an `Error` and `instance` 
     }
 ```
 
-Nothing in either type is about freddie. A name, what names one daemon, some flags, and a function that runs until it is done: any program that wants one instance of itself and the verbs to manage it fits, whether or not it has a model, an event, or a keyboard. `freddie-daemon-runtime.md` is what mercury calls inside `run`, and this crate never learns that it exists.
+Nothing in either type is about freddie. A name, what names one daemon, some flags, and a function that runs until it is done: any program that wants one instance of itself and the verbs to manage it fits, whether or not it has a model, an event, or a keyboard. `freddie-daemon-runtime.md` is what mercury calls inside `run_daemon`, and this crate never learns that it exists.
 
 ## The verbs, and the flags they carry
 
@@ -318,15 +319,15 @@ Verified on the pinned 1.96.0 against clap 4.6.2, with mercury's and isograph's 
 
 ## Doing a lifecycle verb
 
-`dispatch` takes the app's whole `ArgMatches` beside the verb, because the three verbs that put a daemon somewhere have to hand it the flags this invocation was given, and those are read off the matches rather than off the parsed struct. `TypedArgs` is what carries them, and it is this crate's own: an app passes what it already has and never builds one.
+`run_lifecycle_verb` takes the app's whole `ArgMatches` beside the verb, because the three verbs that put a daemon somewhere have to hand it the flags this invocation was given, and those are read off the matches rather than off the parsed struct. `TypedArgs` is what carries them, and it is this crate's own: an app passes what it already has and never builds one.
 
 ```rust
-/// Do one lifecycle verb: work out which daemon it means, start logging, and run it.
+/// Work out which daemon a lifecycle verb means, start logging for it, and run the verb.
 ///
 /// The three steps every verb needs, in the one order they work in. Logging is set up here rather
 /// than inside each verb because its path comes from the instance, so nothing before this line
 /// has anywhere to write.
-pub fn dispatch<TApp: App>(verb: Verb<TApp>, matches: &ArgMatches) -> ExitCode {
+pub fn run_lifecycle_verb<TApp: App>(verb: Verb<TApp>, matches: &ArgMatches) -> ExitCode {
     let instance = match TApp::instance(verb.id()) {
         Ok(instance) => instance,
         // Through clap rather than a print, and on stderr rather than in the log, because there
@@ -339,15 +340,15 @@ pub fn dispatch<TApp: App>(verb: Verb<TApp>, matches: &ArgMatches) -> ExitCode {
     };
 
     logging::init(&instance, verb.terminal());
-    run::<TApp>(verb, &instance, TypedArgs::of(matches))
+    run_verb_on::<TApp>(verb, &instance, TypedArgs::of(matches))
 }
 
-/// Run the verb, with its daemon named and its logging up.
+/// Run the verb against the daemon it named, with logging already up.
 ///
-/// `TypedArgs` is read off the matches by [`dispatch`], so every spawned daemon gets the id its
-/// parent was given. One spawned without it resolves a different instance, takes a different
-/// lock, and leaves the `start` that spawned it reporting success over something else.
-fn run<TApp: App>(verb: Verb<TApp>, instance: &Instance, typed: TypedArgs<'_>) -> ExitCode {
+/// `TypedArgs` is read off the matches by [`run_lifecycle_verb`], so every spawned daemon gets
+/// the id its parent was given. One spawned without it resolves a different instance, takes a
+/// different lock, and leaves the `start` that spawned it reporting success over something else.
+fn run_verb_on<TApp: App>(verb: Verb<TApp>, instance: &Instance, typed: TypedArgs<'_>) -> ExitCode {
     match verb {
         Verb::Start(_) => client::start::<TApp>(instance, typed),
         Verb::Restart(args) => client::restart::<TApp>(instance, &args, typed),
@@ -355,7 +356,7 @@ fn run<TApp: App>(verb: Verb<TApp>, instance: &Instance, typed: TypedArgs<'_>) -
         Verb::Logs(args) => client::logs(instance, &args),
         Verb::Stop(args) => client::stop(instance, &args),
         Verb::Daemon(args) => {
-            daemon::run::<TApp>(instance, &args);
+            daemon::run_in_foreground::<TApp>(instance, &args);
             ExitCode::SUCCESS
         }
     }
@@ -365,10 +366,12 @@ fn run<TApp: App>(verb: Verb<TApp>, instance: &Instance, typed: TypedArgs<'_>) -
 ///
 /// Built by parsing an empty command line, so the app's own defaults decide what it resolves to.
 /// An app whose `Id` has a required flag has no bare invocation, and clap says so in the words it
-/// uses for a missing flag anywhere else, then exits. Verified on the pinned
+/// uses for a missing flag anywhere else, then exits.
+///
+/// An app calls this for its `None` arm, where its parser saw no verb at all. Verified on the pinned
 /// 1.96.0: an app whose `Id` is [`NoArgs`] resolves its global instance, and one whose `Id` has a
 /// required flag exits with `the following required arguments were not provided`.
-pub fn bare<TApp: App>() -> Verb<TApp> {
+pub fn verb_for_bare_invocation<TApp: App>() -> Verb<TApp> {
     let command = StartArgs::<TApp::Id, TApp::DaemonArgs>::augment_args(Command::new(TApp::NAME));
     let matches = match command.try_get_matches_from([TApp::NAME]) {
         Ok(matches) => matches,
@@ -521,7 +524,7 @@ The lock and the logging move ahead of the app, so an app cannot forget either a
 
 ```rust
 /// Run the app's daemon in the foreground: take the lock, and hand over.
-pub(crate) fn run<TApp: App>(
+pub(crate) fn run_in_foreground<TApp: App>(
     instance: &Instance,
     args: &DaemonVerbArgs<TApp::Id, TApp::DaemonArgs>,
 ) {
@@ -538,7 +541,7 @@ pub(crate) fn run<TApp: App>(
         }
     };
 
-    TApp::run(&args.id, &args.app);
+    TApp::run_daemon(&args.id, &args.app);
 }
 ```
 
@@ -595,7 +598,7 @@ What does move is every verb that only reads a lock, spawns a binary, signals a 
 - `const APP: &str = "mercury"` is deleted. Five of its use sites become the instance the verb was given; the two under `label` stay in mercury with the launch agent.
 - Every function that reads the instance, or calls one that does, takes an `&Instance`, and the `holder`/`acquire`/`await_free` calls become their `_at` counterparts, which take the path the instance already resolved.
 - Every message that spells "mercury" spells `instance.display_name()`, which is what makes both a fork's output its own and a multi-daemon app's name the one it means.
-- The `logging::init` call at the top of each verb is deleted: `dispatch` does it once, before any of them runs.
+- The `logging::init` call at the top of each verb is deleted: `run_lifecycle_verb` does it once, before any of them runs.
 - `start` and `restart` take a `TypedArgs<'_>` and pass it down to `spawn_daemon`, which forwards the id along with the flags.
 
 The instance reaches the lock, in place of the app's name:
@@ -638,7 +641,7 @@ impl App for TestApp {
         Ok(Instance::global(Self::NAME)?)
     }
 
-    fn run(_: &NoArgs, _: &NoArgs) {
+    fn run_daemon(_: &NoArgs, _: &NoArgs) {
         unreachable!("the parse tests never run the daemon")
     }
 }
@@ -701,23 +704,29 @@ impl App for Mercury {
         Ok(Instance::global(Self::NAME)?)
     }
 
-    fn run(_: &NoArgs, args: &MercuryArgs) {
+    fn run_daemon(_: &NoArgs, args: &MercuryArgs) {
         daemon::run(args.port);
     }
 }
 
 fn main() -> ExitCode {
     // First, so `--help` prints and a bad flag exits before the lock, the keyboard, or the icon.
-    // The matches are kept beside the parse because `dispatch` reads what was written from them.
+    // The matches are kept beside the parse because `run_lifecycle_verb` reads what was
+    // written from them.
     let matches = MercuryCli::command().get_matches();
     let cli = MercuryCli::from_arg_matches(&matches)
         .expect("the derived type matches the command it derived");
 
     match cli.verb {
-        Some(MercuryVerb::Lifecycle(verb)) => freddie_cli::dispatch::<Mercury>(verb, &matches),
+        Some(MercuryVerb::Lifecycle(verb)) => {
+            freddie_cli::run_lifecycle_verb::<Mercury>(verb, &matches)
+        }
         Some(MercuryVerb::Install) => agent::install(),
         Some(MercuryVerb::Uninstall) => agent::uninstall(),
-        None => freddie_cli::dispatch::<Mercury>(freddie_cli::bare::<Mercury>(), &matches),
+        None => freddie_cli::run_lifecycle_verb::<Mercury>(
+            freddie_cli::verb_for_bare_invocation::<Mercury>(),
+            &matches,
+        ),
     }
 }
 ```
@@ -756,6 +765,6 @@ Its signature is what it is today, and its two early returns stay early returns.
 ## The changes, in order
 
 1. **Logging takes a name.** `log_dir(name)`, the file name derived from it, and `init(name, terminal)`, in mercury, with `client::APP` passed at each of the four call sites. No behaviour changes: the name passed is the name that was written. The instance is not part of this one, since mercury has no second daemon to tell apart; change 2 is where `init` gains it.
-2. **`freddie_cli`, holding the lifecycle verbs.** The trait, `Instance`, `Verb` and the arg structs, `dispatch`, `bare`, the daemon verb, `logging`, and the `client` module, all keyed to the instance the command line named. mercury gains a `Parser` of its own that flattens `Verb<Mercury>` in beside `install` and `uninstall`. mercury shrinks to the `main.rs` above, a `daemon.rs` that starts at `freddie_windows::init()`, and an `agent.rs` holding `install` and `uninstall`. Every verb does what it does now, and `mercury --help` prints what it prints now, because mercury's instance is its name and its `Id` is empty.
+2. **`freddie_cli`, holding the lifecycle verbs.** The trait, `Instance`, `Verb` and the arg structs, `run_lifecycle_verb`, `verb_for_bare_invocation`, the daemon verb, `logging`, and the `client` module, all keyed to the instance the command line named. mercury gains a `Parser` of its own that flattens `Verb<Mercury>` in beside `install` and `uninstall`. mercury shrinks to the `main.rs` above, a `daemon.rs` that starts at `freddie_windows::init()`, and an `agent.rs` holding `install` and `uninstall`. Every verb does what it does now, and `mercury --help` prints what it prints now, because mercury's instance is its name and its `Id` is empty.
 
-One change rather than one per verb: `Verb` is a single enum and `dispatch` a single match, so a `freddie_cli` holding some of the verbs would leave mercury without the rest.
+One change rather than one per verb: `Verb` is a single enum and `run_verb_on` a single match, so a `freddie_cli` holding some of the verbs would leave mercury without the rest.
