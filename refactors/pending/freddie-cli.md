@@ -1,10 +1,10 @@
 # the command line is freddie's, the daemon is the app's
 
-An app built here is one process holding something there can only be one of, plus a handful of verbs for finding it, starting it, and stopping it. mercury owns the keyboard; isograph v2 watches a set of project directories. What the single process is for differs, and the verbs that manage it do not. All of them live in mercury today, where a second app cannot reach them.
+An app built here is a process holding something there can only be one of, plus a handful of verbs for finding it, starting it, and stopping it. mercury owns the keyboard, and there is one of it on the machine. isograph v2 watches the directories one config names, and there is one of it per config, so a machine runs as many as you have projects open. What the process is for differs, how many there are differs, and the verbs that manage one do not. All of them live in mercury today, where a second app cannot reach them.
 
 The verbs are the same because none of them looks inside the process. They read a lock file, spawn a binary, send a signal, and tail a log, and every one of those works the same for a program that has nothing to do with keys or events.
 
-`freddie_cli` is a new crate holding the whole command surface. An app supplies its name, its daemon body, and whatever extra flags that body takes; it gets `start`, `restart`, `status`, `logs`, `stop`, and the hidden `daemon` for free, keyed to its own name and writing to its own log file. mercury becomes an implementation of one trait and a `main` that is a single call.
+`freddie_cli` is a new crate holding the whole command surface. An app supplies its name, what names one of its daemons, its daemon body, and whatever extra flags that body takes; it gets `start`, `restart`, `status`, `logs`, `stop`, and the hidden `daemon` for free, each keyed to the daemon the command line named and writing to that daemon's own log file. mercury becomes an implementation of one trait and a `main` that is a single call.
 
 The name of the binary is the app's, not mercury's. Nothing in `freddie_cli` spells "mercury", and nothing in an app spells the verbs.
 
@@ -15,14 +15,15 @@ A new crate rather than a dependency, and that is settled rather than assumed: `
 `freddie_cli` owns:
 
 - the `Args`/`Verb` types and the parse
-- the single-instance lock: acquiring it for the daemon, probing it for the clients
+- the single-instance lock: acquiring it for the daemon, probing it for the clients, both under the instance the command line named
 - logging setup, and the log directory
 - every client verb, since all of them are the lock, the log file, and a subprocess
 - delivering SIGTERM to the app as a request to stop
 
 The app owns:
 
-- its name, which keys the lock file, the log directory, the launchd label, the help text, and every line a verb prints
+- its name, which keys the log directory and the help text
+- what names one of its daemons, and how many of them there can be
 - what the daemon does, which is everything `mercury::daemon` holds today
 - any flag beyond `--log-level` that its daemon takes
 - what quitting means, since this crate only ever sends a signal and waits for the lock to go free
@@ -36,31 +37,79 @@ The app owns:
 /// One impl per binary. Everything else in this crate is generic over it, so `A` names the app
 /// wherever it appears and never one of the app's own types.
 pub trait App {
-    /// The flags this app's daemon takes beyond the shared ones.
+    /// What names one of this app's daemons, as flags every verb takes.
     ///
-    /// [`NoArgs`] for an app that takes none.
+    /// [`NoArgs`] for an app with one global daemon, which every verb then means without saying
+    /// so. isograph's is its `--config`, so `isograph status --config ./a.json` asks about one
+    /// daemon and `--config ./b.json` asks about another.
+    type Id: clap::Args + fmt::Debug;
+
+    /// The flags this app's daemon takes beyond the shared ones and beyond [`Id`](Self::Id).
+    ///
+    /// [`NoArgs`] for an app that takes none. Separate from `Id` so the verbs that only find a
+    /// daemon take only what names one: `isograph status --port 4001` is refused rather than
+    /// accepted and ignored.
     type DaemonArgs: clap::Args + fmt::Debug;
 
-    /// The name the lock file, the log directory, the launchd label, `--help`, and every message a
-    /// verb writes are all keyed to.
-    ///
-    /// One name, so a client cannot look for the daemon under a name the daemon did not
-    /// register under.
+    /// The name of the binary, which keys the log directory and `--help`.
     const NAME: &'static str;
 
     /// The one-line description at the top of `--help`.
     const ABOUT: &'static str;
 
+    /// Which daemon the command line named, or `None` if it named none that could exist.
+    ///
+    /// Fallible and allowed to touch the filesystem, because naming a daemon can mean reading
+    /// one. isograph's id comes from the config, not from the text of the flag: `./foo.json` and
+    /// `/abs/foo.json` are one daemon, so it resolves the path before it keys anything to it, and
+    /// a config that is not there names no daemon at all. Say why in the log before returning
+    /// `None`; the caller knows only that there is nothing to act on and exits 1.
+    ///
+    /// Called before the lock, the log file, and any subprocess, so every verb agrees on which
+    /// daemon it meant before it does anything.
+    fn instance(id: &Self::Id) -> Option<Instance>;
+
     /// Be the daemon. Returns the process's exit code when it has quit.
     ///
     /// Called with the lock held and logging initialized. Returning drops the lock, so an app
     /// that wants to stay running stays inside this call.
-    fn run(args: &Self::DaemonArgs) -> i32;
+    fn run(id: &Self::Id, args: &Self::DaemonArgs) -> i32;
 }
 
-/// The daemon flags of an app that adds none.
+/// The daemon flags, or the id, of an app that has none.
 #[derive(clap::Args, Debug)]
 pub struct NoArgs {}
+```
+
+One daemon of one app: what its lock is under, what its log is called, and what a verb calls it when it says something about it.
+
+```rust
+/// Which daemon this is.
+///
+/// Two strings rather than one, because they answer to different things. A lock file and a log
+/// file have to be named something the filesystem will take, and a person reading `status` has to
+/// recognize what they typed. For an app with one global daemon both are its name.
+#[derive(Clone, Debug)]
+pub struct Instance {
+    key: String,
+    label: String,
+}
+
+impl Instance {
+    /// The one daemon of an app that has one.
+    pub fn global(name: &str) -> Self {
+        Self { key: name.to_owned(), label: name.to_owned() }
+    }
+
+    /// One of many: `key` names its files, `label` is what the person who asked for it typed.
+    ///
+    /// `key` has to be stable across two invocations that mean the same daemon, and distinct for
+    /// two that do not, since it is the whole of what the lock file is keyed to. A path that has
+    /// been resolved, or a hash of one, is the shape of it.
+    pub fn named(key: impl Into<String>, label: impl Into<String>) -> Self {
+        Self { key: key.into(), label: label.into() }
+    }
+}
 ```
 
 That is the whole trait, and nothing in it is about freddie. A name, an about line, some flags, and a function that runs until it is done: any program that wants one instance of itself and the verbs to manage it fits, whether or not it has a model, an event, or a keyboard. `freddie-daemon-runtime.md` is what mercury calls inside `run`, and this crate never learns that it exists.
@@ -69,7 +118,9 @@ That is the whole trait, and nothing in it is about freddie. A name, an about li
 
 An app's daemon takes flags of its own: mercury's `--port` names the socket the extension talks to, and isograph's is a config file path. So the command line is generic over the app, and each of the types that carries the app's flags flattens `A::DaemonArgs` in. clap's derive accepts generic parameters, which is what lets it. Verified on the pinned 1.96.0 against clap 4.6.2: a `Subcommand` enum whose variants are a mix of generic and not derives, an arg struct generic over the flags flattens them in, `app daemon --port 4001` parses into it, the shared defaults resolve, and `NoArgs` gives an app with no flags of its own.
 
-Three verbs are generic, and they are the three that start the daemon: `daemon` is it, and `start` and `restart` spawn it. A flag the daemon takes has to reach it whichever of those put it there, so each of them takes the app's flags and hands them on. `status`, `logs`, and `stop` only ever find a daemon that is already running, so they stay concrete, and their arg structs move across unchanged from `crates/mercury/src/cli.rs`.
+Every verb is generic, because every one of them is about one daemon and has to be told which. `status`, `logs`, and `stop` take `A::Id` and nothing more, since finding a daemon needs only its name. `daemon`, `start`, and `restart` take `A::DaemonArgs` as well, because they are the three that put a daemon somewhere and it needs its flags to run.
+
+For mercury, whose `Id` is `NoArgs`, this adds nothing to any verb: `mercury status` takes no flags today and takes none after.
 
 ```rust
 /// No `Debug` derive: `Args` and `Verb` hold no `A`, but the derive would ask every app for one
@@ -88,30 +139,33 @@ pub struct Args<A: App> {
 #[derive(Subcommand)]
 pub enum Verb<A: App> {
     /// Start the daemon if it is not running, and exit.
-    Start(StartArgs<A::DaemonArgs>),
+    Start(StartArgs<A::Id, A::DaemonArgs>),
     /// Stop the running daemon and start a fresh one.
-    Restart(RestartArgs<A::DaemonArgs>),
+    Restart(RestartArgs<A::Id, A::DaemonArgs>),
     /// Report whether the daemon is running, and its pid.
-    Status,
+    Status(IdArgs<A::Id>),
     /// Follow the log, starting nothing.
-    Logs(LogsArgs),
+    Logs(LogsArgs<A::Id>),
     /// Ask the running daemon to quit.
-    Stop(StopArgs),
+    Stop(StopArgs<A::Id>),
     /// Run the daemon in this process. Not for typing: `start` spawns it.
     #[command(hide = true)]
-    Daemon(DaemonVerbArgs<A::DaemonArgs>),
+    Daemon(DaemonVerbArgs<A::Id, A::DaemonArgs>),
 }
 
 /// What the foreground daemon can be told: what this crate asks of every app, and what the app
 /// asks for itself.
 #[derive(clap::Args, Debug)]
-pub struct DaemonVerbArgs<F: clap::Args> {
+pub struct DaemonVerbArgs<I: clap::Args, F: clap::Args> {
     /// What the terminal shows. The log file always records `debug`, whatever this says.
     ///
     /// A `tracing_subscriber` filter directive, so `info` and `mercury=debug,bind=warn` are both
     /// accepted. Only the foreground daemon has a terminal to show anything on.
     #[arg(long, env = "LOG_LEVEL", default_value = DEFAULT_LOG_LEVEL)]
     pub log_level: String,
+
+    #[command(flatten)]
+    pub id: I,
 
     #[command(flatten)]
     pub app: F,
@@ -121,14 +175,17 @@ pub struct DaemonVerbArgs<F: clap::Args> {
 ///
 /// No `--log-level`: the daemon it spawns has no terminal to show anything on.
 #[derive(clap::Args, Debug)]
-pub struct StartArgs<F: clap::Args> {
+pub struct StartArgs<I: clap::Args, F: clap::Args> {
+    #[command(flatten)]
+    pub id: I,
+
     #[command(flatten)]
     pub app: F,
 }
 
 /// What `restart` can be told: `start`'s flags, and how hard to stop what is running.
 #[derive(clap::Args, Debug)]
-pub struct RestartArgs<F: clap::Args> {
+pub struct RestartArgs<I: clap::Args, F: clap::Args> {
     /// Destroy the running daemon with SIGKILL instead of asking it to quit.
     ///
     /// For a daemon that no longer answers. It runs no destructors, so whatever the app undoes on
@@ -137,9 +194,21 @@ pub struct RestartArgs<F: clap::Args> {
     pub force: bool,
 
     #[command(flatten)]
+    pub id: I,
+
+    #[command(flatten)]
     pub app: F,
 }
+
+/// What a verb that only finds a daemon can be told, which is which daemon.
+#[derive(clap::Args, Debug)]
+pub struct IdArgs<I: clap::Args> {
+    #[command(flatten)]
+    pub id: I,
+}
 ```
+
+`LogsArgs<I>` and `StopArgs<I>` gain the same flattened `id` beside the `--level` and `--force` they already have.
 
 The arg structs take the flags rather than the app, so their `Debug` derives against `F: Debug`, which the associated type satisfies, and no app is asked for a `Debug` it has no use for.
 
@@ -157,16 +226,40 @@ The `Start` and `Daemon` doc comments lose the binary's name, since the derive w
 
 ```rust
 /// Do what the command line asked, and report the exit code for it.
+///
+/// Every arm resolves which daemon it means before it does anything, and an id that names none is
+/// the one failure this level reports itself.
 fn dispatch<A: App>(verb: Option<Verb<A>>, typed: Typed<'_>) -> i32 {
+    // The bare invocation is `start` with no id: one behaviour, not two that agree. An app whose
+    // `Id` has a required flag has no bare invocation, and clap says so.
+    let verb = verb.unwrap_or_else(|| Verb::Start(StartArgs::default_for::<A>()));
+
+    let Some(instance) = A::instance(verb.id()) else {
+        return 1;
+    };
+
     match verb {
-        // The bare invocation is `start`: one behaviour, not two that agree.
-        None => client::start::<A>(typed),
-        Some(Verb::Start(_)) => client::start::<A>(typed),
-        Some(Verb::Restart(args)) => client::restart::<A>(&args, typed),
-        Some(Verb::Status) => client::status::<A>(),
-        Some(Verb::Logs(args)) => client::logs::<A>(&args),
-        Some(Verb::Stop(args)) => client::stop::<A>(&args),
-        Some(Verb::Daemon(args)) => daemon::run::<A>(&args),
+        Verb::Start(_) => client::start::<A>(&instance, typed),
+        Verb::Restart(args) => client::restart::<A>(&instance, &args, typed),
+        Verb::Status(_) => client::status::<A>(&instance),
+        Verb::Logs(args) => client::logs::<A>(&instance, &args),
+        Verb::Stop(args) => client::stop::<A>(&instance, &args),
+        Verb::Daemon(args) => daemon::run::<A>(&instance, &args),
+    }
+}
+
+impl<A: App> Verb<A> {
+    /// What this verb said about which daemon it meant. Every verb says something, because every
+    /// verb is about one.
+    fn id(&self) -> &A::Id {
+        match self {
+            Self::Start(args) => &args.id,
+            Self::Restart(args) => &args.id,
+            Self::Status(args) => &args.id,
+            Self::Logs(args) => &args.id,
+            Self::Stop(args) => &args.id,
+            Self::Daemon(args) => &args.id,
+        }
     }
 }
 
@@ -199,7 +292,7 @@ pub fn main<A: App>() -> ! {
 
 ## Handing the app's flags to the daemon
 
-`start` spawns the daemon and `restart` spawns a replacement. Both have to give it the flags this invocation was given, and neither can know what those flags are: `A::DaemonArgs` is the app's.
+`start` spawns the daemon and `restart` spawns a replacement. Both have to give it the flags this invocation was given, and neither can know what those flags are: `A::Id` and `A::DaemonArgs` are the app's. The id goes across too, and it is the half that must: a child spawned without it resolves a different instance from the parent that spawned it, takes a different lock, and the `start` that spawned it reports success having started something else.
 
 clap parses argv into a struct and does not write one back out, so the flags are re-emitted from the matches instead. Reading the same derive that parsed them is what keeps this from drifting: an app that adds a flag gets it forwarded without writing a line.
 
@@ -222,7 +315,14 @@ impl Typed<'_> {
             return Vec::new();
         };
         let mut argv = Vec::new();
-        for arg in A::DaemonArgs::augment_args(Command::new(A::NAME)).get_arguments() {
+        Self::emit::<A::Id>(matches, &mut argv);
+        Self::emit::<A::DaemonArgs>(matches, &mut argv);
+        argv
+    }
+
+    /// Re-emit one arg set's typed flags onto `argv`.
+    fn emit<T: clap::Args>(matches: &ArgMatches, argv: &mut Vec<OsString>) {
+        for arg in T::augment_args(Command::new("probe")).get_arguments() {
             let id = arg.get_id().as_str();
             let carried = matches.value_source(id) == Some(ValueSource::CommandLine);
             // A positional has no flag to re-emit it under. `A::DaemonArgs` is a set of flags: the verbs
@@ -241,7 +341,6 @@ impl Typed<'_> {
                 }
             }
         }
-        argv
     }
 }
 ```
@@ -289,30 +388,36 @@ The lock and the logging move ahead of the app, so an app cannot forget either a
 
 ```rust
 /// Run `A`'s daemon in the foreground: set up logging, take the lock, and hand over.
-pub(crate) fn run<A: App>(args: &DaemonVerbArgs<A::DaemonArgs>) -> i32 {
-    let log_path = logging::init(A::NAME, &Terminal::Daemon(LogLevel(&args.log_level)));
+pub(crate) fn run<A: App>(
+    instance: &Instance,
+    args: &DaemonVerbArgs<A::Id, A::DaemonArgs>,
+) -> i32 {
+    let log_path = logging::init(A::NAME, instance, &Terminal::Daemon(LogLevel(&args.log_level)));
     info!(path = %log_path.display(), "logging");
 
-    // Before anything that touches the machine. Two instances swallow and re-emit each other's
-    // keys forever, which wedges the keyboard. The binding must outlive the call (`let _instance`,
-    // never `let _`): dropping it releases the lock.
-    let _instance = match freddie_single_instance::acquire(A::NAME) {
-        Ok(instance) => instance,
+    // Before anything that touches the machine. Two of one instance fight over whatever there is
+    // only one of, and for mercury that is the keyboard: two of them swallow and re-emit each
+    // other's keys forever. The binding must outlive the call (`let _held`, never `let _`):
+    // dropping it releases the lock.
+    let _held = match freddie_single_instance::acquire(instance.key()) {
+        Ok(held) => held,
         Err(e) => {
-            error!(name = A::NAME, error = %e, "another instance holds the lock; `stop` ends it");
+            error!(daemon = instance.label(), error = %e, "already running; `stop` ends it");
             return 1;
         }
     };
 
-    A::run(&args.app)
+    A::run(&args.id, &args.app)
 }
 ```
 
 The daemon verb reports a code where mercury's exits 0 whatever happened: a lock it could not take and a menu bar it could not create are both a daemon that did not run. An app whose launch agent declines to revive a clean exit depends on this, which mercury's does.
 
-## Logging keyed to the name
+## Logging keyed to the instance
 
-`crates/mercury/src/logging.rs` moves to `freddie_cli` and takes the name it currently spells twice. Its `Terminal`/`LogLevel` split, its pid stamp, its file level, and its client layers cross unchanged.
+`crates/mercury/src/logging.rs` moves to `freddie_cli` and takes the two names it currently spells as literals: the app's, which is the directory, and the instance's, which is the file. Its `Terminal`/`LogLevel` split, its pid stamp, its file level, and its client layers cross unchanged.
+
+One file per daemon rather than one per app, so `isograph logs --config ./a.json` tails that daemon and nothing else. mercury's path does not move: its instance is `mercury`, so `~/Library/Logs/mercury/mercury.log` is what it was.
 
 Before:
 
@@ -343,18 +448,20 @@ fn log_dir(name: &str) -> PathBuf {
     )
 }
 
-pub fn init(name: &str, terminal: &Terminal<'_>) -> PathBuf {
+pub fn init(name: &str, instance: &Instance, terminal: &Terminal<'_>) -> PathBuf {
     let dir = log_dir(name);
-    let file_name = format!("{name}.log");
+    let file_name = format!("{}.log", instance.key());
 ```
 
-`LOG_FILE` is deleted; `rolling::never(&dir, &file_name)` and `dir.join(file_name)` take its place. The one message `init` writes itself is keyed the same way:
+`LOG_FILE` is deleted; `rolling::never(&dir, &file_name)` and `dir.join(file_name)` take its place. The one message `init` writes itself names the daemon rather than the app:
 
 ```rust
     for problem in setup {
-        warn!("{name}: {problem}");
+        warn!("{}: {problem}", instance.label());
     }
 ```
+
+`key` and `label` are readers on `Instance`, since nothing outside it may build one that has a filename in the wrong half.
 
 ## The client verbs
 
@@ -362,33 +469,35 @@ pub fn init(name: &str, terminal: &Terminal<'_>) -> PathBuf {
 
 What does move is every verb that only reads a lock, spawns a binary, signals a pid, or tails a log. No verb changes what it does, what it prints, or what it exits with. Four things change throughout:
 
-- `const APP: &str = "mercury"` is deleted. Five of its use sites move here and become `A::NAME`; the two under `label` stay in mercury with the launch agent.
-- Every function that reads the name, or calls one that does, gains `<A: App>`.
-- Every message that spells "mercury" spells `A::NAME`, which is what makes a fork's output its own.
-- `start` and `restart` take a `Typed<'_>` and pass it down to `spawn_daemon`: `start<A: App>(typed: Typed<'_>)`, `restart<A: App>(args: &RestartArgs<A::DaemonArgs>, typed: Typed<'_>)`, and `ensure_started<A: App>(typed: Typed<'_>)` between them and the spawn. `status`, `logs`, and `stop` take no such thing, since none of them starts a daemon.
+- `const APP: &str = "mercury"` is deleted. Five of its use sites become the instance the verb was given; the two under `label` stay in mercury with the launch agent.
+- Every function that reads the instance, or calls one that does, takes an `&Instance`, and every one that resolves a name gains `<A: App>`.
+- Every message that spells "mercury" spells `instance.label()`, which is what makes both a fork's output its own and isograph's name the config it means.
+- `start` and `restart` take a `Typed<'_>` and pass it down to `spawn_daemon`, which forwards the id along with the flags.
 
-The name reaches the lock:
+The instance reaches the lock, in place of the app's name:
 
 ```rust
-fn ensure_started<A: App>() -> Result<Running, NotStarted> {
-    match freddie_single_instance::holder(A::NAME) {
+fn ensure_started<A: App>(instance: &Instance, typed: Typed<'_>) -> Result<Running, NotStarted> {
+    match freddie_single_instance::holder(instance.key()) {
 ```
 
 and every line a verb writes:
 
 ```rust
-pub(crate) fn status<A: App>() -> i32 {
-    logging::init(A::NAME, &Terminal::Client);
-    match freddie_single_instance::holder(A::NAME) {
+pub(crate) fn status<A: App>(instance: &Instance) -> i32 {
+    logging::init(A::NAME, instance, &Terminal::Client);
+    match freddie_single_instance::holder(instance.key()) {
         Ok(Held::Free) => {
-            info!("{} is not running", A::NAME);
+            info!("{} is not running", instance.label());
             1
         }
         Ok(Held::By(pid)) => {
-            info!("{} is running (pid {pid})", A::NAME);
+            info!("{} is running (pid {pid})", instance.label());
             0
         }
 ```
+
+For mercury the label is `mercury`, so every line reads exactly as it reads today. For isograph it is the config, so two daemons say which of them they are.
 
 The tests move with the module and pick the name up from a test app:
 
@@ -398,16 +507,22 @@ struct TestApp;
 
 #[cfg(test)]
 impl App for TestApp {
+    type Id = NoArgs;
     type DaemonArgs = NoArgs;
     const NAME: &'static str = "testapp";
     const ABOUT: &'static str = "A test app.";
-    fn run(_: &Self::DaemonArgs) -> i32 {
+
+    fn instance(_: &NoArgs) -> Option<Instance> {
+        Some(Instance::global(Self::NAME))
+    }
+
+    fn run(_: &NoArgs, _: &NoArgs) -> i32 {
         unreachable!("the parse tests never run the daemon")
     }
 }
 ```
 
-`cli.rs`'s parse tests become `Args::<TestApp>::try_parse_from`, and the two that assert a port move to mercury, which is the crate that has one.
+`cli.rs`'s parse tests become `Args::<TestApp>::try_parse_from`, and the two that assert a port move to mercury, which is the crate that has one. A second test app with a real `Id` covers what mercury cannot: that two ids resolve to two instances, and that `start` forwards the id into the child.
 
 ## What mercury becomes
 
@@ -416,8 +531,9 @@ impl App for TestApp {
 ```rust
 //! The mercury binary: a freddie app and the command line that runs it.
 
-use freddie_cli::App;
+use freddie_cli::{App, Instance, NoArgs};
 
+mod agent;
 mod daemon;
 
 /// The loopback port the event socket listens on, and nothing else mercury needs from a flag.
@@ -431,18 +547,24 @@ pub struct MercuryArgs {
 struct Mercury;
 
 impl App for Mercury {
+    // One mercury to a machine, so no flag names which.
+    type Id = NoArgs;
     type DaemonArgs = MercuryArgs;
     // `install` and `uninstall`, which are mercury's own. See `app-verbs.md`.
-    type Subcommands = MercuryVerb;
+    type Subcommands = agent::MercuryVerb;
 
     const NAME: &'static str = "mercury";
     const ABOUT: &'static str = "A layered keyboard remapper.";
 
-    fn run(args: &Self::DaemonArgs) -> i32 {
+    fn instance(_: &NoArgs) -> Option<Instance> {
+        Some(Instance::global(Self::NAME))
+    }
+
+    fn run(_: &NoArgs, args: &MercuryArgs) -> i32 {
         daemon::run(args.port)
     }
 
-    fn run_subcommand(verb: MercuryVerb) -> i32 {
+    fn run_subcommand(verb: agent::MercuryVerb) -> i32 {
         agent::run(verb)
     }
 }
@@ -486,7 +608,7 @@ Its two early returns become `1` and its end becomes `0`, so a menu bar that cou
 ## The changes, in order
 
 1. **Logging takes a name.** `log_dir(name)`, the file name derived from it, and `init(name, terminal)`, in mercury, with `client::APP` passed at each of the four call sites. No behaviour changes: the name passed is the name that was written.
-2. **`freddie_cli`, holding the command surface, and `app-verbs.md` with it.** The trait, the generic `Args`/`Verb`/`DaemonVerbArgs`, `main`, `dispatch`, the daemon verb, `logging`, and the `client` module, all keyed to `A::NAME`. mercury shrinks to the `main.rs` above, a `daemon.rs` that starts at `freddie_windows::init()`, and an `agent.rs` holding `install` and `uninstall`. Every verb does what it does now, and `mercury --help` prints what it prints now.
+2. **`freddie_cli`, holding the command surface, and `app-verbs.md` with it.** The trait, `Instance`, the generic `Args`/`Verb`/arg structs, `main`, `dispatch`, the daemon verb, `logging`, and the `client` module, all keyed to the instance the command line named. mercury shrinks to the `main.rs` above, a `daemon.rs` that starts at `freddie_windows::init()`, and an `agent.rs` holding `install` and `uninstall`. Every verb does what it does now, and `mercury --help` prints what it prints now, because mercury's instance is its name and its `Id` is empty.
 
 `app-verbs.md` lands here rather than after, because `install` and `uninstall` are mercury's own verbs and there is no way to keep them without the seam that carries them.
 

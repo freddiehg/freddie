@@ -48,10 +48,10 @@ One variant, last, so freddie's verbs come first in `--help`:
 ```rust
 #[derive(Subcommand)]
 pub enum Verb<A: App> {
-    Start(StartArgs<A::DaemonArgs>),
+    Start(StartArgs<A::Id, A::DaemonArgs>),
     // .. the rest of freddie-cli.md's verbs, unchanged ..
     #[command(hide = true)]
-    Daemon(DaemonVerbArgs<A::DaemonArgs>),
+    Daemon(DaemonVerbArgs<A::Id, A::DaemonArgs>),
 
     /// This app's own verbs, each spelled as though it were declared here.
     #[command(flatten)]
