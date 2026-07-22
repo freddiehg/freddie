@@ -56,17 +56,23 @@ pub trait App {
     /// Not the help text: the app writes its own `--help`, because the app owns its command line.
     const NAME: &'static str;
 
-    /// Which daemon the command line named, or `None` if it named none that could exist.
+    /// Which daemon the command line named.
     ///
     /// Fallible and allowed to touch the filesystem, because naming a daemon can mean reading
     /// one. isograph's id comes from the config, not from the text of the flag: `./foo.json` and
     /// `/abs/foo.json` are one daemon, so it resolves the path before it keys anything to it, and
-    /// a config that is not there names no daemon at all. Say why in the log before returning
-    /// `None`; the caller knows only that there is nothing to act on and exits 1.
+    /// a config that is not there names no daemon at all.
+    ///
+    /// Returns why rather than saying why. This runs before the log file has a name, since the
+    /// name comes from what it returns, so an app that wrote to the log here would write before
+    /// there was a subscriber to take it.
     ///
     /// Called before the lock, the log file, and any subprocess, so every verb agrees on which
     /// daemon it meant before it does anything.
-    fn instance(id: &Self::Id) -> Option<Instance>;
+    ///
+    /// Boxed rather than an associated type: this crate has no opinion about an app's errors and
+    /// only ever prints this one. `freddie_menu_bar::show` returns the same thing.
+    fn instance(id: &Self::Id) -> Result<Instance, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Be the daemon. Returns the process's exit code when it has quit.
     ///
@@ -83,30 +89,53 @@ pub struct NoArgs {}
 One daemon of one app: what its lock is under, what its log is called, and what a verb calls it when it says something about it.
 
 ```rust
-/// Which daemon this is.
+/// Which daemon this is, and everything keyed to it.
 ///
-/// Two strings rather than one, because they answer to different things. A lock file and a log
-/// file have to be named something the filesystem will take, and a person reading `status` has to
-/// recognize what they typed. For an app with one global daemon both are its name.
+/// The key never leaves: what callers get are the lock and the log path built from it, so the one
+/// convention that turns a daemon into two filenames lives here rather than at each place that
+/// wants one. A `key` and an app name are all either of them is.
 #[derive(Clone, Debug)]
 pub struct Instance {
-    key: String,
-    label: String,
+    app: String,
+    slug: String,
+    display_name: String,
 }
 
 impl Instance {
-    /// The one daemon of an app that has one.
-    pub fn global(name: &str) -> Self {
-        Self { key: name.to_owned(), label: name.to_owned() }
+    /// The one daemon of an app that has one, keyed to the app itself.
+    pub fn global(app: &str) -> Self {
+        Self { app: app.to_owned(), slug: app.to_owned(), display_name: app.to_owned() }
     }
 
-    /// One of many: `key` names its files, `label` is what the person who asked for it typed.
+    /// One of many: `slug` names its files, `display_name` is what the person who asked for it
+    /// typed.
     ///
-    /// `key` has to be stable across two invocations that mean the same daemon, and distinct for
-    /// two that do not, since it is the whole of what the lock file is keyed to. A path that has
-    /// been resolved, or a hash of one, is the shape of it.
-    pub fn named(key: impl Into<String>, label: impl Into<String>) -> Self {
-        Self { key: key.into(), label: label.into() }
+    /// `slug` has to be stable across two invocations that mean the same daemon, and distinct for
+    /// two that do not, since it is the whole of what the lock is keyed to. A path that has been
+    /// resolved, or a hash of one, is the shape of it. It also has to be a filename, because it
+    /// becomes one.
+    pub fn named(app: &str, slug: impl Into<String>, display_name: impl Into<String>) -> Self {
+        Self { app: app.to_owned(), slug: slug.into(), display_name: display_name.into() }
+    }
+
+    /// What the single-instance lock is keyed to.
+    pub fn lock(&self) -> &str {
+        &self.slug
+    }
+
+    /// Where this daemon's log lives: the macOS per-user log directory, or the current directory
+    /// when `HOME` is unset. One directory per app, one file per daemon in it.
+    pub fn log_file(&self) -> PathBuf {
+        let dir = std::env::var_os("HOME").map_or_else(
+            || PathBuf::from("."),
+            |home| PathBuf::from(home).join("Library/Logs").join(&self.app),
+        );
+        dir.join(format!("{}.log", self.slug))
+    }
+
+    /// What a verb calls this daemon when it says something about it.
+    pub fn display_name(&self) -> &str {
+        &self.display_name
     }
 }
 ```
@@ -210,7 +239,7 @@ The `Start` and `Daemon` doc comments lose the binary's name, since the derive w
 
 `StopArgs` and `RestartArgs` say what `--force` costs, and `Signal`'s two variants say what each signal does. All four of those doc comments are written about mercury today, naming the keyboard grab and the modifiers a command layer swallowed. They are reworded down to what this crate actually knows, which is a process, its pid, a lock, and two signals: SIGTERM asks the daemon to quit and it leaves the way it chose to, SIGKILL destroys it so no destructor runs and whatever it would have undone stays undone. Nothing here knows there is a model, an event, or a keyboard. A doc comment is the one place "mercury" can survive the move without the compiler noticing.
 
-`use clap::{ArgMatches, CommandFactory, FromArgMatches, Subcommand};`.
+`use clap::error::ErrorKind; use clap::{ArgMatches, CommandFactory, FromArgMatches, Subcommand};`.
 
 ## The app owns its command line
 
@@ -258,14 +287,21 @@ Verified on the pinned 1.96.0 against clap 4.6.2, with mercury's and isograph's 
 pub fn dispatch<TApp: App>(verb: Verb<TApp>, matches: &ArgMatches) -> i32 {
     let typed = TypedArgs::of(matches);
 
-    let Some(instance) = TApp::instance(verb.id()) else {
-        return 1;
+    let instance = match TApp::instance(verb.id()) {
+        Ok(instance) => instance,
+        // Through clap rather than a print, and on stderr rather than in the log, because there
+        // is no log yet: its path comes from the instance this failed to produce. An id that
+        // names no daemon is a bad command line, so it is reported by the thing that reports bad
+        // command lines, which `refactors/past/one-log-many-writers.md` already exempts from
+        // going through tracing. Verified on the pinned 1.96.0: this writes `error: <what the app
+        // said>` to stderr and exits 2, as a rejected flag does.
+        Err(e) => clap::Error::raw(ErrorKind::ValueValidation, format!("{e}\n")).exit(),
     };
 
     match verb {
         Verb::Start(_) => client::start::<TApp>(&instance, typed),
         Verb::Restart(args) => client::restart::<TApp>(&instance, &args, typed),
-        Verb::Status(_) => client::status::<TApp>(&instance),
+        Verb::Status(_) => client::status(&instance),
         Verb::Logs(args) => client::logs::<TApp>(&instance, &args),
         Verb::Stop(args) => client::stop::<TApp>(&instance, &args),
         Verb::Daemon(args) => daemon::run::<TApp>(&instance, &args),
@@ -424,17 +460,17 @@ pub(crate) fn run<TApp: App>(
     instance: &Instance,
     args: &DaemonVerbArgs<TApp::Id, TApp::DaemonArgs>,
 ) -> i32 {
-    let log_path = logging::init(TApp::NAME, instance, &Terminal::Daemon(LogLevel(&args.log_level)));
+    let log_path = logging::init(instance, &Terminal::Daemon(LogLevel(&args.log_level)));
     info!(path = %log_path.display(), "logging");
 
     // Before anything that touches the machine. Two of one instance fight over whatever there is
     // only one of, and for mercury that is the keyboard: two of them swallow and re-emit each
     // other's keys forever. The binding must outlive the call (`let _held`, never `let _`):
     // dropping it releases the lock.
-    let _held = match freddie_single_instance::acquire(instance.key()) {
+    let _held = match freddie_single_instance::acquire(instance.lock()) {
         Ok(held) => held,
         Err(e) => {
-            error!(daemon = instance.label(), error = %e, "already running; `stop` ends it");
+            error!(daemon = instance.display_name(), error = %e, "already running; `stop` ends it");
             return 1;
         }
     };
@@ -447,7 +483,7 @@ The daemon verb reports a code where mercury's exits 0 whatever happened: a lock
 
 ## Logging keyed to the instance
 
-`crates/mercury/src/logging.rs` moves to `freddie_cli` and takes the two names it currently spells as literals: the app's, which is the directory, and the instance's, which is the file. Its `Terminal`/`LogLevel` split, its pid stamp, its file level, and its client layers cross unchanged.
+`crates/mercury/src/logging.rs` moves to `freddie_cli` and stops deciding where the log goes: the instance knows. Its `Terminal`/`LogLevel` split, its pid stamp, its file level, and its client layers cross unchanged.
 
 One file per daemon rather than one per app, so `isograph logs --config ./a.json` tails that daemon and nothing else. mercury's path does not move: its instance is `mercury`, so `~/Library/Logs/mercury/mercury.log` is what it was.
 
@@ -471,29 +507,19 @@ pub fn init(terminal: &Terminal<'_>) -> PathBuf {
 After:
 
 ```rust
-/// Where the log file lives: the macOS per-user log directory, or the current
-/// directory when `HOME` is unset.
-fn log_dir(name: &str) -> PathBuf {
-    std::env::var_os("HOME").map_or_else(
-        || PathBuf::from("."),
-        |home| PathBuf::from(home).join("Library/Logs").join(name),
-    )
-}
-
-pub fn init(name: &str, instance: &Instance, terminal: &Terminal<'_>) -> PathBuf {
-    let dir = log_dir(name);
-    let file_name = format!("{}.log", instance.key());
+pub fn init(instance: &Instance, terminal: &Terminal<'_>) -> PathBuf {
+    let path = instance.log_file();
+    let dir = path.parent().unwrap_or(Path::new("."));
+    let file_name = path.file_name().unwrap_or(OsStr::new("log"));
 ```
 
-`LOG_FILE` is deleted; `rolling::never(&dir, &file_name)` and `dir.join(file_name)` take its place. The one message `init` writes itself names the daemon rather than the app:
+`LOG_FILE` and `log_dir` are both deleted; `Instance::log_file` is the only thing that decides a path, and `rolling::never(dir, file_name)` splits it because that is the shape `tracing_appender` takes. The one message `init` writes itself names the daemon rather than the app:
 
 ```rust
     for problem in setup {
-        warn!("{}: {problem}", instance.label());
+        warn!("{}: {problem}", instance.display_name());
     }
 ```
-
-`key` and `label` are readers on `Instance`, since nothing outside it may build one that has a filename in the wrong half.
 
 ## The client verbs
 
@@ -503,33 +529,33 @@ What does move is every verb that only reads a lock, spawns a binary, signals a 
 
 - `const APP: &str = "mercury"` is deleted. Five of its use sites become the instance the verb was given; the two under `label` stay in mercury with the launch agent.
 - Every function that reads the instance, or calls one that does, takes an `&Instance`, and every one that resolves a name gains `<TApp: App>`.
-- Every message that spells "mercury" spells `instance.label()`, which is what makes both a fork's output its own and isograph's name the config it means.
+- Every message that spells "mercury" spells `instance.display_name()`, which is what makes both a fork's output its own and isograph's name the config it means.
 - `start` and `restart` take a `TypedArgs<'_>` and pass it down to `spawn_daemon`, which forwards the id along with the flags.
 
 The instance reaches the lock, in place of the app's name:
 
 ```rust
 fn ensure_started<TApp: App>(instance: &Instance, typed: TypedArgs<'_>) -> Result<Running, NotStarted> {
-    match freddie_single_instance::holder(instance.key()) {
+    match freddie_single_instance::holder(instance.lock()) {
 ```
 
 and every line a verb writes:
 
 ```rust
-pub(crate) fn status<TApp: App>(instance: &Instance) -> i32 {
-    logging::init(TApp::NAME, instance, &Terminal::Client);
-    match freddie_single_instance::holder(instance.key()) {
+pub(crate) fn status(instance: &Instance) -> i32 {
+    logging::init(instance, &Terminal::Client);
+    match freddie_single_instance::holder(instance.lock()) {
         Ok(Held::Free) => {
-            info!("{} is not running", instance.label());
+            info!("{} is not running", instance.display_name());
             1
         }
         Ok(Held::By(pid)) => {
-            info!("{} is running (pid {pid})", instance.label());
+            info!("{} is running (pid {pid})", instance.display_name());
             0
         }
 ```
 
-For mercury the label is `mercury`, so every line reads exactly as it reads today. For isograph it is the config, so two daemons say which of them they are.
+For mercury the display name is `mercury`, so every line reads exactly as it reads today. For isograph it is the config, so two daemons say which of them they are.
 
 The tests move with the module and pick the name up from a test app:
 
@@ -543,8 +569,8 @@ impl App for TestApp {
     type DaemonArgs = NoArgs;
     const NAME: &'static str = "testapp";
 
-    fn instance(_: &NoArgs) -> Option<Instance> {
-        Some(Instance::global(Self::NAME))
+    fn instance(_: &NoArgs) -> Result<Instance, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Instance::global(Self::NAME))
     }
 
     fn run(_: &NoArgs, _: &NoArgs) -> i32 {
@@ -604,8 +630,8 @@ impl App for Mercury {
 
     const NAME: &'static str = "mercury";
 
-    fn instance(_: &NoArgs) -> Option<Instance> {
-        Some(Instance::global(Self::NAME))
+    fn instance(_: &NoArgs) -> Result<Instance, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Instance::global(Self::NAME))
     }
 
     fn run(_: &NoArgs, args: &MercuryArgs) -> i32 {
