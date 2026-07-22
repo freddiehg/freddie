@@ -5,6 +5,7 @@
 use std::hash::{BuildHasher, Hasher, RandomState};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use core_foundation::runloop::CFRunLoop;
 use core_graphics::event::{
@@ -318,8 +319,10 @@ pub fn intercept(
         return Err(CaptureError);
     };
     let interceptor = Interceptor {
-        run_loop,
-        thread: Some(thread),
+        _tap: TapThread {
+            run_loop,
+            thread: Some(thread),
+        },
     };
     let emitter = Emitter { tag };
     Ok((interceptor, emitter))
@@ -327,16 +330,44 @@ pub fn intercept(
 
 /// An active grab of the keyboard. While it is alive keys are intercepted;
 /// dropping it releases the keyboard.
+///
+/// No `Drop` of its own: dropping it drops the [`TapThread`], which is what the release is.
 pub struct Interceptor {
+    _tap: TapThread,
+}
+
+/// How long a dropped [`TapThread`] waits for the tap thread to finish before giving up on it.
+///
+/// Stopping the run loop is what ends that thread, and it ends promptly unless it is inside a slow
+/// `on_key`. Waiting forever would turn one wedged callback into a process that cannot exit, and
+/// this runs on the shutdown path and during unwinds.
+const RELEASE_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// The thread the event tap runs on, and the run loop that ends it.
+///
+/// One resource in two parts: stopping the run loop is what makes the thread return, and joining is
+/// how the release finishes.
+struct TapThread {
     run_loop: CFRunLoop,
     thread: Option<JoinHandle<()>>,
 }
 
-impl Drop for Interceptor {
+impl Drop for TapThread {
     fn drop(&mut self) {
         self.run_loop.stop();
-        if let Some(thread) = self.thread.take() {
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        // Joined on another thread so this one can stop waiting. The tap is released when the
+        // thread ends either way; what the timeout bounds is how long the caller waits to hear
+        // about it.
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
             let _ = thread.join();
+            let _ = done_tx.send(());
+        });
+        if done_rx.recv_timeout(RELEASE_TIMEOUT).is_err() {
+            tracing::warn!("the keyboard tap did not stop; releasing without it");
         }
     }
 }
