@@ -424,7 +424,7 @@ impl App for Mercury {
 }
 
 fn main() -> ! {
-    freddie_cli::main::<Mercury>()
+    // mercury's own parse and dispatch, as `freddie-cli.md` has it.
 }
 ```
 

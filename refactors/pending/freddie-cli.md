@@ -549,7 +549,7 @@ impl App for TestApp {
 }
 ```
 
-`cli.rs`'s parse tests become `Args::<TestApp>::try_parse_from`, and the two that assert a port move to mercury, which is the crate that has one. A second test app with a real `Id` covers what mercury cannot: that two ids resolve to two instances, and that `start` forwards the id into the child.
+`cli.rs`'s parse tests move to mercury with its command line, since that is the crate that has a `Parser` now; what stays here are tests over `Verb<TestApp>` flattened into a test `Parser`, and the two that assert a port go to mercury. A second test app with a real `Id` covers what mercury cannot: that two ids resolve to two instances, and that `start` forwards the id into the child.
 
 ## What mercury becomes
 
@@ -663,6 +663,6 @@ Its two early returns become `1` and its end becomes `0`, so a menu bar that cou
 ## The changes, in order
 
 1. **Logging takes a name.** `log_dir(name)`, the file name derived from it, and `init(name, terminal)`, in mercury, with `client::APP` passed at each of the four call sites. No behaviour changes: the name passed is the name that was written.
-2. **`freddie_cli`, holding the command surface, and `app-verbs.md` with it.** The trait, `Instance`, the generic `Args`/`Verb`/arg structs, `main`, `dispatch`, the daemon verb, `logging`, and the `client` module, all keyed to the instance the command line named. mercury shrinks to the `main.rs` above, a `daemon.rs` that starts at `freddie_windows::init()`, and an `agent.rs` holding `install` and `uninstall`. Every verb does what it does now, and `mercury --help` prints what it prints now, because mercury's instance is its name and its `Id` is empty.
+2. **`freddie_cli`, holding the lifecycle verbs.** The trait, `Instance`, `Verb` and the arg structs, `dispatch`, `bare`, `Typed`, the daemon verb, `logging`, and the `client` module, all keyed to the instance the command line named. mercury gains a `Parser` of its own that flattens `Verb<Mercury>` in beside `install` and `uninstall`. mercury shrinks to the `main.rs` above, a `daemon.rs` that starts at `freddie_windows::init()`, and an `agent.rs` holding `install` and `uninstall`. Every verb does what it does now, and `mercury --help` prints what it prints now, because mercury's instance is its name and its `Id` is empty.
 
 One change rather than one per verb: `Verb` is a single enum and `dispatch` a single match, so a `freddie_cli` holding some of the verbs would leave mercury without the rest.
