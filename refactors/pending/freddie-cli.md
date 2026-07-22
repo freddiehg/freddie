@@ -120,16 +120,16 @@ One daemon of one app: what its lock is under, what its log is called, and what 
 /// wants one. A `key` and an app name are all either of them is.
 #[derive(Clone, Debug)]
 pub struct Instance {
-    app: String,
     slug: String,
     display_name: String,
+    log_file: PathBuf,
 }
 
 impl Instance {
     /// The one daemon of an app that has one, keyed to the app itself.
-    pub fn global(app: impl Into<String>) -> Self {
+    pub fn global(app: impl Into<String>) -> Result<Self, NoLogDir> {
         let app = app.into();
-        Self { slug: app.clone(), display_name: app.clone(), app }
+        Self::named(&app, app.clone(), app.clone())
     }
 
     /// One of many: `slug` names its files, `display_name` is what the person who asked for it
@@ -139,12 +139,18 @@ impl Instance {
     /// two that do not, since it is the whole of what the lock is keyed to. A path that has been
     /// resolved, or a hash of one, is the shape of it. It also has to be a filename, because it
     /// becomes one.
+    ///
+    /// Fails when the environment does not say where this user's files go, which is the one thing
+    /// about placing a daemon that can fail. It fails here, once, rather than at each call that
+    /// wants the path: an instance that exists is one whose files have a place to be.
     pub fn named(
-        app: impl Into<String>,
+        app: &str,
         slug: impl Into<String>,
         display_name: impl Into<String>,
-    ) -> Self {
-        Self { app: app.into(), slug: slug.into(), display_name: display_name.into() }
+    ) -> Result<Self, NoLogDir> {
+        let slug = slug.into();
+        let log_file = log_dir(app)?.join(format!("{slug}.log"));
+        Ok(Self { slug, display_name: display_name.into(), log_file })
     }
 
     /// What the single-instance lock is keyed to.
@@ -152,14 +158,9 @@ impl Instance {
         &self.slug
     }
 
-    /// Where this daemon's log lives: the macOS per-user log directory, or the current directory
-    /// when `HOME` is unset. One directory per app, one file per daemon in it.
-    pub fn log_file(&self) -> PathBuf {
-        let dir = std::env::var_os("HOME").map_or_else(
-            || PathBuf::from("."),
-            |home| PathBuf::from(home).join("Library/Logs").join(&self.app),
-        );
-        dir.join(format!("{}.log", self.slug))
+    /// Where this daemon's log goes. One directory per app, one file per daemon in it.
+    pub fn log_file(&self) -> &Path {
+        &self.log_file
     }
 
     /// What a verb calls this daemon when it says something about it.
@@ -167,6 +168,39 @@ impl Instance {
         &self.display_name
     }
 }
+
+/// The environment names no per-user directory to keep the log in.
+///
+/// An error rather than a fallback to the current directory, and the same call that this one
+/// fails on makes `freddie_single_instance::acquire` return `LockError::NoStateDir`. A daemon
+/// that cannot find its home cannot take its lock either, so it was never going to run; falling
+/// back would write a log for a process that is about to fail, in whatever directory it was
+/// started from.
+#[derive(Debug)]
+pub struct NoLogDir;
+
+impl fmt::Display for NoLogDir {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("no per-user directory to keep the log in; is HOME set?")
+    }
+}
+
+impl std::error::Error for NoLogDir {}
+
+/// The per-user directory this app's logs go in, which is the one platform-shaped thing here.
+/// `freddie-cli-off-macos.md` is where it gains its other arms.
+fn log_dir(app: &str) -> Result<PathBuf, NoLogDir> {
+    let home = std::env::var_os("HOME").ok_or(NoLogDir)?;
+    Ok(PathBuf::from(home).join("Library/Logs").join(app))
+}
+```
+
+An app reaches this through `?`, since `NoLogDir` is an `Error` and `instance` returns a boxed one:
+
+```rust
+    fn instance(_: &NoArgs) -> Result<Instance, Box<dyn std::error::Error + Send + Sync>> {
+        Ok(Instance::global(Self::NAME)?)
+    }
 ```
 
 Nothing in either type is about freddie. A name, what names one daemon, some flags, and a function that runs until it is done: any program that wants one instance of itself and the verbs to manage it fits, whether or not it has a model, an event, or a keyboard. `freddie-daemon-runtime.md` is what mercury calls inside `run`, and this crate never learns that it exists.
@@ -541,7 +575,7 @@ pub fn init(instance: &Instance, terminal: &Terminal<'_>) -> PathBuf {
     let file_name = path.file_name().unwrap_or(OsStr::new("log"));
 ```
 
-`LOG_FILE` and `log_dir` are both deleted; `Instance::log_file` is the only thing that decides a path, and `rolling::never(dir, file_name)` splits it because that is the shape `tracing_appender` takes. The one message `init` writes itself names the daemon rather than the app:
+`LOG_FILE` and this module's `log_dir` are both deleted; the instance was built knowing its path, and `rolling::never(dir, file_name)` splits it because that is the shape `tracing_appender` takes. The `unwrap_or`s are unreachable for a path built by `Instance::named`, and are there because `Path` cannot say so. The one message `init` writes itself names the daemon rather than the app:
 
 ```rust
     for problem in setup {
@@ -598,7 +632,7 @@ impl App for TestApp {
     const NAME: &'static str = "testapp";
 
     fn instance(_: &NoArgs) -> Result<Instance, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(Instance::global(Self::NAME))
+        Ok(Instance::global(Self::NAME)?)
     }
 
     fn run(_: &NoArgs, _: &NoArgs) -> Ended {
@@ -659,7 +693,7 @@ impl App for Mercury {
     const NAME: &'static str = "mercury";
 
     fn instance(_: &NoArgs) -> Result<Instance, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(Instance::global(Self::NAME))
+        Ok(Instance::global(Self::NAME)?)
     }
 
     fn run(_: &NoArgs, args: &MercuryArgs) -> Ended {
