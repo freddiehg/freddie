@@ -4,7 +4,7 @@ An app built here is one process holding something there can only be one of, plu
 
 The verbs are the same because none of them looks inside the process. They read a lock file, spawn a binary, send a signal, and tail a log, and every one of those works the same for a program that has nothing to do with keys or events.
 
-`freddie_cli` is a new crate holding the whole command surface. An app supplies its name, its daemon body, and whatever extra flags that body takes; it gets `start`, `restart`, `status`, `logs`, `stop`, `install`, `uninstall`, and the hidden `daemon` for free, keyed to its own name and writing to its own log file. mercury becomes an implementation of one trait and a `main` that is a single call.
+`freddie_cli` is a new crate holding the whole command surface. An app supplies its name, its daemon body, and whatever extra flags that body takes; it gets `start`, `restart`, `status`, `logs`, `stop`, and the hidden `daemon` for free, keyed to its own name and writing to its own log file. mercury becomes an implementation of one trait and a `main` that is a single call.
 
 The name of the binary is the app's, not mercury's. Nothing in `freddie_cli` spells "mercury", and nothing in an app spells the verbs.
 
@@ -26,6 +26,7 @@ The app owns:
 - what the daemon does, which is everything `mercury::daemon` holds today
 - any flag beyond `--log-level` that its daemon takes
 - what quitting means, since this crate only ever sends a signal and waits for the lock to go free
+- whether it installs itself to start with the session, and what that job says
 
 ## The seam
 
@@ -71,7 +72,7 @@ That is the whole trait, and nothing in it is about freddie. A name, an about li
 
 An app's daemon takes flags of its own: mercury's `--port` names the socket the extension talks to, and isograph's is a config file path. So the command line is generic over the app, and each of the types that carries the app's flags flattens `A::Args` in. clap's derive accepts generic parameters, which is what lets it. Verified on the pinned 1.96.0 against clap 4.6.2: a `Subcommand` enum whose variants are a mix of generic and not derives, an arg struct generic over `A: App` flattens the associated `A::Args`, `app daemon --port 4001` parses into it, the shared defaults resolve, and `NoArgs` gives an app with no flags of its own.
 
-Four verbs are generic, and they are the four that run the daemon: `daemon` is it, `start` and `restart` spawn it, and `install` writes the agent that launchd starts it from. A flag the daemon takes has to reach it whichever of those put it there, so each of them takes the app's flags and hands them on. `status`, `logs`, `stop`, and `uninstall` only ever find a daemon that is already running, so they stay concrete, and their arg structs move across unchanged from `crates/mercury/src/cli.rs`.
+Three verbs are generic, and they are the three that start the daemon: `daemon` is it, and `start` and `restart` spawn it. A flag the daemon takes has to reach it whichever of those put it there, so each of them takes the app's flags and hands them on. `status`, `logs`, and `stop` only ever find a daemon that is already running, so they stay concrete, and their arg structs move across unchanged from `crates/mercury/src/cli.rs`.
 
 ```rust
 #[derive(Parser, Debug)]
@@ -97,10 +98,6 @@ pub enum Verb<A: App> {
     Logs(LogsArgs),
     /// Ask the running daemon to quit.
     Stop(StopArgs),
-    /// Register this binary as a login agent, so the app starts with the session.
-    Install(InstallArgs<A>),
-    /// Take the login agent back out.
-    Uninstall,
     /// Run the daemon in this process. Not for typing: `start` spawns it.
     #[command(hide = true)]
     Daemon(DaemonArgs<A>),
@@ -143,13 +140,6 @@ pub struct RestartArgs<A: App> {
     #[command(flatten)]
     pub app: A::Args,
 }
-
-/// What `install` can be told, which is what the agent it writes will start the daemon with.
-#[derive(clap::Args, Debug)]
-pub struct InstallArgs<A: App> {
-    #[command(flatten)]
-    pub app: A::Args,
-}
 ```
 
 The `Start` and `Daemon` doc comments lose the binary's name, since the derive writes them into every app's `--help`. `LogsArgs` moves across as it is; `RestartArgs` gains the app's flags and keeps `--force`.
@@ -175,8 +165,6 @@ fn dispatch<A: App>(verb: Option<Verb<A>>, typed: Typed<'_>) -> i32 {
         Some(Verb::Status) => client::status::<A>(),
         Some(Verb::Logs(args)) => client::logs::<A>(&args),
         Some(Verb::Stop(args)) => client::stop::<A>(&args),
-        Some(Verb::Install(_)) => client::install::<A>(typed),
-        Some(Verb::Uninstall) => client::uninstall::<A>(),
         Some(Verb::Daemon(args)) => daemon::run::<A>(&args),
     }
 }
@@ -210,7 +198,7 @@ pub fn main<A: App>() -> ! {
 
 ## Handing the app's flags to the daemon
 
-`start` spawns the daemon, `restart` spawns a replacement, and `install` writes the agent launchd spawns it from. All three have to give it the flags this invocation was given, and none of them can know what those flags are: `A::Args` is the app's.
+`start` spawns the daemon and `restart` spawns a replacement. Both have to give it the flags this invocation was given, and neither can know what those flags are: `A::Args` is the app's.
 
 clap parses argv into a struct and does not write one back out, so the flags are re-emitted from the matches instead. Reading the same derive that parsed them is what keeps this from drifting: an app that adds a flag gets it forwarded without writing a line.
 
@@ -222,35 +210,20 @@ clap parses argv into a struct and does not write one back out, so the flags are
 #[derive(Clone, Copy)]
 pub(crate) struct Typed<'a>(Option<&'a ArgMatches>);
 
-/// Where the daemon is about to be started, which decides what its flags have to carry.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Started {
-    /// By this process, as a child. It inherits this environment, so anything the environment
-    /// said is already there.
-    AsChild,
-    /// By launchd, from the agent `install` writes. The session it starts in never saw the shell
-    /// that set these, so what the environment said has to be written into the plist.
-    AtLogin,
-}
-
 impl Typed<'_> {
-    /// Re-emit `A`'s flags as argv for the process named by `started`.
+    /// Re-emit `A`'s flags as argv for the daemon this process is about to spawn.
     ///
-    /// A default is left out either way: the daemon resolves the same one. A value that came from
-    /// the environment is left out for a child, which inherits it, and written in for the agent,
-    /// which does not.
-    pub(crate) fn argv<A: App>(self, started: Started) -> Vec<OsString> {
+    /// Only what was typed. A default is left out because the daemon resolves the same one, and a
+    /// value from the environment is left out because the child inherits the environment it came
+    /// from and resolves that too.
+    pub(crate) fn argv<A: App>(self) -> Vec<OsString> {
         let Some(matches) = self.0 else {
             return Vec::new();
         };
         let mut argv = Vec::new();
         for arg in A::Args::augment_args(Command::new(A::NAME)).get_arguments() {
             let id = arg.get_id().as_str();
-            let carried = match matches.value_source(id) {
-                Some(ValueSource::CommandLine) => true,
-                Some(ValueSource::EnvVariable) => started == Started::AtLogin,
-                _ => false,
-            };
+            let carried = matches.value_source(id) == Some(ValueSource::CommandLine);
             // A positional has no flag to re-emit it under. `A::Args` is a set of flags: the verbs
             // own their positionals, and an app's positional would be ambiguous against them.
             let Some(long) = arg.get_long().filter(|_| carried) else {
@@ -276,14 +249,12 @@ Verified on the pinned 1.96.0 against clap 4.6.2, against an `A::Args` of `--por
 
 - `start --port 4001 --config "/a b/c.toml"` re-emits exactly `["--port", "4001", "--config", "/a b/c.toml"]`. The value with a space needs no quoting, because these reach `Command::arg` as separate `OsString`s and no shell parses them.
 - `restart --force --verbose` re-emits `["--verbose"]`. The verb's own `--force` drops out with no stripping, because it is not one of `A::Args`'s arguments.
-- `start` with nothing typed re-emits nothing, and `MERCURY_PORT=5005 start` re-emits nothing for a child and `["--port", "5005"]` for the agent, having parsed as `5005` in both.
+- `start` with nothing typed re-emits nothing, and so does `MERCURY_PORT=5005 start`, having parsed as `5005` either way. The child inherits `MERCURY_PORT` and reaches `5005` on its own.
 - `NoArgs` re-emits nothing.
-
-A path an app takes as a flag is the app's to make absolute. launchd starts the agent in a directory the shell never chose, so a relative one recorded at `install` names somewhere else at login.
 
 `use clap::builder::ArgAction; use clap::parser::ValueSource; use clap::{ArgMatches, Args as _, Command};`.
 
-Then the two places that build a daemon's argv take it. `spawn_daemon`, before:
+Then `spawn_daemon` takes it. Before:
 
 ```rust
 fn spawn_daemon() -> io::Result<Pid> {
@@ -299,26 +270,17 @@ fn spawn_daemon<A: App>(typed: Typed<'_>) -> io::Result<Pid> {
     let exe = std::env::current_exe()?;
     let child = Command::new(exe)
         .arg("daemon")
-        .args(typed.argv::<A>(Started::AsChild))
+        .args(typed.argv::<A>())
 ```
 
-and `Agent::running`, before:
+`--log-level` is not forwarded, and for the reason `spawn_daemon` already gives: it governs a terminal a detached child does not have.
+
+The hidden verb's name is spelled here and nowhere else, so an app writing a launch agent has something to point at rather than a string of its own:
 
 ```rust
-            program_arguments: vec![program.to_string_lossy().into_owned(), "daemon".to_owned()],
+/// What the daemon verb is called, for an app building an argv that has to reach it.
+pub const DAEMON_VERB: &str = "daemon";
 ```
-
-after:
-
-```rust
-            program_arguments: std::iter::once(program.as_os_str().to_owned())
-                .chain(std::iter::once(OsString::from("daemon")))
-                .chain(typed.argv::<A>(Started::AtLogin))
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect(),
-```
-
-`--log-level` is forwarded by neither, and for the reason `spawn_daemon` already gives: it governs a terminal that a detached child and a launchd agent both lack.
 
 ## The daemon verb
 
@@ -345,7 +307,7 @@ pub(crate) fn run<A: App>(args: &DaemonArgs<A>) -> i32 {
 }
 ```
 
-The daemon verb reports a code where mercury's exits 0 whatever happened: a lock it could not take and a menu bar it could not create are both a daemon that did not run, and `install`'s launch agent is tuned to the exit code.
+The daemon verb reports a code where mercury's exits 0 whatever happened: a lock it could not take and a menu bar it could not create are both a daemon that did not run. An app whose launch agent declines to revive a clean exit depends on this, which mercury's does.
 
 ## Logging keyed to the name
 
@@ -395,32 +357,20 @@ pub fn init(name: &str, terminal: &Terminal<'_>) -> PathBuf {
 
 ## The client verbs
 
-`crates/mercury/src/client.rs` becomes `freddie_cli`'s `client` module. No verb changes what it does, what it prints, or what it exits with. Four things change throughout:
+`crates/mercury/src/client.rs` becomes `freddie_cli`'s `client` module, apart from what `install` and `uninstall` need: `Agent`, `KeepAlive`, `label`, `plist_path`, `domain`, `bootout`, `launchctl`, `users_uid`, `NotInstalled`, and the `TRANSIENT` and `ID` constants all stay in mercury. A launch agent says which session type it loads in, when launchd should revive it, and what its label is, and those are answers about one app rather than about daemons. `app-verbs.md` is what mercury reaches those two verbs through.
 
-- `const APP: &str = "mercury"` is deleted, and each of its seven use sites becomes `A::NAME`.
+What does move is every verb that only reads a lock, spawns a binary, signals a pid, or tails a log. No verb changes what it does, what it prints, or what it exits with. Four things change throughout:
+
+- `const APP: &str = "mercury"` is deleted. Five of its use sites move here and become `A::NAME`; the two under `label` stay in mercury with the launch agent.
 - Every function that reads the name, or calls one that does, gains `<A: App>`.
 - Every message that spells "mercury" spells `A::NAME`, which is what makes a fork's output its own.
-- `start`, `restart`, and `install` take a `Typed<'_>` and pass it down to whichever of `spawn_daemon` and `Agent::running` they reach: `start<A: App>(typed: Typed<'_>)`, `restart<A: App>(args: &RestartArgs<A>, typed: Typed<'_>)`, `install<A: App>(typed: Typed<'_>)`, and `ensure_started<A: App>(typed: Typed<'_>)` between the first two and the spawn. The other four verbs take no such thing, since none of them starts a daemon.
+- `start` and `restart` take a `Typed<'_>` and pass it down to `spawn_daemon`: `start<A: App>(typed: Typed<'_>)`, `restart<A: App>(args: &RestartArgs<A>, typed: Typed<'_>)`, and `ensure_started<A: App>(typed: Typed<'_>)` between them and the spawn. `status`, `logs`, and `stop` take no such thing, since none of them starts a daemon.
 
 The name reaches the lock:
 
 ```rust
 fn ensure_started<A: App>() -> Result<Running, NotStarted> {
     match freddie_single_instance::holder(A::NAME) {
-```
-
-the launchd label:
-
-```rust
-/// The launchd job's name, keyed to the same name as the lock and the log directory, so a fork
-/// gets its own job rather than fighting this one over a label.
-fn label<A: App>() -> String {
-    format!("{AGENT_PREFIX}{}", A::NAME)
-}
-
-/// The reverse-DNS prefix every freddie app's launch agent sits under. The name after it is the
-/// app's, so two of them cannot collide.
-const AGENT_PREFIX: &str = "hg.freddie.";
 ```
 
 and every line a verb writes:
@@ -457,7 +407,7 @@ impl App for TestApp {
 }
 ```
 
-`label`'s test asserts `hg.freddie.testapp`; `cli.rs`'s parse tests become `Args::<TestApp>::try_parse_from`, and the two that assert a port move to mercury, which is the crate that has one.
+`cli.rs`'s parse tests become `Args::<TestApp>::try_parse_from`, and the two that assert a port move to mercury, which is the crate that has one.
 
 ## What mercury becomes
 
@@ -483,11 +433,18 @@ struct Mercury;
 
 impl App for Mercury {
     type Args = MercuryArgs;
+    // `install` and `uninstall`, which are mercury's own. See `app-verbs.md`.
+    type Subcommands = MercuryVerb;
+
     const NAME: &'static str = "mercury";
     const ABOUT: &'static str = "A layered keyboard remapper.";
 
     fn run(args: &Self::Args) -> i32 {
         daemon::run(args.port)
+    }
+
+    fn run_subcommand(verb: MercuryVerb) -> i32 {
+        agent::run(verb)
     }
 }
 
@@ -496,7 +453,7 @@ fn main() -> ! {
 }
 ```
 
-`crates/mercury/src/cli.rs`, `crates/mercury/src/client.rs`, and `crates/mercury/src/logging.rs` are deleted; their contents live in `freddie_cli`.
+`crates/mercury/src/cli.rs` and `crates/mercury/src/logging.rs` are deleted; their contents live in `freddie_cli`. `crates/mercury/src/client.rs` becomes `agent.rs`, holding only what `install` and `uninstall` need.
 
 `crates/mercury/src/daemon.rs` keeps everything it holds today except the logging call and the lock, which `freddie_cli` does before calling it. Before:
 
@@ -525,11 +482,13 @@ pub(crate) fn run(port: u16) -> i32 {
 
 Its two early returns become `1` and its end becomes `0`, so a menu bar that could not be created is a daemon that did not run. `use crate::cli::DaemonArgs;` and `use crate::logging::{self, LogLevel, Terminal};` go with the modules they name.
 
-`freddie_cli`'s dependencies are the ones those three files already pull in: `clap`, `tracing`, `tracing-subscriber`, `tracing-appender`, `serde` and `plist` for the launch agent, and `freddie_single_instance`. mercury drops `tracing-subscriber`, `tracing-appender`, `plist`, and `freddie_single_instance`, and keeps `clap` for its own `Args` derive, `tracing` for the daemon, and `serde` for the wire types in `external.rs`.
+`freddie_cli`'s dependencies are `clap`, `tracing`, `tracing-subscriber`, `tracing-appender`, and `freddie_single_instance`. mercury drops `tracing-subscriber` and `tracing-appender`, and keeps `clap`, `tracing`, `serde` for the wire types and the launch agent, `plist` for writing it, and `freddie_single_instance`, which `label` and the agent verbs still reach.
 
 ## The changes, in order
 
 1. **Logging takes a name.** `log_dir(name)`, the file name derived from it, and `init(name, terminal)`, in mercury, with `client::APP` passed at each of the four call sites. No behaviour changes: the name passed is the name that was written.
-2. **`freddie_cli`, holding the whole command surface.** The trait, the generic `Args`/`Verb`/`DaemonArgs`, `parse`, `main`, `dispatch`, the daemon verb, `logging`, and the `client` module, all keyed to `A::NAME`. mercury shrinks to the `main.rs` above and a `daemon.rs` that starts at `freddie_windows::init()`. Every verb does what it does now, and `mercury --help` prints what it prints now.
+2. **`freddie_cli`, holding the command surface, and `app-verbs.md` with it.** The trait, the generic `Args`/`Verb`/`DaemonArgs`, `main`, `dispatch`, the daemon verb, `logging`, and the `client` module, all keyed to `A::NAME`. mercury shrinks to the `main.rs` above, a `daemon.rs` that starts at `freddie_windows::init()`, and an `agent.rs` holding `install` and `uninstall`. Every verb does what it does now, and `mercury --help` prints what it prints now.
+
+`app-verbs.md` lands here rather than after, because `install` and `uninstall` are mercury's own verbs and there is no way to keep them without the seam that carries them.
 
 One change rather than one per verb: `Verb` is a single enum and `dispatch` a single match, so a `freddie_cli` holding some of the verbs would leave mercury without the rest.
