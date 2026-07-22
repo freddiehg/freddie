@@ -42,6 +42,12 @@ pub trait App {
     /// [`NoArgs`] for an app with one global daemon, which every verb then means without saying
     /// so. An app with more than one says which in a flag, and two values of that flag are two
     /// daemons, each with its own lock, log, and pid.
+    ///
+    /// Every flag here has to reach [`instance`](Self::instance), and one that does not belongs
+    /// in [`DaemonArgs`](Self::DaemonArgs) instead. These flags are what `status`, `logs`, and
+    /// `stop` accept, and those verbs do nothing but find a daemon: a flag they take that does
+    /// not change which daemon they found is one their `--help` offers and their behaviour
+    /// ignores.
     type Id: clap::Args + fmt::Debug;
 
     /// The flags this app's daemon takes beyond the shared ones and beyond [`Id`](Self::Id).
@@ -191,7 +197,13 @@ Nothing in either type is about freddie. A name, what names one daemon, some fla
 
 ## The verbs, and the flags they carry
 
-An app's daemon takes flags of its own: mercury's `--port` names the socket the extension talks to, and isograph's is a config file path. So the command line is generic over the app, and each of the types that carries the app's flags flattens `TApp::DaemonArgs` in. clap's derive accepts generic parameters, which is what lets it. Verified on the pinned 1.96.0 against clap 4.6.2: a `Subcommand` enum whose variants are a mix of generic and not derives, an arg struct generic over the flags flattens them in, `app daemon --port 4001` parses into it, the shared defaults resolve, and `NoArgs` gives an app with no flags of its own.
+An app's daemon takes flags of its own: mercury's `--port` names the socket the extension talks to, and isograph's is a config file path. So the command line is generic over the app, and each of the types that carries the app's flags flattens `TApp::DaemonArgs` in. clap's derive accepts generic parameters, which is what lets it. Verified on the pinned 1.96.0 against clap 4.6.2, across the three shapes an `Id` takes:
+
+- One required flag: `status --config ./a.json` parses, a bare `status` is refused with `the following required arguments were not provided`, and `start --config ./a.json --port 5` fills the id and the app's flags from one command line.
+- `NoArgs`: `status` takes nothing, `status --config ./a.json` is refused as an unexpected argument, and `status --help` prints `Usage: status`.
+- A required flag and an optional one: both reach `status`, whose help reads `Usage: status [OPTIONS] --config <CONFIG>`.
+
+An arg struct generic over the flags flattens them in, two flattens sit in one struct, a `Subcommand` enum whose variants are a mix of generic and not derives, and the shared defaults resolve.
 
 Every verb is generic, because every one of them is about one daemon and has to be told which. `status`, `logs`, and `stop` take `TApp::Id` and nothing more, since finding a daemon needs only its name. `daemon`, `start`, and `restart` take `TApp::DaemonArgs` as well, because they are the three that put a daemon somewhere and it needs its flags to run.
 
