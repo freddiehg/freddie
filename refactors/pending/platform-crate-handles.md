@@ -57,7 +57,17 @@ The `thread_local!` stays. It is what lets a block dispatched to the main queue 
 
 So the storage is not the problem; being able to reach it without proving it exists is. It becomes private, keyed by overlay rather than a single slot, and a handle only [`overlay`] can mint is what reaches an entry.
 
-Two things follow from that and are worth stating as requirements rather than as things that happen to work. Overlays are not a singleton: [`overlay`] can be called more than once, each handle drives its own panel, and one dropping leaves the others alone. And an overlay is destroyable: dropping one deallocates its panel rather than hiding it, ids are never reused, and a [`OverlaySink`] outliving its overlay is inert rather than pointed at somebody else's.
+Two things follow from that and are worth stating as requirements rather than as things that happen to work. Overlays are not a singleton: [`overlay`] can be called more than once, each handle drives its own panel, and one dropping leaves the others alone. And an overlay is destroyable: dropping one deallocates its panel rather than hiding it, ids are never reused, and an [`OverlaySink`] outliving its overlay is inert rather than pointed at somebody else's.
+
+## What hiding is for, and what dropping is for
+
+An overlay's lifetime is the lifetime of whatever state holds it, and those differ.
+
+The keymap overlay is held for the run. It is shown and hidden on every layer change, so its panel stays built between showings: `hide` orders it out and keeps it, and the next keystroke puts an existing panel on screen rather than constructing one. That is the whole reason `hide` is not `drop`.
+
+An overlay shown for an infrequent event, and only briefly, is the other case. Its state appears, an [`Overlay`] is built with it, and when that state goes the handle drops. Nothing keeps a panel warm for something that may not happen again, and the drop has to give the panel back rather than park it hidden and alive — which is what `close` is for, and why `build` clears `releasedWhenClosed` to make that release ours to perform.
+
+So `hide` is for an overlay that will be shown again, and `drop` is for one that will not.
 
 `crates/freddie_overlay/src/lib.rs`, before:
 
