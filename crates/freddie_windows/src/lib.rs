@@ -52,9 +52,9 @@ use core_graphics::window::{CGWindowID, kCGNullWindowID};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2_app_kit::{
-    NSApplicationDidChangeScreenParametersNotification, NSRunningApplication, NSScreen,
-    NSWorkspace, NSWorkspaceApplicationKey, NSWorkspaceDidLaunchApplicationNotification,
-    NSWorkspaceDidTerminateApplicationNotification,
+    NSApplicationActivationPolicy, NSApplicationDidChangeScreenParametersNotification,
+    NSRunningApplication, NSScreen, NSWorkspace, NSWorkspaceApplicationKey,
+    NSWorkspaceDidLaunchApplicationNotification, NSWorkspaceDidTerminateApplicationNotification,
 };
 use objc2_foundation::{
     MainThreadMarker, NSNotification, NSNotificationCenter, NSNotificationName,
@@ -63,6 +63,33 @@ use objc2_foundation::{
 /// A running app, by process id. `pid_t` is an `i32`, and an `i32` is not a process.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Pid(pub pid_t);
+
+/// An app whose windows a user could be looking at, which is the only kind worth observing.
+///
+/// macOS runs UI services alongside the apps: `CursorUIViewService` draws the text cursor and
+/// `Open and Save Panel Service` draws a file dialog, and each of them owns real windows with
+/// real ids. Those windows post the same Accessibility notifications an app's windows do, so a
+/// watcher that observes every process records one of them as the focused window whenever the
+/// user puts a cursor in a text field, and a placement then moves an invisible 64x64 box
+/// instead of the window in front of the user.
+///
+/// Their activation policy is what separates them: `prohibited` means macOS will not let the
+/// user bring the app forward at all, so nothing it owns can be what a placement is aimed at.
+/// Accessory apps stay in, because a menu bar app has no Dock icon but does have windows, and
+/// its settings window is placed like any other.
+///
+/// Built only by [`Self::of`], so an app that has not been vetted cannot reach
+/// [`observe_app`].
+#[derive(Clone, Copy, Debug)]
+struct ObservableApp(Pid);
+
+impl ObservableApp {
+    /// `app` if its windows can be looked at, `None` if it is one of the UI services.
+    fn of(app: &NSRunningApplication) -> Option<Self> {
+        (app.activationPolicy() != NSApplicationActivationPolicy::Prohibited)
+            .then(|| Self(Pid(app.processIdentifier())))
+    }
+}
 
 /// A window's `CGWindowID`: the identity that outlives any one `AXUIElement` naming it.
 ///
@@ -703,7 +730,7 @@ fn add_notification(
 /// An app that refuses Accessibility, or has not finished launching, fails
 /// `AXObserverCreate`. Logged at `debug` and skipped: its windows are never reported and
 /// cannot be addressed, and every other app goes on being observed.
-fn observe_app(state: &Rc<WatcherState>, pid: Pid) {
+fn observe_app(state: &Rc<WatcherState>, ObservableApp(pid): ObservableApp) {
     if state.apps.borrow().contains_key(&pid) {
         return;
     }
@@ -860,18 +887,16 @@ fn observe_notification(
     }
 }
 
-/// The pid a launch or terminate notification is about.
-fn notified_pid(notif: &NSNotification) -> Option<Pid> {
+/// The app a launch or terminate notification is about.
+fn notified_app(notif: &NSNotification) -> Option<Retained<NSRunningApplication>> {
     let info = notif.userInfo()?;
     // SAFETY: `NSWorkspaceApplicationKey` is an immutable extern static `NSString` that
     // AppKit initializes before any notification can be delivered.
     #[expect(unsafe_code)]
     let key = unsafe { NSWorkspaceApplicationKey };
-    let app = info
-        .objectForKey(key)?
+    info.objectForKey(key)?
         .downcast::<NSRunningApplication>()
-        .ok()?;
-    Some(Pid(app.processIdentifier()))
+        .ok()
 }
 
 /// Watch what the workspace and the screens do: apps coming and going, so a window opened
@@ -893,13 +918,17 @@ fn watch_notifications(state: &Rc<WatcherState>) -> Vec<Observation> {
     ] {
         let state = Rc::downgrade(state);
         observations.push(observe_notification(&workspace, name, move |notif| {
-            let (Some(state), Some(pid)) = (state.upgrade(), notified_pid(notif)) else {
+            let (Some(state), Some(app)) = (state.upgrade(), notified_app(notif)) else {
                 return;
             };
             if launched {
-                observe_app(&state, pid);
+                // A UI service launching is not something to watch, so there is nothing here
+                // to observe.
+                if let Some(app) = ObservableApp::of(&app) {
+                    observe_app(&state, app);
+                }
             } else {
-                forget_app(&state, pid);
+                forget_app(&state, Pid(app.processIdentifier()));
             }
         }));
     }
@@ -983,8 +1012,12 @@ pub fn watch(
     });
 
     let notifications = watch_notifications(&state);
-    for app in NSWorkspace::sharedWorkspace().runningApplications() {
-        observe_app(&state, Pid(app.processIdentifier()));
+    for app in NSWorkspace::sharedWorkspace()
+        .runningApplications()
+        .iter()
+        .filter_map(|app| ObservableApp::of(&app))
+    {
+        observe_app(&state, app);
     }
 
     let screens = read_monitors(mtm);
