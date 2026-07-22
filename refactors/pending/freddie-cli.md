@@ -25,7 +25,7 @@ The app owns:
 - its name, which keys the lock file, the log directory, the launchd label, the help text, and every line a verb prints
 - what the daemon does, which is everything `mercury::daemon` holds today
 - any flag beyond `--log-level` that its daemon takes
-- what quitting means, which `freddie-daemon-runtime.md` routes to it as an abstract `Stop`
+- what quitting means, since this crate only ever sends a signal and waits for the lock to go free
 
 ## The seam
 
