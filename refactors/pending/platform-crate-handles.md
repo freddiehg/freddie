@@ -88,13 +88,25 @@ struct Panel {
     label: Retained<NSTextField>,
 }
 
-/// The overlay. Holding it is what makes [`show`](Overlay::show) reach a panel.
+/// The overlay's lifetime. Holding it keeps the panel built; dropping it takes it down.
 ///
-/// `!Send`: it stands for main-thread-only state, and dropping it has to take that state
-/// down on the thread that built it.
+/// `!Send`, because `Drop` reaches `PANEL`, and a `thread_local` reached from another
+/// thread is a different slot: a handle dropped off main would clear an empty one and
+/// leave the real panel on screen. It stays where [`overlay`] built it, like
+/// `freddie_menu_bar`'s `MenuBar` and `freddie_windows`'s `Watcher`.
+///
+/// It does not show anything. [`sink`](Overlay::sink) is what a worker uses.
 pub struct Overlay {
     _main_thread_only: PhantomData<*const ()>,
 }
+
+/// The handle showing and hiding go through. Cheap to clone and `Send`, because it carries
+/// nothing: `show` and `hide` dispatch to the main queue and find the panel there.
+///
+/// Safe to keep past the [`Overlay`]. The dispatched block finds an empty slot and does
+/// nothing, which is what a hidden overlay would have done anyway.
+#[derive(Clone, Copy)]
+pub struct OverlaySink;
 
 /// Build the overlay panel, hidden, and return the handle that drives it.
 ///
@@ -111,6 +123,15 @@ pub fn overlay() -> Overlay {
 }
 
 impl Overlay {
+    /// A handle to show and hide through. Cheap to clone, `Send`, and safe to keep past
+    /// the overlay itself.
+    #[must_use]
+    pub const fn sink(&self) -> OverlaySink {
+        OverlaySink
+    }
+}
+
+impl OverlaySink {
     /// Show the overlay with `text`, from any thread.
     ///
     /// The panel is sized to the text, so a keymap with more rows makes a taller panel
@@ -156,14 +177,17 @@ impl Drop for Overlay {
 
 `text` becomes an owned `String` rather than `&'static str`. The `'static` bound was never about the panel; it was the dispatched block needing to own what it carries, and a `String` it owns satisfies that without every caller having to hand it a const.
 
-Mercury's effect handler changes by one word at each site:
+Mercury builds the `Overlay` on the main thread beside the `MenuBar`, holds it for the life
+of `main`, and hands `overlay.sink()` to the effect loop the way it already hands it a
+`WindowSink`:
 
 ```rust
         MercuryEffect::ShowOverlay(text) => overlay.show(text.to_owned()),
         MercuryEffect::HideOverlay => overlay.hide(),
 ```
 
-The `Overlay` is built on the main thread beside the `MenuBar`, and the effect loop holds a reference to it. Nothing goes through `main_loop.run`, and the overlay keeps appearing as promptly as it does today.
+where `overlay` is the `OverlaySink`. Nothing goes through `main_loop.run`, and the overlay
+keeps appearing as promptly as it does today.
 
 # Change 3: dropping an `Interceptor` cannot hang
 
