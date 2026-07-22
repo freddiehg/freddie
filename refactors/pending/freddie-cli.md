@@ -112,7 +112,8 @@ pub struct Instance {
     slug: String,
     display_name: String,
     lock_file: PathBuf,
-    log_file: PathBuf,
+    log_dir: PathBuf,
+    log_file_name: String,
 }
 
 impl Instance {
@@ -140,7 +141,8 @@ impl Instance {
         let slug = slug.into();
         Ok(Self {
             lock_file: freddie_single_instance::lock_path(&slug).ok_or(NoUserDir)?,
-            log_file: log_dir(app)?.join(format!("{slug}.log")),
+            log_dir: log_dir(app)?,
+            log_file_name: format!("{slug}.log"),
             display_name: display_name.into(),
             slug,
         })
@@ -151,9 +153,20 @@ impl Instance {
         &self.lock_file
     }
 
-    /// Where this daemon's log goes. One directory per app, one file per daemon in it.
-    pub fn log_file(&self) -> &Path {
-        &self.log_file
+    /// The directory this daemon's log goes in, one per app, and the name of its file, one per
+    /// daemon. Kept apart because that is how `tracing_appender` takes them, and because the
+    /// directory is what has to be created before anything opens the file.
+    pub fn log_dir(&self) -> &Path {
+        &self.log_dir
+    }
+
+    pub fn log_file_name(&self) -> &str {
+        &self.log_file_name
+    }
+
+    /// The two of them joined, for saying where the log is and for reading it back.
+    pub fn log_file(&self) -> PathBuf {
+        self.log_dir.join(&self.log_file_name)
     }
 
     /// What a verb calls this daemon when it says something about it.
@@ -586,14 +599,14 @@ After:
 
 ```rust
 pub fn init(instance: &Instance, terminal: Terminal) {
-    let path = instance.log_file();
-    let dir = path.parent().unwrap_or(Path::new("."));
-    let file_name = path.file_name().unwrap_or(OsStr::new("log"));
+    let dir = instance.log_dir();
 ```
+
+`LOG_FILE` and this module's `log_dir` are gone: the instance was built knowing both halves, and `rolling::never(dir, instance.log_file_name())` takes them as it always has.
 
 It returns nothing now: it was handing back the path so `logs` could follow it, and `logs` has the instance.
 
-`LOG_FILE` and this module's `log_dir` are both deleted; the instance was built knowing its path, and `rolling::never(dir, file_name)` splits it because that is the shape `tracing_appender` takes. The `unwrap_or`s are unreachable for a path built by `Instance::named`, and are there because `Path` cannot say so. The one message `init` writes itself names the daemon rather than the app:
+ The one message `init` writes itself names the daemon rather than the app:
 
 ```rust
     for problem in setup {
