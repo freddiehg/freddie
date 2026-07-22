@@ -117,8 +117,8 @@ function BendIt() {
           <Doable title="Check out a branch from GitHub">
             Press one key to check out the branch you&rsquo;re reviewing on GitHub, open your editor, and open the changed files. Then press one key to jump back.
           </Doable>
-          <Doable title="Mute your microphone">
-            Mute your microphone and disable your camera from anywhere. No more panicking and scrounging around to find the Google Meet tab when you receive a phone call.
+          <Doable title="Jump to Google Meet">
+            You're doomscrolling, but your boss asked you a question about the sales figures. How quickly can you find Google Meet? One key foregrounds it, wherever it is. No sweat.
           </Doable>
         </div>
         <div className="row">
@@ -148,9 +148,7 @@ function Features() {
             <h3>Integrate anything</h3>
             <p>
               A freddie program responds to whatever you can observe. A keypress,
-              an app being foregrounded, which tab you are
-              looking at, what devices are plugged in, or something you have
-              not thought of yet.
+              an app being foregrounded, which tab you are looking at, what devices are plugged in, or something you have not thought of yet.
             </p>
           </div>
           <div className="col col--4">
