@@ -4,9 +4,9 @@ An app built here is a process holding something there can only be one of, plus 
 
 The verbs are the same because none of them looks inside the process. They read a lock file, spawn a binary, send a signal, and tail a log, and every one of those works the same for a program that has nothing to do with keys or events.
 
-`freddie_cli` is a new crate holding the whole command surface. An app supplies its name, what names one of its daemons, its daemon body, and whatever extra flags that body takes; it gets `start`, `restart`, `status`, `logs`, `stop`, and the hidden `daemon` for free, each keyed to the daemon the command line named and writing to that daemon's own log file. mercury becomes an implementation of one trait and a `main` that is a single call.
+`freddie_cli` is a new crate holding the whole command surface. An app supplies its name, what names one of its daemons, its daemon body, and whatever extra flags that body takes; it gets `start`, `restart`, `status`, `logs`, `stop`, and the hidden `daemon` for free, each keyed to the daemon the command line named and writing to that daemon's own log file. mercury becomes an implementation of one trait, plus a command line of its own with those verbs folded into it.
 
-The name of the binary is the app's, not mercury's. Nothing in `freddie_cli` spells "mercury", and nothing in an app spells the verbs.
+The name of the binary is the app's, not mercury's, and nothing in `freddie_cli` spells "mercury". An app names the block of lifecycle verbs where it flattens them in, and never one of the verbs inside it.
 
 A new crate rather than a dependency, and that is settled rather than assumed: `refactors/past/reuse-existing-crates.md` audited `single-instance`, `service-manager`, and `daemonize` against what these verbs need and none of them fit. `single-instance` cannot probe without acquiring or report a pid, so `status` and `stop` have nothing to build on; `service-manager` cannot express `SuccessfulExit=false`, which is the key the daemon's exit code is tuned to. Whoever forks this gets the lifecycle from here or writes it again themselves.
 
@@ -14,7 +14,7 @@ A new crate rather than a dependency, and that is settled rather than assumed: `
 
 `freddie_cli` owns:
 
-- the `Args`/`Verb` types and the parse
+- the `Verb` enum and the arg structs under it, for an app to flatten into its own parser
 - the single-instance lock: acquiring it for the daemon, probing it for the clients, both under the instance the command line named
 - logging setup, and the log directory
 - every client verb, since all of them are the lock, the log file, and a subprocess
@@ -22,7 +22,7 @@ A new crate rather than a dependency, and that is settled rather than assumed: `
 
 The app owns:
 
-- its name, which keys the log directory and the help text
+- its name, which is what the log directory is called
 - what names one of its daemons, and how many of them there can be
 - what the daemon does, which is everything `mercury::daemon` holds today
 - any flag beyond `--log-level` that its daemon takes
@@ -111,9 +111,9 @@ impl Instance {
 }
 ```
 
-That is the whole trait, and nothing in it is about freddie. A name, an about line, some flags, and a function that runs until it is done: any program that wants one instance of itself and the verbs to manage it fits, whether or not it has a model, an event, or a keyboard. `freddie-daemon-runtime.md` is what mercury calls inside `run`, and this crate never learns that it exists.
+Nothing in either type is about freddie. A name, what names one daemon, some flags, and a function that runs until it is done: any program that wants one instance of itself and the verbs to manage it fits, whether or not it has a model, an event, or a keyboard. `freddie-daemon-runtime.md` is what mercury calls inside `run`, and this crate never learns that it exists.
 
-## The generic command line
+## The verbs, and the flags they carry
 
 An app's daemon takes flags of its own: mercury's `--port` names the socket the extension talks to, and isograph's is a config file path. So the command line is generic over the app, and each of the types that carries the app's flags flattens `TApp::DaemonArgs` in. clap's derive accepts generic parameters, which is what lets it. Verified on the pinned 1.96.0 against clap 4.6.2: a `Subcommand` enum whose variants are a mix of generic and not derives, an arg struct generic over the flags flattens them in, `app daemon --port 4001` parses into it, the shared defaults resolve, and `NoArgs` gives an app with no flags of its own.
 
@@ -206,7 +206,7 @@ pub struct IdArgs<I: clap::Args> {
 
 The arg structs take the flags rather than the app, so their `Debug` derives against `F: Debug`, which the associated type satisfies, and no app is asked for a `Debug` it has no use for.
 
-The `Start` and `Daemon` doc comments lose the binary's name, since the derive writes them into every app's `--help`. `LogsArgs` moves across as it is; `RestartArgs` gains the app's flags and keeps `--force`.
+The `Start` and `Daemon` doc comments lose the binary's name, since the derive writes them into every app's `--help`. `LogsArgs` keeps its `--level` and `StopArgs` its `--force`, and both gain the flattened id.
 
 `StopArgs` and `RestartArgs` say what `--force` costs, and `Signal`'s two variants say what each signal does. All four of those doc comments are written about mercury today, naming the keyboard grab and the modifiers a command layer swallowed. They are reworded down to what this crate actually knows, which is a process, its pid, a lock, and two signals: SIGTERM asks the daemon to quit and it leaves the way it chose to, SIGKILL destroys it so no destructor runs and whatever it would have undone stays undone. Nothing here knows there is a model, an event, or a keyboard. A doc comment is the one place "mercury" can survive the move without the compiler noticing.
 
@@ -240,8 +240,6 @@ enum MercuryVerb {
 The flattened variant sits first because that is where mercury's `--help` lists those verbs today. An app that wants its own first writes them first.
 
 Verified on the pinned 1.96.0 against clap 4.6.2, with mercury's and isograph's command lines built this way: `mercury install` and `mercury status` both parse and reach the right side, `isograph watch ./src` sits beside `isograph status --config ./a.json`, `isograph status --port 1` is still refused, and `mercury --help` prints one flat list of verbs with no sign that half of them came from a library.
-
-This is what `TApp::ABOUT` and the runtime `Command::name` were for, and both are gone: the derive sees a literal, because the app wrote it.
 
 ## Doing a lifecycle verb
 
@@ -307,7 +305,6 @@ impl<TApp: App> Verb<TApp> {
         }
     }
 }
-
 ```
 
 `TypedArgs` is read off the app's own matches, and stays private so that reading it is not something an app does at all:
@@ -359,8 +356,9 @@ impl TypedArgs<'_> {
         for arg in T::augment_args(Command::new("probe")).get_arguments() {
             let id = arg.get_id().as_str();
             let carried = matches.value_source(id) == Some(ValueSource::CommandLine);
-            // A positional has no flag to re-emit it under. `TApp::DaemonArgs` is a set of flags: the verbs
-            // own their positionals, and an app's positional would be ambiguous against them.
+            // A positional has no flag to re-emit it under. An app's two arg sets are sets of
+            // flags: the verbs own their positionals, and an app's would be ambiguous against
+            // them.
             let Some(long) = arg.get_long().filter(|_| carried) else {
                 continue;
             };
@@ -379,10 +377,10 @@ impl TypedArgs<'_> {
 }
 ```
 
-Verified on the pinned 1.96.0 against clap 4.6.2, against an `TApp::DaemonArgs` of `--port` (with an env and a default), `--config` (an optional path), and `--verbose` (a flag):
+Verified on the pinned 1.96.0 against clap 4.6.2, against a `DaemonArgs` of `--port` (with an env and a default), `--config` (an optional path), and `--verbose` (a flag):
 
 - `start --port 4001 --config "/a b/c.toml"` re-emits exactly `["--port", "4001", "--config", "/a b/c.toml"]`. The value with a space needs no quoting, because these reach `Command::arg` as separate `OsString`s and no shell parses them.
-- `restart --force --verbose` re-emits `["--verbose"]`. The verb's own `--force` drops out with no stripping, because it is not one of `TApp::DaemonArgs`'s arguments.
+- `restart --force --verbose` re-emits `["--verbose"]`. The verb's own `--force` drops out with no stripping, because it is not one of the app's arguments.
 - `start` with nothing typed re-emits nothing, and so does `MERCURY_PORT=5005 start`, having parsed as `5005` either way. The child inherits `MERCURY_PORT` and reaches `5005` on its own.
 - `NoArgs` re-emits nothing.
 
@@ -544,7 +542,6 @@ impl App for TestApp {
     type Id = NoArgs;
     type DaemonArgs = NoArgs;
     const NAME: &'static str = "testapp";
-    const ABOUT: &'static str = "A test app.";
 
     fn instance(_: &NoArgs) -> Option<Instance> {
         Some(Instance::global(Self::NAME))
@@ -668,7 +665,7 @@ Its two early returns become `1` and its end becomes `0`, so a menu bar that cou
 
 ## The changes, in order
 
-1. **Logging takes a name.** `log_dir(name)`, the file name derived from it, and `init(name, terminal)`, in mercury, with `client::APP` passed at each of the four call sites. No behaviour changes: the name passed is the name that was written.
+1. **Logging takes a name.** `log_dir(name)`, the file name derived from it, and `init(name, terminal)`, in mercury, with `client::APP` passed at each of the four call sites. No behaviour changes: the name passed is the name that was written. The instance is not part of this one, since mercury has no second daemon to tell apart; change 2 is where `init` gains it.
 2. **`freddie_cli`, holding the lifecycle verbs.** The trait, `Instance`, `Verb` and the arg structs, `dispatch`, `bare`, the daemon verb, `logging`, and the `client` module, all keyed to the instance the command line named. mercury gains a `Parser` of its own that flattens `Verb<Mercury>` in beside `install` and `uninstall`. mercury shrinks to the `main.rs` above, a `daemon.rs` that starts at `freddie_windows::init()`, and an `agent.rs` holding `install` and `uninstall`. Every verb does what it does now, and `mercury --help` prints what it prints now, because mercury's instance is its name and its `Id` is empty.
 
 One change rather than one per verb: `Verb` is a single enum and `dispatch` a single match, so a `freddie_cli` holding some of the verbs would leave mercury without the rest.
