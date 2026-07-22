@@ -285,7 +285,7 @@ The `Start` and `Daemon` doc comments lose the binary's name, since the derive w
 
 `StopArgs` and `RestartArgs` say what `--force` costs, and `Signal`'s two variants say what each signal does. All four of those doc comments are written about mercury today, naming the keyboard grab and the modifiers a command layer swallowed. They are reworded down to what this crate actually knows, which is a process, its pid, a lock, and two signals: SIGTERM asks the daemon to quit and it leaves the way it chose to, SIGKILL destroys it so no destructor runs and whatever it would have undone stays undone. Nothing here knows there is a model, an event, or a keyboard. A doc comment is the one place "mercury" can survive the move without the compiler noticing.
 
-`use clap::error::ErrorKind; use clap::{ArgMatches, CommandFactory, FromArgMatches, Subcommand};`.
+`use std::process::ExitCode; use clap::error::ErrorKind; use clap::{ArgMatches, CommandFactory, FromArgMatches, Subcommand};`.
 
 ## The app owns its command line
 
@@ -321,17 +321,12 @@ Verified on the pinned 1.96.0 against clap 4.6.2, with mercury's and isograph's 
 `dispatch` takes the app's whole `ArgMatches` beside the verb, because the three verbs that put a daemon somewhere have to hand it the flags this invocation was given, and those are read off the matches rather than off the parsed struct. `TypedArgs` is what carries them, and it is this crate's own: an app passes what it already has and never builds one.
 
 ```rust
-/// Do one lifecycle verb, and report the exit code for it.
+/// Do one lifecycle verb: work out which daemon it means, start logging, and run it.
 ///
-/// Resolves which daemon it means before it does anything, and an id that names none is the one
-/// failure this level reports itself.
-///
-/// Reads the typed flags off the matches itself, so every spawned daemon gets the id its parent
-/// was given. One spawned without it resolves a different instance, takes a different lock, and
-/// leaves the `start` that spawned it reporting success over something else.
-pub fn dispatch<TApp: App>(verb: Verb<TApp>, matches: &ArgMatches) -> i32 {
-    let typed = TypedArgs::of(matches);
-
+/// The three steps every verb needs, in the one order they work in. Logging is set up here rather
+/// than inside each verb because its path comes from the instance, so nothing before this line
+/// has anywhere to write.
+pub fn dispatch<TApp: App>(verb: Verb<TApp>, matches: &ArgMatches) -> ExitCode {
     let instance = match TApp::instance(verb.id()) {
         Ok(instance) => instance,
         // Through clap rather than a print, and on stderr rather than in the log, because there
@@ -343,15 +338,25 @@ pub fn dispatch<TApp: App>(verb: Verb<TApp>, matches: &ArgMatches) -> i32 {
         Err(e) => clap::Error::raw(ErrorKind::ValueValidation, format!("{e}\n")).exit(),
     };
 
+    logging::init(&instance, verb.terminal());
+    run::<TApp>(verb, &instance, TypedArgs::of(matches))
+}
+
+/// Run the verb, with its daemon named and its logging up.
+///
+/// `TypedArgs` is read off the matches by [`dispatch`], so every spawned daemon gets the id its
+/// parent was given. One spawned without it resolves a different instance, takes a different
+/// lock, and leaves the `start` that spawned it reporting success over something else.
+fn run<TApp: App>(verb: Verb<TApp>, instance: &Instance, typed: TypedArgs<'_>) -> ExitCode {
     match verb {
-        Verb::Start(_) => client::start::<TApp>(&instance, typed),
-        Verb::Restart(args) => client::restart::<TApp>(&instance, &args, typed),
-        Verb::Status(_) => client::status(&instance),
-        Verb::Logs(args) => client::logs::<TApp>(&instance, &args),
-        Verb::Stop(args) => client::stop::<TApp>(&instance, &args),
+        Verb::Start(_) => client::start::<TApp>(instance, typed),
+        Verb::Restart(args) => client::restart::<TApp>(instance, &args, typed),
+        Verb::Status(_) => client::status(instance),
+        Verb::Logs(args) => client::logs(instance, &args),
+        Verb::Stop(args) => client::stop(instance, &args),
         Verb::Daemon(args) => {
-            daemon::run::<TApp>(&instance, &args);
-            0
+            daemon::run::<TApp>(instance, &args);
+            ExitCode::SUCCESS
         }
     }
 }
@@ -376,6 +381,18 @@ pub fn bare<TApp: App>() -> Verb<TApp> {
 }
 
 impl<TApp: App> Verb<TApp> {
+    /// What this verb's terminal is for: being the daemon, or talking to one.
+    fn terminal(&self) -> Terminal {
+        match self {
+            Self::Daemon(_) => Terminal::Daemon,
+            Self::Start(_)
+            | Self::Restart(_)
+            | Self::Status(_)
+            | Self::Logs(_)
+            | Self::Stop(_) => Terminal::Client,
+        }
+    }
+
     /// What this verb said about which daemon it meant. Every verb says something, because every
     /// verb is about one.
     fn id(&self) -> &TApp::Id {
@@ -503,13 +520,12 @@ pub const DAEMON_VERB: &str = "daemon";
 The lock and the logging move ahead of the app, so an app cannot forget either and two apps cannot disagree about where they go.
 
 ```rust
-/// Run the app's daemon in the foreground: set up logging, take the lock, and hand over.
+/// Run the app's daemon in the foreground: take the lock, and hand over.
 pub(crate) fn run<TApp: App>(
     instance: &Instance,
     args: &DaemonVerbArgs<TApp::Id, TApp::DaemonArgs>,
 ) {
-    let log_path = logging::init(instance, &Terminal::Daemon(LogLevel(&args.log_level)));
-    info!(path = %log_path.display(), "logging");
+    info!(path = %instance.log_file().display(), "logging");
 
     // Before anything that touches the machine, because two of one instance fight over whatever
     // there is only one of. The binding must outlive the call (`let _held`, never `let _`):
@@ -554,11 +570,13 @@ pub fn init(terminal: &Terminal<'_>) -> PathBuf {
 After:
 
 ```rust
-pub fn init(instance: &Instance, terminal: &Terminal<'_>) -> PathBuf {
+pub fn init(instance: &Instance, terminal: Terminal) {
     let path = instance.log_file();
     let dir = path.parent().unwrap_or(Path::new("."));
     let file_name = path.file_name().unwrap_or(OsStr::new("log"));
 ```
+
+It returns nothing now: it was handing back the path so `logs` could follow it, and `logs` has the instance.
 
 `LOG_FILE` and this module's `log_dir` are both deleted; the instance was built knowing its path, and `rolling::never(dir, file_name)` splits it because that is the shape `tracing_appender` takes. The `unwrap_or`s are unreachable for a path built by `Instance::named`, and are there because `Path` cannot say so. The one message `init` writes itself names the daemon rather than the app:
 
@@ -576,7 +594,8 @@ What does move is every verb that only reads a lock, spawns a binary, signals a 
 
 - `const APP: &str = "mercury"` is deleted. Five of its use sites become the instance the verb was given; the two under `label` stay in mercury with the launch agent.
 - Every function that reads the instance, or calls one that does, takes an `&Instance`, and the `holder`/`acquire`/`await_free` calls become their `_at` counterparts, which take the path the instance already resolved.
-- Every message that spells "mercury" spells `instance.display_name()`, which is what makes both a fork's output its own and isograph's name the config it means.
+- Every message that spells "mercury" spells `instance.display_name()`, which is what makes both a fork's output its own and a multi-daemon app's name the one it means.
+- The `logging::init` call at the top of each verb is deleted: `dispatch` does it once, before any of them runs.
 - `start` and `restart` take a `TypedArgs<'_>` and pass it down to `spawn_daemon`, which forwards the id along with the flags.
 
 The instance reaches the lock, in place of the app's name:
@@ -589,16 +608,15 @@ fn ensure_started<TApp: App>(instance: &Instance, typed: TypedArgs<'_>) -> Resul
 and every line a verb writes:
 
 ```rust
-pub(crate) fn status(instance: &Instance) -> i32 {
-    logging::init(instance, &Terminal::Client);
+pub(crate) fn status(instance: &Instance) -> ExitCode {
     match freddie_single_instance::holder_at(instance.lock_file()) {
         Ok(Held::Free) => {
             info!("{} is not running", instance.display_name());
-            1
+            ExitCode::FAILURE
         }
         Ok(Held::By(pid)) => {
             info!("{} is running (pid {pid})", instance.display_name());
-            0
+            ExitCode::SUCCESS
         }
 ```
 
@@ -634,6 +652,8 @@ impl App for TestApp {
 
 ```rust
 //! The mercury binary: its command line, with freddie's lifecycle verbs folded into it.
+
+use std::process::ExitCode;
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use freddie_cli::{App, Instance, NoArgs};
@@ -686,22 +706,19 @@ impl App for Mercury {
     }
 }
 
-fn main() -> ! {
+fn main() -> ExitCode {
     // First, so `--help` prints and a bad flag exits before the lock, the keyboard, or the icon.
     // The matches are kept beside the parse because `dispatch` reads what was written from them.
     let matches = MercuryCli::command().get_matches();
     let cli = MercuryCli::from_arg_matches(&matches)
         .expect("the derived type matches the command it derived");
 
-    let code = match cli.verb {
+    match cli.verb {
         Some(MercuryVerb::Lifecycle(verb)) => freddie_cli::dispatch::<Mercury>(verb, &matches),
         Some(MercuryVerb::Install) => agent::install(),
         Some(MercuryVerb::Uninstall) => agent::uninstall(),
         None => freddie_cli::dispatch::<Mercury>(freddie_cli::bare::<Mercury>(), &matches),
-    };
-    // Every path above has returned, so the daemon's locals are already dropped by the time this
-    // skips the rest of the destructors.
-    std::process::exit(code);
+    }
 }
 ```
 
