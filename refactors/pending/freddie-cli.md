@@ -74,11 +74,35 @@ pub trait App {
     /// only ever prints this one. `freddie_menu_bar::show` returns the same thing.
     fn instance(id: &Self::Id) -> Result<Instance, Box<dyn std::error::Error + Send + Sync>>;
 
-    /// Be the daemon. Returns the process's exit code when it has quit.
+    /// Be the daemon. Returns how it ended.
     ///
     /// Called with the lock held and logging initialized. Returning drops the lock, so an app
     /// that wants to stay running stays inside this call.
-    fn run(id: &Self::Id, args: &Self::DaemonArgs) -> i32;
+    fn run(id: &Self::Id, args: &Self::DaemonArgs) -> Ended;
+}
+
+/// How a daemon's run ended.
+///
+/// Not an exit code, because a daemon started by a service manager is watched by one, and the
+/// codes a watcher reads are a contract an app must not be able to break by returning a number.
+/// Both of these mean do not start me again, and both are zero: the run is over either because
+/// it was asked to be or because starting it again would fail the same way. A panic is the only
+/// nonzero exit, and it is the only one that means try again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ended {
+    /// It ran, and stopped because something asked it to.
+    Stopped,
+    /// It never ran: something it needed was unavailable, and another attempt would find the same.
+    Refused,
+}
+
+impl Ended {
+    /// What the process exits with.
+    fn code(self) -> i32 {
+        match self {
+            Self::Stopped | Self::Refused => 0,
+        }
+    }
 }
 
 /// The daemon flags, or the id, of an app that has none.
@@ -304,7 +328,7 @@ pub fn dispatch<TApp: App>(verb: Verb<TApp>, matches: &ArgMatches) -> i32 {
         Verb::Status(_) => client::status(&instance),
         Verb::Logs(args) => client::logs::<TApp>(&instance, &args),
         Verb::Stop(args) => client::stop::<TApp>(&instance, &args),
-        Verb::Daemon(args) => daemon::run::<TApp>(&instance, &args),
+        Verb::Daemon(args) => daemon::run::<TApp>(&instance, &args).code(),
     }
 }
 
@@ -459,7 +483,7 @@ The lock and the logging move ahead of the app, so an app cannot forget either a
 pub(crate) fn run<TApp: App>(
     instance: &Instance,
     args: &DaemonVerbArgs<TApp::Id, TApp::DaemonArgs>,
-) -> i32 {
+) -> Ended {
     let log_path = logging::init(instance, &Terminal::Daemon(LogLevel(&args.log_level)));
     info!(path = %log_path.display(), "logging");
 
@@ -470,7 +494,7 @@ pub(crate) fn run<TApp: App>(
         Ok(held) => held,
         Err(e) => {
             error!(daemon = instance.display_name(), error = %e, "already running; `stop` ends it");
-            return 1;
+            return Ended::Refused;
         }
     };
 
@@ -478,7 +502,7 @@ pub(crate) fn run<TApp: App>(
 }
 ```
 
-The daemon verb reports a code where mercury's exits 0 whatever happened: a lock it could not take and a menu bar it could not create are both a daemon that did not run. An app whose launch agent declines to revive a clean exit depends on this, which mercury's does.
+A second daemon that finds the lock held has not failed, it has found out it was not needed, and it says so with the same code a clean stop uses. Starting it again would find the lock held again.
 
 ## Logging keyed to the instance
 
@@ -572,7 +596,7 @@ impl App for TestApp {
         Ok(Instance::global(Self::NAME))
     }
 
-    fn run(_: &NoArgs, _: &NoArgs) -> i32 {
+    fn run(_: &NoArgs, _: &NoArgs) -> Ended {
         unreachable!("the parse tests never run the daemon")
     }
 }
@@ -588,7 +612,7 @@ impl App for TestApp {
 //! The mercury binary: its command line, with freddie's lifecycle verbs folded into it.
 
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
-use freddie_cli::{App, Instance, NoArgs};
+use freddie_cli::{App, Ended, Instance, NoArgs};
 
 mod agent;
 mod daemon;
@@ -633,7 +657,7 @@ impl App for Mercury {
         Ok(Instance::global(Self::NAME))
     }
 
-    fn run(_: &NoArgs, args: &MercuryArgs) -> i32 {
+    fn run(_: &NoArgs, args: &MercuryArgs) -> Ended {
         daemon::run(args.port)
     }
 }
@@ -680,11 +704,11 @@ pub(crate) fn run(args: &DaemonArgs) {
 After:
 
 ```rust
-pub(crate) fn run(port: u16) -> i32 {
+pub(crate) fn run(port: u16) -> Ended {
     if let Err(e) = freddie_windows::init() {
 ```
 
-Its two early returns become `1` and its end becomes `0`, so a menu bar that could not be created is a daemon that did not run. `use crate::cli::DaemonArgs;` and `use crate::logging::{self, LogLevel, Terminal};` go with the modules they name.
+Its two early returns become `Ended::Refused` and its end becomes `Ended::Stopped`, so a menu bar that could not be created is a daemon that did not run and that launchd is not asked to start again. `use crate::cli::DaemonArgs;` and `use crate::logging::{self, LogLevel, Terminal};` go with the modules they name.
 
 `freddie_cli`'s dependencies are `clap`, `tracing`, `tracing-subscriber`, `tracing-appender`, and `freddie_single_instance`. mercury drops `tracing-subscriber` and `tracing-appender`, and keeps `clap`, `tracing`, `serde` for the wire types and the launch agent, `plist` for writing it, and `freddie_single_instance`, which `label` and the agent verbs still reach.
 

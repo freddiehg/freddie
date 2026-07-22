@@ -118,12 +118,12 @@ function BendIt() {
             Press one key to check out the branch you&rsquo;re reviewing on GitHub, open your editor, and open the changed files. Then press one key to jump back.
           </Doable>
           <Doable title="Jump to Google Meet">
-            You're doomscrolling, but your boss asked you a question about the sales figures. How quickly can you find Google Meet? One key foregrounds it, wherever it is. No sweat.
+            You&rsquo;re doomscrolling, but your boss asked you a question about the sales figures. How quickly can you find Google Meet? One key foregrounds it, wherever it is. No sweat.
           </Doable>
         </div>
         <div className="row">
           <Doable title="Rearrange windows automatically">
-            Connect a monitor and have your windows go back to where they belong, without any futzing on your part.
+            Connect a monitor and have your application windows go back to where they belong, without any futzing on your part.
           </Doable>
           <Doable title="Respond to scheduled events">
             Nudge yourself to stop doomscrolling after 30 minutes or decrease your screen&rsquo;s brightness at sundown.
@@ -139,29 +139,27 @@ function BendIt() {
 
 function Features() {
   return (
-    <section className="alt-background">
+    <section>
       <div className="container">
-        <div className="kicker">It’s simple</div>
+        <div className="kicker">It’s the elm architecture</div>
         <h2 className={styles.centeredHeading}>Events in, effects out</h2>
         <div className="row" style={{ paddingTop: '1.5rem' }}>
           <div className="col col--4">
-            <h3>Integrate anything</h3>
+            <h3>Effects in</h3>
             <p>
-              A freddie program responds to whatever you can observe. A keypress,
-              an app being foregrounded, which tab you are looking at, what devices are plugged in, or something you have not thought of yet.
+              A freddie program responds to any arbitrary event stream. Each is incorporated into the same state, so an event handler can make complex decisions that take into account multiple sources of information.
             </p>
           </div>
           <div className="col col--4">
-            <h3>There’s no stopping me</h3>
+            <h3>Pure, testable core</h3>
             <p>
-              Because we're integrating events from many sources, we can easily do crazy things, such as cloning the repository you're looking at without leaving GitHub, or muting your microphone on Google Meet (without finding the tab!)
+              You write individual event handlers, and freddie assembles them into a larger function: events in, descriptions of effects out. This larger function is pure and side-effect free, and thus easily tested and easy to reason about.
             </p>
           </div>
           <div className="col col--4">
-            <h3>Testable, understandable</h3>
+            <h3>Effects out</h3>
             <p>
-              A freddie program is centered around a single, pure function: state and event in, new
-              state and a list of effects out. And so a freddie program remains testable and easy to reason about, even as it scales and grows more complex.
+              You can handle these effects however you like. Resize windows, foreground apps, send keys. Because we're writing code and your handlers receive access to the state, there really is no limit to what you can accomplish.
             </p>
           </div>
         </div>
@@ -205,17 +203,17 @@ function DontStopMeNow() {
             Other programs for remapping keys are configuration-driven, and that makes it difficult or impossible to handle unanticipated use cases.
           </p>
           <p>
-            Want to bind keys? That's fine, because these apps allow that. But, want your windows to go back where they belong the moment you connect to a monitor? You're out of luck — that's a device event, not a keybinding, and these apps don't allow you to incorporate arbitrary streams of events.
+            Want to bind keys? That&rsquo;s fine, because these apps allow that. But, want your application windows to go back where they belong the moment you connect to a monitor? You&rsquo;re out of luck — that&rsquo;s a device event, not a keybinding, and these apps don&rsquo;t allow you to incorporate arbitrary streams of events.
           </p>
           <h3>That&rsquo;s a sign of a deeper problem</h3>
           <p>
-            Want these keybindings to do different things in different states? Well, you'd better hope that the app exposed that aspect of the state to you. Different keybindings for different active apps? That's doable, because it's anticipated and allowlisted. But, what about custom mute/unmute keybindings for when you're in an active Google Meet call? Not possible.
+            Want these keybindings to do different things in different states? Well, you&rsquo;d better hope that the app exposed that aspect of the state to you. Different keybindings for different active apps? That&rsquo;s doable, because it&rsquo;s anticipated and allowlisted. But, what about custom mute/unmute keybindings for when you&rsquo;re in an active Google Meet call? Not possible.
           </p>
           <p>
-            And, in configuration-driven frameworks, you don't write functions, so your handlers don't get access to the state at all! Want one key that maximizes a window and, pressed again, puts it back exactly where it was? Then something has to remember the window's old position, in other words, it needs to be a function that is passed state.
+            And, in configuration-driven frameworks, you don&rsquo;t write functions, so your handlers don&rsquo;t get access to the state at all! Want one key that maximizes a window and, pressed again, puts it back exactly where it was? Then something has to remember the window&rsquo;s old position, in other words, it needs to be a function that is passed state.
           </p>
           <p>
-            Now, more folks are willing to write configuration than to write and compile a Rust program. But guess what — freddie isn't for everyone. So, if you're willing to clone a repo, make some changes and run cargo build, freddie is here to give you incredible power.
+            Now, more folks are willing to write configuration than to write and compile a Rust program. But guess what — freddie isn&rsquo;t for everyone. So, if you&rsquo;re willing to clone a repo, make some changes and run cargo build, freddie is here to give you incredible power.
           </p>
         </Prose>
       </div>
@@ -225,13 +223,13 @@ function DontStopMeNow() {
 
 function BindingSection() {
   return (
-    <section>
+    <section className="alt-background">
       <div className="container">
         <div className="kicker">It’s a kind of magic</div>
         <h2 className={styles.centeredHeading}>Handle complexity with ease</h2>
         <Prose>
           <p>
-            The value of using a programming language and compiling our own program becomes apparent when we move beyond simple examples. Here, we'll build something that is impossible (or at least, awkward) in any other framework: the ability to maximize windows, and the ability to restore them to their previous location.
+            The value of using a programming language and compiling our own program becomes apparent when we move beyond simple examples. Here, we&rsquo;ll build something that is impossible (or at least, awkward) in any other framework: the ability to maximize windows, and later restore them to their previous location.
           </p>
           <p>
             First, we add the appropriate pieces of state onto our root struct:
@@ -271,9 +269,9 @@ function BindingSection() {
           </div>
         </Prose>
         <Prose>
-          <h3>But wait &mdash; how did that state get there?</h3>
+          <h3>Populating the state</h3>
           <p>
-            Amazing! And, simple, even. We wrote handlers that accessed and mutated the state, and emitted effects that did the right thing. But that <code>focused</code> field did not fill itself in. We have to hook that up ourselves, too:
+            So far so good — we wrote handlers that accessed and mutated the state, and emitted effects that did the right thing. But that <code>focused</code> field did not fill itself in. We have to hook that up ourselves, too:
           </p>
         </Prose>
         <Prose>
@@ -391,9 +389,9 @@ export default function Home(): ReactNode {
       <main>
         <BendIt />
         <DontStopMeNow />
-        <Video />
         <Features />
         <BindingSection />
+        <Video />
         <Mercury />
         <AreYouReady />
       </main>
