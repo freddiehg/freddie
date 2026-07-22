@@ -65,7 +65,7 @@ An overlay's lifetime is the lifetime of whatever state holds it, and those diff
 
 The keymap overlay is held for the run. It is shown and hidden on every layer change, so its panel stays built between showings: `hide` orders it out and keeps it, and the next keystroke puts an existing panel on screen rather than constructing one. That is the whole reason `hide` is not `drop`.
 
-An overlay shown for an infrequent event, and only briefly, is the other case. Its state appears, an [`Overlay`] is built with it, and when that state goes the handle drops. Nothing keeps a panel warm for something that may not happen again, and the drop has to give the panel back rather than park it hidden and alive — which is what `close` is for, and why `build` clears `releasedWhenClosed` to make that release ours to perform.
+An overlay shown for an infrequent event, and only briefly, is the other case. Its state appears, an [`Overlay`] is built with it, and when that state goes the handle drops. Nothing keeps a panel warm for something that may not happen again, and the drop has to give the panel back rather than park it hidden and alive. `close` is what does that, and `build` clears `releasedWhenClosed` so the release is ours to perform.
 
 So `hide` is for an overlay that will be shown again, and `drop` is for one that will not.
 
@@ -214,19 +214,19 @@ impl OverlaySink {
 }
 
 impl Drop for Overlay {
-    /// Takes the panel off screen and gives it back.
+    /// Gives the panel back.
     ///
-    /// Dropping the `Retained` alone does neither: AppKit's window list holds its own
-    /// reference to a window, so the panel would stay alive, and stay visible, with nothing
-    /// on this side able to reach it.
+    /// Dropping the `Retained` alone would not: AppKit's window list holds its own
+    /// reference to a window, so the panel would stay alive, and stay on screen, with
+    /// nothing on this side able to reach it.
     ///
-    /// `close` is what drops AppKit's reference. It is safe to call because `build` cleared
-    /// `releasedWhenClosed`, so closing does not also release — the `Retained` going out of
-    /// scope here is the last reference, and the panel is deallocated.
+    /// `close` takes it off the screen and off that list, so no `orderOut` is needed first.
+    /// It is safe to call because `build` cleared `releasedWhenClosed`, so closing does not
+    /// also release — the `Retained` going out of scope here is the last reference, and the
+    /// panel is deallocated.
     fn drop(&mut self) {
         PANELS.with_borrow_mut(|panels| {
             if let Some(panel) = panels.remove(&self.id) {
-                panel.panel.orderOut(None);
                 panel.panel.close();
             }
         });
