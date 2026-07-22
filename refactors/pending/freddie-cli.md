@@ -109,9 +109,8 @@ pub struct Instance {
 
 impl Instance {
     /// The one daemon of an app that has one, keyed to the app itself.
-    pub fn global(app: impl Into<String>) -> Result<Self, NoLogDir> {
-        let app = app.into();
-        Self::named(&app, app.clone(), app.clone())
+    pub fn global(app: &str) -> Result<Self, NoLogDir> {
+        Self::named(app, app, app)
     }
 
     /// One of many: `slug` names its files, `display_name` is what the person who asked for it
