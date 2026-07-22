@@ -300,3 +300,82 @@ impl Drop for Interceptor {
 ```
 
 The keyboard comes back regardless: the tap dies with the process even if the thread never unwinds.
+
+# Change 4: the tap's teardown is its own type
+
+`Interceptor` is the public handle, and it carries the whole teardown: a run loop to stop, a thread to join, and after Change 3 a channel and a timeout as well. `docs/platform-apis.md` says to put `Drop` on a newtype around the resource and leave the outer type without one, so that what the handle means and how the resource is released are separate things to read.
+
+The resource here is the thread running the tap. Stopping its run loop and waiting for it are two steps of releasing one thing, so they belong together, in a type that is nothing else.
+
+`crates/freddie_keyboard/src/sys/macos.rs`, before (with Change 3 applied):
+
+```rust
+/// An active grab of the keyboard. While it is alive keys are intercepted;
+/// dropping it releases the keyboard.
+pub struct Interceptor {
+    run_loop: CFRunLoop,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Drop for Interceptor {
+    fn drop(&mut self) {
+        self.run_loop.stop();
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = thread.join();
+            let _ = done_tx.send(());
+        });
+        if done_rx.recv_timeout(RELEASE_TIMEOUT).is_err() {
+            tracing::warn!("the keyboard tap did not stop; releasing without it");
+        }
+    }
+}
+```
+
+After:
+
+```rust
+/// An active grab of the keyboard. While it is alive keys are intercepted; dropping it
+/// releases the keyboard.
+///
+/// No `Drop` of its own: dropping it drops the [`TapThread`], which is what the release is.
+pub struct Interceptor {
+    _tap: TapThread,
+}
+
+/// The thread the event tap runs on, and the run loop that ends it.
+///
+/// One resource in two parts: stopping the run loop is what makes the thread return, and
+/// joining is how the release finishes.
+struct TapThread {
+    run_loop: CFRunLoop,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Drop for TapThread {
+    fn drop(&mut self) {
+        self.run_loop.stop();
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        // Joined on another thread so this one can stop waiting. The tap is released when
+        // the thread ends either way; what the timeout bounds is how long the caller waits
+        // to hear about it.
+        let (done_tx, done_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = thread.join();
+            let _ = done_tx.send(());
+        });
+        if done_rx.recv_timeout(RELEASE_TIMEOUT).is_err() {
+            tracing::warn!("the keyboard tap did not stop; releasing without it");
+        }
+    }
+}
+```
+
+`intercept` builds the `TapThread` and wraps it, and nothing else changes: `Interceptor` is still what the caller holds and still releases the keyboard when dropped.
+
+The rest of the crates already do this. `freddie_windows` releases through `Owned`, `AppObserver`, and `Observation`, each wrapping one thing. `freddie_app_nav`'s `Watcher` and `freddie_main_loop`'s `Stopper` are each nothing but the registration they undo, so `Drop` on them is `Drop` on the resource. `freddie_single_instance`'s `Instance` holds a `File`, which closes itself.
