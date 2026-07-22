@@ -1,48 +1,41 @@
 # the lifecycle verbs, off macOS
 
-`freddie-cli.md` builds a crate that finds a daemon, starts one, signals it, and tails its log. Nothing in what it does is particular to a platform, and much of how it does it is: it shells out to `/bin/kill`, it shells out to `/usr/bin/tail`, it writes under `~/Library/Logs`, and it detaches a child with a Unix process group.
+`freddie_cli` finds a daemon, starts one, stops it, and follows its log. Four things in it are macOS-shaped: the log directory is `~/Library/Logs`, `logs` runs `/usr/bin/tail`, `stop` runs `/bin/kill`, and `start` detaches its child with a Unix process group.
 
-This doc is what each of those becomes on Linux and on Windows. It is worth doing because the crate's second consumer is a compiler daemon that watches project directories, and those run wherever the projects are. The keyboard remapper stays macOS-only whatever happens here, because a `CGEventTap` has no counterpart to port to.
+`freddie_single_instance` is not one of them. It locks through `File::try_lock`, which is `std`, and picks its state directory per platform already, so the lock and every probe over it work on all three today.
 
-The split is already drawn where it needs to be: an app's `run` is the app's, so a macOS-only app compiled on macOS and a portable app compiled everywhere both use the same crate. What follows is only about the verbs.
-
-## What is already portable
-
-`freddie_single_instance` is done, and it is the hard part. It locks through `File::try_lock` and `File::try_lock_shared`, which are `std`, and it already picks a per-user state directory three ways:
-
-```rust
-#[cfg(target_os = "macos")]
-fn state_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library/Application Support"))
-}
-
-#[cfg(target_os = "windows")]
-fn state_dir() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
-}
-
-#[cfg(all(unix, not(target_os = "macos")))]
-fn state_dir() -> Option<PathBuf> {
-    std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state")))
-}
-
-#[cfg(not(any(unix, target_os = "windows")))]
-compile_error!("freddie_single_instance has no per-user state directory for this platform");
-```
-
-So `status`, and the probe half of `start`, `restart`, and `stop`, work on all three today. What is left is four things.
+The app's `run` is the app's, so an app bound to one platform and an app that runs everywhere both use this crate unchanged. What follows is only the verbs.
 
 ## The log directory
 
-`Instance::named` resolves the log path once, when the instance is built, and fails with `NoLogDir` when the environment names nowhere to put it. So this is one function with three arms, written the way `state_dir` already is, and every caller downstream just reads a `&Path`.
+`Instance::named` resolves the path once and hands out a `&Path`, so this is one function, shaped like `freddie_single_instance::state_dir`.
+
+Before:
 
 ```rust
-/// The per-user directory this app's logs go in, or [`NoLogDir`] when there is none.
-///
-/// Each is the platform's place for logs a person is expected to read, and each matches where
-/// `freddie_single_instance` puts the lock, so a daemon that can take its lock can write its log.
+fn log_dir(app: &str) -> Result<PathBuf, NoLogDir> {
+    let home = std::env::var_os("HOME").ok_or(NoLogDir)?;
+    Ok(PathBuf::from(home).join("Library/Logs").join(app))
+}
+```
+
+After:
+
+```rust
+/// This user's home, which is the only environment variable this crate reads.
+#[cfg(unix)]
+fn home() -> Result<PathBuf, NoLogDir> {
+    std::env::var_os("HOME").map(PathBuf::from).ok_or(NoLogDir)
+}
+
+#[cfg(windows)]
+fn home() -> Result<PathBuf, NoLogDir> {
+    std::env::var_os("USERPROFILE").map(PathBuf::from).ok_or(NoLogDir)
+}
+
+/// The per-user directory `app`'s logs go in: the platform's place for logs a person is expected
+/// to read. Each sits beside where `freddie_single_instance` puts the lock, so a daemon that can
+/// take its lock can write its log.
 #[cfg(target_os = "macos")]
 fn log_dir(app: &str) -> Result<PathBuf, NoLogDir> {
     Ok(home()?.join("Library/Logs").join(app))
@@ -59,8 +52,7 @@ fn log_dir(app: &str) -> Result<PathBuf, NoLogDir> {
     Ok(base.join(app))
 }
 
-/// `%LOCALAPPDATA%`, per-machine like the lock: a roaming profile must not sync one machine's log
-/// onto another.
+/// `%LOCALAPPDATA%`, per-machine: a roaming profile must not sync one machine's log onto another.
 #[cfg(target_os = "windows")]
 fn log_dir(app: &str) -> Result<PathBuf, NoLogDir> {
     let base = std::env::var_os("LOCALAPPDATA").ok_or(NoLogDir)?;
@@ -71,71 +63,216 @@ fn log_dir(app: &str) -> Result<PathBuf, NoLogDir> {
 compile_error!("freddie_cli has no per-user log directory for this platform");
 ```
 
-`home()` reads `HOME` on Unix and `USERPROFILE` on Windows, and is the only place either is read once this lands. The `compile_error!` arm is copied from `freddie_single_instance` deliberately: a platform this crate has no answer for should not build.
-
 ## Following the log
 
-`logs` runs `/usr/bin/tail -n 50 -F`. Windows has no `tail`, and `Get-Content -Wait` through PowerShell is a second shell-out with a second set of quoting rules.
+`logs` reads the file itself on every platform, and `TAIL`, `TAIL_LINES`, and the `Command` that ran them are deleted.
 
-The verb reads the file itself instead, on every platform. It opens the log, seeks back far enough for the last fifty lines, writes what it finds, then blocks reading and writes what arrives. A file that is replaced rather than appended to is not a case that arises: `tracing_appender::rolling::never` holds one file open and never rotates it.
+Before, in `client::logs`:
 
-This deletes a subprocess rather than porting one, and it deletes one of the three exceptions to `refactors/past/one-log-many-writers.md`: with no `tail` writing to the terminal, the only things that bypass tracing are clap and the tests.
+```rust
+    let mut tail = match Command::new(TAIL)
+        .args(["-n", TAIL_LINES])
+        .arg("-F")
+        .arg(&path)
+        .stdout(Stdio::piped())
+        .spawn()
+```
 
-Reading a file that another process is appending to needs no locking on any of the three: a reader sees bytes once they are written, and a partially written line is a line that has not arrived yet.
+After:
+
+```rust
+/// How much of the existing log to show before following.
+const BACKLOG_LINES: usize = 50;
+
+/// How long to wait before looking for more, once a read has come up empty.
+///
+/// A poll, and the exception the "never poll" rule allows: no platform reports a regular file
+/// growing through a readiness primitive. `epoll` and `kqueue` both call a regular file always
+/// ready and return zero bytes, and `tail -F` polls for the same reason. A watch crate would
+/// trade this for a dependency and a thread, and would still wake on a timer underneath.
+const IDLE: Duration = Duration::from_millis(200);
+
+/// Write `path`'s last [`BACKLOG_LINES`] lines to `out`, then whatever is appended to it, until
+/// the reader is interrupted or `out` closes.
+///
+/// The file is opened once and never reopened: `tracing_appender::rolling::never` holds one file
+/// for the life of the process and never rotates it, so there is no new inode to follow onto.
+fn follow(path: &Path, out: &mut impl Write) -> io::Result<()> {
+    let mut file = File::open(path)?;
+    let mut reader = BufReader::new(&mut file);
+
+    // The backlog, kept in a ring so the whole file is never held: a log is appended to for the
+    // life of a daemon and there is no bound on how long that is.
+    let mut backlog = VecDeque::with_capacity(BACKLOG_LINES);
+    let mut line = String::new();
+    while reader.read_line(&mut line)? != 0 {
+        if backlog.len() == BACKLOG_LINES {
+            backlog.pop_front();
+        }
+        backlog.push_back(std::mem::take(&mut line));
+    }
+    for line in &backlog {
+        show(out, line)?;
+    }
+
+    // Then whatever arrives. A read that returns nothing is the writer not having written yet,
+    // which is the common case: waiting on it is the whole of what this verb does.
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            std::thread::sleep(IDLE);
+            continue;
+        }
+        show(out, &line)?;
+    }
+}
+```
+
+`show` is what `client.rs` already has: it reads the record's level out of the line, colours it when the terminal is one, and writes it. It is unchanged, and it is the reason the backlog is kept as lines rather than bytes.
+
+A partial line is a line that has not arrived. `read_line` returns it without its newline only at end of file, and the next read resumes mid-line, so a record written in two writes reaches `show` in two pieces. Read to a newline before showing:
+
+```rust
+        if !line.ends_with('\n') {
+            // The writer is mid-record. Leave what was read in the buffer and wait for the rest.
+            partial.push_str(&line);
+            std::thread::sleep(IDLE);
+            continue;
+        }
+```
 
 ## Stopping a daemon
 
-This is the one that does not port, and it is the reason this doc is not a small one.
+Unix keeps `/bin/kill`, which Linux has where macOS has it. Windows has no signal to send, so the two halves split:
 
-On Unix, `stop` sends SIGTERM and `--force` sends SIGKILL, both through `/bin/kill` because the workspace forbids `unsafe` and every binding for `kill(2)` is an unsafe extern call. Linux needs nothing new: `/bin/kill` is there, and the two signals mean what they mean.
+```rust
+/// Destroy `pid`. `--force`, and the only stop Windows has until the graceful one below lands.
+#[cfg(windows)]
+fn kill(pid: Pid) -> io::Result<()> {
+    run(Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]))
+}
 
-Windows has neither signal. What it has:
+#[cfg(unix)]
+fn kill(pid: Pid) -> io::Result<()> {
+    run(Command::new("/bin/kill").args(["-KILL", &pid.to_string()]))
+}
+```
 
-- `taskkill /PID <pid>` posts `WM_CLOSE` to the process's windows. A daemon with no window ignores it, which is every daemon here.
-- `taskkill /F /PID <pid>` terminates the process. That is SIGKILL, and it is `--force`.
-- `GenerateConsoleCtrlEvent` reaches a process group sharing a console, which a detached daemon does not have.
+A subprocess on both, for the reason `signal_pid` already gives: the workspace forbids `unsafe`, and every binding for `kill(2)` and for `TerminateProcess` is an unsafe extern call.
 
-So there is no Windows equivalent of the graceful stop, and one has to be built. The daemon opens a named event at a path derived from the instance, and waits on it alongside its other work; `stop` opens the same event and sets it. That is the same shape as the Unix path, where the signal arrives and the runtime turns it into the app's own quit, and it keeps `freddie-daemon-runtime.md`'s `on_stop` as the single place an app answers.
+The graceful stop is a signal on Unix and a named pipe on Windows. `taskkill` without `/F` posts `WM_CLOSE`, which a daemon with no window never sees, so it is not the gentle half of the pair.
 
-The decision this doc does not make is which crate owns that event, because it is the one piece here that needs `unsafe` or a dependency, and `refactors/past/reuse-existing-crates.md` is the precedent for auditing before adding either. Settle it before writing any of this.
+The daemon end belongs to `freddie_daemon`, beside the SIGTERM handler it already installs, and pushes on the same stop channel:
 
-`--force` works on Windows the day it is written. The graceful path is the work.
+```rust
+/// Push an ask to leave when something opens this daemon's pipe and writes to it.
+///
+/// The Windows counterpart of SIGTERM. `tokio::net::windows::named_pipe` rather than a binding,
+/// so no `unsafe` is written here; tokio is already this crate's runtime.
+#[cfg(windows)]
+fn forward_pipe(instance: &Instance, stop_tx: &UnboundedSender<()>) {
+    let name = format!(r"\\.\pipe\{}", instance.lock());
+    // .. serve `name`, and send `()` for each client that connects ..
+}
+```
+
+The client end is `std::fs`, because Windows opens a named pipe as a file, so `freddie_cli` gains no dependency:
+
+```rust
+#[cfg(windows)]
+fn ask_to_stop(instance: &Instance) -> io::Result<()> {
+    let name = format!(r"\\.\pipe\{}", instance.lock());
+    std::fs::OpenOptions::new().write(true).open(name)?.write_all(b"stop")
+}
+
+#[cfg(unix)]
+fn ask_to_stop(pid: Pid) -> io::Result<()> {
+    run(Command::new("/bin/kill").args(["-TERM", &pid.to_string()]))
+}
+```
+
+Both ends key off `instance.lock()`, which is the one string that already names one daemon.
+
+`stop` then waits for the lock to go free exactly as it does now, on both platforms, and that wait is what tells it the daemon left. Nothing about `stop`'s reporting, its timeout, or its exit codes changes.
 
 ## Detaching the spawned daemon
 
-`start` spawns the child and exits, so the child must outlive the terminal.
+Before, in `spawn_daemon`:
 
 ```rust
+    use std::os::unix::process::CommandExt;
+
+    let exe = std::env::current_exe()?;
+    let child = Command::new(exe)
+        .arg(DAEMON_VERB)
+        .args(typed.argv::<TApp>())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()?;
+```
+
+After:
+
+```rust
+    let exe = std::env::current_exe()?;
+    let mut command = Command::new(exe);
+    command
+        .arg(DAEMON_VERB)
+        .args(typed.argv::<TApp>())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let child = detach(&mut command).spawn()?;
+```
+
+```rust
+/// Put the child where a terminal cannot reach it, so it outlives the one that spawned it.
 #[cfg(unix)]
 fn detach(command: &mut Command) -> &mut Command {
     use std::os::unix::process::CommandExt;
-    // Its own process group, so a ctrl-c in the terminal that spawned it does not reach it.
+    // Its own process group, so a ctrl-c in the spawning terminal does not reach it.
     command.process_group(0)
 }
 
 #[cfg(windows)]
 fn detach(command: &mut Command) -> &mut Command {
     use std::os::windows::process::CommandExt;
-    // DETACHED_PROCESS: no console at all, which is what the three null stdio streams already say.
-    // CREATE_NEW_PROCESS_GROUP: no console control event reaches it.
-    command.creation_flags(0x0000_0008 | 0x0000_0200)
+    /// No console at all, which is what the three null stdio streams already say.
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    /// No console control event reaches it.
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
 }
 ```
 
-The three null stdio streams and `current_exe` are already portable.
+## CI
 
-## What CI has to say
+`.github/workflows/ci.yml` runs on `macos-latest`. It gains one job:
 
-`.github/workflows/ci.yml` builds and tests on `macos-latest` only, for the crates that are macOS-bound. A portable `freddie_cli` that is never compiled anywhere else stops being portable within a week.
-
-So the workflow gains a job that builds and tests `freddie_cli` and `freddie_single_instance`, and nothing else, on `ubuntu-latest` and `windows-latest`. Those two crates have no macOS-only dependency, which is what makes the job possible at all.
+```yaml
+  portable:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.96.0
+      # The two crates with no macOS-only dependency. `-p` rather than the workspace, because
+      # everything else in it binds to AppKit and will not build here.
+      - run: cargo test -p freddie_cli -p freddie_single_instance
+```
 
 ## The changes, in order
 
-Each is shippable on its own, and the first three change nothing on macOS.
+The first three change nothing on macOS, and each is shippable alone.
 
-1. **The log directory, three ways.** `Instance::log_dir` with its `cfg` arms and `home()`. macOS keeps the path it has.
-2. **`logs` reads the file itself.** The `tail` subprocess is deleted, along with `TAIL`, `TAIL_LINES`, and the exception in `one-log-many-writers.md`.
-3. **`detach`, two ways.** The Unix arm is what `spawn_daemon` does today, moved behind a `cfg`.
-4. **CI builds the two portable crates on Linux and Windows.** After 1 through 3, this passes; before them, it is what tells you they are needed.
-5. **A graceful stop on Windows.** The named event, once the audit above has settled who owns it. Until this lands, Windows has `--force` and nothing gentler, and `stop` says so rather than appearing to work.
+1. **`log_dir`, three ways**, with `home()` beside it.
+2. **`logs` follows the file itself.** `follow`, and the deletion of `TAIL`, `TAIL_LINES`, and the subprocess. `refactors/past/one-log-many-writers.md` loses its `tail` exception: clap and the tests are then the only things that reach a terminal without going through tracing.
+3. **`detach`, and `kill` for `--force`**, both behind `cfg`.
+4. **The CI job.** After 1 through 3 it passes, and it is what keeps them true.
+5. **The graceful stop on Windows.** `forward_pipe` in `freddie_daemon` and `ask_to_stop` in `freddie_cli`. Until it lands, `stop` on Windows has only `--force`, and says so rather than appearing to work.
