@@ -73,6 +73,16 @@
 
   --ifm-toc-border-color: rgb(var(--freddie-ink-rgb) / 0.12);
 
+  /* Paper rather than a lightbox: the white with a little ochre worked into it,
+     so the tinted bands and the hero sit on a surface instead of glaring next
+     to one. Opaque, because the navbar takes this colour and content scrolls
+     under it. */
+  --ifm-background-color: color-mix(
+    in srgb,
+    var(--freddie-ochre) 14%,
+    var(--freddie-white)
+  );
+
   --ifm-font-family-base: Maison, system-ui, -apple-system, sans-serif;
   --ifm-h2-font-size: 3rem;
   --ifm-h3-font-size: 1.68rem;
@@ -155,6 +165,18 @@ pre {
 .navbar__logo img {
   border-radius: 50%;
   background-color: var(--freddie-white);
+  transition: transform 160ms ease;
+}
+
+/* The same lift the hero logo takes, at the size this one is. */
+.navbar__logo:hover img {
+  transform: translateY(-2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .navbar__logo:hover img {
+    transform: none;
+  }
 }
 
 h1,

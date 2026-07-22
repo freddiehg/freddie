@@ -30,7 +30,7 @@
 
 .heroLogo:hover {
   box-shadow: 0 16px 48px rgb(var(--freddie-ink-rgb) / 0.42);
-  transform: translateY(-3px);
+  transform: translateY(-6px);
 }
 
 /* The lift is motion and goes; the shadow is a cross-fade and stays, so the
