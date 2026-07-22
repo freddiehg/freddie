@@ -567,6 +567,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "freddie_cli"
+version = "0.0.1"
+dependencies = [
+ "clap",
+ "freddie_single_instance",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "freddie_event_socket"
 version = "0.0.1"
 dependencies = [

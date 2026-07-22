@@ -15,6 +15,7 @@ members = [
     "crates/freddie_overlay",
     "crates/freddie_windows",
     "crates/freddie_single_instance",
+    "crates/freddie_cli",
     "crates/mercury",
 ]
 
