@@ -123,10 +123,10 @@ function BendIt() {
         </div>
         <div className="row">
           <Doable title="Rearrange windows automatically">
-            Connect a monitor and your have your windows go back to where they belong.
+            Connect a monitor and your have your windows go back to where they belong, without any futzing on your part.
           </Doable>
           <Doable title="Respond to scheduled events">
-            A timer is an event source like any other. Want to nudge yourself to stop using Twitter after 30 minutes? You can!
+            A timer is an event source like any other. Want to nudge yourself to stop using Twitter after 30 minutes? Or decrease screen brightness at sundown? You can!
           </Doable>
           <Doable title="Incorporate any event">
             Read events over a websocket, or from a file, or from system APIs - such as which window took focus.
