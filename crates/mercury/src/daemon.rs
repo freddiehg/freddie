@@ -41,6 +41,7 @@ use std::ops::ControlFlow;
 
 use freddie::{AlwaysEqual, TimerEffect};
 use freddie_keyboard::Emitter;
+use freddie_overlay::OverlaySink;
 use freddie_windows::{WindowFrame, WindowSink};
 use mercury::{
     App, Chord, Copied, Mercury, MercuryEffect, MercuryEvent, UrlPart, WindowEvent, Windows,
@@ -115,6 +116,10 @@ pub(crate) fn run(args: &DaemonArgs) {
         }
     };
 
+    // The overlay panel, built here because `NSPanel` is main-thread-only, and held for the
+    // life of `main` like `menu_bar`: dropping it closes the panel.
+    let overlay = freddie_overlay::overlay();
+
     // The app-navigation source, installed before the seed below is read: an app switch
     // between the two is then queued as an event rather than lost, and the model converges.
     // Delivery is on this thread either way. Held for the life of `main`, like `menu_bar`,
@@ -153,6 +158,7 @@ pub(crate) fn run(args: &DaemonArgs) {
             .map_or(App::Other, |bundle_id| App::from_bundle_id(&bundle_id)),
         windows: window_state,
         window_sink,
+        overlay: overlay.sink(),
     };
 
     let worker = std::thread::Builder::new()
@@ -177,7 +183,9 @@ pub(crate) fn run(args: &DaemonArgs) {
         }
     });
     let _ = worker.join();
-    drop(menu_bar); // held until the loop returns, so the icon is up for the whole run
+    // Held until the loop returns, so the icon is up and the panel is available for the whole run.
+    drop(menu_bar);
+    drop(overlay);
 }
 
 /// What the process read from the OS before the main loop started turning.
@@ -195,6 +203,8 @@ struct Boot {
     /// The handle placements are performed through. `None` when window observation could
     /// not start, in which case a placement has nothing to act on and says so.
     window_sink: Option<WindowSink>,
+    /// The handle the overlay is shown and hidden through.
+    overlay: OverlaySink,
 }
 
 /// Everything mercury does, on the worker thread.
@@ -280,7 +290,7 @@ async fn serve(
 
     tokio::select! {
         () = run_event_loop(mercury, event_rx, effect_tx) => {}
-        () = run_effect_loop(effect_rx, emitter, event_tx, title_tx, boot.window_sink) => {}
+        () = run_effect_loop(effect_rx, emitter, event_tx, title_tx, boot.window_sink, boot.overlay) => {}
     }
     drop(interceptor); // hold the grab until here
 }
@@ -327,9 +337,19 @@ async fn run_effect_loop(
     event_tx: UnboundedSender<MercuryEvent>,
     title_tx: std::sync::mpsc::Sender<&'static str>,
     windows: Option<WindowSink>,
+    overlay: OverlaySink,
 ) {
     while let Some(effect) = effect_rx.recv().await {
-        if perform_effect(effect, &emitter, &event_tx, &title_tx, windows.as_ref()).is_break() {
+        if perform_effect(
+            effect,
+            &emitter,
+            &event_tx,
+            &title_tx,
+            windows.as_ref(),
+            overlay,
+        )
+        .is_break()
+        {
             break;
         }
     }
@@ -347,6 +367,7 @@ fn perform_effect(
     event_tx: &UnboundedSender<MercuryEvent>,
     title_tx: &std::sync::mpsc::Sender<&'static str>,
     windows: Option<&WindowSink>,
+    overlay: OverlaySink,
 ) -> ControlFlow<()> {
     match effect {
         MercuryEffect::Foreground(app) => foreground_app(app),
@@ -365,8 +386,8 @@ fn perform_effect(
             return ControlFlow::Break(());
         }
         MercuryEffect::Timer(timer) => schedule_timer(timer, event_tx),
-        MercuryEffect::ShowOverlay(text) => freddie_overlay::show(text),
-        MercuryEffect::HideOverlay => freddie_overlay::hide(),
+        MercuryEffect::ShowOverlay(text) => overlay.show(text.to_owned()),
+        MercuryEffect::HideOverlay => overlay.hide(),
         // A closed channel means the main thread has gone, which the Kill path handles.
         MercuryEffect::ShowLayer(name) => {
             let _ = title_tx.send(name);

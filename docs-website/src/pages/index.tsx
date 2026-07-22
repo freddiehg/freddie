@@ -112,7 +112,7 @@ function BendIt() {
         <h2 className={styles.centeredHeading}>Bend it to your will</h2>
         <div className={`row ${styles.doableGrid}`}>
           <Doable title="Send commands to your agent">
-            Send a screenshot or the contents of your clipboard to an agent. Or, select all, cut, send to your agent ("please fix"), and paste the result, all without ever leaving your app.
+            Send a screenshot or the contents of your clipboard to an agent. Or, select all, cut, send to your agent (&ldquo;please fix&rdquo;), and paste the result, all without ever leaving your app.
           </Doable>
           <Doable title="Check out a branch from GitHub">
             Press one key to check out the branch you&rsquo;re reviewing on GitHub, open your editor, and open the changed files. Then press one key to jump back.
@@ -123,13 +123,13 @@ function BendIt() {
         </div>
         <div className="row">
           <Doable title="Rearrange windows automatically">
-            Connect a monitor and your have your windows go back to where they belong, without any futzing on your part.
+            Connect a monitor and have your windows go back to where they belong, without any futzing on your part.
           </Doable>
           <Doable title="Respond to scheduled events">
             Nudge yourself to stop doomscrolling after 30 minutes or decrease your screen&rsquo;s brightness at sundown.
           </Doable>
-          <Doable title="Dispatch links to specific windows">
-            Every link on your machine can go through freddie, so you can reliably open work GitHub links exclusively in your work Chrome profile.
+          <Doable title="Dispatch links to specific profiles">
+            Every link on your machine can go through freddie, so work GitHub links always open in your work Chrome profile.
           </Doable>
         </div>
       </div>
