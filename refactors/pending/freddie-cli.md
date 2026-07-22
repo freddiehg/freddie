@@ -35,14 +35,11 @@ The app owns:
 ///
 /// One impl per binary. Everything else in this crate is generic over it, so `A` names the app
 /// wherever it appears and never one of the app's own types.
-///
-/// `Debug` because the derived `Debug` on every type generic over an app asks for it. An app is a
-/// unit struct, so this is a derive on the marker.
-pub trait App: fmt::Debug {
+pub trait App {
     /// The flags this app's daemon takes beyond the shared ones.
     ///
     /// [`NoArgs`] for an app that takes none.
-    type Args: clap::Args + fmt::Debug;
+    type DaemonArgs: clap::Args + fmt::Debug;
 
     /// The name the lock file, the log directory, the launchd label, `--help`, and every message a
     /// verb writes are all keyed to.
@@ -58,7 +55,7 @@ pub trait App: fmt::Debug {
     ///
     /// Called with the lock held and logging initialized. Returning drops the lock, so an app
     /// that wants to stay running stays inside this call.
-    fn run(args: &Self::Args) -> i32;
+    fn run(args: &Self::DaemonArgs) -> i32;
 }
 
 /// The daemon flags of an app that adds none.
@@ -70,12 +67,14 @@ That is the whole trait, and nothing in it is about freddie. A name, an about li
 
 ## The generic command line
 
-An app's daemon takes flags of its own: mercury's `--port` names the socket the extension talks to, and isograph's is a config file path. So the command line is generic over the app, and each of the types that carries the app's flags flattens `A::Args` in. clap's derive accepts generic parameters, which is what lets it. Verified on the pinned 1.96.0 against clap 4.6.2: a `Subcommand` enum whose variants are a mix of generic and not derives, an arg struct generic over `A: App` flattens the associated `A::Args`, `app daemon --port 4001` parses into it, the shared defaults resolve, and `NoArgs` gives an app with no flags of its own.
+An app's daemon takes flags of its own: mercury's `--port` names the socket the extension talks to, and isograph's is a config file path. So the command line is generic over the app, and each of the types that carries the app's flags flattens `A::DaemonArgs` in. clap's derive accepts generic parameters, which is what lets it. Verified on the pinned 1.96.0 against clap 4.6.2: a `Subcommand` enum whose variants are a mix of generic and not derives, an arg struct generic over the flags flattens them in, `app daemon --port 4001` parses into it, the shared defaults resolve, and `NoArgs` gives an app with no flags of its own.
 
 Three verbs are generic, and they are the three that start the daemon: `daemon` is it, and `start` and `restart` spawn it. A flag the daemon takes has to reach it whichever of those put it there, so each of them takes the app's flags and hands them on. `status`, `logs`, and `stop` only ever find a daemon that is already running, so they stay concrete, and their arg structs move across unchanged from `crates/mercury/src/cli.rs`.
 
 ```rust
-#[derive(Parser, Debug)]
+/// No `Debug` derive: `Args` and `Verb` hold no `A`, but the derive would ask every app for one
+/// anyway. The types that do hold flags derive it below, where the bound is real.
+#[derive(Parser)]
 #[command(version, long_about = None)]
 pub struct Args<A: App> {
     #[command(subcommand)]
@@ -86,12 +85,12 @@ pub struct Args<A: App> {
 ///
 /// Each variant's doc comment is its line in `--help`, so the help text cannot drift from the
 /// verbs. Declaration order is help order.
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand)]
 pub enum Verb<A: App> {
     /// Start the daemon if it is not running, and exit.
-    Start(StartArgs<A>),
+    Start(StartArgs<A::DaemonArgs>),
     /// Stop the running daemon and start a fresh one.
-    Restart(RestartArgs<A>),
+    Restart(RestartArgs<A::DaemonArgs>),
     /// Report whether the daemon is running, and its pid.
     Status,
     /// Follow the log, starting nothing.
@@ -100,13 +99,13 @@ pub enum Verb<A: App> {
     Stop(StopArgs),
     /// Run the daemon in this process. Not for typing: `start` spawns it.
     #[command(hide = true)]
-    Daemon(DaemonArgs<A>),
+    Daemon(DaemonVerbArgs<A::DaemonArgs>),
 }
 
 /// What the foreground daemon can be told: what this crate asks of every app, and what the app
 /// asks for itself.
 #[derive(clap::Args, Debug)]
-pub struct DaemonArgs<A: App> {
+pub struct DaemonVerbArgs<F: clap::Args> {
     /// What the terminal shows. The log file always records `debug`, whatever this says.
     ///
     /// A `tracing_subscriber` filter directive, so `info` and `mercury=debug,bind=warn` are both
@@ -115,21 +114,21 @@ pub struct DaemonArgs<A: App> {
     pub log_level: String,
 
     #[command(flatten)]
-    pub app: A::Args,
+    pub app: F,
 }
 
 /// What `start` can be told, which is whatever the daemon it spawns can be told.
 ///
 /// No `--log-level`: the daemon it spawns has no terminal to show anything on.
 #[derive(clap::Args, Debug)]
-pub struct StartArgs<A: App> {
+pub struct StartArgs<F: clap::Args> {
     #[command(flatten)]
-    pub app: A::Args,
+    pub app: F,
 }
 
 /// What `restart` can be told: `start`'s flags, and how hard to stop what is running.
 #[derive(clap::Args, Debug)]
-pub struct RestartArgs<A: App> {
+pub struct RestartArgs<F: clap::Args> {
     /// Destroy the running daemon with SIGKILL instead of asking it to quit.
     ///
     /// For a daemon that no longer answers. It runs no destructors, so whatever the app undoes on
@@ -138,9 +137,11 @@ pub struct RestartArgs<A: App> {
     pub force: bool,
 
     #[command(flatten)]
-    pub app: A::Args,
+    pub app: F,
 }
 ```
+
+The arg structs take the flags rather than the app, so their `Debug` derives against `F: Debug`, which the associated type satisfies, and no app is asked for a `Debug` it has no use for.
 
 The `Start` and `Daemon` doc comments lose the binary's name, since the derive writes them into every app's `--help`. `LogsArgs` moves across as it is; `RestartArgs` gains the app's flags and keeps `--force`.
 
@@ -198,7 +199,7 @@ pub fn main<A: App>() -> ! {
 
 ## Handing the app's flags to the daemon
 
-`start` spawns the daemon and `restart` spawns a replacement. Both have to give it the flags this invocation was given, and neither can know what those flags are: `A::Args` is the app's.
+`start` spawns the daemon and `restart` spawns a replacement. Both have to give it the flags this invocation was given, and neither can know what those flags are: `A::DaemonArgs` is the app's.
 
 clap parses argv into a struct and does not write one back out, so the flags are re-emitted from the matches instead. Reading the same derive that parsed them is what keeps this from drifting: an app that adds a flag gets it forwarded without writing a line.
 
@@ -221,10 +222,10 @@ impl Typed<'_> {
             return Vec::new();
         };
         let mut argv = Vec::new();
-        for arg in A::Args::augment_args(Command::new(A::NAME)).get_arguments() {
+        for arg in A::DaemonArgs::augment_args(Command::new(A::NAME)).get_arguments() {
             let id = arg.get_id().as_str();
             let carried = matches.value_source(id) == Some(ValueSource::CommandLine);
-            // A positional has no flag to re-emit it under. `A::Args` is a set of flags: the verbs
+            // A positional has no flag to re-emit it under. `A::DaemonArgs` is a set of flags: the verbs
             // own their positionals, and an app's positional would be ambiguous against them.
             let Some(long) = arg.get_long().filter(|_| carried) else {
                 continue;
@@ -245,10 +246,10 @@ impl Typed<'_> {
 }
 ```
 
-Verified on the pinned 1.96.0 against clap 4.6.2, against an `A::Args` of `--port` (with an env and a default), `--config` (an optional path), and `--verbose` (a flag):
+Verified on the pinned 1.96.0 against clap 4.6.2, against an `A::DaemonArgs` of `--port` (with an env and a default), `--config` (an optional path), and `--verbose` (a flag):
 
 - `start --port 4001 --config "/a b/c.toml"` re-emits exactly `["--port", "4001", "--config", "/a b/c.toml"]`. The value with a space needs no quoting, because these reach `Command::arg` as separate `OsString`s and no shell parses them.
-- `restart --force --verbose` re-emits `["--verbose"]`. The verb's own `--force` drops out with no stripping, because it is not one of `A::Args`'s arguments.
+- `restart --force --verbose` re-emits `["--verbose"]`. The verb's own `--force` drops out with no stripping, because it is not one of `A::DaemonArgs`'s arguments.
 - `start` with nothing typed re-emits nothing, and so does `MERCURY_PORT=5005 start`, having parsed as `5005` either way. The child inherits `MERCURY_PORT` and reaches `5005` on its own.
 - `NoArgs` re-emits nothing.
 
@@ -288,7 +289,7 @@ The lock and the logging move ahead of the app, so an app cannot forget either a
 
 ```rust
 /// Run `A`'s daemon in the foreground: set up logging, take the lock, and hand over.
-pub(crate) fn run<A: App>(args: &DaemonArgs<A>) -> i32 {
+pub(crate) fn run<A: App>(args: &DaemonVerbArgs<A::DaemonArgs>) -> i32 {
     let log_path = logging::init(A::NAME, &Terminal::Daemon(LogLevel(&args.log_level)));
     info!(path = %log_path.display(), "logging");
 
@@ -364,7 +365,7 @@ What does move is every verb that only reads a lock, spawns a binary, signals a 
 - `const APP: &str = "mercury"` is deleted. Five of its use sites move here and become `A::NAME`; the two under `label` stay in mercury with the launch agent.
 - Every function that reads the name, or calls one that does, gains `<A: App>`.
 - Every message that spells "mercury" spells `A::NAME`, which is what makes a fork's output its own.
-- `start` and `restart` take a `Typed<'_>` and pass it down to `spawn_daemon`: `start<A: App>(typed: Typed<'_>)`, `restart<A: App>(args: &RestartArgs<A>, typed: Typed<'_>)`, and `ensure_started<A: App>(typed: Typed<'_>)` between them and the spawn. `status`, `logs`, and `stop` take no such thing, since none of them starts a daemon.
+- `start` and `restart` take a `Typed<'_>` and pass it down to `spawn_daemon`: `start<A: App>(typed: Typed<'_>)`, `restart<A: App>(args: &RestartArgs<A::DaemonArgs>, typed: Typed<'_>)`, and `ensure_started<A: App>(typed: Typed<'_>)` between them and the spawn. `status`, `logs`, and `stop` take no such thing, since none of them starts a daemon.
 
 The name reaches the lock:
 
@@ -393,15 +394,14 @@ The tests move with the module and pick the name up from a test app:
 
 ```rust
 #[cfg(test)]
-#[derive(Debug)]
 struct TestApp;
 
 #[cfg(test)]
 impl App for TestApp {
-    type Args = NoArgs;
+    type DaemonArgs = NoArgs;
     const NAME: &'static str = "testapp";
     const ABOUT: &'static str = "A test app.";
-    fn run(_: &Self::Args) -> i32 {
+    fn run(_: &Self::DaemonArgs) -> i32 {
         unreachable!("the parse tests never run the daemon")
     }
 }
@@ -428,18 +428,17 @@ pub struct MercuryArgs {
     pub port: u16,
 }
 
-#[derive(Debug)]
 struct Mercury;
 
 impl App for Mercury {
-    type Args = MercuryArgs;
+    type DaemonArgs = MercuryArgs;
     // `install` and `uninstall`, which are mercury's own. See `app-verbs.md`.
     type Subcommands = MercuryVerb;
 
     const NAME: &'static str = "mercury";
     const ABOUT: &'static str = "A layered keyboard remapper.";
 
-    fn run(args: &Self::Args) -> i32 {
+    fn run(args: &Self::DaemonArgs) -> i32 {
         daemon::run(args.port)
     }
 
@@ -487,7 +486,7 @@ Its two early returns become `1` and its end becomes `0`, so a menu bar that cou
 ## The changes, in order
 
 1. **Logging takes a name.** `log_dir(name)`, the file name derived from it, and `init(name, terminal)`, in mercury, with `client::APP` passed at each of the four call sites. No behaviour changes: the name passed is the name that was written.
-2. **`freddie_cli`, holding the command surface, and `app-verbs.md` with it.** The trait, the generic `Args`/`Verb`/`DaemonArgs`, `main`, `dispatch`, the daemon verb, `logging`, and the `client` module, all keyed to `A::NAME`. mercury shrinks to the `main.rs` above, a `daemon.rs` that starts at `freddie_windows::init()`, and an `agent.rs` holding `install` and `uninstall`. Every verb does what it does now, and `mercury --help` prints what it prints now.
+2. **`freddie_cli`, holding the command surface, and `app-verbs.md` with it.** The trait, the generic `Args`/`Verb`/`DaemonVerbArgs`, `main`, `dispatch`, the daemon verb, `logging`, and the `client` module, all keyed to `A::NAME`. mercury shrinks to the `main.rs` above, a `daemon.rs` that starts at `freddie_windows::init()`, and an `agent.rs` holding `install` and `uninstall`. Every verb does what it does now, and `mercury --help` prints what it prints now.
 
 `app-verbs.md` lands here rather than after, because `install` and `uninstall` are mercury's own verbs and there is no way to keep them without the seam that carries them.
 

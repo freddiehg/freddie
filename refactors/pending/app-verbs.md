@@ -46,12 +46,12 @@ An app with no verbs of its own says so in two lines, and the compiler agrees th
 One variant, last, so freddie's verbs come first in `--help`:
 
 ```rust
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand)]
 pub enum Verb<A: App> {
-    Start(StartArgs<A>),
+    Start(StartArgs<A::DaemonArgs>),
     // .. the rest of freddie-cli.md's verbs, unchanged ..
     #[command(hide = true)]
-    Daemon(DaemonArgs<A>),
+    Daemon(DaemonVerbArgs<A::DaemonArgs>),
 
     /// This app's own verbs, each spelled as though it were declared here.
     #[command(flatten)]
