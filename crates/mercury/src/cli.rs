@@ -88,13 +88,6 @@ pub const DEFAULT_LOG_LEVEL: &str = "info";
 /// on `mercury` itself.
 #[derive(clap::Args, Debug, PartialEq, Eq)]
 pub struct DaemonArgs {
-    /// What the terminal shows. The log file always records `debug`, whatever this says.
-    ///
-    /// A `tracing_subscriber` filter directive, so `info` and `mercury=debug,bind=warn` are both
-    /// accepted. Only the foreground daemon has a terminal to show anything on.
-    #[arg(long, env = "LOG_LEVEL", default_value = DEFAULT_LOG_LEVEL)]
-    pub log_level: String,
-
     /// The loopback port the event socket listens on.
     #[arg(long, env = "MERCURY_PORT", default_value_t = mercury::DEFAULT_PORT)]
     pub port: u16,
@@ -153,26 +146,17 @@ mod tests {
     }
 
     #[test]
-    fn the_daemon_verb_defaults_to_info() {
-        assert_eq!(daemon_args(&["daemon"]).log_level, super::DEFAULT_LOG_LEVEL);
-    }
-
-    #[test]
-    fn the_daemon_verb_takes_a_filter_directive() {
-        assert_eq!(
-            daemon_args(&["daemon", "--log-level", "mercury=debug"]).log_level,
-            "mercury=debug"
-        );
-    }
-
-    #[test]
     fn the_daemon_verb_takes_a_port() {
         assert_eq!(daemon_args(&["daemon", "--port", "4001"]).port, 4001);
     }
 
+    // The terminal filter is `LOG_LEVEL` and nothing else: no verb takes it, because the only
+    // invocation with a terminal to filter is one a person ran in front of.
     #[test]
-    fn the_log_level_is_not_a_top_level_flag() {
+    fn no_verb_takes_a_log_level() {
         assert!(Args::try_parse_from(["mercury", "--log-level", "debug"]).is_err());
+        assert!(Args::try_parse_from(["mercury", "daemon", "--log-level", "debug"]).is_err());
+        assert!(Args::try_parse_from(["mercury", "start", "--log-level", "debug"]).is_err());
     }
 
     #[test]

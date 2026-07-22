@@ -52,7 +52,7 @@ use tokio::sync::oneshot::error::TryRecvError;
 use tracing::{debug, error, info, warn};
 
 use crate::cli::DaemonArgs;
-use crate::logging::{self, LogLevel, Terminal};
+use crate::logging::{self, Terminal};
 
 /// Be the daemon: give the main thread to the run loop, and run mercury on a worker thread.
 ///
@@ -64,7 +64,7 @@ use crate::logging::{self, LogLevel, Terminal};
 /// failed keyboard grab, and a panic all exit. Declaration order below matters:
 /// the runtime drops before the `Stopper`.
 pub(crate) fn run(args: &DaemonArgs) {
-    let log_path = logging::init(&Terminal::Daemon(LogLevel(&args.log_level)));
+    let log_path = logging::init(&Terminal::Daemon);
     info!(path = %log_path.display(), "logging");
 
     // Before anything that touches the machine. Two mercuries swallow and re-emit each
