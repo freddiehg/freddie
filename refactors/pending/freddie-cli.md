@@ -43,10 +43,12 @@ pub trait App {
     /// so. An app with more than one says which in a flag, and two values of that flag are two
     /// daemons, each with its own lock, log, and pid.
     ///
-    /// These flags are what `status`, `logs`, and `stop` accept, since finding a daemon is all
-    /// those verbs do. A field [`instance`](Self::instance) does not read is one they take and
-    /// ignore, which is worth knowing when deciding whether a flag belongs here or in
-    /// [`DaemonArgs`](Self::DaemonArgs).
+    /// A field [`instance`](Self::instance) does not read still reaches the daemon, since the id
+    /// is handed to [`run_daemon`](Self::run_daemon) whole and forwarded to a spawned one. What
+    /// it does not do is tell two daemons apart: `status`, `logs`, and `stop` parse it and then
+    /// use nothing but the instance, and two `start`s differing only in such a field are one
+    /// daemon, where the second is told one is already running and its value never takes
+    /// effect.
     type Id: clap::Args + fmt::Debug;
 
     /// The flags this app's daemon takes beyond the shared ones and beyond [`Id`](Self::Id).
