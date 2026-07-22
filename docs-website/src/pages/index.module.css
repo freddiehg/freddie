@@ -1,12 +1,29 @@
 .centeredHeading {
   text-align: center;
+
+  /* The box hugs the type rather than the container, so a gradient painted
+     across it is painted across the letters. Spanning the full width put both
+     ends of the ramp in the empty margins either side of a centred heading,
+     where the colour they carry cannot be seen. */
+  width: fit-content;
+  margin-inline: auto;
+
   color: var(--freddie-red);
 }
 
-/* The red clears 9:1 on a white page and 1.4:1 on the dark one, so dark mode
-   takes the yellow the docs already use for the same job. */
+/* The red reads at 9:1 on the light page and 1.4:1 on the dark one, so the ramp
+   moves up the palette by one: yellow through the middle and ochre at the ends,
+   which is the hero's own pair. */
 [data-theme='dark'] .centeredHeading {
-  color: var(--freddie-yellow);
+  background-image: radial-gradient(
+    ellipse 62% 200% at 50% 50%,
+    var(--freddie-yellow) 0%,
+    var(--freddie-ochre) 100%
+  );
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
 }
 
 .codeBlockWrap pre {
