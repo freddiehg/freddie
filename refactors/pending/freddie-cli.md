@@ -70,8 +70,8 @@ pub trait App {
     /// Called before the lock, the log file, and any subprocess, so every verb agrees on which
     /// daemon it meant before it does anything.
     ///
-    /// Boxed rather than an associated type: this crate has no opinion about an app's errors and
-    /// only ever prints this one. `freddie_menu_bar::show` returns the same thing.
+    /// The error is shown once and the process then exits, so a boxed one carries everything
+    /// this crate does with it. `freddie_menu_bar::show` returns the same type.
     fn instance(id: &Self::Id) -> Result<Instance, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Be the daemon. Returns how it ended.
@@ -83,11 +83,11 @@ pub trait App {
 
 /// How a daemon's run ended.
 ///
-/// Not an exit code, because a daemon started by a service manager is watched by one, and the
-/// codes a watcher reads are a contract an app must not be able to break by returning a number.
-/// Both of these mean do not start me again, and both are zero: the run is over either because
-/// it was asked to be or because starting it again would fail the same way. A panic is the only
-/// nonzero exit, and it is the only one that means try again.
+/// A service manager watches what this becomes and decides from it whether to start the daemon
+/// again, so an app names the outcome and this crate derives the code. Both outcomes mean do not
+/// start me again, and both are zero: the run is over either because it was asked to be or
+/// because starting it again would fail the same way. A panic is the only nonzero exit, and the
+/// only one that means try again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ended {
     /// It ran, and stopped because something asked it to.
@@ -171,11 +171,9 @@ impl Instance {
 
 /// The environment names no per-user directory to keep the log in.
 ///
-/// An error rather than a fallback to the current directory, and the same call that this one
-/// fails on makes `freddie_single_instance::acquire` return `LockError::NoStateDir`. A daemon
-/// that cannot find its home cannot take its lock either, so it was never going to run; falling
-/// back would write a log for a process that is about to fail, in whatever directory it was
-/// started from.
+/// The call this fails on is the one that makes `freddie_single_instance::acquire` return
+/// `LockError::NoStateDir`, so a daemon that cannot find its home cannot take its lock either and
+/// was never going to run.
 #[derive(Debug)]
 pub struct NoLogDir;
 
@@ -220,8 +218,8 @@ For mercury, whose `Id` is `NoArgs`, this adds nothing to any verb: `mercury sta
 /// verbs. Declaration order is help order within this block; where the block sits among the app's
 /// own verbs is the app's to choose.
 ///
-/// No `Debug` derive: this holds no `TApp`, but the derive would ask every app for one anyway. The
-/// types that do hold flags derive it below, where the bound is real.
+/// The derive would put a `Debug` bound on `TApp`, which holds no data here. The types below hold
+/// the flags and derive it against those.
 #[derive(Subcommand)]
 pub enum Verb<TApp: App> {
     /// Start the daemon if it is not running, and exit.
@@ -343,10 +341,9 @@ Verified on the pinned 1.96.0 against clap 4.6.2, with mercury's and isograph's 
 /// Resolves which daemon it means before it does anything, and an id that names none is the one
 /// failure this level reports itself.
 ///
-/// Takes the whole `ArgMatches` rather than the flags read off it, so that reading them is not a
-/// step an app can leave out. One that did would spawn a daemon without the id it was given,
-/// which resolves a different instance, takes a different lock, and reports success having
-/// started something else.
+/// Reads the typed flags off the matches itself, so every spawned daemon gets the id its parent
+/// was given. One spawned without it resolves a different instance, takes a different lock, and
+/// leaves the `start` that spawned it reporting success over something else.
 pub fn dispatch<TApp: App>(verb: Verb<TApp>, matches: &ArgMatches) -> i32 {
     let typed = TypedArgs::of(matches);
 
@@ -373,9 +370,9 @@ pub fn dispatch<TApp: App>(verb: Verb<TApp>, matches: &ArgMatches) -> i32 {
 
 /// What the bare binary means: `start`, with every flag left unsaid.
 ///
-/// Built by parsing an empty command line rather than by a `Default` this crate cannot ask an app
-/// for. An app whose `Id` has a required flag has no bare invocation, and clap is what says so, in
-/// the same words it uses for a missing flag anywhere else, then exits. Verified on the pinned
+/// Built by parsing an empty command line, so the app's own defaults decide what it resolves to.
+/// An app whose `Id` has a required flag has no bare invocation, and clap says so in the words it
+/// uses for a missing flag anywhere else, then exits. Verified on the pinned
 /// 1.96.0: an app whose `Id` is [`NoArgs`] resolves its global instance, and one whose `Id` has a
 /// required flag exits with `the following required arguments were not provided`.
 pub fn bare<TApp: App>() -> Verb<TApp> {

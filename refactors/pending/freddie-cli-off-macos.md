@@ -88,8 +88,7 @@ const BACKLOG_LINES: usize = 50;
 ///
 /// A poll, and the exception the "never poll" rule allows: no platform reports a regular file
 /// growing through a readiness primitive. `epoll` and `kqueue` both call a regular file always
-/// ready and return zero bytes, and `tail -F` polls for the same reason. A watch crate would
-/// trade this for a dependency and a thread, and would still wake on a timer underneath.
+/// ready and return zero bytes, and `tail -F` polls for the same reason.
 const IDLE: Duration = Duration::from_millis(200);
 
 /// Write `path`'s last [`BACKLOG_LINES`] lines to `out`, then whatever is appended to it, until
@@ -160,15 +159,15 @@ fn kill(pid: Pid) -> io::Result<()> {
 
 A subprocess on both, for the reason `signal_pid` already gives: the workspace forbids `unsafe`, and every binding for `kill(2)` and for `TerminateProcess` is an unsafe extern call.
 
-The graceful stop is a signal on Unix and a named pipe on Windows. `taskkill` without `/F` posts `WM_CLOSE`, which a daemon with no window never sees, so it is not the gentle half of the pair.
+The graceful stop is a signal on Unix and a named pipe on Windows.
 
 The daemon end belongs to `freddie_daemon`, beside the SIGTERM handler it already installs, and pushes on the same stop channel:
 
 ```rust
 /// Push an ask to leave when something opens this daemon's pipe and writes to it.
 ///
-/// The Windows counterpart of SIGTERM. `tokio::net::windows::named_pipe` rather than a binding,
-/// so no `unsafe` is written here; tokio is already this crate's runtime.
+/// The Windows counterpart of SIGTERM, over `tokio::net::windows::named_pipe`: tokio is already
+/// this crate's runtime, and it keeps the `unsafe` a binding would need out of here.
 #[cfg(windows)]
 fn forward_pipe(instance: &Instance, stop_tx: &UnboundedSender<()>) {
     let name = format!(r"\\.\pipe\{}", instance.lock());
