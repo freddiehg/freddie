@@ -127,8 +127,9 @@ pub struct Instance {
 
 impl Instance {
     /// The one daemon of an app that has one, keyed to the app itself.
-    pub fn global(app: &str) -> Self {
-        Self { app: app.to_owned(), slug: app.to_owned(), display_name: app.to_owned() }
+    pub fn global(app: impl Into<String>) -> Self {
+        let app = app.into();
+        Self { slug: app.clone(), display_name: app.clone(), app }
     }
 
     /// One of many: `slug` names its files, `display_name` is what the person who asked for it
@@ -138,8 +139,12 @@ impl Instance {
     /// two that do not, since it is the whole of what the lock is keyed to. A path that has been
     /// resolved, or a hash of one, is the shape of it. It also has to be a filename, because it
     /// becomes one.
-    pub fn named(app: &str, slug: impl Into<String>, display_name: impl Into<String>) -> Self {
-        Self { app: app.to_owned(), slug: slug.into(), display_name: display_name.into() }
+    pub fn named(
+        app: impl Into<String>,
+        slug: impl Into<String>,
+        display_name: impl Into<String>,
+    ) -> Self {
+        Self { app: app.into(), slug: slug.into(), display_name: display_name.into() }
     }
 
     /// What the single-instance lock is keyed to.
