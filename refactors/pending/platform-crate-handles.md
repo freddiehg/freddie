@@ -55,7 +55,9 @@ The doc comment on [`show`] gains the constraint that follows from a global hand
 
 The `thread_local!` stays. It is what lets a block dispatched to the main queue reach the panel: the closure must be `'static` and `Send`, so it cannot carry an `NSPanel`, and it finds one already on main instead. That dispatch is also what makes the overlay appear immediately — the main queue is drained from inside `nextEventMatchingMask_untilDate`, without waiting for it to return.
 
-So the storage is not the problem; being able to reach it without proving it exists is. It becomes private, and a handle only [`overlay`] can mint is what reaches it.
+So the storage is not the problem; being able to reach it without proving it exists is. It becomes private, keyed by overlay rather than a single slot, and a handle only [`overlay`] can mint is what reaches an entry.
+
+Two things follow from that and are worth stating as requirements rather than as things that happen to work. Overlays are not a singleton: [`overlay`] can be called more than once, each handle drives its own panel, and one dropping leaves the others alone. And an overlay is destroyable: dropping one deallocates its panel rather than hiding it, ids are never reused, and a [`OverlaySink`] outliving its overlay is inert rather than pointed at somebody else's.
 
 `crates/freddie_overlay/src/lib.rs`, before:
 
@@ -75,13 +77,25 @@ After:
 
 ```rust
 thread_local! {
-    /// The panel and its label, on the main thread, reachable from a dispatched block.
+    /// Every overlay built on this thread, by id.
     ///
-    /// Private, and only an [`Overlay`] can reach it: a block dispatched to the main queue
-    /// has to be `'static` and `Send`, so it cannot carry an `NSPanel` and finds one here
-    /// instead. `None` before [`overlay`] builds it and after the handle drops.
-    static PANEL: RefCell<Option<Panel>> = const { RefCell::new(None) };
+    /// Private, and only an [`Overlay`] or [`OverlaySink`] can reach an entry: a block
+    /// dispatched to the main queue has to be `'static` and `Send`, so it cannot carry an
+    /// `NSPanel` and looks one up here instead. An id is in the table between [`overlay`]
+    /// building it and the handle dropping.
+    ///
+    /// A table and not a single slot: nothing about a panel makes it the only one, and a
+    /// consumer wanting two overlays should not have to fork the crate to get them.
+    static PANELS: RefCell<HashMap<OverlayId, Panel>> = RefCell::new(HashMap::new());
+
+    /// Mints the next [`OverlayId`]. A plain `Cell` because overlays are only ever built on
+    /// this thread.
+    static NEXT_ID: Cell<u64> = const { Cell::new(0) };
 }
+
+/// One overlay's entry in [`PANELS`]. Ids are never reused within a run.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+struct OverlayId(u64);
 
 struct Panel {
     panel: Retained<NSPanel>,
@@ -102,28 +116,33 @@ unsafe {
 
 /// The overlay's lifetime. Holding it keeps the panel built; dropping it takes it down.
 ///
-/// `!Send`, because `Drop` reaches `PANEL`, and a `thread_local` reached from another
-/// thread is a different slot: a handle dropped off main would clear an empty one and
-/// leave the real panel on screen. It stays where [`overlay`] built it, like
+/// `!Send`, because `Drop` reaches `PANELS`, and a `thread_local` reached from another
+/// thread is a different table: a handle dropped off main would find no entry and leave
+/// the real panel on screen. It stays where [`overlay`] built it, like
 /// `freddie_menu_bar`'s `MenuBar` and `freddie_windows`'s `Watcher`.
 ///
 /// It does not show anything. [`sink`](Overlay::sink) is what a worker uses.
 pub struct Overlay {
+    id: OverlayId,
     _main_thread_only: PhantomData<*const ()>,
 }
 
 /// The handle showing and hiding go through. Cheap to clone and `Send`, because it carries
 /// nothing: `show` and `hide` dispatch to the main queue and find the panel there.
 ///
-/// Safe to keep past the [`Overlay`]. The dispatched block finds an empty slot and does
-/// nothing, which is what a hidden overlay would have done anyway.
+/// Safe to keep past its [`Overlay`]. The dispatched block finds no entry for its id and
+/// does nothing, which is what hiding an already-hidden overlay would have done. Ids are
+/// never reused, so a later overlay cannot inherit a dead sink's messages.
 #[derive(Clone, Copy)]
-pub struct OverlaySink;
+pub struct OverlaySink {
+    id: OverlayId,
+}
 
 /// Build the overlay panel, hidden, and return the handle that owns it.
 ///
-/// Eagerly, not on first show: it is what makes the slot `Some` for the whole life of the
-/// [`Overlay`], so nothing after this has to write it and `show` can borrow it shared.
+/// Eagerly, not on first show: it is what keeps the entry present for the whole life of the
+/// [`Overlay`], so nothing after this has to write the table and `show` can borrow it
+/// shared.
 ///
 /// # Panics
 ///
@@ -131,8 +150,14 @@ pub struct OverlaySink;
 #[must_use]
 pub fn overlay() -> Overlay {
     let mtm = MainThreadMarker::new().expect("overlay must be built on the main thread");
-    PANEL.with_borrow_mut(|slot| *slot = Some(build(mtm)));
+    let id = NEXT_ID.with(|next| {
+        let id = next.get();
+        next.set(id + 1);
+        OverlayId(id)
+    });
+    PANELS.with_borrow_mut(|panels| panels.insert(id, build(mtm)));
     Overlay {
+        id,
         _main_thread_only: PhantomData,
     }
 }
@@ -142,7 +167,7 @@ impl Overlay {
     /// the overlay itself.
     #[must_use]
     pub const fn sink(&self) -> OverlaySink {
-        OverlaySink
+        OverlaySink { id: self.id }
     }
 }
 
@@ -152,11 +177,12 @@ impl OverlaySink {
     /// The panel is sized to the text, so a keymap with more rows makes a taller panel
     /// rather than a clipped one.
     pub fn show(&self, text: String) {
+        let id = self.id;
         DispatchQueue::main().exec_async(move || {
-            // Shared, not mutable: every AppKit setter here takes `&self`, and the slot
+            // Shared, not mutable: every AppKit setter here takes `&self`, and the table
             // itself is only written by `overlay` and `Overlay::drop`.
-            PANEL.with_borrow(|slot| {
-                let Some(panel) = slot else { return };
+            PANELS.with_borrow(|panels| {
+                let Some(panel) = panels.get(&id) else { return };
                 // ... set the label, resize, place, order front, as today
             });
             debug!(text, "overlay shown");
@@ -165,9 +191,10 @@ impl OverlaySink {
 
     /// Hide the overlay, from any thread. A no-op if it is not up.
     pub fn hide(&self) {
-        DispatchQueue::main().exec_async(|| {
-            PANEL.with_borrow(|slot| {
-                if let Some(panel) = slot {
+        let id = self.id;
+        DispatchQueue::main().exec_async(move || {
+            PANELS.with_borrow(|panels| {
+                if let Some(panel) = panels.get(&id) {
                     panel.panel.orderOut(None);
                 }
             });
@@ -187,8 +214,8 @@ impl Drop for Overlay {
     /// `releasedWhenClosed`, so closing does not also release — the `Retained` going out of
     /// scope here is the last reference, and the panel is deallocated.
     fn drop(&mut self) {
-        PANEL.with_borrow_mut(|slot| {
-            if let Some(panel) = slot.take() {
+        PANELS.with_borrow_mut(|panels| {
+            if let Some(panel) = panels.remove(&self.id) {
                 panel.panel.orderOut(None);
                 panel.panel.close();
             }
