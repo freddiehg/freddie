@@ -43,11 +43,10 @@ pub trait App {
     /// so. An app with more than one says which in a flag, and two values of that flag are two
     /// daemons, each with its own lock, log, and pid.
     ///
-    /// Every flag here has to reach [`instance`](Self::instance), and one that does not belongs
-    /// in [`DaemonArgs`](Self::DaemonArgs) instead. These flags are what `status`, `logs`, and
-    /// `stop` accept, and those verbs do nothing but find a daemon: a flag they take that does
-    /// not change which daemon they found is one their `--help` offers and their behaviour
-    /// ignores.
+    /// These flags are what `status`, `logs`, and `stop` accept, since finding a daemon is all
+    /// those verbs do. A field [`instance`](Self::instance) does not read is one they take and
+    /// ignore, which is worth knowing when deciding whether a flag belongs here or in
+    /// [`DaemonArgs`](Self::DaemonArgs).
     type Id: clap::Args + fmt::Debug;
 
     /// The flags this app's daemon takes beyond the shared ones and beyond [`Id`](Self::Id).
