@@ -108,7 +108,10 @@ pub struct Overlay {
 #[derive(Clone, Copy)]
 pub struct OverlaySink;
 
-/// Build the overlay panel, hidden, and return the handle that drives it.
+/// Build the overlay panel, hidden, and return the handle that owns it.
+///
+/// Eagerly, not on first show: it is what makes the slot `Some` for the whole life of the
+/// [`Overlay`], so nothing after this has to write it and `show` can borrow it shared.
 ///
 /// # Panics
 ///
@@ -138,7 +141,9 @@ impl OverlaySink {
     /// rather than a clipped one.
     pub fn show(&self, text: String) {
         DispatchQueue::main().exec_async(move || {
-            PANEL.with_borrow_mut(|slot| {
+            // Shared, not mutable: every AppKit setter here takes `&self`, and the slot
+            // itself is only written by `overlay` and `Overlay::drop`.
+            PANEL.with_borrow(|slot| {
                 let Some(panel) = slot else { return };
                 // ... set the label, resize, place, order front, as today
             });
