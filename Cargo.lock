@@ -1174,6 +1174,7 @@ dependencies = [
  "derive_more",
  "freddie",
  "freddie_app_nav",
+ "freddie_cli",
  "freddie_event_socket",
  "freddie_keyboard",
  "freddie_keys",
@@ -1191,8 +1192,6 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
- "tracing-appender",
- "tracing-subscriber",
  "ts-rs",
 ]
 

@@ -51,9 +51,6 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot::error::TryRecvError;
 use tracing::{debug, error, info, warn};
 
-use crate::cli::DaemonArgs;
-use crate::logging::{self, Terminal};
-
 /// Be the daemon: give the main thread to the run loop, and run mercury on a worker thread.
 ///
 /// `AppKit` delivers its callbacks only while the main thread is inside a run
@@ -63,27 +60,10 @@ use crate::logging::{self, Terminal};
 /// Dropping the worker's `Stopper` stops main's loop, so a normal return, a
 /// failed keyboard grab, and a panic all exit. Declaration order below matters:
 /// the runtime drops before the `Stopper`.
-pub(crate) fn run(args: &DaemonArgs) {
-    let log_path = logging::init(&Terminal::Daemon);
-    info!(path = %log_path.display(), "logging");
-
-    // Before anything that touches the machine. Two mercuries swallow and re-emit each
-    // other's keys forever, at tens of thousands of events a second, which wedges the
-    // keyboard. The binding must outlive main (`let _instance`, never `let _`): dropping
-    // it releases the lock, and `let _` would drop it here.
-    let _instance = match freddie_single_instance::acquire(crate::client::APP) {
-        Ok(instance) => instance,
-        Err(e) => {
-            error!(error = %e, "another mercury holds the lock; `mercury stop` ends it");
-            return;
-        }
-    };
-
+pub(crate) fn run(port: u16) {
     // NSApp as an accessory (menu-bar) app, before the status item is created and
     // before the loop pumps its events.
     freddie_main_loop::init_menu_bar_app();
-
-    let port = args.port;
 
     let (main_loop, stopper) = freddie_main_loop::main_loop();
 

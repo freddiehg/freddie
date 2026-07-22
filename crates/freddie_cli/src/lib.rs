@@ -92,6 +92,15 @@ pub trait App {
 #[derive(clap::Args, Debug)]
 pub struct NoArgs;
 
+/// Send this process's tracing to `instance`'s log file and to a client verb's terminal.
+///
+/// [`run_lifecycle_verb`] does this for the verbs it runs. An app's own verbs are not among them,
+/// so one that wants its output on a terminal and in the log calls this first, naming the daemon
+/// whose log it belongs in.
+pub fn init_client_logging(instance: &Instance) {
+    logging::init(instance, logging::Terminal::Client);
+}
+
 /// Work out which daemon a lifecycle verb means, start logging for it, and run the verb.
 ///
 /// The three steps every verb needs, in the one order they work in. Logging is set up here rather
