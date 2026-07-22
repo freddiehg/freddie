@@ -88,6 +88,18 @@ struct Panel {
     label: Retained<NSTextField>,
 }
 
+// In `build`, once the panel exists and before it is ever ordered in:
+//
+// SAFETY: setting a window's own release policy, on the main thread, before anything else
+// holds it.
+#[expect(unsafe_code)]
+unsafe {
+    // Ours to release, not AppKit's. `NSWindow` defaults to releasing itself when closed,
+    // which would leave `Overlay::drop`'s `close` racing the `Retained` it still holds.
+    // Cleared here so `close` only drops AppKit's reference and ours is the last one.
+    panel.setReleasedWhenClosed(false);
+}
+
 /// The overlay's lifetime. Holding it keeps the panel built; dropping it takes it down.
 ///
 /// `!Send`, because `Drop` reaches `PANEL`, and a `thread_local` reached from another
@@ -165,15 +177,20 @@ impl OverlaySink {
 }
 
 impl Drop for Overlay {
-    /// Takes the panel off screen and drops it.
+    /// Takes the panel off screen and gives it back.
     ///
-    /// Releasing the `Retained` alone is not enough: a panel that has been ordered front is
-    /// retained by AppKit's window machinery, so clearing the slot without ordering it out
-    /// would leave a visible overlay up with nothing able to hide it.
+    /// Dropping the `Retained` alone does neither: AppKit's window list holds its own
+    /// reference to a window, so the panel would stay alive, and stay visible, with nothing
+    /// on this side able to reach it.
+    ///
+    /// `close` is what drops AppKit's reference. It is safe to call because `build` cleared
+    /// `releasedWhenClosed`, so closing does not also release — the `Retained` going out of
+    /// scope here is the last reference, and the panel is deallocated.
     fn drop(&mut self) {
         PANEL.with_borrow_mut(|slot| {
             if let Some(panel) = slot.take() {
                 panel.panel.orderOut(None);
+                panel.panel.close();
             }
         });
     }
