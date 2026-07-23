@@ -175,22 +175,68 @@ fn log_panics() {
 
 #[cfg(test)]
 mod tests {
-    use super::PidStamped;
+    use super::{MakeWriter, PidStamped, WithPid};
     use std::io::Write;
+    use std::sync::{Arc, Mutex};
 
-    // The seam the whole records change rests on: the stamp splices in front of a record whose
-    // opening brace has been taken off, so the writer produces a line the reader can parse.
+    /// A writer that keeps what was written, so a test can read back what the layer produced.
+    #[derive(Clone, Default)]
+    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+    impl SharedBuf {
+        fn take(&self) -> Vec<u8> {
+            std::mem::take(&mut self.0.lock().unwrap())
+        }
+    }
+
+    impl Write for SharedBuf {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl MakeWriter<'_> for SharedBuf {
+        type Writer = Self;
+
+        fn make_writer(&self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    // The seam the whole records change rests on: the real json layer, through the real pid stamp,
+    // produces a line shaped the way `client::Record` reads it. This is what pins the record shape
+    // against a `tracing-subscriber` that changes its JSON.
     #[test]
-    fn what_the_writer_writes_is_a_record() {
-        let formatted =
-            br#"{"timestamp":"t","level":"INFO","target":"x","fields":{"message":"m"}}"#;
-        let mut written = Vec::new();
-        PidStamped(&mut written)
-            .write_all(formatted)
-            .expect("writing to a Vec");
-        let record: serde_json::Value = serde_json::from_slice(&written).expect("a record");
+    fn the_file_layer_writes_a_record_shaped_line() {
+        let buf = SharedBuf::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_current_span(false)
+            .with_span_list(false)
+            .with_ansi(false)
+            .with_writer(WithPid(buf.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(event = "Key(KeyR)", state = "Mercury { .. }", "dispatch");
+        });
+
+        let line = buf.take();
+        let record: serde_json::Value = serde_json::from_slice(&line).expect("a record");
         assert_eq!(record["pid"], serde_json::json!(std::process::id()));
+        assert!(record["timestamp"].is_string());
         assert_eq!(record["level"], serde_json::json!("INFO"));
+        assert!(record["target"].is_string());
+        assert_eq!(record["fields"]["message"], serde_json::json!("dispatch"));
+        assert_eq!(record["fields"]["event"], serde_json::json!("Key(KeyR)"));
+        assert_eq!(
+            record["fields"]["state"],
+            serde_json::json!("Mercury { .. }")
+        );
     }
 
     // A record with no leading brace would be destroyed by having its first byte replaced, so it is
