@@ -1,5 +1,8 @@
 # the lifecycle verbs, off macOS
 
+Changes 1 through 4 landed; this is here as their record. Change 5, the graceful stop on Windows, is deferred: it needs a daemon listening on the pipe, and no freddie daemon runs on Windows yet, since mercury is macOS-only and is the only one that exists. `--force` is Windows's whole stop until then, and `stop` without it says so. The portable crates compile, test, and clippy-clean on Linux and Windows in CI; a Windows freddie daemon is what makes change 5 worth building.
+
+
 `freddie_cli` finds a daemon, starts one, stops it, and follows its log. Four things in it are macOS-shaped: the log directory is `~/Library/Logs`, `logs` runs `/usr/bin/tail`, `stop` runs `/bin/kill`, and `start` detaches its child with a Unix process group.
 
 `freddie_single_instance` is not one of them. It locks through `File::try_lock`, which is `std`, and picks its state directory per platform already, so the lock and every probe over it work on all three today.
@@ -270,8 +273,8 @@ fn detach(command: &mut Command) -> &mut Command {
 
 The first three change nothing on macOS, and each is shippable alone.
 
-1. **`log_dir`, three ways**, with `home()` beside it.
-2. **`logs` follows the file itself.** `follow`, and the deletion of `TAIL`, `TAIL_LINES`, and the subprocess. `refactors/past/one-log-many-writers.md` loses its `tail` exception: clap and the tests are then the only things that reach a terminal without going through tracing.
-3. **`detach`, and `kill` for `--force`**, both behind `cfg`.
-4. **The CI job.** After 1 through 3 it passes, and it is what keeps them true.
-5. **The graceful stop on Windows.** `forward_pipe` in `freddie_daemon` and `ask_to_stop` in `freddie_cli`. Until it lands, `stop` on Windows has only `--force`, and says so rather than appearing to work.
+1. **`log_dir`, three ways**, with `home()` beside it. Landed.
+2. **`logs` follows the file itself.** `follow`, and the deletion of `TAIL`, `TAIL_LINES`, and the subprocess. `refactors/past/one-log-many-writers.md` loses its `tail` exception: clap and the tests are then the only things that reach a terminal without going through tracing. Landed. The graceful path split into `forward_pipe`/`ask_to_stop` in the doc above did not land; instead the existing `signal_pid` gained a Windows arm, SIGKILL via `taskkill /F` and SIGTERM returning "use --force" until change 5.
+3. **`detach`, and `kill` for `--force`**, both behind `cfg`. Landed.
+4. **The CI job.** After 1 through 3 it passes, and it is what keeps them true. Landed, with a clippy step beside the test.
+5. **The graceful stop on Windows.** Deferred until a freddie daemon runs on Windows. It is a pipe the daemon listens on and `stop` writes to, replacing the Windows `signal_pid`'s SIGTERM arm. mercury cannot run on Windows, so nothing exercises it yet.
