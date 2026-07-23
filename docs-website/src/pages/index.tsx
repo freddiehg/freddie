@@ -1,7 +1,7 @@
 import Link from '@docusaurus/Link';
 import CodeBlock from '@theme/CodeBlock';
 import Layout from '@theme/Layout';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import HomepageHeader from '../components/Header';
 import styles from './index.module.css';
 
@@ -105,6 +105,8 @@ function Doable({ title, children }: { title: string; children: ReactNode }) {
 }
 
 function BendIt() {
+  const [showMore, setShowMore] = useState(false);
+
   return (
     <section>
       <div className="container">
@@ -118,7 +120,7 @@ function BendIt() {
             Press one key to check out the branch you&rsquo;re reviewing on GitHub, open your editor, and open the changed files. Then press one key to jump back.
           </Doable>
           <Doable title="Jump to Google Meet">
-            You&rsquo;re doomscrolling, but your boss asked you a question about the sales figures. How quickly can you find Google Meet? One key foregrounds it, wherever it is. No sweat.
+            You&rsquo;re scrolling, but your boss asked you a question about the sales figures. How quickly can you find Google Meet? One key foregrounds it, wherever it is. No sweat.
           </Doable>
         </div>
         <div className="row">
@@ -132,6 +134,29 @@ function BendIt() {
             Every link on your machine can go through freddie, so work GitHub links always open in your work Chrome profile.
           </Doable>
         </div>
+        {showMore ? (
+          <div className="row">
+            <Doable title="Build a HUD for your events">
+              Float a heads-up display over everything you do, showing your agents&rsquo; responses and whatever else you want to keep an eye on.
+            </Doable>
+            <Doable title="Watch your CI">
+              Wire your build&rsquo;s failures into freddie and get nudged the moment a run goes red, without babysitting a browser tab.
+            </Doable>
+            <Doable title="Roll your own claw">
+              Build your own claw on rigorous foundations. Construct something more complex than if this was built on a pile of scripts.
+            </Doable>
+          </div>
+        ) : (
+          <div className={styles.ctaContainer}>
+            <button
+              type="button"
+              className="button button--secondary button--lg"
+              onClick={() => setShowMore(true)}
+            >
+              There&rsquo;s more&hellip;
+            </button>
+          </div>
+        )}
       </div>
     </section>
   );
