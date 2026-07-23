@@ -21,6 +21,8 @@ pub fn show(&self, text: String) {
 
 The table, the id it is keyed by, and the `Cell` that mints the id are all there to route a `Send` block back to a non-`Send` panel. `freddie_main_loop::MainLoop::run` already gives the main thread an `on_wake` callback for exactly this kind of work, and `daemon.rs` already drains the menu-bar title channel there. Sending over a channel drained on `on_wake` lets the `Overlay` own its panel directly, which deletes the `thread_local!`, the id, and the table.
 
+The channel is a `WakingSender`, so a `show` wakes the main run loop and `pump` runs at once rather than at the next slice — the promptness GCD gave for free. This change builds on `refactors/pending/wake-the-main-loop.md`, which lands first.
+
 ## The shape
 
 Each `Overlay` owns its `Panel` and the receiving end of a channel. `OverlaySink` holds the sending end, which is `Send` and `Clone`. `show`/`hide` send a message; the main thread drains it and mutates the panel it owns. There is no shared table, so there is no id and no lookup.
@@ -53,7 +55,10 @@ pub struct Overlay {
     /// The panel this overlay owns. `Retained<NSPanel>` is not `Send`, which keeps `Overlay` on
     /// the thread that built it without a `PhantomData`.
     panel: Panel,
-    /// Drained by [`Overlay::pump`] on the main thread. The sinks hold the senders.
+    /// The sender the sinks clone from. Held so `sink` can be called more than once; the overlay
+    /// itself never sends.
+    outgoing: WakingSender<OverlayMsg>,
+    /// Drained by [`Overlay::pump`] on the main thread when the loop wakes.
     incoming: Receiver<OverlayMsg>,
 }
 ```
@@ -77,11 +82,11 @@ after:
 /// is a harmless error, which is what hiding an already-gone overlay would have been.
 #[derive(Clone, Debug)]
 pub struct OverlaySink {
-    outgoing: Sender<OverlayMsg>,
+    outgoing: WakingSender<OverlayMsg>,
 }
 ```
 
-`overlay()` builds the panel and the channel, before:
+`overlay()` takes the main-loop waker, builds the panel, and makes a waking channel so a `show` reaches `pump` at once. before:
 
 ```rust
 pub fn overlay() -> Overlay {
@@ -103,26 +108,21 @@ pub fn overlay() -> Overlay {
 after:
 
 ```rust
-pub fn overlay() -> Overlay {
+pub fn overlay(waker: &MainWaker) -> Overlay {
     let mtm = MainThreadMarker::new().expect("overlay must be built on the main thread");
-    let (_outgoing, incoming) = std::sync::mpsc::channel();
+    let (outgoing, incoming) = waker.channel();
     debug!("overlay built");
     Overlay {
         panel: build(mtm),
+        outgoing,
         incoming,
     }
 }
 ```
 
-The sink carries a sender, so `sink()` clones one out. `overlay()` keeps one sender alive on the `Overlay`? No: the `Overlay` holds only the receiver, and `sink()` is the sole source of senders. Since `sink()` needs a sender to clone, the `Overlay` holds the original:
+`sink` clones the sender out; the overlay holds the original so `sink` can be called more than once:
 
 ```rust
-pub struct Overlay {
-    panel: Panel,
-    outgoing: Sender<OverlayMsg>,
-    incoming: Receiver<OverlayMsg>,
-}
-
 impl Overlay {
     #[must_use]
     pub fn sink(&self) -> OverlaySink {
@@ -135,7 +135,8 @@ impl Overlay {
 
 ```rust
 impl OverlaySink {
-    /// Show the overlay with `text`, from any thread. Applied on the main thread's next wake.
+    /// Show the overlay with `text`, from any thread. The send wakes the main loop, so `pump` runs
+    /// and the panel updates at once rather than at the next slice.
     pub fn show(&self, text: String) {
         let _ = self.outgoing.send(OverlayMsg::Show(text));
     }
@@ -190,9 +191,11 @@ impl Drop for Overlay {
 }
 ```
 
-`daemon.rs` drains the overlay on each wake, beside the title:
+`daemon.rs` builds the overlay with the same `waker` the title channel uses (`refactors/pending/wake-the-main-loop.md` creates it) and drains it on each wake, beside the title:
 
 ```rust
+    let overlay = freddie_overlay::overlay(&waker);
+    // ...
     main_loop.run(|| {
         if let Some(name) = title_rx.try_iter().last() {
             menu_bar.set_title(Some(&format!(" {name}")));
@@ -201,11 +204,9 @@ impl Drop for Overlay {
     });
 ```
 
-## The latency this trades for
+## Delivery is prompt
 
-The dispatched block ran on the main queue's next turn; `pump` runs on the main loop's next wake, which is at least every `SLICE` (100ms) and sooner on any `AppKit` event. So a show can lag up to `SLICE`. This is the same latency the menu-bar title already takes through `on_wake`, and it is acceptable there. The overlay is a glance-hint on a toggle or a dwell, not a per-frame element, so it takes the same deal.
-
-If that lag ever shows, the fix is to wake the run loop on send the way `Stopper` does, not to go back to the table: the sink would hold a `CFRunLoop` handle and call `wake_up` after the send. That is more machinery than `on_wake`, so it is held until the latency is a real complaint rather than a hypothetical.
+`show`/`hide` send on a `WakingSender`, which wakes the main run loop after the send. So `nextEventMatchingMask` returns at once, `on_wake` runs `pump`, and the panel changes without waiting for the slice — what the GCD dispatch delivered, now with no `thread_local`. This is why the change depends on `refactors/pending/wake-the-main-loop.md` landing first; on a bare channel the overlay would lag up to the slice on the exact keystroke that summons it.
 
 ## What is deleted
 
