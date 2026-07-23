@@ -266,6 +266,8 @@ after:
 
 ### Threading the source through the layer transitions
 
+Minting borrows `root.timer_ids` only for the `timer_effect_and_guard` call: the `TimerGuard` it returns is owned and borrows nothing, so the borrow ends at the call and the guard is then free to be stored. Storing it is one of two shapes, and neither collides with the mint. Either the guard goes into a value being built (a layer constructor owns it and `set_layer` installs it), or it goes onto an existing field (`toggle_overlay`'s `self.overlay`, the jk handler's `root.typing_state.jk`), which is a different field of `Mercury` than `timer_ids`. Where the target is a sub-struct method, the caller passes both as disjoint fields, `root.windows.placing(&mut root.timer_ids, target)`, which the borrow checker accepts. Ascending to the root is what supplies the `&mut` for both halves; it does not lock anything.
+
 The layer constructors that arm a return-home timer take the source. `NavLayer::new` (`state/nav.rs:39`) is representative; `AppLayer::new` (`app.rs`), `SiteLayer::new` (`site.rs`), and `ResizeLayer::new` (`resize.rs`) are the same shape. before:
 
 ```rust
