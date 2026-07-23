@@ -688,8 +688,6 @@ fn watch_for_free(instance: &Instance) -> mpsc::Receiver<Result<(), LockError>> 
 /// else.
 #[cfg(unix)]
 fn signal_pid(pid: Pid, signal: Signal) -> io::Result<()> {
-    // A subprocess rather than `kill(2)`, because the workspace forbids `unsafe` and every binding
-    // for the syscall is an unsafe extern call.
     ran(Command::new("/bin/kill")
         .arg(signal.flag())
         .arg(pid.to_string()))
@@ -703,8 +701,6 @@ fn signal_pid(pid: Pid, signal: Signal) -> io::Result<()> {
         Signal::Kill => ran(Command::new("taskkill")
             .args(["/F", "/PID"])
             .arg(pid.to_string())),
-        // The graceful stop is a named pipe, which `freddie-cli-off-macos.md` change 5 adds. Until
-        // then Windows has only `--force`.
         Signal::Terminate => Err(io::Error::other(
             "graceful stop is not yet available on Windows; use --force",
         )),
