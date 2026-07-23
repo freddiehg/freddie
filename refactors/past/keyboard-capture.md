@@ -25,14 +25,10 @@ pub struct Interceptor(/* private */);
 pub struct Emitter(/* private */);
 impl Emitter {
     // Synthesize a key not tied to an intercepted event. Re-posts, so it carries the tag.
-    pub fn emit(&self, key: Key, press: PressType) -> Result<(), EmitError>;
-    pub fn tap(&self, key: Key) -> Result<(), EmitError>;      // press then release
-    pub fn press(&self, key: Key) -> Result<Held, EmitError>; // held until the last handle drops
+    // The event states its own modifier flags rather than trusting the source's state.
+    pub fn emit(&self, key: Key, press: PressType, flags: ModifierFlags) -> Result<(), EmitError>;
+    pub fn tap(&self, key: Key, flags: ModifierFlags) -> Result<(), EmitError>; // down then up, both carrying flags
 }
-
-pub struct Held(/* private */);
-impl Clone for Held;   // another handle holding the key down
-// impl Drop for Held: the last handle releases the key.
 
 pub struct CaptureError;                 // Display + Error
 pub enum EmitError { Unmappable(Key), Post }
@@ -42,9 +38,9 @@ pub enum EmitError { Unmappable(Key), Post }
 let (interceptor, emitter) = intercept(on_key)?;
 ```
 
-`on_key` runs on the capture thread and returns the transform, so keep it fast; freddie's remap is CPU-only, so it fits. The `Emitter` is for keys the callback did not produce by returning, a macro or a held modifier, and it shares the interceptor's tag from the same `intercept` call. `emit`/`tap`/`press` `CGEventPost`, so they carry the tag and hit the cross-process caveat below. `press` holds a key and releases it when the last `Held` drops, ref-counted per key; `Held` is `Rc`-backed and `!Send`, and a `send` feature swaps in `Arc`.
+`on_key` runs on the capture thread and returns the transform, so keep it fast; freddie's remap is CPU-only, so it fits. The `Emitter` is for keys the callback did not produce by returning (a synthesized chord, or a modifier emitted down and up on its own), and it shares the interceptor's tag from the same `intercept` call. `emit`/`tap` `CGEventPost`, so they carry the tag and hit the cross-process caveat below, and both state the modifier flags on the event they post rather than trusting the source's state.
 
-`Key` is one enum, a variant per key, `Key::Raw(u16)` included. `KeyEvent` is `{ key: Key, press: PressType }`, and `PressType` is `Down` or `Up`, a named enum rather than a bare bool.
+`Key` is one enum, a variant per key, `Key::Raw(u16)` included. `KeyEvent` is `{ key: Key, press: PressType, flags: ModifierFlags }`, `PressType` is `Down` or `Up`, a named enum rather than a bare bool, and `ModifierFlags` is a portable bitset the backend maps to native flags on emit.
 
 ## The tag, and the cross-process limit
 
