@@ -268,12 +268,15 @@ pub trait Ascend<Target> {
 /// per-depth impl structure and overlap-freedom. Use [`PathMut::ascend_to_mut`] to
 /// name the target, or let it be inferred.
 ///
+/// [`Ascend`] is a supertrait: a consuming ascender can always also borrow-ascend,
+/// so one `AscendMut` bound gives a handler both reaches.
+///
 /// ```ignore
 /// fn take<'a, P: AscendMut<LayerPath<'a>>>(path: P) {
 ///     let layer: LayerPath = path.ascend_mut();
 /// }
 /// ```
-pub trait AscendMut<Target> {
+pub trait AscendMut<Target>: Ascend<Target> {
     fn ascend_mut(self) -> Target;
 }
 
