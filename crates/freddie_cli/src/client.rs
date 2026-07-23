@@ -442,13 +442,16 @@ const IDLE: Duration = Duration::from_millis(200);
 /// One record out of the log file.
 ///
 /// `fields` is a map rather than a struct, because its keys are whatever the call site passed:
-/// `message` is always there and the rest are the record's own.
+/// `message` is always there and the rest are the record's own. It is `#[serde(flatten)]` because
+/// the layer writes those keys at the top level, so this collects everything that is not the
+/// envelope, in the order the record holds them.
 #[derive(serde::Deserialize)]
 struct Record {
     pid: u32,
     timestamp: String,
     level: String,
     target: String,
+    #[serde(flatten)]
     fields: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -726,7 +729,7 @@ mod tests {
     use super::{LogsView, Record, show};
     use tracing::Level;
 
-    const DISPATCH: &str = r#"{"pid":1,"timestamp":"2026-07-21T09:14:02.114Z","level":"INFO","target":"mercury::daemon","fields":{"message":"dispatch","event":"Key(KeyR)","state":"Mercury { .. }"}}"#;
+    const DISPATCH: &str = r#"{"pid":1,"timestamp":"2026-07-21T09:14:02.114Z","level":"INFO","message":"dispatch","event":"Key(KeyR)","effects":"[]","state":"Mercury { .. }","target":"mercury::daemon"}"#;
 
     fn view(include_state: bool) -> LogsView {
         LogsView {
@@ -753,14 +756,15 @@ mod tests {
         assert!(with.contains("state=Mercury { .. }"));
     }
 
-    // A dispatch record reads as its parts: the prefix, the message, then each field. `message` is
-    // pulled out first, and the remaining fields follow in the map's own order.
+    // A dispatch record reads as its parts: the prefix, the message, then each field in the order
+    // it was logged. `message` is pulled out first, `event` comes before `effects` because that is
+    // how the daemon records them, and `state` is left out.
     #[test]
     fn a_record_reads_as_its_parts() {
         let line = shown(DISPATCH, &view(false), false);
         assert_eq!(
             line.trim_end(),
-            "2026-07-21T09:14:02.114Z pid=1 mercury::daemon INFO dispatch event=Key(KeyR)"
+            "2026-07-21T09:14:02.114Z pid=1 mercury::daemon INFO dispatch event=Key(KeyR) effects=[]"
         );
     }
 

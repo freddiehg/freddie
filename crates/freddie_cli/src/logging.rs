@@ -112,9 +112,10 @@ pub(crate) fn init(instance: &Instance, terminal: Terminal) {
 
     let file = fmt::layer()
         .json()
-        // Flat: one object per record, with its fields under `fields` and nothing else nested.
-        // `logs` renders a record from those keys, and a span list would be keys it has no line to
-        // put.
+        // One flat object per record: `flatten_event` lifts the event's own fields up beside
+        // `timestamp` and `target` rather than nesting them under `fields`, and dropping the span
+        // keys leaves nothing else in the object.
+        .flatten_event(true)
         .with_current_span(false)
         .with_span_list(false)
         .with_writer(WithPid(tracing_appender::rolling::never(
@@ -180,21 +181,28 @@ mod tests {
 
     // The seam the whole records change rests on: the real json layer, through the real pid stamp,
     // produces a line shaped the way `client::Record` reads it. This pins the record shape against a
-    // `tracing-subscriber` that changes its JSON.
+    // `tracing-subscriber` that changes its JSON: the event's own fields sit at the top level, and
+    // they keep the order they were logged, which is what puts `event` before `effects`.
     #[test]
-    fn the_file_layer_writes_a_record_shaped_line() {
+    fn the_file_layer_writes_a_flat_record_in_logged_order() {
         let path =
             std::env::temp_dir().join(format!("freddie_cli_seam_{}.log", std::process::id()));
         let file = std::fs::File::create(&path).expect("a temp log file");
         let subscriber = tracing_subscriber::fmt()
             .json()
+            .flatten_event(true)
             .with_current_span(false)
             .with_span_list(false)
             .with_ansi(false)
             .with_writer(WithPid(file))
             .finish();
         tracing::subscriber::with_default(subscriber, || {
-            tracing::info!(event = "Key(KeyR)", state = "Mercury { .. }", "dispatch");
+            tracing::info!(
+                event = "Key(KeyR)",
+                effects = "[]",
+                state = "Mercury { .. }",
+                "dispatch"
+            );
         });
 
         let line = std::fs::read(&path).expect("the temp log file");
@@ -204,12 +212,14 @@ mod tests {
         assert!(record["timestamp"].is_string());
         assert_eq!(record["level"], serde_json::json!("INFO"));
         assert!(record["target"].is_string());
-        assert_eq!(record["fields"]["message"], serde_json::json!("dispatch"));
-        assert_eq!(record["fields"]["event"], serde_json::json!("Key(KeyR)"));
-        assert_eq!(
-            record["fields"]["state"],
-            serde_json::json!("Mercury { .. }")
-        );
+        // Flat, not nested under `fields`.
+        assert_eq!(record["message"], serde_json::json!("dispatch"));
+        assert_eq!(record["event"], serde_json::json!("Key(KeyR)"));
+        assert_eq!(record["state"], serde_json::json!("Mercury { .. }"));
+
+        let keys: Vec<&String> = record.as_object().expect("an object").keys().collect();
+        let at = |k: &str| keys.iter().position(|key| *key == k).expect("the key");
+        assert!(at("event") < at("effects"), "event should precede effects");
     }
 
     // A record with no leading brace would be destroyed by having its first byte replaced, so it is

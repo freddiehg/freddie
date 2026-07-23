@@ -55,7 +55,7 @@ The event socket reaches a running daemon without touching the process: connect 
 
 mercury writes its tracing output to `~/Library/Logs/mercury/mercury.log`, always, appending across runs. Read that file to debug a run.
 
-The file always records down to `debug`, whatever the terminal is set to, so a run is always reconstructable afterwards. Every line is one JSON object: `pid`, `timestamp`, `level`, `target`, and the record's own fields under `fields`. So `jq` reads it, and `mercury logs` renders it rather than parsing text.
+The file always records down to `debug`, whatever the terminal is set to, so a run is always reconstructable afterwards. Every line is one flat JSON object: `pid`, `timestamp`, `level`, `target`, and the record's own fields (`message` and whatever the call site logged) beside them, in the order they were logged. So `jq` reads it, and `mercury logs` renders it rather than parsing text.
 
 It holds one record per dispatched event, carrying the event, the effects it produced, and the resulting state, plus each key emitted, each app foregrounded, and the raw frontmost-app changes `freddie_app_nav` observed.
 
