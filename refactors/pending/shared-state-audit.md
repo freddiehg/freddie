@@ -55,13 +55,20 @@ after:
 /// Monotonic and never reset within a run: a firing from a cancelled timer must never carry the id
 /// of one armed later, or a stale event would match a fresh guard. The read-then-bump lives here and
 /// nowhere else; a caller only ever holds `&mut TimerIds` and never sees an id.
+///
+/// Deliberately not `Clone` or `Copy`. `next` takes `&mut self`, and the only reachable `TimerIds`
+/// is the one field on the root, so every mint advances the canonical counter. A copy would let a
+/// caller mint an id whose bump never reached the root, which is the one way two timers could share
+/// an id.
 #[derive(Default, Debug)]
 #[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
 pub struct TimerIds(u64);
 
 impl TimerIds {
-    /// The next id, advancing the source. The only way to make a [`TimerId`], so no caller mints
-    /// off an ambient counter.
+    /// The next id, advancing the source. The only way to make a [`TimerId`], and it bumps on every
+    /// call, so a minted id and the counter's advance are the same event: there is no id without a
+    /// bump. `TimerGuard` and `TimerEffect` are built from the id in the same call, so holding a
+    /// guard implies the bump already happened.
     fn next(&mut self) -> TimerId {
         let id = TimerId(self.0);
         self.0 += 1;
