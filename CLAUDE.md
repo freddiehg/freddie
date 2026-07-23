@@ -119,6 +119,7 @@ Three things stay unrouted, because none of them is mercury's own output. clap w
 - In JavaScript, a discriminated union takes exactly one form: `{ kind: "Type.Variant", value: T }`. The tag is always `kind`, its value is the dotted `Type.Variant` name, and the payload is always the single `value` field (never inline fields, never a bare variant name). Every variant that shares a `Type` prefix belongs to the same union, so `Type.` is how you read off which union a value is in.
 - Never poll and loop. Always select! or the like, unless there is a specific, unavoidable need.
 - Never rely on discipline what we can enforce with newtypes.
+- Custom traits are generally to be avoided. Prefer a concrete type, an enum, a plain function, or a standard-library trait (`From`/`Into`, `Default`, the iterator traits) over introducing a trait of our own. A trait earns its place when several types genuinely implement it or it marks a real abstraction boundary; a trait with one implementor, reached for to make a generic infer or to fold a single call site's boilerplate, is the case to avoid. The exact line is not sharp yet, so when a design introduces a trait, question it the way the shared-state primitives are: say what it buys over a concrete type, and default to the version without it.
 
 ### Wrapping an operating system API
 

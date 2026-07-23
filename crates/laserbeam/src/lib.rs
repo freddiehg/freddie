@@ -213,13 +213,13 @@ mod tests {
 ///
 /// Implemented for every path and for each of its ancestors, to twelve levels, so
 /// a handler can be generic over "any path beneath this node" rather than naming
-/// one. Use [`PathMut::ascend_to`] to name the target, or let it be inferred.
+/// one. Use [`PathMut::ascend_to_mut`] to name the target, or let it be inferred.
 ///
 /// ```ignore
 /// fn to_home<'a, P: Ascend<LayerPath<'a>>>(path: P) {
-///     let layer: LayerPath = path.ascend();
+///     let layer: LayerPath = path.ascend_mut();
 /// }
-/// nav_path.ascend_to::<LayerPath>();
+/// nav_path.ascend_to_mut::<LayerPath>();
 /// ```
 ///
 /// The impls match on the shape of the path rather than on which node it is, so
@@ -236,12 +236,12 @@ mod tests {
 /// its parent as a route enum rather than a `PathMut`, so the shapes stop matching,
 /// and the ascent would not be unique anyway.
 pub trait Ascend<Target> {
-    fn ascend(self) -> Target;
+    fn ascend_mut(self) -> Target;
 }
 
 /// Every path is its own ancestor, at depth zero.
 impl<T> Ascend<T> for T {
-    fn ascend(self) -> T {
+    fn ascend_mut(self) -> T {
         self
     }
 }
@@ -250,16 +250,16 @@ impl<Node, Parent> PathMut<Node, Parent> {
     /// Walk up to `Target`, naming it rather than leaving it to inference.
     ///
     /// Sugar, and the only way to name the target on the right. `Target` is a
-    /// parameter of [`Ascend`] rather than of its method, so `path.ascend::<T>()`
+    /// parameter of [`Ascend`] rather than of its method, so `path.ascend_mut::<T>()`
     /// does not compile: the method takes no generic arguments. Without this you
-    /// would name the target on the left, `let layer: LayerPath = path.ascend();`,
-    /// or spell out `<HomeLayerPath as Ascend<LayerPath>>::ascend(path)`.
+    /// would name the target on the left, `let layer: LayerPath = path.ascend_mut();`,
+    /// or spell out `<HomeLayerPath as Ascend<LayerPath>>::ascend_mut(path)`.
     #[must_use]
-    pub fn ascend_to<Target>(self) -> Target
+    pub fn ascend_to_mut<Target>(self) -> Target
     where
         Self: Ascend<Target>,
     {
-        Ascend::ascend(self)
+        Ascend::ascend_mut(self)
     }
 }
 
@@ -284,7 +284,7 @@ macro_rules! ascend_impls {
     ([$($acc:ident),*]) => {};
     ([$($acc:ident),*], $head:ident $(, $rest:ident)*) => {
         impl<T, $($acc,)* $head> Ascend<T> for ascend_nest!(T $(, $acc)*, $head) {
-            fn ascend(self) -> T {
+            fn ascend_mut(self) -> T {
                 ascend_up!(self $(, $acc)*, $head)
             }
         }

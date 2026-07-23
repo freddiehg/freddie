@@ -55,7 +55,7 @@ pub(crate) fn copy_host<'a, E, P: Ascend<MercuryPath<'a>>, D>(
 /// to answer at all, so that case falls back to [`Copied::FrontTabUrl`]. A URL with no host
 /// (`about:blank`, `file:///...`) has no answer either way, and copies nothing.
 fn copy<'a, P: Ascend<MercuryPath<'a>>>(path: P, part: UrlPart) -> Vec<MercuryEffect> {
-    let root: MercuryPath<'_> = path.ascend();
+    let root: MercuryPath<'_> = path.ascend_mut();
     let Some(url) = root
         .foreground
         .confirmed_chrome()

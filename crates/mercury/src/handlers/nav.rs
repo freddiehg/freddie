@@ -19,7 +19,7 @@ use crate::{App, MercuryEffect};
 ///
 /// Generic over the path, so every opener binds it from its own node.
 fn navigate<'a, P: Ascend<MercuryPath<'a>>>(path: P, app: App) -> Vec<MercuryEffect> {
-    let root: MercuryPath<'_> = path.ascend();
+    let root: MercuryPath<'_> = path.ascend_mut();
     root.foreground.start_navigating();
     let (inapp, timer) = AppLayer::new();
     let mut effects = root.set_layer(inapp);

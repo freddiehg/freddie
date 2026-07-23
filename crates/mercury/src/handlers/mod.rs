@@ -52,7 +52,7 @@ pub(crate) fn and_go_home<'a, P: Ascend<MercuryPath<'a>>>(
     path: P,
     effects: impl IntoIterator<Item = MercuryEffect>,
 ) -> Vec<MercuryEffect> {
-    and_go_home_from(path.ascend(), effects)
+    and_go_home_from(path.ascend_mut(), effects)
 }
 
 /// [`and_go_home`] for a caller that has already ascended, which a handler that read the

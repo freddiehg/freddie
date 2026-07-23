@@ -15,7 +15,7 @@ pub(crate) fn toggle_overlay<'a, E, P: Ascend<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
-    node.parent.ascend().toggle_overlay()
+    node.parent.ascend_mut().toggle_overlay()
 }
 
 /// The overlay's hide timer fired. Bound at the root, so it fires from whatever layer is active,
