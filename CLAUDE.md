@@ -34,6 +34,10 @@ This section is extremely important. A frequent source of frustration is deviati
 
 The preferred way to move data between threads is a channel whose sender is freely `Send` and cloneable while the receiver stays pinned to one thread. Sending an event to the thread that owns the state beats reaching into that state across a lock. If a design reaches for `Arc<Mutex<_>>`, the first question is what channel would carry that data instead.
 
+Ambient state the program itself owns belongs on the root struct, not in a `static` or a `thread_local!`. A process-wide counter, a next-id source, anything a dispatch reads or advances: make it a field on the root model and thread it to where it is used, so the value it hands out is a function of state. A `static NEXT: AtomicU64` is the shape to avoid: it is ambient, it makes the dispatch that reads it impure, and it is usually `Sync` only to satisfy `static` rather than because two threads touch it.
+
+This is distinct from state the outside world owns. The front app and a window's frame are seeded at construction and kept current by events, under the idempotence rule above; they are external truth mirrored into the model, not ambient state the program invented. The test is who mints the value. If the program mints it, it is a field on root. If the OS owns it, it arrives as an event.
+
 ## Tests
 
 The standard for the model is exhaustive: every key in every reachable state, asserting exactly what dispatch produces. The model is a pure function of state and event, so the full table is checkable and doubles as documentation of the keymap. Not all of it exists yet; new bindings should extend toward it rather than test only the happy path.
