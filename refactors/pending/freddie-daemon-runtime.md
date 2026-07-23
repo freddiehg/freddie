@@ -30,6 +30,8 @@ pub trait Model {
 }
 ```
 
+Two methods on one value rather than two functions handed to the loop. `handle` and `perform` are a matched pair operating on the same running model, and the trait ties them, and the `Event` and `Effect` types, to it: a call site passes one model, not a value plus two function references that could be mismatched or drift apart. The loop is generic over the trait, so the dispatch is still static and inlined.
+
 ## The loop
 
 ```rust
