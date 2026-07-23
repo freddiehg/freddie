@@ -1,6 +1,6 @@
 # virtual HID keyboard (the Karabiner route)
 
-The correct way to remap a keyboard on macOS, and what it costs. This is the upgrade path behind the same `Grab` API as the CGEventTap backend (keyboard-capture.md); nothing above `Grab` changes when we swap.
+The correct way to remap a keyboard on macOS, and what it costs. This is the upgrade path behind the same `intercept` seam as the CGEventTap backend (keyboard-capture.md); nothing above `intercept` changes when we swap.
 
 ## The shape
 
@@ -38,18 +38,18 @@ Either beats writing and getting a new driver approved.
 
 The entitlement approval and notarization are for shipping to other machines, not for iterating on your own. Locally you turn on system-extension developer mode (`systemextensionsctl developer on`, usually with SIP relaxed) and load a self-signed build, which is the normal driver dev loop. And reusing Karabiner's installed, already-signed driver skips signing and notarization entirely while developing. So the Apple gate is a distribution problem and can be deferred; it does not block trying the approach.
 
-## How it fits behind `Grab`
+## How it fits behind `intercept`
 
-`Grab` is observe-plus-emit: `new(on_key)` hands you each key, `emit`/`tap`/`press` post output. The HID backend implements that directly: `on_key` is a seized-device read, `emit` posts a virtual HID report. The CGEventTap backend implements the same by swallowing and re-posting, with the tag and the cross-process loop.
+`intercept(on_key)` is observe-plus-emit: it hands you each key through `on_key` and returns an `Interceptor` and an `Emitter`, whose `emit`/`tap` post output. The HID backend implements that directly: `on_key` is a seized-device read, `emit` posts a virtual HID report. The CGEventTap backend implements the same by swallowing and re-posting, with the tag and the cross-process loop.
 
-The one thing that would leak is CGEventTap's trick of deciding in the callback and returning the event down the chain. HID has no chain to return into, so we do not use that trick; both backends stay on observe-plus-emit, and the swap is invisible above `Grab`.
+The one thing that would leak is CGEventTap's trick of deciding in the callback and returning the event down the chain. HID has no chain to return into, so we do not use that trick; both backends stay on observe-plus-emit, and the swap is invisible above `intercept`.
 
 ## mercury is already shaped for this
 
-mercury swallows every key and re-posts its output through `CGEventPost`, rather than deciding in the tap callback and returning the event down the chain. That looks like a compromise on the tap and it is exactly what HID needs: observe, then emit. Nothing above `Grab` changes on the swap, and nothing in mercury's event loop, effect loop, or model changes either.
+mercury swallows every key and re-posts its output through `CGEventPost`, rather than deciding in the tap callback and returning the event down the chain. That looks like a compromise on the tap and it is exactly what HID needs: observe, then emit. Nothing above `intercept` changes on the swap, and nothing in mercury's event loop, effect loop, or model changes either.
 
 The alternative, dispatching synchronously in the tap callback, would have to be undone here, because there is no chain to return into. See synchronous-dispatch.md, where that is decided against for this reason.
 
 ## Recommendation
 
-CGEventTap now, behind `Grab`, single-process. HID when the cross-process loop or robustness matters, ideally by leaning on Karabiner's driver rather than shipping our own. The API does not change across the swap, so starting on the tap is not wasted.
+CGEventTap now, behind `intercept`, single-process. HID when the cross-process loop or robustness matters, ideally by leaning on Karabiner's driver rather than shipping our own. The API does not change across the swap, so starting on the tap is not wasted.

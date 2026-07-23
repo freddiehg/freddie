@@ -2,7 +2,7 @@
 
 The macOS backend choice for capture and emit. Details live in keyboard-capture.md (tap) and virtual-hid.md (HID); this is the comparison and the call.
 
-The two are not mutually exclusive. Both sit behind the same `Grab` (observe plus emit, synchronous dispatch), so the choice is which to build first, not a permanent commitment. That framing matters: start on the cheap one, keep the other as a known upgrade.
+The two are not mutually exclusive. Both sit behind the same `intercept` seam (observe plus emit), so the choice is which to build first, not a permanent commitment. That framing matters: start on the cheap one, keep the other as a known upgrade.
 
 ## Correctness and the loop
 
@@ -34,7 +34,7 @@ Both are a single fast hop, microseconds, well under anything perceptible. Not a
 
 ## The call
 
-Build CGEventTap first, behind `Grab`, with the synchronous-dispatch model. It is cheap, safe, ships now, and is correct for the single-process case that mercury and figaro actually are. The synchronous model is what makes it correct enough to ship, since it removes the re-post that causes the loop.
+Build CGEventTap first, behind `intercept`, single-process. It is cheap, safe, ships now, and covers the single-process case that mercury and figaro actually are: the per-process tag stops the tap from re-eating its own output. mercury swallows every key and re-posts its output through the `Emitter` rather than deciding in the tap callback and returning the event; that keeps one lock-free owner of state, at the cost of the re-post and the residual cross-process loop hole, which is accepted until HID. The synchronous-dispatch model that would remove the re-post was weighed and rejected as a detour HID would undo (synchronous-dispatch.md).
 
 Move to HID when a hard requirement forces it, not before:
 
@@ -42,4 +42,4 @@ Move to HID when a hard requirement forces it, not before:
 - multiple independent remappers have to coexist correctly (the cross-process loop);
 - you want Karabiner-grade robustness as a product, not a personal tool.
 
-Until one of those is real, HID is a large investment gated on Apple, for correctness in cases a single-process tap does not hit. Because the swap is invisible above `Grab`, starting on the tap costs nothing if we later need the driver.
+Until one of those is real, HID is a large investment gated on Apple, for correctness in cases a single-process tap does not hit. Because the swap is invisible above `intercept`, starting on the tap costs nothing if we later need the driver.
