@@ -2,47 +2,7 @@
 
 The root `LaunchDaemon` that wires the seize (`freddie_hid_sys`) to the virtual device (`freddie_virtual_hid`) and exposes a unix socket to the session. It runs the transport, not the model: it reads the physical keyboard, forwards each key to the session, applies the keys the session emits back, and posts them to the virtual device. When no session client is attached it passes keys straight through, so the keyboard never goes dead.
 
-Depends on `hid-virtual-device-client.md` and `hid-seize.md`. Defines `freddie_hid_wire`, shared with the session backend (`hid-session-backend.md`).
-
-## freddie_hid_wire
-
-The session↔daemon protocol, one small crate both sides depend on. Two directions, each an enum so a new message is a variant rather than a format change:
-
-```rust
-// crates/freddie_hid_wire/src/lib.rs
-use freddie_keys::{Key, KeyEvent, PressType};
-use serde::{Deserialize, Serialize};
-
-/// Daemon → session. Each physical key, as the model's `on_key` will see it: a full
-/// `KeyEvent` carrying the input-side modifier flags the daemon tracks, so the session sees
-/// exactly what the CGEventTap backend delivers.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub enum Uplink {
-    Input(KeyEvent),
-}
-
-/// Session → daemon. One output key transition. No flags: the session's HID `Emitter` has
-/// already expanded modifier state into explicit modifier-key transitions (see
-/// `hid-session-backend.md`), so the daemon only toggles a held key and never interprets
-/// flags on this path.
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub enum Downlink {
-    Emit { key: Key, press: PressType },
-}
-```
-
-Framing is a `u32` little-endian length prefix and a JSON body. Keystroke rates make JSON's cost irrelevant, and it matches the repo's JSON-record logging; a compact binary codec would buy nothing here.
-
-```rust
-/// Read/write one framed message over any stream. `Err` on EOF or a length past the cap.
-pub fn write_msg<T: Serialize>(sock: &mut impl std::io::Write, msg: &T) -> std::io::Result<()>;
-pub fn read_msg<T: DeserializeOwned>(sock: &mut impl std::io::Read) -> std::io::Result<T>;
-
-/// A frame past this is a protocol error; nothing legitimate on this socket is large.
-const MAX_FRAME_BYTES: usize = 64 * 1024;
-```
-
-Prefactor: `freddie_keys::{Key, PressType, ModifierFlags, KeyEvent}` derive `Serialize`/`Deserialize`. They are plain data; the derives are additive and let both the wire and, later, structured logging carry them. This is the first change and ships alone.
+Depends on `hid-virtual-device-client.md`, `hid-seize.md`, and `freddie_hid_wire` (the session↔daemon protocol, defined in `hid-session-backend.md`: `Uplink::Input(KeyEvent)` up, `Downlink::Emit { key, press }` down, `u32`-length-prefixed JSON frames). This is the change that ties the pieces together; once it lands, `freddie_keyboard_hid` from the first change drives it end to end.
 
 ## The daemon's state
 

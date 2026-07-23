@@ -1,65 +1,79 @@
-# freddie_keyboard on HID: the session backend
+# freddie_keyboard_hid: the interface crate
 
-`freddie_keyboard`'s second macOS backend, `sys/hid.rs`, selected by the `hid` Cargo feature. It implements the same `intercept`/`Interceptor`/`Emitter` as `sys/macos.rs`, but instead of a CGEventTap it connects to `freddie_hidd`'s socket: the interceptor's reader turns each `Uplink::Input` into an `on_key` call, and the emitter turns `emit`/`tap` into `Downlink::Emit`s. Depends on `freddie_hid_wire` (defined in `hidd.md`).
+The new crate figaro depends on, exposing the same `intercept`/`Interceptor`/`Emitter` as `freddie_keyboard`, but backed by `freddie_hidd`'s socket instead of a CGEventTap: the interceptor's reader turns each `Uplink::Input` into an `on_key` call, and the emitter turns `emit`/`tap` into `Downlink::Emit`s. This is the first, minimal change. It compiles and figaro can depend on it with the emitter logic unit-tested; it does nothing end to end until `freddie_hidd` exists (`hidd.md`).
 
-Nothing above `intercept` changes. figaro is the mercury shape with this backend selected; its model, event loop, effect loop, `freddie_app_nav`, and menu bar are untouched.
+Nothing above `intercept` changes. figaro is the mercury shape against this crate; its model, event loop, effect loop, `freddie_app_nav`, and menu bar are untouched.
 
-## The feature
+## The crate
 
 ```toml
-# crates/freddie_keyboard/Cargo.toml
-[features]
-default = ["cgevent"]
-cgevent = []
-hid = ["dep:freddie_hid_wire"]
+# crates/freddie_keyboard_hid/Cargo.toml
+[package]
+name = "freddie_keyboard_hid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 freddie_keys = { path = "../freddie_keys", version = "0.0.1" }
-freddie_hid_wire = { path = "../freddie_hid_wire", version = "0.0.1", optional = true }
+freddie_hid_wire = { path = "../freddie_hid_wire", version = "0.0.1" }
 tracing = "0.1"
 
-[target.'cfg(target_os = "macos")'.dependencies]
-core-graphics = { version = "0.25", features = ["link"] }
-core-foundation = { version = "0.10", features = ["link"] }
+[lints]
+workspace = true
 ```
 
-`core-graphics`/`core-foundation` stay unconditional today; a later change can gate them behind `cgevent` so an `hid`-only build does not pull them. Not required for correctness, so it is not part of this change.
-
-Backend selection, `sys/mod.rs`:
+Under `forbid(unsafe_code)`: it is a socket client. It re-exports the vocabulary and defines the same error types as `freddie_keyboard`, so a consumer's `use` and call sites match either crate:
 
 ```rust
-// before
-#[cfg(target_os = "macos")]
-mod macos;
-#[cfg(target_os = "macos")]
-pub use macos::{Emitter, Interceptor, intercept};
+// crates/freddie_keyboard_hid/src/lib.rs
+pub use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 
-#[cfg(not(target_os = "macos"))]
-compile_error!("freddie_keyboard only has a macOS backend so far");
+/// The keyboard could not be grabbed. On HID this means `freddie_hidd` is unreachable.
+pub struct CaptureError;   // same shape as freddie_keyboard::CaptureError
+
+/// A key could not be emitted.
+pub enum EmitError { Unmappable(Key), Post }
 ```
+
+The two error types are duplicated across the two crates rather than shared, keeping this change to one new crate that touches nothing else. Hoisting the shared interface (the errors and, if wanted, a `Backend` trait) into a `freddie_keyboard_api` crate is a later cleanup, not this change.
+
+## freddie_hid_wire
+
+The session↔daemon protocol, a small crate this one and `freddie_hidd` both depend on. Two directions, each an enum so a new message is a variant, not a format break:
 
 ```rust
-// after
-#[cfg(all(target_os = "macos", feature = "cgevent"))]
-mod macos;
-#[cfg(all(target_os = "macos", feature = "cgevent"))]
-pub use macos::{Emitter, Interceptor, intercept};
+// crates/freddie_hid_wire/src/lib.rs
+use freddie_keys::{Key, KeyEvent, PressType};
+use serde::{Deserialize, Serialize};
 
-#[cfg(all(target_os = "macos", feature = "hid"))]
-mod hid;
-#[cfg(all(target_os = "macos", feature = "hid"))]
-pub use hid::{Emitter, Interceptor, intercept};
+/// Daemon → session. Each physical key, as the model's `on_key` sees it: a full `KeyEvent`
+/// carrying the input-side modifier flags the daemon tracks, so the session sees exactly what
+/// the CGEventTap backend delivers.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum Uplink {
+    Input(KeyEvent),
+}
 
-#[cfg(all(target_os = "macos", not(any(feature = "cgevent", feature = "hid"))))]
-compile_error!("freddie_keyboard on macOS needs exactly one of `cgevent` or `hid`");
-#[cfg(all(target_os = "macos", all(feature = "cgevent", feature = "hid")))]
-compile_error!("freddie_keyboard: `cgevent` and `hid` are mutually exclusive");
+/// Session → daemon. One output key transition. No flags: the emitter here has already
+/// expanded modifier state into explicit modifier-key transitions, so the daemon only toggles
+/// a held key and never interprets flags on this path.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub enum Downlink {
+    Emit { key: Key, press: PressType },
+}
 
-#[cfg(not(target_os = "macos"))]
-compile_error!("freddie_keyboard only has a macOS backend so far");
+/// Read/write one framed message: a `u32` little-endian length prefix and a JSON body.
+/// Keystroke rates make JSON's cost irrelevant, and it matches the repo's JSON-record logging.
+pub fn write_msg<T: Serialize>(sock: &mut impl std::io::Write, msg: &T) -> std::io::Result<()>;
+pub fn read_msg<T: DeserializeOwned>(sock: &mut impl std::io::Read) -> std::io::Result<T>;
+
+/// A frame past this is a protocol error; nothing legitimate on this socket is large.
+const MAX_FRAME_BYTES: usize = 64 * 1024;
 ```
 
-The two features are mutually exclusive because they export the same names. mercury keeps the default; figaro sets `default-features = false, features = ["hid"]`.
+Prefactor within this change: `freddie_keys::{Key, PressType, ModifierFlags, KeyEvent}` derive `Serialize`/`Deserialize`. They are plain data; the derives are additive and serve both the wire and, later, structured logging.
 
 ## intercept
 
@@ -197,7 +211,7 @@ Two limits stated so they are not surprises:
 
 ## Errors
 
-`CaptureError` and `EmitError` are the crate's existing types, unchanged. `CaptureError` from `intercept` means the daemon is unreachable; `EmitError::Post` from a send means the socket died mid-run (the daemon exited), which the effect loop logs exactly as it logs a CGEventTap post failure.
+`CaptureError` and `EmitError` are this crate's own, defined above to match `freddie_keyboard`'s. `CaptureError` from `intercept` means the daemon is unreachable; `EmitError::Post` from a send means the socket died mid-run (the daemon exited), which the effect loop logs exactly as it logs a CGEventTap post failure.
 
 ## Tests
 
