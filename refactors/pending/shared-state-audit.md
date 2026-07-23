@@ -194,12 +194,17 @@ Root methods reach the field directly. `toggle_overlay` (`mod.rs:619`), before:
 ```rust
         let (guard, effect) =
             timer_effect_and_guard(OVERLAY_DWELL, |id| MercuryEvent::Timer(TimerFired(id)));
+        self.overlay = Some(guard);
 ```
 
 after:
 
 ```rust
+        // `&mut self.timer_ids` is borrowed only for this call; `guard` is owned (a `Copy` id and a
+        // `DropGuard`, no reference to the source), so the borrow is gone before the next line stores
+        // it into the `overlay` field. Bump and store are two sequential statements, never one borrow.
         let (guard, effect) = timer_effect_and_guard(&mut self.timer_ids, OVERLAY_DWELL);
+        self.overlay = Some(guard);
 ```
 
 `Windows::asking_for` (`mod.rs:343`) is on the `Windows` sub-struct, so it takes the source and its caller `Windows::placing` forwards it. before:
