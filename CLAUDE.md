@@ -24,6 +24,16 @@ This section is extremely important. A frequent source of frustration is deviati
 - When a doc is not being actively worked on, it may become stale. That is okay. It should be updated to not be stale when we start working on it in the future. In other words, if we are working on `A`, and `B` depends on `A`, we do not need to keep `B` up to date unless it's part of the discussion.
 - If a refactor is too large and should be broken up into smaller steps (e.g. "Chrome extension that informs mercury of changes" -> "Mercury receives events on a port" + "Chrome extension that sends events"), let the user know, and do so. The files should be "conceptually different".
 
+## Shared state and interior mutability
+
+`Arc`, `Rc`, `Mutex`, `RwLock`, `Cell`, `RefCell`, `OnceCell`/`OnceLock`, `lazy_static`, `thread_local!`, and atomics are almost always the wrong reach in freddie. The model is a pure function of state and event running on one thread; the state lives in one place, and a handler that wants a value already holds it. So when a design proposes any of these, three things happen every time:
+
+- Question whether it is needed at all. Most of the time the value it is trying to share is already reachable without it, and the primitive is papering over a design that put the value in the wrong place.
+- Default to the version that does not need it. Write that version first and only fall back to shared mutable state when the non-shared version is genuinely, provably impossible — not merely more work.
+- Raise it with the user, every single time, before it goes into a planning doc or into code. There are no exceptions to this. Name the primitive, say what it is sharing and why the non-shared version does not work, and wait for the user's decision.
+
+The preferred way to move data between threads is a channel whose sender is freely `Send` and cloneable while the receiver stays pinned to one thread. Sending an event to the thread that owns the state beats reaching into that state across a lock. If a design reaches for `Arc<Mutex<_>>`, the first question is what channel would carry that data instead.
+
 ## Tests
 
 The standard for the model is exhaustive: every key in every reachable state, asserting exactly what dispatch produces. The model is a pure function of state and event, so the full table is checkable and doubles as documentation of the keymap. Not all of it exists yet; new bindings should extend toward it rather than test only the happy path.
