@@ -1,7 +1,7 @@
 //! The program's one way out, shared by home's `q` and the menu bar's Quit.
 
 use bind::Node;
-use laserbeam::Ascend;
+use laserbeam::AscendMut;
 
 use crate::MercuryEffect;
 use crate::state::MercuryPath;
@@ -15,7 +15,7 @@ use crate::state::MercuryPath;
 /// Emit the held modifiers' downs first. In a command layer their real downs were swallowed, so
 /// the app does not know they are held; once the grab is released no further down is coming, so
 /// tell it now, before `Kill`, or it is left thinking a physically-held modifier is up.
-pub(crate) fn quit<'a, E, P: Ascend<MercuryPath<'a>>>(
+pub(crate) fn quit<'a, E, P: AscendMut<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {

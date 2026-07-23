@@ -8,7 +8,7 @@
 
 use bind::Node;
 use freddie_keys::{Key, ModifierFlags};
-use laserbeam::Ascend;
+use laserbeam::AscendMut;
 
 use super::to_typing;
 use crate::effect::tap;
@@ -18,7 +18,7 @@ use crate::{App, MercuryEffect};
 /// Foreground `app` and enter the in-app layer, with the navigation marked in flight.
 ///
 /// Generic over the path, so every opener binds it from its own node.
-fn navigate<'a, P: Ascend<MercuryPath<'a>>>(path: P, app: App) -> Vec<MercuryEffect> {
+fn navigate<'a, P: AscendMut<MercuryPath<'a>>>(path: P, app: App) -> Vec<MercuryEffect> {
     let root: MercuryPath<'_> = path.ascend_mut();
     root.foreground.start_navigating();
     let (inapp, timer) = AppLayer::new();
@@ -28,25 +28,25 @@ fn navigate<'a, P: Ascend<MercuryPath<'a>>>(path: P, app: App) -> Vec<MercuryEff
     effects
 }
 
-pub(crate) fn open_chrome<'a, E, P: Ascend<MercuryPath<'a>>>(
+pub(crate) fn open_chrome<'a, E, P: AscendMut<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
     navigate(node.parent, App::Chrome)
 }
-pub(crate) fn open_finder<'a, E, P: Ascend<MercuryPath<'a>>>(
+pub(crate) fn open_finder<'a, E, P: AscendMut<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
     navigate(node.parent, App::Finder)
 }
-pub(crate) fn open_ghostty<'a, E, P: Ascend<MercuryPath<'a>>>(
+pub(crate) fn open_ghostty<'a, E, P: AscendMut<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
     navigate(node.parent, App::Ghostty)
 }
-pub(crate) fn open_zed<'a, E, P: Ascend<MercuryPath<'a>>>(
+pub(crate) fn open_zed<'a, E, P: AscendMut<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
@@ -59,7 +59,7 @@ pub(crate) fn open_zed<'a, E, P: Ascend<MercuryPath<'a>>>(
 /// and it is opened with its own chord rather than by foregrounding anything. The tap comes before
 /// the transition, so the modifier downs typing's `open` emits land on Spotlight rather than on the
 /// app being left.
-pub(crate) fn open_spotlight<'a, E, P: Ascend<MercuryPath<'a>>>(
+pub(crate) fn open_spotlight<'a, E, P: AscendMut<MercuryPath<'a>>>(
     ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {

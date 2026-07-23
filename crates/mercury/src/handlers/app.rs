@@ -3,7 +3,7 @@
 
 use bind::Node;
 use freddie_keys::{Key, ModifierFlags};
-use laserbeam::Ascend;
+use laserbeam::AscendMut;
 
 use super::{and_go_home, to_typing};
 use crate::MercuryEffect;
@@ -20,7 +20,7 @@ pub(crate) fn refresh<E, N>(_ev: &E, _node: N) -> MercuryEffect {
 ///
 /// A focused text field is somewhere you type, and the in-app layer would swallow what you typed
 /// at it, so this leaves for typing the way nav's `space` does.
-pub(crate) fn focus_address_bar<'a, E, P: Ascend<MercuryPath<'a>>, D>(
+pub(crate) fn focus_address_bar<'a, E, P: AscendMut<MercuryPath<'a>>, D>(
     ev: &E,
     node: Node<P, D>,
 ) -> Vec<MercuryEffect> {
@@ -30,7 +30,7 @@ pub(crate) fn focus_address_bar<'a, E, P: Ascend<MercuryPath<'a>>, D>(
 }
 
 /// `shift-l` in Chrome: the front tab's whole URL, onto the clipboard.
-pub(crate) fn copy_url<'a, E, P: Ascend<MercuryPath<'a>>, D>(
+pub(crate) fn copy_url<'a, E, P: AscendMut<MercuryPath<'a>>, D>(
     _ev: &E,
     node: Node<P, D>,
 ) -> Vec<MercuryEffect> {
@@ -38,7 +38,7 @@ pub(crate) fn copy_url<'a, E, P: Ascend<MercuryPath<'a>>, D>(
 }
 
 /// `cmd-l` in Chrome: the front tab's host, onto the clipboard.
-pub(crate) fn copy_host<'a, E, P: Ascend<MercuryPath<'a>>, D>(
+pub(crate) fn copy_host<'a, E, P: AscendMut<MercuryPath<'a>>, D>(
     _ev: &E,
     node: Node<P, D>,
 ) -> Vec<MercuryEffect> {
@@ -54,7 +54,7 @@ pub(crate) fn copy_host<'a, E, P: Ascend<MercuryPath<'a>>, D>(
 /// Without a reported URL there is nothing to take a host from, and asking Chrome is the only way
 /// to answer at all, so that case falls back to [`Copied::FrontTabUrl`]. A URL with no host
 /// (`about:blank`, `file:///...`) has no answer either way, and copies nothing.
-fn copy<'a, P: Ascend<MercuryPath<'a>>>(path: P, part: UrlPart) -> Vec<MercuryEffect> {
+fn copy<'a, P: AscendMut<MercuryPath<'a>>>(path: P, part: UrlPart) -> Vec<MercuryEffect> {
     let root: MercuryPath<'_> = path.ascend_mut();
     let Some(url) = root
         .foreground
@@ -102,7 +102,7 @@ pub(crate) fn next_window<E, N>(_ev: &E, _node: N) -> Vec<MercuryEffect> {
 /// See [`and_go_home`].
 macro_rules! select_window {
     ($($handler:ident => $digit:ident),* $(,)?) => {$(
-        pub(crate) fn $handler<'a, E, P: Ascend<MercuryPath<'a>>, D>(
+        pub(crate) fn $handler<'a, E, P: AscendMut<MercuryPath<'a>>, D>(
             _ev: &E,
             node: Node<P, D>,
         ) -> Vec<MercuryEffect> {
@@ -132,7 +132,7 @@ select_window! {
 ///
 /// A new chat lands in its prompt box, which is somewhere you type, so this leaves for typing the
 /// way Chrome's `l` does.
-pub(crate) fn new_chat<'a, E, P: Ascend<MercuryPath<'a>>, D>(
+pub(crate) fn new_chat<'a, E, P: AscendMut<MercuryPath<'a>>, D>(
     ev: &E,
     node: Node<P, D>,
 ) -> Vec<MercuryEffect> {

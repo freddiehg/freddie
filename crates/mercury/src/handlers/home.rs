@@ -9,7 +9,7 @@
 //! root can bind it from its own place in the tree.
 
 use bind::Node;
-use laserbeam::Ascend;
+use laserbeam::AscendMut;
 
 use super::go_home;
 use crate::MercuryEffect;
@@ -18,7 +18,7 @@ use crate::state::{AppLayer, MercuryPath, NavLayer, ResizeLayer, SiteLayer, Typi
 /// `escape` anywhere, and a layer's idle-timeout: go back to the home layer.
 ///
 /// Typing has to bind `escape` explicitly, because a plain escape passes through there.
-pub(crate) fn to_home<'a, E, P: Ascend<MercuryPath<'a>>>(
+pub(crate) fn to_home<'a, E, P: AscendMut<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
@@ -28,7 +28,7 @@ pub(crate) fn to_home<'a, E, P: Ascend<MercuryPath<'a>>>(
 /// `n`: enter the nav layer. Bound from home and from the in-app layer.
 ///
 /// Nav arms an idle-timeout, so its constructor also hands back the effect that schedules it.
-pub(crate) fn to_nav<'a, E, P: Ascend<MercuryPath<'a>>>(
+pub(crate) fn to_nav<'a, E, P: AscendMut<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
@@ -42,7 +42,7 @@ pub(crate) fn to_nav<'a, E, P: Ascend<MercuryPath<'a>>>(
 ///
 /// Generic over the node's data as well, because an app's level binds it too (Chrome's `l` focuses
 /// the address bar and lands here) and a derived node carries its data rather than `()`.
-pub(crate) fn to_typing<'a, E, P: Ascend<MercuryPath<'a>>, D>(
+pub(crate) fn to_typing<'a, E, P: AscendMut<MercuryPath<'a>>, D>(
     _ev: &E,
     node: Node<P, D>,
 ) -> Vec<MercuryEffect> {
@@ -50,7 +50,7 @@ pub(crate) fn to_typing<'a, E, P: Ascend<MercuryPath<'a>>, D>(
 }
 
 /// `i` in home: enter the in-app layer for whatever app is foregrounded.
-pub(crate) fn to_inapp<'a, E, P: Ascend<MercuryPath<'a>>>(
+pub(crate) fn to_inapp<'a, E, P: AscendMut<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
@@ -64,7 +64,7 @@ pub(crate) fn to_inapp<'a, E, P: Ascend<MercuryPath<'a>>>(
 ///
 /// Next to `i` under the same finger, because the two are neighbours in meaning as well: `i` is
 /// what the frontmost app can do, `u` is what the site in its front tab can do.
-pub(crate) fn to_site<'a, E, P: Ascend<MercuryPath<'a>>>(
+pub(crate) fn to_site<'a, E, P: AscendMut<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
@@ -75,7 +75,7 @@ pub(crate) fn to_site<'a, E, P: Ascend<MercuryPath<'a>>>(
 }
 
 /// `r` in home: enter the resize layer.
-pub(crate) fn to_resize<'a, E, P: Ascend<MercuryPath<'a>>>(
+pub(crate) fn to_resize<'a, E, P: AscendMut<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {

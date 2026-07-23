@@ -2,7 +2,7 @@
 
 use bind::Node;
 use freddie_windows::{Frame, WindowFrame};
-use laserbeam::Ascend;
+use laserbeam::AscendMut;
 
 use super::and_go_home_from;
 use crate::MercuryEffect;
@@ -30,21 +30,21 @@ const fn right_of(visible: Frame) -> Frame {
     }
 }
 
-pub(crate) fn maximize<'a, E, P: Ascend<MercuryPath<'a>>>(
+pub(crate) fn maximize<'a, E, P: AscendMut<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
     place(node.parent, maximized)
 }
 
-pub(crate) fn left_half<'a, E, P: Ascend<MercuryPath<'a>>>(
+pub(crate) fn left_half<'a, E, P: AscendMut<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
     place(node.parent, left_of)
 }
 
-pub(crate) fn right_half<'a, E, P: Ascend<MercuryPath<'a>>>(
+pub(crate) fn right_half<'a, E, P: AscendMut<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
@@ -56,7 +56,7 @@ pub(crate) fn right_half<'a, E, P: Ascend<MercuryPath<'a>>>(
 ///
 /// The effects are empty when there is no focused window or no screen has been reported.
 /// The layer returns home either way.
-fn place<'a, P: Ascend<MercuryPath<'a>>>(
+fn place<'a, P: AscendMut<MercuryPath<'a>>>(
     path: P,
     within: impl Fn(Frame) -> Frame,
 ) -> Vec<MercuryEffect> {
@@ -70,7 +70,7 @@ fn place<'a, P: Ascend<MercuryPath<'a>>>(
 ///
 /// Restoring is one choice, not something to repeat, so it leaves the layer the way the
 /// arrows do.
-pub(crate) fn restore_window<'a, E, P: Ascend<MercuryPath<'a>>>(
+pub(crate) fn restore_window<'a, E, P: AscendMut<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
