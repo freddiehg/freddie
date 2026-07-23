@@ -282,11 +282,11 @@ after:
         let (timeout, timer) = arm_return_home(ids);
 ```
 
-The transition handlers call a constructor then `set_layer` on the ascended root, so they need `&mut` to the root to hand over `&mut root.timer_ids`. That is `AscendMut` (the forthcoming `Ascend` / `AscendMut` split). `handlers/home.rs`'s nav transition is representative, before:
+The transition handlers call a constructor then `set_layer` on the ascended root, so they need `&mut` to the root to hand over `&mut root.timer_ids`. `ascend_mut` supplies it: `refactors/pending/ascend-by-ref.md` (which lands first) renames the consuming walk to `ascend_mut(self) -> Target`, and for the root `Target` is `MercuryPath<'a>`, an `&mut Mercury`. `handlers/home.rs`'s nav transition is representative, before (already `ascend_mut` once `ascend-by-ref` has renamed it):
 
 ```rust
     let (nav, timer) = NavLayer::new();
-    let mut effects = node.parent.ascend().set_layer(nav);
+    let mut effects = node.parent.ascend_mut().set_layer(nav);
 ```
 
 after:
@@ -297,7 +297,7 @@ after:
     let mut effects = root.set_layer(nav);
 ```
 
-`root.timer_ids` and the layer field `set_layer` writes are disjoint fields of `Mercury`, so the borrow for `new` is released before `set_layer` takes `&mut root`. This depends on `ascend_mut` yielding a `&mut Mercury` (or something exposing its fields); the `Ascend`/`AscendMut` doc defines it, and this change waits on it.
+`root` is an `&mut Mercury`, and `root.timer_ids` and the layer field `set_layer` writes are disjoint fields, so the borrow for `new` is released before `set_layer` reborrows `*root`.
 
 Every call to a `*Layer::new()` is updated to pass the source: the `home.rs` transitions (`home.rs:35,57,71,82`), and the `handlers/nav.rs` in-app transition (`nav.rs:24`). `Windows::placing`'s call to `asking_for` forwards its own `&mut TimerIds`.
 
