@@ -4,7 +4,7 @@
   "version": "0.0.1",
   "description": "Reports Chrome's active tab URL to a running mercury.",
   "background": { "service_worker": "dist/background.js", "type": "module" },
-  "permissions": ["tabs", "storage"],
+  "permissions": ["tabs", "storage", "webNavigation"],
   "host_permissions": ["http://127.0.0.1/*"],
   "options_page": "options.html",
   "icons": {

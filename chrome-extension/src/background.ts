@@ -82,3 +82,24 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
     .query({ active: true, windowId })
     .then(([tab]) => pushUrl(tab?.url));
 });
+
+/**
+ * A same-document navigation in the front tab: `pushState`, `replaceState`, or a fragment change.
+ *
+ * `onUpdated` covers document loads and nothing else, so without these a single-page app changes
+ * route with no event at all. `frameId === 0` keeps this to the top frame: an iframe navigating
+ * does not change what the tab is showing.
+ */
+const onSameDocument = ({
+  tabId,
+  frameId,
+  url,
+}: chrome.webNavigation.WebNavigationTransitionCallbackDetails): void => {
+  if (frameId !== 0) return;
+  void chrome.tabs.get(tabId).then((tab) => {
+    if (tab.active) void pushUrl(url);
+  });
+};
+
+chrome.webNavigation.onHistoryStateUpdated.addListener(onSameDocument);
+chrome.webNavigation.onReferenceFragmentUpdated.addListener(onSameDocument);
