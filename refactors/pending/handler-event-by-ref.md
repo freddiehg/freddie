@@ -360,3 +360,24 @@ fn dispatch_event(
 Its caller (`run_event_loop`) already binds an owned `event` off the channel, so it passes `event` in place of `&event`.
 
 Tests drive the tree through `SimpleRunner` (change 2), so `tests/transitions.rs` needs no event-borrow edits; it constructs `MercuryEvent`s and queues them by value as it does now.
+
+## the tension: one owned event, one handler
+
+Dispatch already runs exactly one handler per event: the leafward-most match, and `Break` ends the walk. This change adds that the event is MOVED into that one handler. Together they assert an event has a single consumer.
+
+Some behavior wants more than one node to see one event. The concrete case is the return-home timer: rearming it on ALL key activity in a timed layer, not only on a bound key that keeps you there (`timed-layer-wrapper.md`). The natural shape for "any key here is activity" is a fallback binding on the timed-layer wrapper, `AnyKey => rearm`, catching whatever the layer's own keys did not.
+
+It does not compose with the single-consumer model, for two separate reasons:
+
+- Dispatch stops at the first match, so a fallback consumes the event. A timed-layer `AnyKey` sits leafward of the root's `AnyKey => maybe_pass_through`, so it would win and the root handler would never run for those keys. But `maybe_pass_through` is where held-modifier bookkeeping happens for every key a layer did not claim (`sources.rs`, and `TypingState::held`), so a modifier pressed in a timed layer would stop being tracked. A rearm fallback would have to run AND let the event fall through to the root, which one-handler dispatch does not do. This is already true today, by-ref; it is a property of `Break`, not of ownership.
+- The move makes fan-out impossible without a copy. Even if dispatch were changed to offer an event to several handlers, the by-value handoff gives the one owned event to one of them; a second observer needs its own copy, which is exactly the rebuild this change set out to remove.
+
+So "rearm on all activity" cannot be a handler under this model. It stays imperative, in `Mercury::handle` after dispatch, reading the resulting layer (`activity_token` in `timed-layer-wrapper.md`). Anything else that wants two nodes to observe one event lands on the same wall.
+
+## speculation: `Rc`-wrapped events for fan-out
+
+If multiple handlers ever must see one event, the escape hatch is to make the event cheap to share rather than to move: wrap it in `Rc`, so the walk hands each observer an `Rc::clone` instead of the event itself. The move this doc adds becomes an `Rc::clone`, still O(1) and still no field rebuild, and several handlers each hold a share. It would be `Rc`, not `Arc`, created at dispatch entry: events arrive owned over the channel from their source threads (the sender is `Send`, per freddie's model), and the walk runs on the one model thread, so `handle` would wrap the received event before descending and the shared handle never crosses a thread.
+
+Probably not worth it, and not for every event type. The events are small. `KeyEvent` is three `Copy` fields (`Key`, `PressType`, `ModifierFlags`); it is not `Copy` only because the derive was withheld, and cloning it copies twelve-odd bytes. Wrapping it in `Rc` would add a heap allocation and a refcount, per keystroke, to share something cheaper to copy than to reference-count. The only events with a heap payload are the ones carrying a `String` (a tab URL), and even there a lone observer's copy is one `String` clone, not a structure worth the machinery. A uniform `Rc<MercuryEvent>` pays everywhere to save a cost that appears for one field of one event type.
+
+If fan-out is ever genuinely wanted, the smaller move is per-type: keep `KeyEvent` owned-and-moved as this doc has it, and reach for `Rc` only on a specific event whose payload is actually large enough to regret cloning. Wrapping every event uniformly is the version to avoid.
