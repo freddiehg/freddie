@@ -3,6 +3,7 @@
 //! None of these takes the single-instance lock. They probe it to find the daemon, and the daemon
 //! is the only process that holds it.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::fmt;
 use std::fs::File;
@@ -438,17 +439,34 @@ const BACKLOG_LINES: usize = 50;
 /// ready and return zero bytes, and `tail -F` polls for the same reason.
 const IDLE: Duration = Duration::from_millis(200);
 
-/// The level of a record, read out of the line the `fmt` layer wrote.
+/// One record out of the log file.
 ///
-/// A stamped record is `pid=N TIMESTAMP LEVEL target: message`, so the level is the third
-/// whitespace-separated token; splitting on whitespace also drops the padding the formatter puts
-/// in front of the shorter names. `None` for a line that is not a record.
+/// `fields` is a map rather than a struct, because its keys are whatever the call site passed:
+/// `message` is always there and the rest are the record's own.
+#[derive(serde::Deserialize)]
+struct Record {
+    pid: u32,
+    timestamp: String,
+    level: String,
+    target: String,
+    fields: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The fields `logs` leaves out unless asked for them.
 ///
-/// Reading the text is what filtering a formatted log costs. A machine format would remove the
-/// coupling and break what the file is for: `CLAUDE.md` sends a person, or an agent, to read it
-/// directly.
-fn record_level(line: &str) -> Option<Level> {
-    line.split_whitespace().nth(2)?.parse().ok()
+/// The state is the whole model rendered with `Debug`, which is most of a dispatch record and is
+/// read when something is being debugged and not before.
+const VERBOSE_FIELDS: &[&str] = &["state"];
+
+/// What `logs` renders, and how much of each record.
+#[derive(Clone, Copy)]
+pub(crate) struct LogsView {
+    /// The least severe records to show.
+    pub(crate) least: Level,
+    /// Put the state field back on dispatch records.
+    pub(crate) include_state: bool,
+    /// Emit each record as the raw JSON it is stored as, for `jq`.
+    pub(crate) json: bool,
 }
 
 /// Dim, for the part of a record that is the same on every line.
@@ -472,23 +490,42 @@ fn level_color(level: Level) -> &'static str {
 /// Show one record, colouring it the way the daemon's own terminal would have.
 ///
 /// The file is written with ANSI off, because `CLAUDE.md` sends a person or an agent to read it
-/// with `cat` and `grep`, and escapes in the file would defeat both. Colour is added here instead,
-/// where the format is known: a record is `pid=N TIMESTAMP LEVEL target: message`, so splitting on
-/// the level's own name divides the prefix that is the same every line from the rest.
+/// with `grep` and `jq`, and escapes in the file would defeat both. Colour is added here instead.
 ///
-/// A line with no level, or a stdout that is not a terminal, is written through unchanged.
-fn show(out: &mut impl Write, line: &str, level: Option<Level>, color: bool) -> io::Result<()> {
-    let split = level
-        .filter(|_| color)
-        .and_then(|level| Some((level, line.split_once(level.as_str())?)));
-    match split {
-        Some((level, (head, rest))) => writeln!(
-            out,
-            "{DIM}{head}{RESET}{}{}{RESET}{rest}",
-            level_color(level),
-            level.as_str()
-        ),
-        None => writeln!(out, "{line}"),
+/// The state is left out unless `view` asks for it: it is the whole model under `Debug`, most of
+/// the line, and read while something is being debugged and not before.
+fn show(out: &mut impl Write, record: &Record, view: &LogsView, color: bool) -> io::Result<()> {
+    let (dim, reset, level_color) = if color {
+        (
+            DIM,
+            RESET,
+            level_color(record.level.parse().unwrap_or(Level::INFO)),
+        )
+    } else {
+        ("", "", "")
+    };
+    write!(
+        out,
+        "{dim}{} pid={} {}{reset} {level_color}{}{reset}",
+        record.timestamp, record.pid, record.target, record.level
+    )?;
+    if let Some(message) = record.fields.get("message") {
+        write!(out, " {}", as_text(message))?;
+    }
+    for (key, value) in &record.fields {
+        if key == "message" || (!view.include_state && VERBOSE_FIELDS.contains(&key.as_str())) {
+            continue;
+        }
+        write!(out, " {dim}{key}={reset}{}", as_text(value))?;
+    }
+    writeln!(out)
+}
+
+/// A field as it reads: a string without its quotes, anything else as the JSON it is.
+fn as_text(value: &serde_json::Value) -> Cow<'_, str> {
+    match value {
+        serde_json::Value::String(s) => Cow::Borrowed(s),
+        other => Cow::Owned(other.to_string()),
     }
 }
 
@@ -504,7 +541,7 @@ fn show(out: &mut impl Write, line: &str, level: Option<Level>, color: bool) -> 
 ///
 /// Lines are written straight to stdout rather than traced: they are already records, out of the
 /// file this is following, and tracing them would put them back into it.
-pub(crate) fn logs(instance: &Instance, least: Level) -> ExitCode {
+pub(crate) fn logs(instance: &Instance, view: LogsView) -> ExitCode {
     let path = instance.log_file();
     info!("{}: following {}", instance.display_name(), path.display());
 
@@ -512,7 +549,7 @@ pub(crate) fn logs(instance: &Instance, least: Level) -> ExitCode {
     let color = std::io::stdout().is_terminal();
     let mut out = std::io::stdout().lock();
 
-    match follow(&path, least, color, &mut out) {
+    match follow(&path, &view, color, &mut out) {
         // The follow ends only when stdout closes, which is the pipeline this was feeding going
         // away: `logs | head -3` got its lines and left. That is a clean finish, not a failure.
         Ok(()) => ExitCode::SUCCESS,
@@ -534,7 +571,7 @@ pub(crate) fn logs(instance: &Instance, least: Level) -> ExitCode {
 /// for the life of the daemon and never rotates it, so there is no new inode to follow onto. A
 /// reader sees appended bytes once they are written, and a line without a trailing newline is a
 /// record the writer has not finished, held until the rest arrives.
-fn follow(path: &Path, least: Level, color: bool, out: &mut impl Write) -> io::Result<()> {
+fn follow(path: &Path, view: &LogsView, color: bool, out: &mut impl Write) -> io::Result<()> {
     let mut reader = BufReader::new(File::open(path)?);
 
     // The backlog, kept in a ring so the whole file is never held: a daemon appends to its log for
@@ -552,7 +589,7 @@ fn follow(path: &Path, least: Level, color: bool, out: &mut impl Write) -> io::R
         // the daemon writes the rest below.
     }
     for record in &backlog {
-        if show_record(out, record, least, color).is_break() {
+        if show_record(out, record, view, color).is_break() {
             return Ok(());
         }
     }
@@ -560,7 +597,7 @@ fn follow(path: &Path, least: Level, color: bool, out: &mut impl Write) -> io::R
     // Then whatever arrives, a record at a time, waiting when the file has not grown.
     loop {
         if reader.read_line(&mut line)? != 0 && line.ends_with('\n') {
-            if show_record(out, &line, least, color).is_break() {
+            if show_record(out, &line, view, color).is_break() {
                 return Ok(());
             }
             line.clear();
@@ -570,17 +607,40 @@ fn follow(path: &Path, least: Level, color: bool, out: &mut impl Write) -> io::R
     }
 }
 
-/// Write one record to `out` if it is at `least` or above. `Break` when `out` has closed.
+/// Write one record to `out`, filtered to `view.least` and shown as `view` asks. `Break` when
+/// `out` has closed.
 ///
-/// A line with no level is not a record: a wrapped message, or something that reached the file
-/// without going through the formatter. Shown rather than dropped, because hiding what cannot be
-/// classified is how a log loses the one line that mattered.
-fn show_record(out: &mut impl Write, line: &str, least: Level, color: bool) -> ControlFlow<()> {
-    let level = record_level(line);
-    if level.is_none_or(|level| level <= least) && show(out, line, level, color).is_err() {
-        return ControlFlow::Break(());
+/// A line that is not a record is shown as it stands: a file written by an older daemon, or
+/// something that reached the file without going through the formatter. Hiding what cannot be
+/// classified is how a log loses the one line that mattered, so a record whose level does not parse
+/// is shown on the same reasoning.
+fn show_record(out: &mut impl Write, line: &str, view: &LogsView, color: bool) -> ControlFlow<()> {
+    let line = line.strip_suffix('\n').unwrap_or(line);
+    let Ok(record) = serde_json::from_str::<Record>(line) else {
+        return broke(writeln!(out, "{line}").is_err());
+    };
+    if record
+        .level
+        .parse::<Level>()
+        .is_ok_and(|level| level > view.least)
+    {
+        return ControlFlow::Continue(());
     }
-    ControlFlow::Continue(())
+    if view.json {
+        broke(writeln!(out, "{line}").is_err())
+    } else {
+        broke(show(out, &record, view, color).is_err())
+    }
+}
+
+/// `Break` on a write that failed, `Continue` otherwise: a closed `out` is the pipeline this was
+/// feeding going away, which ends the follow rather than being an error worth a word.
+const fn broke(failed: bool) -> ControlFlow<()> {
+    if failed {
+        ControlFlow::Break(())
+    } else {
+        ControlFlow::Continue(())
+    }
 }
 
 /// Find the daemon, waiting out the window in which it holds the lock without having named itself.
@@ -663,53 +723,54 @@ fn ran(command: &mut Command) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{record_level, show};
+    use super::{LogsView, Record, show};
     use tracing::Level;
 
-    const RECORD: &str =
-        "pid=34322 2026-07-19T13:11:19.717128Z  INFO some_app::daemon: SIGTERM: quitting";
+    const DISPATCH: &str = r#"{"pid":1,"timestamp":"2026-07-21T09:14:02.114Z","level":"INFO","target":"mercury::daemon","fields":{"message":"dispatch","event":"Key(KeyR)","state":"Mercury { .. }"}}"#;
 
-    fn shown(line: &str, color: bool) -> String {
+    fn view(include_state: bool) -> LogsView {
+        LogsView {
+            least: Level::DEBUG,
+            include_state,
+            json: false,
+        }
+    }
+
+    fn shown(line: &str, view: &LogsView, color: bool) -> String {
+        let record: Record = serde_json::from_str(line).expect("a record");
         let mut out = Vec::new();
-        show(&mut out, line, record_level(line), color).expect("writing to a Vec");
+        show(&mut out, &record, view, color).expect("writing to a Vec");
         String::from_utf8(out).expect("the record is utf8")
     }
 
     #[test]
-    fn the_level_is_the_third_token() {
-        assert_eq!(record_level(RECORD), Some(Level::INFO));
+    fn the_state_is_left_out_unless_asked_for() {
+        let without = shown(DISPATCH, &view(false), false);
+        assert!(without.contains("event=Key(KeyR)"));
+        assert!(!without.contains("state="));
+
+        let with = shown(DISPATCH, &view(true), false);
+        assert!(with.contains("state=Mercury { .. }"));
+    }
+
+    // A dispatch record reads as its parts: the prefix, the message, then each field. `message` is
+    // pulled out first, and the remaining fields follow in the map's own order.
+    #[test]
+    fn a_record_reads_as_its_parts() {
+        let line = shown(DISPATCH, &view(false), false);
         assert_eq!(
-            record_level("pid=1 2026-07-19T13:11:19.717128Z DEBUG a: b"),
-            Some(Level::DEBUG)
+            line.trim_end(),
+            "2026-07-21T09:14:02.114Z pid=1 mercury::daemon INFO dispatch event=Key(KeyR)"
         );
     }
 
-    // Anything that did not come out of the formatter has no level, and is shown rather than
-    // dropped.
+    // Anything that did not come out of the formatter is not a record, and `show_record` writes it
+    // through rather than dropping it.
     #[test]
-    fn a_line_that_is_not_a_record_has_no_level() {
-        assert_eq!(record_level("a stray line"), None);
-        assert_eq!(record_level(""), None);
-    }
-
-    // A pipeline gets what the file holds, byte for byte.
-    #[test]
-    fn without_colour_a_record_is_passed_through() {
-        assert_eq!(shown(RECORD, false), format!("{RECORD}\n"));
-    }
-
-    // The prefix is dimmed, the level takes its own colour, and the message is left alone.
-    #[test]
-    fn with_colour_the_level_is_painted() {
-        assert_eq!(
-            shown(RECORD, true),
-            "\x1b[2mpid=34322 2026-07-19T13:11:19.717128Z  \x1b[0m\x1b[32mINFO\x1b[0m \
-             some_app::daemon: SIGTERM: quitting\n"
+    fn a_line_that_is_not_a_record_does_not_parse() {
+        assert!(
+            serde_json::from_str::<Record>("Boot-out failed: 36: Operation now in progress")
+                .is_err()
         );
-    }
-
-    #[test]
-    fn a_line_with_no_level_is_never_painted() {
-        assert_eq!(shown("a stray line", true), "a stray line\n");
     }
 }

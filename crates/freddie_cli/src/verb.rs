@@ -107,6 +107,18 @@ pub struct LogsArgs<I: clap::Args> {
     #[arg(long, default_value = crate::logging::DEFAULT_LOG_LEVEL)]
     pub level: tracing::Level,
 
+    /// Include the model state on each dispatch record.
+    ///
+    /// It is the whole model under `Debug` and it is most of the line, so it is left out of a
+    /// follow that is watching what happened rather than reading what the model became. Off unless
+    /// asked for.
+    #[arg(long)]
+    pub include_state: bool,
+
+    /// Write each record as the JSON it is stored as, for `jq`.
+    #[arg(long)]
+    pub json: bool,
+
     #[command(flatten)]
     pub id: I,
 }

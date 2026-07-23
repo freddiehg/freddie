@@ -130,7 +130,14 @@ fn run_verb_on<TApp: App>(verb: Verb<TApp>, instance: &Instance, typed: TypedArg
         Verb::Start(_) => client::start::<TApp>(instance, typed),
         Verb::Restart(args) => client::restart::<TApp>(instance, args.force, typed),
         Verb::Status(_) => client::status(instance),
-        Verb::Logs(args) => client::logs(instance, args.level),
+        Verb::Logs(args) => client::logs(
+            instance,
+            client::LogsView {
+                least: args.level,
+                include_state: args.include_state,
+                json: args.json,
+            },
+        ),
         Verb::Stop(args) => client::stop(instance, args.force),
         Verb::Daemon(args) => {
             daemon::run_in_foreground::<TApp>(instance, &args);
