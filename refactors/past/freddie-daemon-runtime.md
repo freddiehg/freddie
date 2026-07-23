@@ -1,5 +1,7 @@
 # the model loop is a function you call
 
+Not worth doing, and moved here without being built. The extraction pays off only when a second mercury-shaped app exists to share the loop, and there is none: isograph is a directory watcher, not a model, and a language server or plain server has its own loop, so all of those use `freddie_cli` and run their own thing inside `run_daemon`. With one consumer, `run_standard_loop` is an eight-line function and a two-method trait wrapped around code mercury already has, and mercury inlining the loop is the same size and clearer. Revisit when figaro or another model app lands and would otherwise copy the loop and risk getting the effect-before-event ordering wrong; the design below is what to build then.
+
 A freddie app that runs a model does the same small thing at its core: read an event, hand it to the model, perform the effects the model returned, and stop when one of them says to. Everything around that — grabbing a keyboard, parking the main thread in a run loop, hanging a menu-bar icon, binding a socket, watching a directory — is the app's, and no two apps have the same set.
 
 So the reusable piece is that loop and nothing else. It is a function an app calls, next to `freddie_keyboard::intercept` and `freddie_menu_bar::show`, not a runtime that owns the process and calls back into the app. An app keeps its own `main` and its own setup, builds its channels, and calls the loop with its model.
