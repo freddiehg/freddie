@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io;
 use std::io::{BufRead, BufReader, IsTerminal, Write};
 use std::ops::ControlFlow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -79,8 +79,9 @@ impl Signal {
 enum Failure {
     /// The lock could not be read, so nothing is known about what holds it.
     Unreadable(LockError),
-    /// Something holds the lock and recorded no pid, so there is nothing to signal.
-    Anonymous,
+    /// Something holds the lock and recorded no pid, so there is nothing to signal. Carries the
+    /// lock path, so the message can name the two files to remove if the holder is stale.
+    Anonymous(PathBuf),
     /// The signal could not be sent to the pid the lock named.
     Unsignalable(SignalFailure),
     /// The daemon was signalled and still holds the lock.
@@ -107,8 +108,12 @@ impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unreadable(e) => write!(f, "{e}"),
-            Self::Anonymous => f.write_str(
-                "something holds the lock but recorded no pid; it is starting or shutting down",
+            Self::Anonymous(lock) => write!(
+                f,
+                "something holds the lock but recorded no pid; it is starting or shutting down. \
+                 If it persists, a live process holds the lock without having named itself: find \
+                 it with `lsof {}` and stop it",
+                lock.display(),
             ),
             Self::Unsignalable(SignalFailure { pid, error }) => {
                 write!(f, "could not signal pid {pid}: {error}")
@@ -146,7 +151,7 @@ fn stop_daemon(instance: &Instance, signal: Signal) -> Result<Option<Pid>, Failu
         Ok(Target::NotRunning) => return Ok(None),
         Ok(Target::Anonymous) => {
             debug!("the lock is held by a holder that recorded no pid");
-            return Err(Failure::Anonymous);
+            return Err(Failure::Anonymous(instance.lock_file().to_owned()));
         }
         Err(error) => {
             debug!(%error, "could not read the lock");
