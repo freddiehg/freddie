@@ -67,6 +67,6 @@
   /* Under the 2.4rem mobile h2, so the section titles sit smaller on a narrow
      screen. */
   .centeredHeading {
-    font-size: 2rem;
+    font-size: 1.96rem;
   }
 }

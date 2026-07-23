@@ -167,7 +167,11 @@ function Features() {
     <section>
       <div className="container">
         <div className="kicker">It’s the elm architecture</div>
-        <h2 className={styles.centeredHeading}>Events in, effects out</h2>
+        {/* The only breakable space is the one after the comma, so a narrow
+            screen wraps there rather than mid-clause. */}
+        <h2 className={styles.centeredHeading}>
+          Events&nbsp;in, effects&nbsp;out
+        </h2>
         <div className="row" style={{ paddingTop: '1.5rem' }}>
           <div className="col col--4">
             <h3>Effects in</h3>
