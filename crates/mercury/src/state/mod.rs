@@ -548,6 +548,21 @@ pub type AppLayerPath<'a> = PathMut<AppLayer, LayerPath<'a>>;
 pub type SiteLayerPath<'a> = PathMut<SiteLayer, LayerPath<'a>>;
 
 impl Mercury {
+    /// The layer a fresh mercury boots into: Typing, the passthrough layer, so a fresh mercury
+    /// (and one launched at login) leaves the keyboard working rather than swallowing everything
+    /// in Home. See launch-at-login.
+    const fn boot_layer() -> Layer {
+        Layer::Typing(TypingLayer::new())
+    }
+
+    /// The title the status item shows before the first layer change.
+    ///
+    /// The main thread paints this when it creates the status item, before the model that would
+    /// otherwise hand it over exists. A literal rather than `boot_layer().name()`, which const
+    /// eval will not run because `Layer` has a destructor; `boot_title_matches_the_boot_layer`
+    /// keeps the two from drifting.
+    pub const BOOT_TITLE: &'static str = "Typing";
+
     /// The model at boot, told what the sources already know.
     ///
     /// `front_app` is read before the main loop runs; see `refactors/pending/seed-at-construction.md`.
@@ -560,9 +575,7 @@ impl Mercury {
             windows,
             typing_state: TypingState::default(),
             overlay: None,
-            // Typing, the passthrough layer, so a fresh mercury (and one launched at login) leaves
-            // the keyboard working rather than swallowing everything in Home. See launch-at-login.
-            layer: Layer::Typing(TypingLayer::new()),
+            layer: Self::boot_layer(),
         }
     }
 

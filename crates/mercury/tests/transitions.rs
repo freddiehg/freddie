@@ -11,6 +11,14 @@ use mercury::{
     RETURN_TO_HOME_TIMEOUT, UrlPart, WindowEvent, Windows, foreground, key, quit_event, tab,
 };
 
+// `BOOT_TITLE` is painted on the status item before the model exists, so it is a literal rather
+// than read off the boot layer. This is the guard that keeps the literal honest.
+#[test]
+fn boot_title_matches_the_boot_layer() {
+    let booted = Mercury::new(App::Other, Windows::default());
+    assert_eq!(booted.layer().name(), Mercury::BOOT_TITLE);
+}
+
 // Entering nav, resize, or the in-app layer arms the return-to-home timer; this is the effect
 // that schedules it. Equality under `testing` compares the delay and fire event, so a rebuilt one
 // matches what a layer produced.

@@ -95,6 +95,10 @@ pub(crate) fn run(port: u16) {
             return;
         }
     };
+    // The boot layer's name, painted now rather than sent from the worker once the model exists:
+    // the title is known before the model is, so the item is never briefly blank. The leading
+    // space is the gap between the glyph and the text.
+    menu_bar.set_title(Some(&format!(" {}", Mercury::BOOT_TITLE)));
 
     // The overlay panel, built here because `NSPanel` is main-thread-only, and held for the
     // life of `main` like `menu_bar`: dropping it closes the panel.
@@ -264,10 +268,8 @@ async fn serve(
     // grab is alive.
     let mercury = Mercury::new(boot.front_app, boot.windows);
 
-    // Nothing has transitioned yet, so no `ShowLayer` has been produced: name the layer we boot
-    // into, or the item stays blank until the first layer change.
-    let _ = title_tx.send(mercury.layer().name());
-
+    // No initial title is sent: `daemon::run` painted `Mercury::BOOT_TITLE` on the item when it
+    // created it, and the worker sends only the changes from there.
     tokio::select! {
         () = run_event_loop(mercury, event_rx, effect_tx) => {}
         () = run_effect_loop(effect_rx, emitter, event_tx, title_tx, boot.window_sink, boot.overlay) => {}
