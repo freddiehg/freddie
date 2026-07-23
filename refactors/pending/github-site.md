@@ -5,7 +5,9 @@ The site layer holds what the site in the front tab can do. Today a site is a ho
 What we want is bound to where you are:
 
 - On a repository page, `c` clones it into `~/code/<repo>`.
+- On a repository page, `u` fast-forwards the clone and `e` opens it in the editor.
 - On a pull request page, `p` checks that pull request out in `~/code/<repo>`, by its number.
+- On an issue page, `b` creates the issue's branch and checks it out.
 - On any github.com page, whatever is true of the whole site is bound, and the page you are on adds to it rather than replacing it.
 - The overlay shows the keymap of the page you are on, so `o` on a pull request lists the pull request's keys.
 
@@ -656,3 +658,213 @@ fn the_overlay_is_the_pages_keymap() {
 ```
 
 The keys the levels do not bind — `o`, `t`, `escape`, and everything unbound — keep asserting what they assert on every other site, from the site layer above.
+
+## Change 7: more of the GitHub keymap
+
+The levels Change 4 built carry a repository or a pull request, which is everything a `gh` or `git` command needs. A binding that is one such command and nothing more is a `Run` and ships here. One that needs a terminal to show output, a confirm before it acts, or a Claude to do the work names its dependency and waits, because `Run` is fire-and-forget with its stdout dropped (`run-effect.md`) and this doc adds no terminal, no guard, and no agent.
+
+### Deterministic: bindings that ship now
+
+The repository page gains two keys. `crates/mercury/src/state/github.rs`, `GithubRepoSite`, before:
+
+```rust
+#[bind(Key::KeyC.down() => clone_repo)]
+pub struct GithubRepoSite {
+    pub(crate) repo: Repo,
+}
+```
+
+after:
+
+```rust
+#[bind(
+    Key::KeyC.down() => clone_repo,
+    Key::KeyU.down() => update_repo,
+    Key::KeyE.down() => edit_repo,
+)]
+pub struct GithubRepoSite {
+    pub(crate) repo: Repo,
+}
+```
+
+with the handlers in `crates/mercury/src/handlers/github.rs`, beside `clone_repo`:
+
+```rust
+/// `u` on a repository page: fast-forward the clone to its remote.
+///
+/// `--ff-only`, so a clone with local commits or a diverged branch fails in the log rather than
+/// merging behind your back. A missing clone fails the same way `checkout_pull_request` does.
+pub(crate) fn update_repo<E>(
+    _ev: &E,
+    node: Node<GithubSitePath<'_>, GithubRepoSite>,
+) -> Vec<MercuryEffect> {
+    let Node { parent, data } = node;
+    let root = parent.parent.ascend();
+    let mut cwd = root.code_dir.clone();
+    cwd.push(&data.repo.name);
+    let run = MercuryEffect::Run(Run {
+        program: "git".to_owned(),
+        args: vec!["pull".to_owned(), "--ff-only".to_owned()],
+        cwd,
+    });
+    and_go_home_from(root, [run])
+}
+
+/// `e` on a repository page: open the clone in the editor. `zed` forks and returns, so nothing
+/// waits; a clone that is not there is a path `zed` opens empty, and that is on the log.
+pub(crate) fn edit_repo<E>(
+    _ev: &E,
+    node: Node<GithubSitePath<'_>, GithubRepoSite>,
+) -> Vec<MercuryEffect> {
+    let Node { parent, data } = node;
+    let root = parent.parent.ascend();
+    let mut dir = root.code_dir.clone();
+    dir.push(&data.repo.name);
+    let run = MercuryEffect::Run(Run {
+        program: "zed".to_owned(),
+        args: vec![dir.to_string_lossy().into_owned()],
+        cwd: root.code_dir.clone(),
+    });
+    and_go_home_from(root, [run])
+}
+```
+
+An issue page is the pull-request page again, with `develop` where `checkout` is. `GithubRoute` gains a variant, `crates/mercury/src/sources.rs`:
+
+```rust
+pub enum GithubRoute {
+    Root,
+    Repo(Repo),
+    PullRequest(PullRequest),
+    Issue(Issue),
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Issue {
+    pub repo: Repo,
+    pub number: u32,
+}
+```
+
+and `from_path` matches `issues/<n>` the way it matches `pull/<n>`:
+
+```rust
+        match (segments.next(), segments.next()) {
+            (Some("pull"), Some(number)) => number.parse().map_or(Self::Repo(repo.clone()), |number| {
+                Self::PullRequest(PullRequest { repo, number })
+            }),
+            (Some("issues"), Some(number)) => number.parse().map_or(Self::Repo(repo.clone()), |number| {
+                Self::Issue(Issue { repo, number })
+            }),
+            _ => Self::Repo(repo),
+        }
+```
+
+`GithubData` gains an `Issue` variant and `github_data` an arm building `GithubIssueSite` from the route, mirroring `PullRequest` exactly. The level, in `github.rs`:
+
+```rust
+/// An issue page, where `b` creates the issue's branch and checks it out.
+///
+/// `b` and not `p`: `gh issue develop` and `gh pr checkout` are different verbs, and each page
+/// wants only its own.
+#[derive(Bind, Debug)]
+#[derived_node(parent = GithubSitePath)]
+#[binds(MercuryStruct)]
+#[bind(Key::KeyB.down() => develop_issue_branch)]
+pub struct GithubIssueSite {
+    pub(crate) repo: Repo,
+    pub(crate) number: u32,
+}
+```
+
+and the handler:
+
+```rust
+/// `b` on an issue page: create the issue's branch in the clone and check it out.
+pub(crate) fn develop_issue_branch<E>(
+    _ev: &E,
+    node: Node<GithubSitePath<'_>, GithubIssueSite>,
+) -> Vec<MercuryEffect> {
+    let Node { parent, data } = node;
+    let root = parent.parent.ascend();
+    let mut cwd = root.code_dir.clone();
+    cwd.push(&data.repo.name);
+    let run = MercuryEffect::Run(Run {
+        program: "gh".to_owned(),
+        args: vec![
+            "issue".to_owned(),
+            "develop".to_owned(),
+            data.number.to_string(),
+            "--checkout".to_owned(),
+        ],
+        cwd,
+    });
+    and_go_home_from(root, [run])
+}
+```
+
+The overlays follow Change 5. Three new arms and three consts, `overlay_for` gaining:
+
+```rust
+        Some(Site::Github(GithubRoute::Issue(_))) => GITHUB_ISSUE_OVERLAY,
+```
+
+`overlays/github-repo.txt` gains `u  update` and `e  edit`, and `overlays/github-issue.txt` is new:
+
+```
+  GITHUB ISSUE
+  ────────────────────
+  b    branch
+  o    overlay
+  t    typing
+  esc  home
+```
+
+Tests extend the table in `crates/mercury/tests/transitions.rs`:
+
+```rust
+#[test]
+fn u_fast_forwards_the_clone() {
+    let mut m = site_showing("https://github.com/rbalicki2/freddie");
+    assert_eq!(
+        m.handle(&key(Key::KeyU)),
+        Some(vec![ran("git", &["pull", "--ff-only"], "/Users/test/code/freddie"), show_layer("Home")])
+    );
+}
+
+#[test]
+fn e_opens_the_clone_in_the_editor() {
+    let mut m = site_showing("https://github.com/rbalicki2/freddie");
+    assert_eq!(
+        m.handle(&key(Key::KeyE)),
+        Some(vec![ran("zed", &["/Users/test/code/freddie"], CODE), show_layer("Home")])
+    );
+}
+
+#[test]
+fn b_develops_the_issues_branch() {
+    let mut m = site_showing("https://github.com/rbalicki2/freddie/issues/7");
+    assert_eq!(
+        m.handle(&key(Key::KeyB)),
+        Some(vec![
+            gh(&["issue", "develop", "7", "--checkout"], "/Users/test/code/freddie"),
+            show_layer("Home"),
+        ])
+    );
+}
+```
+
+### Needs machinery this doc does not have
+
+Each of these is a binding we want and cannot write against nothing. Named here so the keymap is whole, deferred to the doc that builds what it needs.
+
+Terminal delivery. `gh pr diff`, `gh pr checks`, and `gh dash` write to a terminal — a pager, or a full-screen TUI — so a `Run` whose stdout is dropped is useless for them. They need to open in a terminal mercury can foreground and feed, which is the `tmux send-keys` / open-a-terminal-with-a-command shape in `effects-and-events.md`. Once it exists:
+
+- `d` on a pull request — `gh pr diff <n>` in a pager.
+- `k` on a pull request — `gh pr checks <n>`, the CI status.
+- `g` on a pull request or a repository — open `gh dash`, the gh-dash TUI. It has no "this pull request" argument; it opens the dashboard, filtered to this repository where its config allows.
+- `w` on a pull request — check it out, then foreground the terminal in `~/code/<name>`, so reading a pull request becomes working on it.
+
+A confirm before it acts. `gh pr merge` and `gh pr review` change the world, so they do not belong under a bare tap beside checkout. They wait on a confirm step — a held or double key — the layer does not have.
+
+A Claude. `r` on a pull request — "review this one" — gathers the repository, the number, and `gh pr diff <n>` and sends it to a Claude with the page as context. That is the agent-routed half of `agentic-layer.md`, not a `gh` command, and it ships with the agentic layer rather than here.
