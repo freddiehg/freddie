@@ -51,50 +51,11 @@ Mercury ─▶ Layer ─▶ TimedLayer ─▶ TimedKind ─▶ NavLayer | Resize
 
 `TimedLayer` binds the firing and the three shared exits, once. Each leaf keeps only its own keys (nav's app-openers, resize's arrows, in-app's `n`/`s`, site's derived child). `rearm_timeout` collapses to one arm. The four `home_timeout` fields, four `new()` arms, four firing binds, and three-times-four shared exits become one of each.
 
-## Change 1: assert the active layer by name in the tests
+## Change 1: introduce the wrapper, moving the timer
 
-Prefactor. Independently shippable, and it decouples the test suite from the enum's shape so Changes 2 and 3 do not touch it.
+The consequential change. It is atomic: the tree restructure, the leaf reparenting, the constructors, the handlers, `handle`'s activity check, and the test assertions all move together, because the old flat `Layer` variants disappear. The three shared exit keys stay on the leaves for now (Change 2 lifts them), so this change moves only the timer and the structure.
 
-`crates/mercury/tests/transitions.rs` inspects the active layer about forty times by matching the enum:
-
-```rust
-assert!(matches!(m.layer(), Layer::Nav(_)));
-assert!(matches!(m.layer(), Layer::InApp(_)), "{app:?} left nav");
-```
-
-`Layer::name` is already unique per layer, so the same assertion reads through it. Add one helper:
-
-```rust
-// The active layer, named. `Layer::name` is unique per layer, so a test asserts which layer it
-// landed in by that name rather than by the enum's shape, which the timed-layer wrapper nests.
-fn in_layer(m: &Mercury, name: &str) -> bool {
-    m.layer().name() == name
-}
-```
-
-Replace every `matches!(m.layer(), Layer::X(_))` with `in_layer(&m, "<Name>")`, keeping any trailing message:
-
-```rust
-assert!(in_layer(&m, "Nav"));
-assert!(in_layer(&m, "App"), "{app:?} left nav");
-```
-
-The variant-to-name map is `Layer::name`'s own:
-
-```
-Home => "Home"   Nav => "Nav"   Resize => "Resize"
-Typing => "Typing"   InApp => "App"   Site => "Site"
-```
-
-Two sites match on an inline temporary rather than `m` (`default_boots_into_typing` at the top, and any other that constructs in place); those become `.layer().name() == "Typing"` directly. The `home()` helper's `Mercury::with_layer(Layer::Home(HomeLayer))` is a construction, not an inspection, and does not change: `Layer::Home` survives the wrapper.
-
-After this change the suite references `Layer` only through `home()`, and no test binds to the position of nav/resize/in-app/site in the enum.
-
-## Change 2: introduce the wrapper, moving the timer
-
-The consequential change. It is atomic: the tree restructure, the leaf reparenting, the constructors, the handlers, and `handle`'s activity check all move together, because the old flat `Layer` variants disappear. The three shared exit keys stay on the leaves for now (Change 3 lifts them), so this change moves only the timer and the structure.
-
-Behavior is unchanged. The test suite (after Change 1) stays green with no further edits.
+Behavior is unchanged.
 
 ### The new module
 
@@ -153,8 +114,10 @@ impl TimedLayer {
         timer
     }
 
+    /// `pub` (not `pub(crate)`) because the integration test crate reads it to assert which timed
+    /// layer is active.
     #[must_use]
-    pub(crate) const fn kind(&self) -> &TimedKind {
+    pub const fn kind(&self) -> &TimedKind {
         &self.kind
     }
 }
@@ -392,7 +355,7 @@ impl NavLayer {
 }
 ```
 
-Nav, after (the escape/`o`/`t` binds stay for now; Change 3 lifts them):
+Nav, after (the escape/`o`/`t` binds stay for now; Change 2 lifts them):
 
 ```rust
 use super::TimedKindPath;
@@ -424,7 +387,7 @@ The other three take the same treatment, keeping their own binds:
 
 - `resize.rs`: keep the arrows and `r`; unit struct; `new() -> Self`; parent `TimedKindPath`.
 - `app.rs`: keep `n => to_nav` and `s => to_site`; keep `#[derived_child(app_data)]`; unit struct; `new() -> Self`; parent `TimedKindPath`. `AppData`/`ChromeApp`/`GhosttyApp` are unchanged: their `#[derived_node(parent = AppLayerPath)]` follows the reparented `AppLayerPath` alias.
-- `site.rs`: it bound only the shared exits, so after they stay (until Change 3) it keeps `escape`/`o`/`t` and its `#[derived_child(site_data)]`; unit struct; `new() -> Self`; parent `TimedKindPath`. `SiteData`/`ClaudeAiSite` are unchanged.
+- `site.rs`: it bound only the shared exits, so until Change 2 lifts them it keeps `escape`/`o`/`t` and its `#[derived_child(site_data)]`; unit struct; `new() -> Self`; parent `TimedKindPath`. `SiteData`/`ClaudeAiSite` are unchanged.
 
 Each leaf drops `use freddie::TimerGuard;` and its `arm_return_home` import, and imports `TimedKindPath` in place of `LayerPath`.
 
@@ -472,9 +435,40 @@ pub use state::{
 };
 ```
 
-## Change 3: lift the shared exits onto the wrapper
+### The tests
 
-Independently shippable after Change 2, and behavior-preserving. The three keys common to all four timed layers move from each leaf up to `TimedLayer`, which is on the active path below every one of them.
+`crates/mercury/tests/transitions.rs` inspects the active layer about forty times, matching the flat enum:
+
+```rust
+assert!(matches!(m.layer(), Layer::Nav(_)));
+assert!(matches!(m.layer(), Layer::InApp(_)), "{app:?} left nav");
+```
+
+The four timed layers now sit under `Layer::Timed`, so those assertions match the nested structure through a helper that reaches the kind:
+
+```rust
+// The active timed layer's kind, or `None` when the active layer is home or typing. Lets a test
+// assert which timed layer it landed in against the real structure.
+fn timed_kind(m: &Mercury) -> Option<&TimedKind> {
+    match m.layer() {
+        Layer::Timed(t) => Some(t.kind()),
+        _ => None,
+    }
+}
+```
+
+Each `matches!(m.layer(), Layer::X(_))` for a timed layer becomes the nested match, one for one (`Nav`, `Resize`, `InApp`, `Site` keep their names), and keeps any trailing message:
+
+```rust
+assert!(matches!(timed_kind(&m), Some(TimedKind::Nav(_))));
+assert!(matches!(timed_kind(&m), Some(TimedKind::InApp(_))), "{app:?} left nav");
+```
+
+Home and typing keep their direct match, since they are still `Layer` variants: `matches!(m.layer(), Layer::Home(_))` and `matches!(m.layer(), Layer::Typing(_))` are unchanged, including the inline-temporary form in `default_boots_into_typing`. The `home()` helper's `Mercury::with_layer(Layer::Home(HomeLayer))` construction is unchanged. The test file adds `TimedKind` to its imports.
+
+## Change 2: lift the shared exits onto the wrapper
+
+Independently shippable after Change 1, and behavior-preserving. The three keys common to all four timed layers move from each leaf up to `TimedLayer`, which is on the active path below every one of them.
 
 `escape => to_home`, `o => toggle_overlay`, `t => to_typing` are identical across nav, resize, in-app, and site. Dispatch tries the leaf before the wrapper, so lifting changes nothing: no leaf binds these to anything else, and none of the derived app or site levels bind escape, `o`, or `t`. Home keeps its own copies (it is not under the wrapper).
 
