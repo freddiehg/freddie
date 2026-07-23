@@ -207,19 +207,46 @@ mod tests {
         }
         assert_eq!(setlist[1], 25);
     }
+
+    #[test]
+    fn ascend_reads_an_ancestor_by_shared_ref() {
+        type Outer<'a> = PathMut<Attack, &'a mut Sheer>;
+        let mut album = Sheer {
+            heart: Attack { length: 7 },
+        };
+        let outer: Outer = PathMut::from_fn(&mut album, |a| &mut a.heart, |a| &a.heart);
+        let mut inner: PathMut<u32, Outer> =
+            PathMut::from_fn(outer, |p| &mut p.get_mut().length, |p| &p.get().length);
+
+        // Read the parent (Attack) by shared ref, without consuming the path.
+        let attack: &Outer = inner.ascend_to::<Outer>();
+        assert_eq!(attack.get().length, 7);
+
+        // The leaf is still usable afterwards.
+        *inner.get_mut() += 1;
+        assert_eq!(*inner.get(), 8);
+    }
 }
 
-/// Walk up a path to an ancestor, consuming it.
+/// Walk up a path to an ancestor.
+///
+/// [`ascend`](Self::ascend) borrows: it takes `&self` and returns `&Target`, so a
+/// handler can read an ancestor and keep using its own node. [`ascend_mut`](Self::ascend_mut)
+/// consumes the path and returns the ancestor by value, which is how a handler that
+/// mutates the root gets there.
 ///
 /// Implemented for every path and for each of its ancestors, to twelve levels, so
 /// a handler can be generic over "any path beneath this node" rather than naming
-/// one. Use [`PathMut::ascend_to_mut`] to name the target, or let it be inferred.
+/// one. Use [`PathMut::ascend_to`] / [`PathMut::ascend_to_mut`] to name the target,
+/// or let it be inferred.
 ///
 /// ```ignore
-/// fn to_home<'a, P: Ascend<LayerPath<'a>>>(path: P) {
+/// fn read<'a, P: Ascend<LayerPath<'a>>>(path: &P) {
+///     let layer: &LayerPath = path.ascend();
+/// }
+/// fn take<'a, P: Ascend<LayerPath<'a>>>(path: P) {
 ///     let layer: LayerPath = path.ascend_mut();
 /// }
-/// nav_path.ascend_to_mut::<LayerPath>();
 /// ```
 ///
 /// The impls match on the shape of the path rather than on which node it is, so
@@ -236,18 +263,33 @@ mod tests {
 /// its parent as a route enum rather than a `PathMut`, so the shapes stop matching,
 /// and the ascent would not be unique anyway.
 pub trait Ascend<Target> {
+    fn ascend(&self) -> &Target;
     fn ascend_mut(self) -> Target;
 }
 
 /// Every path is its own ancestor, at depth zero.
 impl<T> Ascend<T> for T {
+    fn ascend(&self) -> &T {
+        self
+    }
     fn ascend_mut(self) -> T {
         self
     }
 }
 
 impl<Node, Parent> PathMut<Node, Parent> {
-    /// Walk up to `Target`, naming it rather than leaving it to inference.
+    /// Walk up to `Target` by shared reference, naming it rather than leaving it to
+    /// inference. See [`ascend_to_mut`](Self::ascend_to_mut) for the consuming form.
+    #[must_use]
+    pub fn ascend_to<Target>(&self) -> &Target
+    where
+        Self: Ascend<Target>,
+    {
+        Ascend::ascend(self)
+    }
+
+    /// Walk up to `Target`, consuming the path, naming it rather than leaving it to
+    /// inference.
     ///
     /// Sugar, and the only way to name the target on the right. `Target` is a
     /// parameter of [`Ascend`] rather than of its method, so `path.ascend_mut::<T>()`
@@ -279,11 +321,22 @@ macro_rules! ascend_up {
     };
 }
 
+/// One `parent()` per type parameter, the shared-borrow mirror of `ascend_up!`.
+macro_rules! ascend_up_ref {
+    ($e:expr) => { $e };
+    ($e:expr, $head:ident $(, $rest:ident)*) => {
+        ascend_up_ref!($e.parent() $(, $rest)*)
+    };
+}
+
 /// One `Ascend` impl per depth, walking the list of type parameters.
 macro_rules! ascend_impls {
     ([$($acc:ident),*]) => {};
     ([$($acc:ident),*], $head:ident $(, $rest:ident)*) => {
         impl<T, $($acc,)* $head> Ascend<T> for ascend_nest!(T $(, $acc)*, $head) {
+            fn ascend(&self) -> &T {
+                ascend_up_ref!(self $(, $acc)*, $head)
+            }
             fn ascend_mut(self) -> T {
                 ascend_up!(self $(, $acc)*, $head)
             }
