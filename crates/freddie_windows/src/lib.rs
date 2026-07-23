@@ -645,6 +645,7 @@ unsafe extern "C" fn on_notification(
     // path in a pattern binds rather than matches the moment it stops resolving.
     if name == kAXWindowCreatedNotification {
         observe_window(&state, registration.observer, refcon, element);
+        report_open(&state, element);
     } else if name == kAXWindowMovedNotification || name == kAXWindowResizedNotification {
         if let (Some(window), Some(frame)) = (window_id(element), window_frame(element)) {
             let moved = WindowFrame { window, frame };
@@ -664,7 +665,12 @@ unsafe extern "C" fn on_notification(
     }
 }
 
-/// Watch one window: record its element, subscribe to what it does, and report it open.
+/// Record a window and subscribe to what it does, without announcing it.
+///
+/// The setup pass calls this alone: every window it finds is already in the `Snapshot`
+/// `watch` returns, so reporting `Opened` for it would be a redundant replay of the seed.
+/// A window that opens later goes through `observe_window` too, and `on_notification` then
+/// calls `report_open`; see its call site.
 ///
 /// `refcon` is the app's [`Registration`], the same one its own notifications carry: the
 /// callback dereferences it whatever fired, so a window registered without it would crash
@@ -676,9 +682,6 @@ fn observe_window(
     element: AXUIElementRef,
 ) {
     let Some(window) = window_id(element) else {
-        return;
-    };
-    let Some(frame) = window_frame(element) else {
         return;
     };
 
@@ -701,7 +704,15 @@ fn observe_window(
     if let Ok(mut table) = state.elements.0.lock() {
         table.insert(window, Arc::new(Element(owned)));
     }
-    state.report(WindowChange::Opened(WindowFrame { window, frame }));
+}
+
+/// Report a window as newly open. Its frame is read now, at announce time, rather than
+/// carried from `observe_window`: the two are one call apart and the window is live for
+/// both. A window whose frame cannot be read is not announced.
+fn report_open(state: &WatcherState, element: AXUIElementRef) {
+    if let (Some(window), Some(frame)) = (window_id(element), window_frame(element)) {
+        state.report(WindowChange::Opened(WindowFrame { window, frame }));
+    }
 }
 
 /// Subscribe `observer` to one notification on `element`, carrying `refcon`.
