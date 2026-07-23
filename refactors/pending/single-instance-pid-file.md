@@ -1,12 +1,12 @@
 # the pid lives beside the lock, not inside it
 
-`freddie_single_instance` stores the holder's pid inside the file it locks, and a probe reads that pid back once the lock is refused. That read works only because Unix `flock` is advisory: a second handle can read bytes the lock covers. Windows locks are mandatory, so the same read is refused, and `holder_at` cannot name a running daemon.
+`freddie_single_instance` stores the holder's pid inside the file it locks, and a probe reads that pid back once the lock is refused. That read works only because Unix `flock` is advisory: a second handle reads bytes the lock covers. Windows locks are mandatory, so the same read is refused, and `holder_at` cannot name a running daemon.
 
-This moves the pid into a sibling file that is never locked. Reading it never touches a locked byte range, so it works on all three platforms with one code path and no `cfg`.
+This moves the pid into a sibling file that is never locked, on every platform. Reading it never lands on a locked byte range, so it works everywhere through one code path, and the crate stops resting on advisory-lock read-through, the platform behavior whose absence broke Windows.
 
 ## The Windows failure
 
-`acquire_at` holds `File::try_lock` (an exclusive whole-file lock) for the life of the `Instance`. `read_pid` then opens a second handle and reads the pid text out of that same file.
+`acquire_at` holds `File::try_lock` (an exclusive whole-file lock) for the life of the `Instance`. `read_pid` opens a second handle and reads the pid text out of that same file.
 
 On Windows the lock is `LockFileEx` with `LOCKFILE_EXCLUSIVE_LOCK` over the whole file, and it is enforced: a `ReadFile` on the locked range through any other handle fails with `ERROR_LOCK_VIOLATION` (os error 33), even from the same process. So `read_pid` returns `None` and `holder_at` reports `Held::Unnamed` for a daemon that is plainly running.
 
@@ -21,15 +21,13 @@ test tests::a_recorded_pid_replaces_the_whole_file ... FAILED
 
 This is the whole of what keeps the `portable (windows-latest)` CI job red.
 
-## What we build
+## What we build, on every platform
 
-The lock file goes back to being a pure lock target: created, locked, never written, never read. The pid moves to `<app>.pid`, a sibling in the same directory. The holder writes it there after taking the lock; a refused probe reads it there.
+The lock file becomes a pure lock target: created, locked, never written, never read. The pid moves to `<app>.pid`, a sibling in the same directory. The holder writes it there after taking the lock; a refused probe reads it there. One code path, no `cfg`, so CI on any platform exercises the real logic rather than a per-platform arm that no other platform runs.
 
-Nothing about the invariant changes. The pid is read exactly when the lock is refused, so a pid left behind by a dead run is never reported: that run's lock is free, the probe answers `Held::Free` and never opens the pid file. The pid file is a leftover in the same way the lock file already is, and means nothing until the lock says a live process is home.
+The invariant is untouched. The pid is read exactly when the lock is refused, so a pid left behind by a dead run is never reported: that run's lock is free, the probe answers `Held::Free` and never opens the pid file. The pid file is a leftover in the way the lock file already is, and means nothing until the lock says a live process is home. This keeps the pid from ever being read as evidence of liveness, which is the failure `refactors/past/single-instance.md` exists to avoid.
 
-The public surface is unchanged. `acquire_at` and `holder_at` still take the lock path; the pid path is derived from it with `Path::with_extension`, so `freddie_cli`, which passes `instance.lock_file()` to both, needs no change.
-
-Ships as one commit: the holder writing the pid to the new file and the probe reading it from there are the two halves of one move, and either alone leaves the crate broken.
+The public surface does not change. `acquire_at` and `holder_at` still take the lock path; the pid path is derived from it with `Path::with_extension`, so `freddie_cli`, which passes `instance.lock_file()` to both, needs no change. Ships as one commit: the holder writing the pid to the new file and the probe reading it from there are the two halves of one move, and either alone leaves the crate broken.
 
 ## The module doc
 
@@ -48,8 +46,8 @@ After:
 ```rust
 //! The holder writes its pid into a sibling file so [`holder`] can say which process is
 //! running. The lock stays on the lock file and never covers the pid, so reading the pid
-//! never contends with the lock: on Windows a mandatory lock refuses reads of the bytes
-//! it covers, and a pid kept under the lock could not be read back while a holder held it.
+//! never contends with the lock: a mandatory lock (Windows) refuses reads of the bytes it
+//! covers, and a pid kept under the lock could not be read back while a holder held it.
 //!
 //! That pid is read only when the lock is refused, so a pid belonging to a process that
 //! has since died is never reported: the lock is free, and the probe answers
@@ -121,7 +119,7 @@ The body is unchanged:
 
 ## Recording the pid
 
-`record_pid` took the already-locked handle and rewrote it in place with `set_len` and `seek`. `write_pid` opens the sibling file fresh and truncates it, which is the same guard against a longer old pid leaving a tail, without the seek.
+`record_pid` took the already-locked handle and rewrote it in place with `set_len` and `seek`. It now opens the sibling file fresh and truncates it, which is the same guard against a longer old pid leaving a tail, without the seek.
 
 Before:
 
@@ -152,7 +150,7 @@ After:
 ///
 /// The parent directory already exists: [`acquire_at`] takes the lock first, and locking
 /// created it.
-fn write_pid(path: &Path) -> io::Result<()> {
+fn record_pid(path: &Path) -> io::Result<()> {
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
@@ -213,12 +211,12 @@ pub fn acquire_at(path: &Path) -> Result<Instance, LockError> {
 ```rust
 pub fn acquire_at(path: &Path) -> Result<Instance, LockError> {
     let file = lock_exclusive(path)?;
-    write_pid(&pid_path(path)).map_err(LockError::Unavailable)?;
+    record_pid(&pid_path(path)).map_err(LockError::Unavailable)?;
     Ok(Instance { _file: file })
 }
 ```
 
-The doc comment's guarantee holds unchanged: an `Instance` means the lock is held and the pid is recorded, both or neither, because a failed `write_pid` fails the acquire and drops `file`, which releases the lock.
+The doc comment's guarantee holds unchanged: an `Instance` means the lock is held and the pid is recorded, both or neither, because a failed `record_pid` fails the acquire and drops `file`, which releases the lock.
 
 `holder_at`, before:
 
@@ -250,7 +248,7 @@ pub fn holder_at(path: &Path) -> Result<Held, LockError> {
 
 ## Imports
 
-`write_pid` no longer seeks, so `Seek` and `SeekFrom` drop out.
+`record_pid` no longer seeks, so `Seek` and `SeekFrom` drop out.
 
 Before:
 
@@ -317,7 +315,7 @@ After:
     std::fs::write(pid_path(&path), "4294967295").expect("a pid from an earlier run");
 ```
 
-`a_recorded_pid_replaces_the_whole_file` seeds and reads the pid file, and its comment already names the property (a longer old pid must not leave a tail behind a shorter one), which `write_pid`'s `truncate(true)` keeps.
+`a_recorded_pid_replaces_the_whole_file` seeds and reads the pid file, and its comment already names the property (a longer old pid must not leave a tail behind a shorter one), which `record_pid`'s `truncate(true)` keeps.
 
 Before:
 
@@ -343,4 +341,4 @@ After:
 
 `the_holder_is_named_by_pid` and `a_probe_is_refused_by_the_holder` are unchanged in text: they read through `holder_at`, which now finds the pid in the sibling file, so they go green on Windows without editing. `probing_writes_nothing` reads the lock file and asserts it is empty, which stays true now that nothing writes to it. The rest of the module is untouched.
 
-After the change, `cargo test -p freddie_single_instance` passes on `windows-latest`, which is what turns the `portable` CI job green.
+After the change, `cargo test -p freddie_single_instance` passes on `windows-latest`, which is what turns the `portable` CI job green, and the same code runs on macOS and Linux.
