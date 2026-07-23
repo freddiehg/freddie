@@ -54,11 +54,20 @@ impl<W: io::Write> io::Write for PidStamped<W> {
     /// Two calls would be two appends, and another process may append between them,
     /// which would leave a stamp attached to a stranger's record. Building the line
     /// first is what keeps a record whole against the other writers this exists for.
+    ///
+    /// A record that does not start with `{` is written through untouched. The formatter always
+    /// produces one that does, and a record that somehow did not would be destroyed by having its
+    /// first byte replaced.
     fn write(&mut self, record: &[u8]) -> io::Result<usize> {
         STAMPED.with_borrow_mut(|line| {
             line.clear();
-            line.extend_from_slice(stamp().as_bytes());
-            line.extend_from_slice(record);
+            match record.strip_prefix(b"{") {
+                Some(rest) => {
+                    line.extend_from_slice(stamp().as_bytes());
+                    line.extend_from_slice(rest);
+                }
+                None => line.extend_from_slice(record),
+            }
             self.0.write_all(line)
         })?;
         Ok(record.len())
@@ -77,10 +86,13 @@ thread_local! {
     static STAMPED: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
-/// This process's stamp, built once. A pid does not change under a running process.
+/// This process's stamp: the opening brace of the record's object and the pid inside it, so
+/// splicing it in front of a record whose own opening brace has been taken off puts the pid first.
+///
+/// Built once. A pid does not change under a running process.
 fn stamp() -> &'static str {
     static STAMP: OnceLock<String> = OnceLock::new();
-    STAMP.get_or_init(|| format!("pid={} ", std::process::id()))
+    STAMP.get_or_init(|| format!("{{\"pid\":{},", std::process::id()))
 }
 
 /// Send tracing to this daemon's log file and to this process's terminal.
@@ -99,6 +111,12 @@ pub(crate) fn init(instance: &Instance, terminal: Terminal) {
     }
 
     let file = fmt::layer()
+        .json()
+        // Flat: one object per record, with its fields under `fields` and nothing else nested.
+        // `logs` renders a record from those keys, and a span list would be keys it has no line to
+        // put.
+        .with_current_span(false)
+        .with_span_list(false)
         .with_writer(WithPid(tracing_appender::rolling::never(
             dir,
             instance.log_file_name(),
@@ -153,6 +171,38 @@ fn log_panics() {
         let backtrace = std::backtrace::Backtrace::capture();
         tracing::error!(%location, %backtrace, "panic: {message}");
     }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PidStamped;
+    use std::io::Write;
+
+    // The seam the whole records change rests on: the stamp splices in front of a record whose
+    // opening brace has been taken off, so the writer produces a line the reader can parse.
+    #[test]
+    fn what_the_writer_writes_is_a_record() {
+        let formatted =
+            br#"{"timestamp":"t","level":"INFO","target":"x","fields":{"message":"m"}}"#;
+        let mut written = Vec::new();
+        PidStamped(&mut written)
+            .write_all(formatted)
+            .expect("writing to a Vec");
+        let record: serde_json::Value = serde_json::from_slice(&written).expect("a record");
+        assert_eq!(record["pid"], serde_json::json!(std::process::id()));
+        assert_eq!(record["level"], serde_json::json!("INFO"));
+    }
+
+    // A record with no leading brace would be destroyed by having its first byte replaced, so it is
+    // written through untouched instead.
+    #[test]
+    fn a_line_that_is_not_an_object_is_written_through() {
+        let mut written = Vec::new();
+        PidStamped(&mut written)
+            .write_all(b"a stray line")
+            .expect("writing to a Vec");
+        assert_eq!(written, b"a stray line");
+    }
 }
 
 /// The environment variable a daemon reads its terminal filter from.
