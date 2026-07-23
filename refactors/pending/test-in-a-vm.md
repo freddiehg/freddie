@@ -1,6 +1,8 @@
-# a VM an agent can test freddie's behavior in
+# a VM an agent can run mercury in
 
-The unit tests cover the model as a table and the crates in isolation, and CI runs them on every platform the code targets. What none of them covers is runtime behavior: the keyboard actually grabbed and remapping, the lifecycle verbs against a live daemon, the menu bar, a cross-platform backend on real input. An agent that changes freddie and wants to see the change work has to run it, and running it on the developer's own machine is the problem this doc solves.
+An agent that changes freddie wants to spin up mercury, send it keys, and watch what it does. The unit tests cover the model as a table and the crates in isolation, but running the real daemon, grab and all, is the thing that shows a change works, and there is nowhere to do it: not on the developer's own machine.
+
+This adds no code to mercury. It is the environment around it, a VM the agent owns, and a small driver that runs the daemon in the VM and feeds it input. mercury is what it is; this is how an agent gets to exercise it.
 
 mercury grabs the global keyboard. A daemon started on the host swallows the human's keys for as long as it runs, and a wedged grab locks them out. It also needs Accessibility and Input Monitoring granted to the binary and a GUI session to grab, neither of which an automated run should be toggling on the machine it runs on. And Windows and Linux behavior cannot run on a mac host at all. A VM per platform, that the agent owns and can wedge or reset freely, is the environment. macOS is the first one that matters, because it is what lets an agent run mercury at all without hijacking the machine.
 
@@ -35,16 +37,24 @@ For the portable crates, and once they exist the keyboard backends (`refactors/p
 
 Linux runs under lima, multipass, or UTM; Windows under UTM (ARM64) on Apple Silicon, or a cloud x64 instance to match CI's `x86_64-pc-windows-msvc`. A Linux keyboard backend needs a full VM, not a container: uinput and a session are not things a container gives you.
 
-## The piece worth building
+## What this produces
 
-Not permanent VM fleets. The reusable piece is the driver: one script that, given a running guest, pulls, builds, starts the daemon, sends a frame, and returns the dispatch record, because that is the loop an agent repeats and it is nearly identical on all three platforms. The guest images are worth automating (tart or lima snapshots that boot with the toolchain installed and, on macOS, the permissions granted) once grab-level testing is recurring, which the keyboard backends or a non-mac freddie app are what make it.
+Two things, once the mechanics are worked out: a runbook and e2e tests. The runbook is instructions an agent follows to bring a guest up, run the daemon, send it input, and read the result. The e2e tests are the same steps automated: boot or reach the guest, start the daemon, send a known frame or key, and assert the dispatch record the log shows. The runbook is what an agent uses to muck around; the tests are what keep the whole path from rotting between uses.
 
-Until then the one with standing value is the macOS guest, because it is the difference between an agent being able to run mercury and not: on the host it cannot, and in the guest it can, with the developer's keyboard untouched.
+Neither is permanent VM infrastructure. The guest is a `tart` (or UTM) image, snapshotted with the toolchain installed and, on macOS, the permissions granted, so it boots ready; the tests reach it and drive it. What is worth automating is the driving, not a fleet.
+
+## The unknowns to settle first
+
+This is a spike before it is a plan: the mechanics have to be found before they can be written down or tested. On macOS specifically:
+
+- bringing up a macOS guest an agent can reach non-interactively (`tart` over SSH is the likely answer, but the licensing and the Apple-Silicon-only constraint want confirming);
+- granting Accessibility and Input Monitoring without a human clicking the dialog, so a fresh guest is usable unattended (writing the TCC database in the guest, or granting once and snapshotting);
+- injecting a real key the grab will see, and confirming a synthetic `CGEvent` is treated as a physical key rather than ignored by the tap.
+
+The socket path (frame in, record out of the log) is the part already known to work from `CLAUDE.md`; these three are what a first pass exists to answer.
 
 ## The changes, in order
 
-Each is usable on its own; the driver is what an agent calls, and the guests are what it calls into.
-
-1. **The driver.** A script taking a host to reach (an SSH target) that builds, starts the daemon, sends a frame it is given, waits for the record, and prints it. Platform-agnostic through the socket; the only per-OS part is the log path, which `Instance` already computes.
-2. **The macOS guest image.** A `tart` (or UTM) macOS guest with the toolchain and the granted permissions, snapshotted, so the driver has something to reach.
-3. **The Linux and Windows guest images.** The same for the portable crates and the keyboard backends, added when a non-mac backend or app makes their runtime behavior worth watching.
+1. **Settle the macOS mechanics.** The three unknowns above, end to end: a guest an agent reaches, the daemon running in it, a key sent, the record read back. The output is the runbook.
+2. **E2e tests on macOS.** The runbook's steps as an automated test: bring the guest to a known state, start the daemon, send a frame, assert the record. This is what makes the path repeatable rather than a thing rediscovered each time.
+3. **The Linux and Windows guests, and their e2e.** The same for the portable crates and the keyboard backends, added when a non-mac backend or app makes their runtime behavior worth watching.
