@@ -40,7 +40,7 @@ By dependency. mercury stays on `freddie_keyboard`; figaro names the new crate:
 freddie_keyboard_hid = { path = "../freddie/crates/freddie_keyboard_hid" }
 ```
 
-Both crates export `intercept`, `Interceptor`, `Emitter`, `CaptureError`, and `EmitError`, and both re-export `Key`/`KeyEvent`/`PressType`/`ModifierFlags` from `freddie_keys`, so a consumer's `use` line and call sites are identical whichever it depends on. The parity is by convention over the shared vocabulary, not enforced by a trait; a `freddie_keyboard_api` trait crate could enforce it later, but it is machinery this does not need yet and is out of scope for the first change.
+Both crates export `intercept`, `Interceptor`, `Emitter`, `CaptureError`, and `EmitError`, and both re-export `Key`/`KeyEvent`/`PressType`/`ModifierFlags` from `freddie_keys`, so a consumer's `use` line and call sites are identical whichever it depends on. The parity is by convention over the shared vocabulary.
 
 ## The interface is already right for this
 

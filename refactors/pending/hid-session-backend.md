@@ -37,7 +37,7 @@ pub struct CaptureError;   // same shape as freddie_keyboard::CaptureError
 pub enum EmitError { Unmappable(Key), Post }
 ```
 
-The two error types are duplicated across the two crates rather than shared, keeping this change to one new crate that touches nothing else. Hoisting the shared interface (the errors and, if wanted, a `Backend` trait) into a `freddie_keyboard_api` crate is a later cleanup, not this change.
+The two error types are duplicated across the two crates rather than shared, keeping this change to one new crate that touches nothing else.
 
 ## freddie_hid_wire
 
