@@ -67,8 +67,12 @@ pub struct TimerIds(u64);
 impl TimerIds {
     /// The next id, advancing the source. The only way to make a [`TimerId`], and it bumps on every
     /// call, so a minted id and the counter's advance are the same event: there is no id without a
-    /// bump. `TimerGuard` and `TimerEffect` are built from the id in the same call, so holding a
-    /// guard implies the bump already happened.
+    /// bump, and no `peek` that returns a value without advancing. `TimerGuard` and `TimerEffect` are
+    /// built from the id in the same call, so holding a guard implies the bump already happened.
+    ///
+    /// `&mut self` is the mutual exclusion: only one `&mut TimerIds` exists at a time, so two mints
+    /// cannot read the same value before either advances. No `RefCell` or atomic is needed; the
+    /// exclusive borrow enforces at compile time what they would enforce at runtime.
     fn next(&mut self) -> TimerId {
         let id = TimerId(self.0);
         self.0 += 1;
@@ -310,6 +314,8 @@ after:
 ```
 
 `root` is an `&mut Mercury`, and `root.timer_ids` and the layer field `set_layer` writes are disjoint fields, so the borrow for `new` is released before `set_layer` reborrows `*root`.
+
+`ascend_mut` consumes the leaf path, and that is not a loss here: the handler is leaving that layer. The guard is born inside the fresh `nav` and `set_layer` moves it into `root.layer`, so the guard's home is the replacement layer, not the leaf we ascended from. The same holds for the root-storing sites (`toggle_overlay` into `root.overlay`, the jk timer into `root.typing_state.jk`, a placement into `root.windows.pending`): they ascend to root and store on a root field, with no leaf to return to. No arming site stores the guard onto the leaf it ascended from, which is why giving that leaf up costs nothing.
 
 Every call to a `*Layer::new()` is updated to pass the source: the `home.rs` transitions (`home.rs:35,57,71,82`), and the `handlers/nav.rs` in-app transition (`nav.rs:24`). `Windows::placing`'s call to `asking_for` forwards its own `&mut TimerIds`.
 
