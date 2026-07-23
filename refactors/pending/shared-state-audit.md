@@ -169,7 +169,7 @@ after:
 
 `the_stopper_is_send`, `run_off_the_main_thread_panics`, and `the_test_thread_is_not_main` are unchanged: `Sender<()>` is `Send`, so `Stopper` stays `Send`.
 
-## Change 2: `freddie/src/timer.rs`'s id source
+## Change 2: `freddie/src/timer.rs`'s id source moves onto the root
 
 `crates/freddie/src/timer.rs:29`:
 
@@ -180,16 +180,244 @@ fn mint() -> Self {
 }
 ```
 
-The comment already admits the atomic is not synchronizing anything: "Atomic because a mutable static has to be `Sync`, not because anything sets timers off one thread." It is a process-global mutable counter touched from one thread.
+The comment already admits the atomic synchronizes nothing: "Atomic because a mutable static has to be `Sync`, not because anything sets timers off one thread." It is ambient, process-global, and it makes every dispatch that arms a timer impure. Under `CLAUDE.md`'s ambient-state rule the counter belongs on the root model, minted through a newtype so the id is a function of state.
 
-This needs a decision before it is written, because the two ways to remove it are not equivalent:
+The id becoming deterministic pays for itself in the model tests: `TimerFired`'s `testing`-only "always equal" impl exists only because a test could not predict the id a global atomic handed out. With the counter on root, the id in a produced effect is the root's counter before the increment, which a test that builds the expected state knows, so the id becomes assertable and the hack goes.
 
-- `thread_local! { static NEXT: Cell<u64> }`, mirroring `freddie_overlay`'s `NEXT_ID`. Small and local, but trades one listed primitive for two, and keeps the id source as ambient global state rather than model state.
-- The counter lives in the model and is threaded to `timer_effect_and_guard`. This is the model-pure answer: minting is already the one impure thing a handler does, so the next id belongs in state beside everything else a dispatch reads. It is the larger change: every `arm_*` helper in `crates/mercury/src/state/mod.rs` (and the `arm_*` in `app.rs`, `resize.rs`, `site.rs`, `nav.rs`) that calls `timer_effect_and_guard` gains access to the counter, and `TimerId::mint` stops being a free function.
+### The newtype and the changed minting
 
-Callers to touch under the second option: `crates/mercury/src/state/mod.rs:49,70,345,625`, and the test helpers in `crates/mercury/tests/transitions.rs:26,33,1209,1448`.
+`crates/freddie/src/timer.rs`, replacing `mint`. The `use std::sync::atomic::{AtomicU64, Ordering};` at the top goes.
 
-Per the standard's own directive ("raise it with the user, every single time"), the direction is the user's to pick. Once picked, the full before/after belongs here.
+before:
+
+```rust
+impl TimerId {
+    /// The next id.
+    ///
+    /// Atomic because a mutable static has to be `Sync`, not because anything sets timers off one
+    /// thread; `Relaxed` because the only requirement is that no two calls return the same value.
+    fn mint() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+```
+
+after:
+
+```rust
+/// The source of timer ids, one per model. Held on the root and advanced when a timer is armed, so
+/// the id a dispatch hands out is a function of state rather than of a process-global counter.
+///
+/// Monotonic and never reset within a run: a firing from a cancelled timer must never carry the id
+/// of one armed later, or a stale event would match a fresh guard.
+#[derive(Default, Debug)]
+#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
+pub struct TimerIds(u64);
+
+impl TimerIds {
+    /// The next id, advancing the source. The only way to make a [`TimerId`], so no caller mints
+    /// off an ambient counter.
+    fn next(&mut self) -> TimerId {
+        let id = TimerId(self.0);
+        self.0 += 1;
+        id
+    }
+}
+```
+
+`timer_effect_and_guard` takes the source, before:
+
+```rust
+pub fn timer_effect_and_guard<E>(
+    delay: Duration,
+    event: impl FnOnce(TimerId) -> E,
+) -> (TimerGuard, TimerEffect<E>) {
+    let (guard, receiver) = drop_guard();
+    let id = TimerId::mint();
+```
+
+after:
+
+```rust
+pub fn timer_effect_and_guard<E>(
+    ids: &mut TimerIds,
+    delay: Duration,
+    event: impl FnOnce(TimerId) -> E,
+) -> (TimerGuard, TimerEffect<E>) {
+    let (guard, receiver) = drop_guard();
+    let id = ids.next();
+```
+
+### `TimerFired` derives its comparison again
+
+`crates/freddie/src/timer.rs`, before:
+
+```rust
+/// A timer fired, carrying which timer it was.
+///
+/// One event for every timer a consumer owns. What tells them apart at dispatch is which node is
+/// still holding that guard, not which type the event is.
+#[derive(Debug)]
+pub struct TimerFired(pub TimerId);
+
+/// Two firings compare equal under `testing` whatever their ids.
+///
+/// The id exists to tell one timer from another at dispatch. A test that rebuilds an expected
+/// effect cannot know it, and asserting it would only assert that the counter ran; with one event
+/// type for every timer, the delay is what distinguishes an effect anyway. A test that cares about
+/// an id reads it off the effect a transition produced.
+#[cfg(feature = "testing")]
+impl PartialEq for TimerFired {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "testing")]
+impl Eq for TimerFired {}
+```
+
+after:
+
+```rust
+/// A timer fired, carrying which timer it was.
+///
+/// One event for every timer a consumer owns. What tells them apart at dispatch is which node is
+/// still holding that guard, not which type the event is.
+///
+/// The id is assertable under `testing`: it is the root's [`TimerIds`] before the arm, so a test
+/// that builds the expected state knows exactly which id a transition mints, and comparing it
+/// asserts the counter advanced by the right amount.
+#[derive(Debug)]
+#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
+pub struct TimerFired(pub TimerId);
+```
+
+`TimerEffect` keeps its `#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]` and its `AlwaysEqual<oneshot::Receiver<()>>` on `cancel`: the receiver is incomparable whatever the id does, so that wrapper is unrelated to this change and stays. Its `event` field now compares by the real id, since `TimerFired` does.
+
+### The counter on the root
+
+`crates/mercury/src/state/mod.rs`, the `Mercury` struct gains a field:
+
+```rust
+    /// The source of timer ids. On the root because the program mints these; every arm draws the
+    /// next from here, so an id is a function of state. See `CLAUDE.md`'s ambient-state rule.
+    timer_ids: TimerIds,
+```
+
+`TimerIds` derives `Default`, so `Mercury`'s construction is unchanged where it is `..Default::default()`; a hand-written constructor sets `timer_ids: TimerIds::default()`.
+
+### Threading `&mut TimerIds` to the arming sites
+
+The arming sites split by whether the method already holds the root.
+
+Root methods reach the field directly. `toggle_overlay` (`mod.rs:619`) and `arm_jk_timeout`'s caller in `handlers/root.rs` are on or hold `Mercury`, so they pass `&mut self.timer_ids` (or `&mut root.timer_ids`).
+
+`toggle_overlay`, before:
+
+```rust
+        let (guard, effect) =
+            timer_effect_and_guard(OVERLAY_DWELL, |id| MercuryEvent::Timer(TimerFired(id)));
+```
+
+after:
+
+```rust
+        let (guard, effect) = timer_effect_and_guard(&mut self.timer_ids, OVERLAY_DWELL, |id| {
+            MercuryEvent::Timer(TimerFired(id))
+        });
+```
+
+Sub-struct methods and the free helpers take `&mut TimerIds`. The free helpers, before:
+
+```rust
+fn arm_return_home() -> (TimerGuard, MercuryEffect) {
+    let (guard, effect) = timer_effect_and_guard(RETURN_TO_HOME_TIMEOUT, |id| {
+        MercuryEvent::Timer(TimerFired(id))
+    });
+    (guard, MercuryEffect::Timer(effect))
+}
+
+pub(crate) fn arm_jk_timeout(window: Duration) -> (TimerGuard, MercuryEffect) {
+    let (guard, effect) = timer_effect_and_guard(window, |id| MercuryEvent::Timer(TimerFired(id)));
+    (guard, MercuryEffect::Timer(effect))
+}
+```
+
+after:
+
+```rust
+fn arm_return_home(ids: &mut TimerIds) -> (TimerGuard, MercuryEffect) {
+    let (guard, effect) = timer_effect_and_guard(ids, RETURN_TO_HOME_TIMEOUT, |id| {
+        MercuryEvent::Timer(TimerFired(id))
+    });
+    (guard, MercuryEffect::Timer(effect))
+}
+
+pub(crate) fn arm_jk_timeout(ids: &mut TimerIds, window: Duration) -> (TimerGuard, MercuryEffect) {
+    let (guard, effect) =
+        timer_effect_and_guard(ids, window, |id| MercuryEvent::Timer(TimerFired(id)));
+    (guard, MercuryEffect::Timer(effect))
+}
+```
+
+`Windows::asking_for` (`mod.rs:343`) is on the `Windows` sub-struct, so it takes the source and its caller `Windows::placing` forwards it. before:
+
+```rust
+    fn asking_for(&mut self, target: WindowFrame) -> Vec<MercuryEffect> {
+        let (timer, effect) =
+            timer_effect_and_guard(PLACEMENT_SETTLE, |id| MercuryEvent::Timer(TimerFired(id)));
+```
+
+after:
+
+```rust
+    fn asking_for(&mut self, ids: &mut TimerIds, target: WindowFrame) -> Vec<MercuryEffect> {
+        let (timer, effect) =
+            timer_effect_and_guard(ids, PLACEMENT_SETTLE, |id| MercuryEvent::Timer(TimerFired(id)));
+```
+
+The layer constructors that arm a return-home timer take the source. `NavLayer::new` (`state/nav.rs:39`) is representative; `AppLayer::new` (`app.rs`), `SiteLayer::new` (`site.rs`), and `ResizeLayer::new` (`resize.rs`) are the same shape. before:
+
+```rust
+    pub(crate) fn new() -> (Self, MercuryEffect) {
+        let (timeout, timer) = arm_return_home();
+```
+
+after:
+
+```rust
+    pub(crate) fn new(ids: &mut TimerIds) -> (Self, MercuryEffect) {
+        let (timeout, timer) = arm_return_home(ids);
+```
+
+The transition handlers that call a constructor then `ascend().set_layer(...)` pass `&mut root.timer_ids`. `handlers/home.rs`'s nav transition is representative:
+
+before:
+
+```rust
+    let (nav, timer) = NavLayer::new();
+    let mut effects = node.parent.ascend().set_layer(nav);
+```
+
+after:
+
+```rust
+    let root = node.parent.ascend();
+    let (nav, timer) = NavLayer::new(&mut root.timer_ids);
+    let mut effects = root.set_layer(nav);
+```
+
+`root.timer_ids` and the layer field `set_layer` writes are disjoint fields of `Mercury`, so the borrow checker allows the source to be borrowed for `new` and released before `set_layer` takes `&mut root`. This assumes `ascend()` yields something that exposes `Mercury`'s fields, the same reach `set_layer` needs; if it yields only `set_layer`, `Mercury` gains a `pub(crate) fn timer_ids(&mut self) -> &mut TimerIds` and the constructors are handed that instead.
+
+Every call to a `*Layer::new()` and to `arm_jk_timeout`/`arm_return_home` is updated to pass the source. The `home.rs` transitions (`home.rs:35,57,71,82`), the `handlers/nav.rs` in-app transition (`nav.rs:24`), and `Windows::placing`'s call to `asking_for` are the full set of caller sites.
+
+### The tests
+
+`crates/mercury/tests/transitions.rs` builds expected timer effects and now needs a source to mint from. The helpers at `transitions.rs:26,33,1209,1448` gain a `&mut TimerIds` argument threaded from the test's expected state, so the id in the expected effect matches the id the transition minted. `crates/freddie` re-exports `TimerIds` for the tests to name.
+
+`timer_id(effects)` (`transitions.rs:44`), which reads the id off a produced effect, is unaffected: it reads whatever the transition minted, and that is now a function of the state the test dispatched against.
 
 ## Change 3: `freddie_overlay`'s marshaling to the main thread
 
