@@ -5,7 +5,7 @@ The site layer holds what the site in the front tab can do. Today a site is a ho
 What we want is bound to where you are:
 
 - On a repository page, `c` clones it into `~/code/<repo>`.
-- On a pull request page, `c` checks that pull request out in `~/code/<repo>`, by its number.
+- On a pull request page, `p` checks that pull request out in `~/code/<repo>`, by its number.
 - On any github.com page, whatever is true of the whole site is bound, and the page you are on adds to it rather than replacing it.
 - The overlay shows the keymap of the page you are on, so `o` on a pull request lists the pull request's keys.
 
@@ -385,15 +385,15 @@ pub struct GithubRepoSite {
     pub(crate) repo: Repo,
 }
 
-/// A pull request page, where `c` checks it out.
+/// A pull request page, where `p` checks it out.
 ///
-/// `c` is the same key as a repository's, because it means the same thing on both: bring what this
-/// page is showing onto this machine. On a repository that is the repository; on a pull request the
-/// repository is already here and the pull request is what is missing.
+/// `p` and not `c`: on a pull request page the repository is already on the machine, so cloning it
+/// and checking the pull request out are two different actions rather than one. `c` stays "clone
+/// this", which a pull request page is not, and `p` is the pull request's own key.
 #[derive(Bind, Debug)]
 #[derived_node(parent = GithubSitePath)]
 #[binds(MercuryStruct)]
-#[bind(Key::KeyC.down() => checkout_pull_request)]
+#[bind(Key::KeyP.down() => checkout_pull_request)]
 pub struct GithubPullRequestSite {
     pub(crate) repo: Repo,
     pub(crate) number: u32,
@@ -496,7 +496,7 @@ The three new files. `crates/mercury/src/state/overlays/github.txt`:
 ```
   GITHUB PR
   ────────────────────
-  c    check out
+  p    check out
   o    overlay
   t    typing
   esc  home
@@ -536,7 +536,7 @@ pub(crate) fn clone_repo<E>(
     and_go_home_from(root, [run])
 }
 
-/// `c` on a pull request page: check it out in the clone, by its number.
+/// `p` on a pull request page: check it out in the clone, by its number.
 ///
 /// The number is all the model has and all `gh` needs: it resolves the branch itself, in the clone,
 /// when it runs. A branch name read off the page would be a second copy of something github already
@@ -597,16 +597,32 @@ fn c_clones_the_repo_you_are_looking_at() {
 }
 
 #[test]
-fn c_checks_out_the_pull_request_you_are_looking_at() {
+fn p_checks_out_the_pull_request_you_are_looking_at() {
     let mut m = site_showing("https://github.com/rbalicki2/freddie/pull/12/files");
     assert_eq!(
-        m.handle(&key(Key::KeyC)),
+        m.handle(&key(Key::KeyP)),
         Some(vec![
             gh(&["pr", "checkout", "12"], "/Users/test/code/freddie"),
             show_layer("Home"),
         ])
     );
     assert!(matches!(m.layer(), Layer::Home(_)));
+}
+
+#[test]
+fn p_is_unbound_without_a_pull_request() {
+    for url in [
+        "https://github.com",
+        "https://github.com/rbalicki2/freddie",
+        "https://github.com/rbalicki2/freddie/pulls",
+        "https://www.x.com/asdfasdf",
+    ] {
+        let mut m = site_showing(url);
+        // Checkout lives only on a pull request page; a repository page clones with `c` but binds
+        // no `p`, so here it is swallowed and the site layer's timer resets.
+        assert_eq!(m.handle(&key(Key::KeyP)), Some(vec![return_home_timer()]), "{url}");
+        assert!(matches!(m.layer(), Layer::Site(_)), "{url}");
+    }
 }
 
 #[test]
