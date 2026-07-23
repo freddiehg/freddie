@@ -179,8 +179,8 @@ mod tests {
     use super::{PidStamped, WithPid};
     use std::io::Write;
 
-    // The seam the whole records change rests on: the real json layer, through the real pid stamp,
-    // produces a line shaped the way `client::Record` reads it. This pins the record shape against a
+    // The real json layer, through the real pid stamp, produces a line shaped the way
+    // `client::Record` reads it. This pins the record shape against a
     // `tracing-subscriber` that changes its JSON: the event's own fields sit at the top level, and
     // they keep the order they were logged, which is what puts `event` before `effects`.
     #[test]
