@@ -1,12 +1,13 @@
 use bind::Bind;
 use freddie::TimerGuard;
 use freddie_keys::{Key, ModifierFlags};
+use laserbeam::Ascend;
 
 #[allow(clippy::wildcard_imports)]
 use crate::handlers::*;
 use crate::{App, MercuryEffect, MercuryStruct};
 
-use super::{AppLayerPath, LayerPath, arm_return_home};
+use super::{AppLayerPath, LayerPath, MercuryPath, arm_return_home};
 
 pub(crate) const CHROME_OVERLAY: &str = include_str!("overlays/chrome.txt");
 pub(crate) const GHOSTTY_OVERLAY: &str = include_str!("overlays/ghostty.txt");
@@ -85,9 +86,8 @@ pub enum AppData {
 /// A shared reference, so it cannot mutate: it derives, it does not act. `None` while a nav is in
 /// flight (the old app must not bind in the gap), and `Zed`/`Other` bind nothing, so all three get
 /// no level and no struct.
-const fn app_data(path: &AppLayerPath) -> Option<AppData> {
-    // AppLayer -> Layer -> Mercury.
-    let root = path.parent().parent();
+fn app_data<'a, P: Ascend<MercuryPath<'a>>>(path: &P) -> Option<AppData> {
+    let root = path.ascend();
     match root.foreground.confirmed() {
         Some(App::Chrome) => Some(AppData::Chrome(ChromeApp::new())),
         Some(App::Ghostty) => Some(AppData::Ghostty(GhosttyApp::new())),

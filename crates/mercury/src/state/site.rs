@@ -1,12 +1,13 @@
 use bind::Bind;
 use freddie::TimerGuard;
 use freddie_keys::Key;
+use laserbeam::Ascend;
 
 #[allow(clippy::wildcard_imports)]
 use crate::handlers::*;
 use crate::{MercuryEffect, MercuryStruct, Site};
 
-use super::{LayerPath, SiteLayerPath, arm_return_home};
+use super::{LayerPath, MercuryPath, SiteLayerPath, arm_return_home};
 
 pub(crate) const OVERLAY: &str = include_str!("overlays/site.txt");
 pub(crate) const CLAUDE_AI_OVERLAY: &str = include_str!("overlays/claude-ai.txt");
@@ -81,9 +82,8 @@ pub enum SiteData {
 /// `None` whenever Chrome is not the confirmed front app, whenever the tab source has not reported
 /// yet, and for a site with no bindings. The first two are the same "we do not know" that leaves a
 /// key unbound rather than aimed at whatever site was there before.
-fn site_data(path: &SiteLayerPath) -> Option<SiteData> {
-    // SiteLayer -> Layer -> Mercury.
-    let root = path.parent().parent();
+fn site_data<'a, P: Ascend<MercuryPath<'a>>>(path: &P) -> Option<SiteData> {
+    let root = path.ascend();
     let url = root.foreground.confirmed_chrome()?.url.as_deref()?;
     match Site::from_url(url) {
         Site::ClaudeAi => Some(SiteData::ClaudeAi(ClaudeAiSite)),
