@@ -86,8 +86,8 @@ struct Agent {
 struct KeepAlive {
     /// `false`: revive a mercury that died unexpectedly, leave one down that declined to run.
     ///
-    /// Both halves are the exit code. Every deliberate way out exits zero — `q` from home, the
-    /// menu bar's Quit, `mercury stop`, `launchctl bootout`, all of which reach the model's quit —
+    /// Both halves are the exit code. Every deliberate way out exits zero: `q` from home, the
+    /// menu bar's Quit, `mercury stop`, `launchctl bootout`, all of which reach the model's quit,
     /// and so does every refusal to start, since none of those is fixed by trying again.
     successful_exit: bool,
 }
