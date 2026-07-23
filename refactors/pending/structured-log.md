@@ -170,7 +170,7 @@ fn show(out: &mut impl Write, record: &Record, args: &LogsArgs, color: bool) -> 
         write!(out, " {}", as_text(message))?;
     }
     for (key, value) in &record.fields {
-        if key == "message" || (!args.state && VERBOSE_FIELDS.contains(&key.as_str())) {
+        if key == "message" || (!args.include_state && VERBOSE_FIELDS.contains(&key.as_str())) {
             continue;
         }
         write!(out, " {dim}{key}={reset}{}", as_text(value))?;
@@ -256,9 +256,10 @@ pub struct LogsArgs {
     /// Include the model state on each dispatch record.
     ///
     /// It is the whole model under `Debug` and it is most of the line, so it is left out of a
-    /// follow that is watching what happened rather than reading what the model became.
+    /// follow that is watching what happened rather than reading what the model became. Off unless
+    /// asked for.
     #[arg(long)]
-    pub state: bool,
+    pub include_state: bool,
 
     /// Write each record as the JSON it is stored as, for `jq`.
     #[arg(long)]
@@ -266,9 +267,9 @@ pub struct LogsArgs {
 }
 ```
 
-`--level` and `--state` are separate axes on purpose: one chooses which records, the other chooses how much of one. `--state --level debug` is a full read of the file, which is what it was before this.
+`--level` and `--include-state` are separate axes on purpose: one chooses which records, the other chooses how much of one. `--include-state --level debug` is a full read of the file, which is what it was before this.
 
-`--json` ignores `--state`, because the raw record is the raw record.
+`--json` ignores `--include-state`, because the raw record is the raw record.
 
 ## Change 5: what `CLAUDE.md` says about the log
 
@@ -293,8 +294,8 @@ resulting state, plus each key emitted, each app foregrounded, and the raw front
 `freddie_app_nav` observed.
 
 `mercury logs` leaves the state out. It is the whole model under `Debug`, which is most of a
-dispatch record and is wanted while something is being debugged; `mercury logs --state` puts it
-back, and `mercury logs --json` gives the records as stored.
+dispatch record and is wanted while something is being debugged; `mercury logs --include-state`
+puts it back, and `mercury logs --json` gives the records as stored.
 ```
 
 and the pid paragraph, before:
@@ -332,11 +333,11 @@ const DISPATCH: &str = r#"{"pid":1,"timestamp":"2026-07-21T09:14:02.114Z","level
 
 #[test]
 fn the_state_is_left_out_unless_asked_for() {
-    let shown_without = shown(DISPATCH, &LogsArgs { state: false, ..logs_args() }, false);
+    let shown_without = shown(DISPATCH, &LogsArgs { include_state: false, ..logs_args() }, false);
     assert!(shown_without.contains("event=Key(KeyR)"));
     assert!(!shown_without.contains("state="));
 
-    let shown_with = shown(DISPATCH, &LogsArgs { state: true, ..logs_args() }, false);
+    let shown_with = shown(DISPATCH, &LogsArgs { include_state: true, ..logs_args() }, false);
     assert!(shown_with.contains("state=Mercury { .. }"));
 }
 
