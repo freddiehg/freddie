@@ -11,7 +11,7 @@
 //!   `didActivateApplication` notification, so the callback runs once per real
 //!   activation. No polling and no interval.
 //!
-//! The two are decoupled on purpose (see `refactors/pending/event-loop.md`):
+//! The two are decoupled on purpose (see `refactors/past/event-loop.md`):
 //! [`foreground`] asks for a change, [`watch`] reports the change that actually
 //! happened, and nothing ties one call to the other. The bundle-id-to-app mapping
 //! belongs to the consumer (which owns its `App` enum), so this crate only ever
@@ -237,5 +237,5 @@ mod tests {
 
     // The observer cannot be tested here: `cargo test` never puts the main thread
     // in a run loop, so nothing is ever delivered. What was measured out of process
-    // is recorded in `refactors/pending/foreground-events.md`.
+    // is recorded in `refactors/past/foreground-events.md`.
 }

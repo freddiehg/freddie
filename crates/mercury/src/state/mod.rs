@@ -565,7 +565,7 @@ impl Mercury {
 
     /// The model at boot, told what the sources already know.
     ///
-    /// `front_app` is read before the main loop runs; see `refactors/pending/seed-at-construction.md`.
+    /// `front_app` is read before the main loop runs; see `refactors/past/seed-at-construction.md`.
     /// No `Default`, because a `Mercury` that has not been told what is frontmost would
     /// resolve its in-app layer against the wrong app until something corrected it.
     #[must_use]

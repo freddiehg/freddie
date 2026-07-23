@@ -4,7 +4,7 @@
 //! [`Emitter`]. The interceptor's callback decides each key and returns what it
 //! becomes (`Some(same)` passes, `Some(other)` remaps, `None` drops); the emitter
 //! synthesizes keys not tied to an intercepted event. See
-//! `refactors/pending/keyboard-capture.md`.
+//! `refactors/past/keyboard-capture.md`.
 
 use std::fmt;
 
