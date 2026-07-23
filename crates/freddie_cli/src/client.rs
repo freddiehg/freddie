@@ -62,6 +62,7 @@ enum Signal {
 
 impl Signal {
     /// How `/bin/kill` spells it.
+    #[cfg(unix)]
     const fn flag(self) -> &'static str {
         match self {
             Self::Terminate => "-TERM",
@@ -271,18 +272,34 @@ fn ensure_started<TApp: App>(
 /// to write, which is why `--log-level` is not passed through: it governs a terminal this child
 /// does not have. The log file records `debug` regardless, and `logs` reads that.
 fn spawn_daemon<TApp: App>(typed: TypedArgs<'_>) -> io::Result<Pid> {
-    use std::os::unix::process::CommandExt;
-
     let exe = std::env::current_exe()?;
-    let child = Command::new(exe)
+    let mut command = Command::new(exe);
+    command
         .arg(DAEMON_VERB)
         .args(typed.argv::<TApp>())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()?;
+        .stderr(Stdio::null());
+    let child = detach(&mut command).spawn()?;
     Ok(Pid(child.id()))
+}
+
+/// Put the child where a terminal cannot reach it, so it outlives the one that spawned it.
+#[cfg(unix)]
+fn detach(command: &mut Command) -> &mut Command {
+    use std::os::unix::process::CommandExt;
+    // Its own process group, so a ctrl-c in the spawning terminal does not reach it.
+    command.process_group(0)
+}
+
+#[cfg(windows)]
+fn detach(command: &mut Command) -> &mut Command {
+    use std::os::windows::process::CommandExt;
+    /// No console at all, which is what the three null stdio streams already say.
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    /// No console control event reaches it.
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
 }
 
 /// Poll until something holds the lock, up to [`START_TIMEOUT`]. `true` when one does.
@@ -606,15 +623,41 @@ fn watch_for_free(instance: &Instance) -> mpsc::Receiver<Result<(), LockError>> 
 /// binding for it is an unsafe extern call. The same trade `freddie_app_nav` makes by
 /// foregrounding an app through `open`. An absolute path, so `PATH` cannot point this at something
 /// else.
+#[cfg(unix)]
 fn signal_pid(pid: Pid, signal: Signal) -> io::Result<()> {
-    let status = Command::new("/bin/kill")
+    // A subprocess rather than `kill(2)`, because the workspace forbids `unsafe` and every binding
+    // for the syscall is an unsafe extern call.
+    ran(Command::new("/bin/kill")
         .arg(signal.flag())
-        .arg(pid.to_string())
-        .status()?;
+        .arg(pid.to_string()))
+}
+
+#[cfg(windows)]
+fn signal_pid(pid: Pid, signal: Signal) -> io::Result<()> {
+    match signal {
+        // `taskkill /F` terminates the process, which is SIGKILL. `taskkill` without it posts
+        // WM_CLOSE, which a daemon with no window never sees, so there is no gentle taskkill.
+        Signal::Kill => ran(Command::new("taskkill")
+            .args(["/F", "/PID"])
+            .arg(pid.to_string())),
+        // The graceful stop is a named pipe, which `freddie-cli-off-macos.md` change 5 adds. Until
+        // then Windows has only `--force`.
+        Signal::Terminate => Err(io::Error::other(
+            "graceful stop is not yet available on Windows; use --force",
+        )),
+    }
+}
+
+/// Run `command` to completion, turning a non-zero exit into an error.
+fn ran(command: &mut Command) -> io::Result<()> {
+    let status = command.status()?;
     if status.success() {
         Ok(())
     } else {
-        Err(io::Error::other(format!("/bin/kill exited with {status}")))
+        Err(io::Error::other(format!(
+            "{} exited with {status}",
+            command.get_program().to_string_lossy()
+        )))
     }
 }
 
