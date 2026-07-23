@@ -424,7 +424,7 @@ fn nav_space_opens_spotlight_and_enters_typing() {
     assert_eq!(m.handle(&key(Key::KeyC)), Some(passed(Key::KeyC)));
 }
 
-// The whole point: `n c` foregrounds Chrome and, once the watcher reports it, `r`
+// `n c` foregrounds Chrome and, once the watcher reports it, `r`
 // refreshes it. No separate `i`.
 #[test]
 fn n_c_then_foreground_then_r_refreshes_chrome() {
