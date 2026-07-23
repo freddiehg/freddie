@@ -63,4 +63,10 @@
     padding-left: var(--ifm-spacing-horizontal);
     padding-right: var(--ifm-spacing-horizontal);
   }
+
+  /* Ten percent under the 2.4rem mobile h2, so the section titles sit a touch
+     smaller on a narrow screen. */
+  .centeredHeading {
+    font-size: 2.16rem;
+  }
 }
