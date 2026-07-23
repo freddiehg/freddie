@@ -6,6 +6,14 @@ const DEFAULT_PORT = 3883;
 
 let socket: WebSocket | null = null;
 
+/**
+ * The URL last sent on `socket`, so an identical one is not sent again.
+ *
+ * Cleared whenever the socket is dropped: a fresh mercury has never been told anything, and the
+ * front tab's URL has to reach it even though this side already sent it to the last one.
+ */
+let lastSent: string | null = null;
+
 /** The configured port, or the default if the options page has never been used. */
 async function port(): Promise<number> {
   const { port } = await chrome.storage.local.get({ port: DEFAULT_PORT });
@@ -31,7 +39,9 @@ async function connect(): Promise<WebSocket> {
   // `close`, and by then a later tab event may already have replaced `socket`; clearing
   // unconditionally would drop a live socket and strand whatever it was about to send.
   const forget = (): void => {
-    if (socket === ws) socket = null;
+    if (socket !== ws) return;
+    socket = null;
+    lastSent = null;
   };
   ws.addEventListener("close", forget);
   ws.addEventListener("error", forget);
@@ -47,7 +57,9 @@ async function connect(): Promise<WebSocket> {
  */
 async function pushUrl(url: string | undefined): Promise<void> {
   if (url === undefined || url === "") return;
+  if (url === lastSent) return;
   const ws = await connect();
+  lastSent = url;
   const frame: IncomingEvent = { kind: "IncomingEvent.Tab", value: { url } };
   const payload = JSON.stringify(frame);
   if (ws.readyState === WebSocket.OPEN) {
