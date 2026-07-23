@@ -55,11 +55,15 @@ The event socket reaches a running daemon without touching the process: connect 
 
 mercury writes its tracing output to `~/Library/Logs/mercury/mercury.log`, always, appending across runs. Read that file to debug a run.
 
-The file always records down to `debug`, whatever the terminal is set to, so a run is always reconstructable afterwards. It holds one record per dispatched event, carrying the event, the effects it produced, and the resulting state on a single line, plus each key emitted, each app foregrounded, and the raw frontmost-app changes `freddie_app_nav` observed.
+The file always records down to `debug`, whatever the terminal is set to, so a run is always reconstructable afterwards. Every line is one JSON object: `pid`, `timestamp`, `level`, `target`, and the record's own fields under `fields`. So `jq` reads it, and `mercury logs` renders it rather than parsing text.
+
+It holds one record per dispatched event, carrying the event, the effects it produced, and the resulting state, plus each key emitted, each app foregrounded, and the raw frontmost-app changes `freddie_app_nav` observed.
 
 `LOG_LEVEL` sets what the terminal shows and nothing else, defaulting to `info`. So `LOG_LEVEL=error cargo run -p mercury` gives a quiet terminal and a full log file. Watch it live from another pane with `mercury logs`, which follows the file and shows records at `info` and above; `mercury logs --level debug` widens that.
 
-Every record carries the pid of the process that wrote it, because a client verb and the daemon both append to the one file. `pid=` is always the writer; a field naming some other process says which, as `stop`'s `daemon=` does.
+`mercury logs` leaves the state out. It is the whole model under `Debug`, which is most of a dispatch record and is wanted while something is being debugged; `mercury logs --include-state` puts it back, and `mercury logs --json` gives the records as stored.
+
+Every record carries the pid of the process that wrote it, because a client verb and the daemon both append to the one file. `pid` is always the writer; a field naming some other process says which, as `stop`'s `daemon=` does.
 
 ## Nothing is printed
 
