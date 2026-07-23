@@ -30,8 +30,7 @@
 //!
 //! macOS only.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::Duration;
 
 use core_foundation::base::TCFType;
@@ -77,12 +76,10 @@ pub fn init_menu_bar_app() {
 /// Call this on the main thread, before spawning the worker that takes the
 /// [`Stopper`].
 pub fn main_loop() -> (MainLoop, Stopper) {
-    let stop = Arc::new(AtomicBool::new(false));
-    let main_loop = MainLoop {
-        stop: Arc::clone(&stop),
-    };
+    let (signal, stop) = std::sync::mpsc::channel();
+    let main_loop = MainLoop { stop };
     let stopper = Stopper {
-        stop,
+        signal,
         run_loop: CFRunLoop::get_main(),
     };
     (main_loop, stopper)
@@ -91,7 +88,7 @@ pub fn main_loop() -> (MainLoop, Stopper) {
 /// The main thread's run loop, waiting to be run.
 #[must_use = "the main loop does nothing until it is run"]
 pub struct MainLoop {
-    stop: Arc<AtomicBool>,
+    stop: Receiver<()>,
 }
 
 impl MainLoop {
@@ -118,7 +115,10 @@ impl MainLoop {
         );
         let mtm = MainThreadMarker::new().expect("run is on the main thread; asserted above");
         let app = NSApplication::sharedApplication(mtm);
-        while !self.stop.load(Ordering::Acquire) {
+        // `Empty` is the only reason to keep turning. A buffered `()` means the stopper sent
+        // before dropping; `Disconnected` means it dropped without sending, which cannot happen
+        // while its `Drop` sends, but is still a stop.
+        while matches!(self.stop.try_recv(), Err(TryRecvError::Empty)) {
             autoreleasepool(|_| {
                 // One event per slice, dequeued and dispatched. This is the pump a bare
                 // CFRunLoop was missing: `nextEventMatchingMask` pulls a window-server
@@ -153,17 +153,18 @@ impl MainLoop {
 /// than hang with a dead worker, and it beats `process::exit`, which runs no
 /// destructors.
 pub struct Stopper {
-    stop: Arc<AtomicBool>,
+    signal: Sender<()>,
     run_loop: CFRunLoop,
 }
 
 impl Drop for Stopper {
     fn drop(&mut self) {
-        // The flag first: `CFRunLoop::stop` against a loop that has not started is
-        // a no-op, so a worker that dies before `MainLoop::run` is reached must
-        // leave something behind for it to find.
-        self.stop.store(true, Ordering::Release);
-        // And the stop, to break it out of the current slice if it has started.
+        // The send first, then the run-loop stop. `CFRunLoop::stop` wakes the main thread out of
+        // its slice; the send has to be visible by the time it wakes and re-checks, or the loop
+        // would see `Empty` and block again. The buffered `()` also covers a worker that dies
+        // before `MainLoop::run` is reached: `stop` is then a no-op and the message is what `run`
+        // finds on its first pass.
+        let _ = self.signal.send(());
         self.run_loop.stop();
     }
 }
@@ -193,16 +194,18 @@ mod tests {
         assert!(panicked.is_err(), "run() off main must panic, not hang");
     }
 
-    // Dropping the stopper before the loop runs must still stop it. The flag is
-    // what carries that, since CFRunLoopStop against a loop that has not started
-    // is a no-op. Asserted on the flag rather than by running a loop, because
-    // `cargo test` has no main thread to give.
+    // Dropping the stopper before the loop runs must still stop it. The buffered send carries
+    // that, since CFRunLoopStop against a loop that has not started is a no-op. Asserted on the
+    // channel rather than by running a loop, because `cargo test` has no main thread to give.
     #[test]
-    fn dropping_the_stopper_sets_the_flag() {
+    fn dropping_the_stopper_signals_stop() {
         let (main_loop, stopper) = main_loop();
-        assert!(!main_loop.stop.load(std::sync::atomic::Ordering::Acquire));
+        assert!(matches!(
+            main_loop.stop.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
         drop(stopper);
-        assert!(main_loop.stop.load(std::sync::atomic::Ordering::Acquire));
+        assert!(main_loop.stop.try_recv().is_ok());
     }
 
     // The stopper is the thing that crosses a thread boundary; the main loop is
