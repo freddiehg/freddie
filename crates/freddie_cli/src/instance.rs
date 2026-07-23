@@ -110,13 +110,41 @@ impl fmt::Display for NoUserDir {
 
 impl std::error::Error for NoUserDir {}
 
-/// The per-user directory `app`'s logs go in: the platform's place for logs a person is expected
-/// to read. It sits beside where `freddie_single_instance` puts the lock, so a daemon that can
-/// take its lock can write its log.
-fn log_dir(app: &str) -> Result<PathBuf, NoUserDir> {
-    let home = std::env::var_os("HOME").ok_or(NoUserDir)?;
-    Ok(PathBuf::from(home).join("Library/Logs").join(app))
+/// This user's home. Unix only, because the Windows log directory is under `%LOCALAPPDATA%`
+/// rather than the profile root.
+#[cfg(unix)]
+fn home() -> Result<PathBuf, NoUserDir> {
+    std::env::var_os("HOME").map(PathBuf::from).ok_or(NoUserDir)
 }
+
+/// The per-user directory `app`'s logs go in: the platform's place for logs a person is expected
+/// to read. Each sits beside where `freddie_single_instance` puts the lock, so a daemon that can
+/// take its lock can write its log.
+#[cfg(target_os = "macos")]
+fn log_dir(app: &str) -> Result<PathBuf, NoUserDir> {
+    Ok(home()?.join("Library/Logs").join(app))
+}
+
+/// `$XDG_STATE_HOME`, defaulting to `~/.local/state`. The base directory specification has no log
+/// directory of its own and names state as where a log belongs.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn log_dir(app: &str) -> Result<PathBuf, NoUserDir> {
+    let base = match std::env::var_os("XDG_STATE_HOME") {
+        Some(base) => PathBuf::from(base),
+        None => home()?.join(".local/state"),
+    };
+    Ok(base.join(app))
+}
+
+/// `%LOCALAPPDATA%`, per-machine: a roaming profile must not sync one machine's log onto another.
+#[cfg(windows)]
+fn log_dir(app: &str) -> Result<PathBuf, NoUserDir> {
+    let base = std::env::var_os("LOCALAPPDATA").ok_or(NoUserDir)?;
+    Ok(PathBuf::from(base).join(app).join("logs"))
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+compile_error!("freddie_cli has no per-user log directory for this platform");
 
 #[cfg(test)]
 mod tests {

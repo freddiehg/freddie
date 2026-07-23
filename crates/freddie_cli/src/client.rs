@@ -3,9 +3,13 @@
 //! None of these takes the single-instance lock. They probe it to find the daemon, and the daemon
 //! is the only process that holds it.
 
+use std::collections::VecDeque;
 use std::fmt;
+use std::fs::File;
 use std::io;
 use std::io::{BufRead, BufReader, IsTerminal, Write};
+use std::ops::ControlFlow;
+use std::path::Path;
 use std::process::ExitCode;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -407,11 +411,15 @@ pub(crate) fn status(instance: &Instance) -> ExitCode {
     }
 }
 
-/// Where `tail` lives. Absolute, so `PATH` cannot point this at something else.
-const TAIL: &str = "/usr/bin/tail";
+/// How many of the file's existing lines to show before following.
+const BACKLOG_LINES: usize = 50;
 
-/// How much of the existing log to show before following.
-const TAIL_LINES: &str = "50";
+/// How long to wait before looking for more, once a read has come up empty.
+///
+/// A poll, and the exception the "never poll" rule allows: no platform reports a regular file
+/// growing through a readiness primitive. `epoll` and `kqueue` both call a regular file always
+/// ready and return zero bytes, and `tail -F` polls for the same reason.
+const IDLE: Duration = Duration::from_millis(200);
 
 /// The level of a record, read out of the line the `fmt` layer wrote.
 ///
@@ -483,58 +491,79 @@ pub(crate) fn logs(instance: &Instance, least: Level) -> ExitCode {
     let path = instance.log_file();
     info!("{}: following {}", instance.display_name(), path.display());
 
-    let mut tail = match Command::new(TAIL)
-        .args(["-n", TAIL_LINES])
-        .arg("-F")
-        .arg(&path)
-        .stdout(Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(e) => {
-            warn!("{}: could not run {TAIL}: {e}", instance.display_name());
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let Some(stdout) = tail.stdout.take() else {
-        warn!("{}: {TAIL} gave no stdout to read", instance.display_name());
-        return ExitCode::FAILURE;
-    };
     // Asked once: a pipeline gets the file's plain text, a terminal gets colour.
     let color = std::io::stdout().is_terminal();
     let mut out = std::io::stdout().lock();
-    for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-        let level = record_level(&line);
-        // A line with no level is not a record: a wrapped message, or something that reached the
-        // file without going through the formatter. Shown rather than dropped, because hiding what
-        // we cannot classify is how a log loses the one line that mattered.
-        if level.is_none_or(|level| level <= least) {
-            // A closed stdout is the pipeline this was feeding going away, which ends the follow
-            // rather than being worth a word about. Noticed on the next record rather than at
-            // once, because that is when the write happens: `logs | head -3` waits for
-            // the daemon to say one more thing, exactly as `tail -f | head -3` does.
-            if show(&mut out, &line, level, color).is_err() {
-                break;
-            }
-        }
-    }
-    match tail.wait() {
-        Ok(status) => {
-            if status.success() {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
-            }
-        }
+
+    match follow(&path, least, color, &mut out) {
+        // The follow ends only when stdout closes, which is the pipeline this was feeding going
+        // away: `logs | head -3` got its lines and left. That is a clean finish, not a failure.
+        Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             warn!(
-                "{}: {TAIL} could not be waited on: {e}",
-                instance.display_name()
+                "{}: could not read {}: {e}",
+                instance.display_name(),
+                path.display()
             );
             ExitCode::FAILURE
         }
     }
+}
+
+/// Show `path`'s last [`BACKLOG_LINES`] records, then whatever is appended to it, filtered to
+/// `least` and above. Returns when `out` closes; errors only on a failure to read the file.
+///
+/// The file is opened once and never reopened: `tracing_appender::rolling::never` holds one file
+/// for the life of the daemon and never rotates it, so there is no new inode to follow onto. A
+/// reader sees appended bytes once they are written, and a line without a trailing newline is a
+/// record the writer has not finished, held until the rest arrives.
+fn follow(path: &Path, least: Level, color: bool, out: &mut impl Write) -> io::Result<()> {
+    let mut reader = BufReader::new(File::open(path)?);
+
+    // The backlog, kept in a ring so the whole file is never held: a daemon appends to its log for
+    // as long as it runs, and there is no bound on that.
+    let mut backlog: VecDeque<String> = VecDeque::with_capacity(BACKLOG_LINES);
+    let mut line = String::new();
+    while reader.read_line(&mut line)? != 0 {
+        if line.ends_with('\n') {
+            if backlog.len() == BACKLOG_LINES {
+                backlog.pop_front();
+            }
+            backlog.push_back(std::mem::take(&mut line));
+        }
+        // A trailing line with no newline is a partial record at EOF, left in `line` to finish as
+        // the daemon writes the rest below.
+    }
+    for record in &backlog {
+        if show_record(out, record, least, color).is_break() {
+            return Ok(());
+        }
+    }
+
+    // Then whatever arrives, a record at a time, waiting when the file has not grown.
+    loop {
+        if reader.read_line(&mut line)? != 0 && line.ends_with('\n') {
+            if show_record(out, &line, least, color).is_break() {
+                return Ok(());
+            }
+            line.clear();
+        } else {
+            std::thread::sleep(IDLE);
+        }
+    }
+}
+
+/// Write one record to `out` if it is at `least` or above. `Break` when `out` has closed.
+///
+/// A line with no level is not a record: a wrapped message, or something that reached the file
+/// without going through the formatter. Shown rather than dropped, because hiding what cannot be
+/// classified is how a log loses the one line that mattered.
+fn show_record(out: &mut impl Write, line: &str, least: Level, color: bool) -> ControlFlow<()> {
+    let level = record_level(line);
+    if level.is_none_or(|level| level <= least) && show(out, line, level, color).is_err() {
+        return ControlFlow::Break(());
+    }
+    ControlFlow::Continue(())
 }
 
 /// Find the daemon, waiting out the window in which it holds the lock without having named itself.
