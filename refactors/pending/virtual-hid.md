@@ -2,6 +2,8 @@
 
 The correct way to remap a keyboard on macOS, and what it costs. This is the upgrade path behind the same `intercept` seam as the CGEventTap backend (keyboard-capture.md); nothing above `intercept` changes when we swap.
 
+The implementable plan lives in `hid-backend.md` and the four component docs it maps (`hid-virtual-device-client.md`, `hid-seize.md`, `hidd.md`, `hid-session-backend.md`). This doc is the background: why HID, what it takes, and the shortcut.
+
 ## The shape
 
 Two halves, the way Karabiner-Elements does it:
