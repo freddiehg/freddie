@@ -175,57 +175,30 @@ fn log_panics() {
 
 #[cfg(test)]
 mod tests {
-    use super::{MakeWriter, PidStamped, WithPid};
+    use super::{PidStamped, WithPid};
     use std::io::Write;
-    use std::sync::{Arc, Mutex};
-
-    /// A writer that keeps what was written, so a test can read back what the layer produced.
-    #[derive(Clone, Default)]
-    struct SharedBuf(Arc<Mutex<Vec<u8>>>);
-
-    impl SharedBuf {
-        fn take(&self) -> Vec<u8> {
-            std::mem::take(&mut self.0.lock().unwrap())
-        }
-    }
-
-    impl Write for SharedBuf {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl MakeWriter<'_> for SharedBuf {
-        type Writer = Self;
-
-        fn make_writer(&self) -> Self::Writer {
-            self.clone()
-        }
-    }
 
     // The seam the whole records change rests on: the real json layer, through the real pid stamp,
-    // produces a line shaped the way `client::Record` reads it. This is what pins the record shape
-    // against a `tracing-subscriber` that changes its JSON.
+    // produces a line shaped the way `client::Record` reads it. This pins the record shape against a
+    // `tracing-subscriber` that changes its JSON.
     #[test]
     fn the_file_layer_writes_a_record_shaped_line() {
-        let buf = SharedBuf::default();
+        let path =
+            std::env::temp_dir().join(format!("freddie_cli_seam_{}.log", std::process::id()));
+        let file = std::fs::File::create(&path).expect("a temp log file");
         let subscriber = tracing_subscriber::fmt()
             .json()
             .with_current_span(false)
             .with_span_list(false)
             .with_ansi(false)
-            .with_writer(WithPid(buf.clone()))
+            .with_writer(WithPid(file))
             .finish();
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!(event = "Key(KeyR)", state = "Mercury { .. }", "dispatch");
         });
 
-        let line = buf.take();
+        let line = std::fs::read(&path).expect("the temp log file");
+        std::fs::remove_file(&path).ok();
         let record: serde_json::Value = serde_json::from_slice(&line).expect("a record");
         assert_eq!(record["pid"], serde_json::json!(std::process::id()));
         assert!(record["timestamp"].is_string());
