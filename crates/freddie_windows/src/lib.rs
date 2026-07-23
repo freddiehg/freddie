@@ -3,8 +3,9 @@
 //! The shape `freddie_app_nav` has: a source, a sink, and a seed.
 //!
 //! - [`watch`] is the source. One `AXObserver` per app reports windows opening, moving,
-//!   resizing, and closing, plus which one is focused; an `NSWorkspace` observer keeps that
-//!   set current as apps launch and quit, and a screen observer reports the monitors. Every
+//!   resizing, and closing, and the frontmost app's focused window changing. `NSWorkspace`
+//!   observers keep the observed set current as apps launch and quit and report the focused
+//!   window afresh on every app activation, and a screen observer reports the monitors. Every
 //!   callback runs on the main thread, from its run loop.
 //! - [`WindowSink::set_frame`] is the sink. It moves and resizes one window, named by id, to
 //!   a rectangle the caller already worked out. It decides nothing: it does not ask what is
@@ -54,7 +55,8 @@ use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2_app_kit::{
     NSApplicationActivationPolicy, NSApplicationDidChangeScreenParametersNotification,
     NSRunningApplication, NSScreen, NSWorkspace, NSWorkspaceApplicationKey,
-    NSWorkspaceDidLaunchApplicationNotification, NSWorkspaceDidTerminateApplicationNotification,
+    NSWorkspaceDidActivateApplicationNotification, NSWorkspaceDidLaunchApplicationNotification,
+    NSWorkspaceDidTerminateApplicationNotification,
 };
 use objc2_foundation::{
     MainThreadMarker, NSNotification, NSNotificationCenter, NSNotificationName,
@@ -398,12 +400,22 @@ fn window_frame(window: AXUIElementRef) -> Option<Frame> {
     })
 }
 
-/// The focused window of the frontmost app, as a +1 reference the caller releases.
-fn focused_window() -> Option<AXUIElementRef> {
-    let pid = NSWorkspace::sharedWorkspace()
-        .frontmostApplication()?
-        .processIdentifier();
+/// The pid of the frontmost application, if there is one.
+fn frontmost_pid() -> Option<pid_t> {
+    Some(
+        NSWorkspace::sharedWorkspace()
+            .frontmostApplication()?
+            .processIdentifier(),
+    )
+}
 
+/// Whether `pid` names the frontmost application right now.
+fn is_frontmost(pid: Pid) -> bool {
+    frontmost_pid() == Some(pid.0)
+}
+
+/// The focused window of the app with pid `pid`, as a +1 reference the caller releases.
+fn focused_window(pid: pid_t) -> Option<AXUIElementRef> {
     // SAFETY: `pid` names a live process, and `AXUIElementCreateApplication` takes
     // no ownership of it. The returned element is +1 and released below.
     #[expect(unsafe_code)]
@@ -602,16 +614,20 @@ impl Drop for AppObserver {
     }
 }
 
-/// What a notification callback needs: the observer to register a new window on, and the
-/// state to report into. A C callback has this instead of a closure.
+/// What a notification callback needs: the observer to register a new window on, the pid of
+/// the app it is for, and the state to report into. A C callback has this instead of a
+/// closure.
 ///
-/// `observer` is held rather than a pid, so a window created later is registered without
-/// going back through `apps`; nothing in the callback path touches that map.
+/// `observer` is held so a window created later is registered without going back through
+/// `apps`; nothing in the callback path touches that map. `pid` is what a focus-changed
+/// notification is gated on, so only the frontmost app's focused window is reported and a
+/// background app changing its own focus is ignored.
 ///
 /// [`Weak`](std::rc::Weak), not [`Rc`]: [`WatcherState`] owns `apps`, an [`AppObserver`] owns
 /// its registration, so a strong reference here would be a cycle that never frees.
 struct Registration {
     observer: AXObserverRef,
+    pid: Pid,
     state: std::rc::Weak<WatcherState>,
 }
 
@@ -661,7 +677,11 @@ unsafe extern "C" fn on_notification(
             state.report(WindowChange::Closed(window));
         }
     } else if name == kAXFocusedWindowChangedNotification {
-        state.report(WindowChange::Focused(window_id(element)));
+        // Only the frontmost app's focused window is what a placement aims at; a background
+        // app changing its own focus is not the window the user is looking at.
+        if is_frontmost(registration.pid) {
+            state.report(WindowChange::Focused(window_id(element)));
+        }
     }
 }
 
@@ -758,6 +778,7 @@ fn observe_app(state: &Rc<WatcherState>, ObservableApp(pid): ObservableApp) {
 
     let registration = Box::new(Registration {
         observer,
+        pid,
         state: Rc::downgrade(state),
     });
     let refcon = std::ptr::from_ref(registration.as_ref()).cast_mut().cast();
@@ -944,6 +965,22 @@ fn watch_notifications(state: &Rc<WatcherState>) -> Vec<Observation> {
         }));
     }
 
+    let activation_state = Rc::downgrade(state);
+    // SAFETY: an immutable extern static AppKit initializes at startup.
+    #[expect(unsafe_code)]
+    let activated = unsafe { NSWorkspaceDidActivateApplicationNotification };
+    observations.push(observe_notification(&workspace, activated, move |notif| {
+        let (Some(state), Some(app)) = (activation_state.upgrade(), notified_app(notif)) else {
+            return;
+        };
+        // App activation posts no focus-changed notification, so the newly frontmost app's
+        // focused window is read here. A UI service that can never be frontmost is skipped
+        // the same way the observer never watches its windows.
+        if let Some(ObservableApp(pid)) = ObservableApp::of(&app) {
+            state.report(WindowChange::Focused(focused_window_id(pid.0)));
+        }
+    }));
+
     let state = Rc::downgrade(state);
     // SAFETY: an immutable extern static AppKit initializes at startup.
     #[expect(unsafe_code)]
@@ -1048,7 +1085,7 @@ pub fn watch(
     );
     let snapshot = Snapshot {
         windows,
-        focused: focused_window_id(),
+        focused: frontmost_pid().and_then(focused_window_id),
         screens,
     };
 
@@ -1066,12 +1103,13 @@ pub fn watch(
     ))
 }
 
-/// The focused window of the frontmost app, by id.
+/// The focused window of the app with pid `pid`, by id.
 ///
-/// The one question this crate asks the OS outside a callback. It is the starting value the
-/// observer cannot report, because the observer reports changes and none has happened yet.
-fn focused_window_id() -> Option<WindowId> {
-    let window = focused_window()?;
+/// Read at boot for the frontmost app, seeding the value the observer cannot report because
+/// none has changed yet, and read again on each app activation, which posts no focus-changed
+/// notification of its own.
+fn focused_window_id(pid: pid_t) -> Option<WindowId> {
+    let window = focused_window(pid)?;
     let id = window_id(window);
     // SAFETY: `focused_window` returned a +1 reference; this balances it.
     #[expect(unsafe_code)]
