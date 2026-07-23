@@ -57,15 +57,6 @@ impl SiteLayer {
             timer,
         )
     }
-
-    /// Reset the return-home timer on activity in this layer: drop the old guard (cancelling it)
-    /// and arm a fresh one, returning the effect that schedules it.
-    #[must_use]
-    pub(crate) fn rearm(&mut self) -> MercuryEffect {
-        let (timeout, timer) = arm_return_home();
-        self.home_timeout = timeout;
-        timer
-    }
 }
 
 /// The site's level, which is not in the tree. A site with no bindings is not a variant, and

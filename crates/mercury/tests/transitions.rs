@@ -1481,6 +1481,26 @@ fn o_shows_the_layers_keymap() {
     }
 }
 
+// `o` shows the overlay and keeps you in the layer, so in a chooser layer it is activity: the
+// return-home timer is re-scheduled as a third effect, past the overlay and its dwell. Home has no
+// such timer, so its `o` stops at the overlay and its dwell.
+#[test]
+fn showing_the_overlay_rearms_the_return_home_timer() {
+    for enter in [Key::KeyN, Key::KeyR] {
+        let mut m = home();
+        let _ = m.handle(&key(enter));
+        let effects = m.handle(&key(Key::KeyO)).expect("o is bound");
+        assert_eq!(effects.len(), 3, "overlay, its dwell, then the rearm");
+        assert_eq!(effects[1], overlay_hide_timer());
+        assert_eq!(effects[2], return_home_timer());
+    }
+
+    let mut m = home();
+    let effects = m.handle(&key(Key::KeyO)).expect("o is bound");
+    assert_eq!(effects.len(), 2, "home has no return-home timer to rearm");
+    assert_eq!(effects[1], overlay_hide_timer());
+}
+
 #[test]
 fn the_in_app_keymap_is_the_front_apps() {
     // The in-app layer's bindings are the app's, so its keymap has to be too.

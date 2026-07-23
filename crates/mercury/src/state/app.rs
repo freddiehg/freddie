@@ -60,15 +60,6 @@ impl AppLayer {
             timer,
         )
     }
-
-    /// Reset the return-home timer on in-app activity: drop the old guard (cancelling it) and arm a
-    /// fresh one, returning the effect that schedules it.
-    #[must_use]
-    pub(crate) fn rearm(&mut self) -> MercuryEffect {
-        let (timeout, timer) = arm_return_home();
-        self.home_timeout = timeout;
-        timer
-    }
 }
 
 /// The app's level, which is not in the tree. Several possible levels, so the data is an enum;

@@ -528,16 +528,24 @@ impl Layer {
         }
     }
 
-    /// Reset the return-home timer of a layer whose own keys keep you in it, returning the effect
-    /// that re-schedules it, or `None` for a layer that has none. Only the in-app layer qualifies:
-    /// nav's and resize's keys all leave, so they keep the timer they entered with.
+    /// Reset the return-home timer on activity that kept you in this layer: drop the guard it holds
+    /// (cancelling the old firing) and arm a fresh one, returning the effect that re-schedules it,
+    /// or `None` for a layer that has no such timer (Home and Typing). Every chooser layer
+    /// qualifies, because each has a key that stays: `o` shows the overlay in all of them, and
+    /// resize's arrows place a window without leaving. That in-layer activity has to push the idle
+    /// clock out rather than let it fire mid-use.
     #[must_use]
     fn rearm_timeout(&mut self) -> Option<MercuryEffect> {
-        match self {
-            Self::InApp(inapp) => Some(inapp.rearm()),
-            Self::Site(site) => Some(site.rearm()),
-            _ => None,
-        }
+        let home_timeout = match self {
+            Self::Nav(nav) => &mut nav.home_timeout,
+            Self::Resize(resize) => &mut resize.home_timeout,
+            Self::InApp(inapp) => &mut inapp.home_timeout,
+            Self::Site(site) => &mut site.home_timeout,
+            Self::Home(_) | Self::Typing(_) => return None,
+        };
+        let (guard, timer) = arm_return_home();
+        *home_timeout = guard;
+        Some(timer)
     }
 }
 
@@ -595,8 +603,8 @@ impl Mercury {
     pub fn handle(&mut self, event: &MercuryEvent) -> Option<Vec<MercuryEffect>> {
         let before = std::mem::discriminant(&self.layer);
         let mut effects = bind::dispatch::<MercuryStruct, Self>(self, event)?;
-        // A keypress that stays in the in-app layer is activity: reset its return-home timer, so it
-        // fires only after you go idle, not a fixed span after you entered.
+        // A keypress that leaves you in the same layer is activity: reset that layer's return-home
+        // timer, so it fires only after you go idle, not a fixed span after you entered.
         if matches!(event, MercuryEvent::Key(_))
             && std::mem::discriminant(&self.layer) == before
             && let Some(reset) = self.layer.rearm_timeout()
