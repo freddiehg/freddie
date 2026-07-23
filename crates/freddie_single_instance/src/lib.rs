@@ -9,16 +9,20 @@
 //! contains, mean nothing on their own, which is what makes a leftover file from the
 //! last run the normal case rather than a stale artifact to detect and clean up.
 //!
-//! The holder writes its pid into the file so [`holder`] can say which process is
-//! running. That pid is read only when the lock is refused, so a pid belonging to a
-//! process that has since died is never reported: its file's lock is free, and the
-//! probe answers [`Held::Free`] without reading. A pid here is an address for a process
+//! The holder writes its pid into a sibling file so [`holder`] can say which process is
+//! running. The lock stays on the lock file and never covers the pid, so reading the pid
+//! never contends with the lock: a mandatory lock (Windows) refuses reads of the bytes it
+//! covers, and a pid kept under the lock could not be read back while a holder held it.
+//!
+//! That pid is read only when the lock is refused, so a pid belonging to a process that
+//! has since died is never reported: the lock is free, and the probe answers
+//! [`Held::Free`] without opening the pid file. A pid here is an address for a process
 //! already known to be alive, never the evidence that it is.
 
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 /// The per-user directory this platform keeps app state in, or `None` when the
@@ -64,6 +68,13 @@ compile_error!("freddie_single_instance has no per-user state directory for this
 #[must_use]
 pub fn lock_path(app: &str) -> Option<PathBuf> {
     Some(state_dir()?.join(app).join(format!("{app}.lock")))
+}
+
+/// Where the holder of `lock` records its pid, a sibling of the lock file rather than the
+/// lock file itself: a mandatory lock (Windows) refuses reads of the range it covers, so a
+/// probe can only read the pid from a file the lock does not touch.
+fn pid_path(lock: &Path) -> PathBuf {
+    lock.with_extension("pid")
 }
 
 /// A held claim on being the only instance of an app. Holding it keeps every other
@@ -140,12 +151,12 @@ pub fn acquire(app: &str) -> Result<Instance, LockError> {
 
 /// Open `path`, creating the parent directory if it is missing.
 ///
-/// `read(true)` alongside the write: the pid is read back through this same open mode,
-/// and a write-only handle cannot serve that.
+/// Read and write both, because a shared lock is meant to permit reads and some platforms
+/// want the handle to carry the access the lock grants; the file's contents are never
+/// touched through it either way.
 ///
-/// `truncate(false)` is the point, not an oversight: opening must not disturb the file
-/// before the lock is held, and the holder truncates deliberately in [`record_pid`]
-/// once it is.
+/// `truncate(false)` because opening must not disturb whatever an earlier run left, and
+/// nothing here writes to this file at all: it is a lock target and nothing more.
 fn open(path: &Path) -> Result<File, LockError> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(LockError::Unavailable)?;
@@ -188,21 +199,30 @@ fn lock_shared(path: &Path) -> Result<File, LockError> {
     Ok(file)
 }
 
-/// Write this process's pid over whatever the file held.
+/// Write this process's pid into the file beside the lock, replacing whatever an earlier
+/// run left there.
 ///
-/// `set_len` before the write, because the previous run's pid may be longer than this
-/// one's, and writing a short number over a long one leaves trailing digits that parse
-/// as a pid belonging to nobody.
-fn record_pid(mut file: &File) -> io::Result<()> {
-    file.set_len(0)?;
-    file.seek(SeekFrom::Start(0))?;
+/// `truncate(true)` because the previous run's pid may be longer than this one's, and a
+/// short number written over a long one leaves trailing digits that parse as a pid
+/// belonging to nobody. The handle closes as this returns; nothing keeps the pid file open
+/// and nothing locks it, so a probe reads it freely.
+///
+/// The parent directory already exists: [`acquire_at`] takes the lock first, and locking
+/// created it.
+fn record_pid(path: &Path) -> io::Result<()> {
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
     file.write_all(std::process::id().to_string().as_bytes())?;
     file.flush()
 }
 
 /// The pid the file at `path` names, or `None` when it holds nothing that reads as one.
 ///
-/// Meaningful only while the lock is held; see [`holder_at`].
+/// `path` is the pid file, a sibling of the lock; see [`pid_path`]. Meaningful only while
+/// the lock is held, which is the one condition [`holder_at`] reads it under.
 fn read_pid(path: &Path) -> Option<Pid> {
     let mut text = String::new();
     File::open(path).ok()?.read_to_string(&mut text).ok()?;
@@ -228,7 +248,7 @@ fn read_pid(path: &Path) -> Option<Pid> {
 /// written.
 pub fn acquire_at(path: &Path) -> Result<Instance, LockError> {
     let file = lock_exclusive(path)?;
-    record_pid(&file).map_err(LockError::Unavailable)?;
+    record_pid(&pid_path(path)).map_err(LockError::Unavailable)?;
     Ok(Instance { _file: file })
 }
 
@@ -258,7 +278,9 @@ pub fn holder_at(path: &Path) -> Result<Held, LockError> {
     match lock_shared(path) {
         // Dropping the file here closes it, which releases the lock we just took.
         Ok(_probe) => Ok(Held::Free),
-        Err(LockError::AlreadyRunning(_)) => Ok(read_pid(path).map_or(Held::Unnamed, Held::By)),
+        Err(LockError::AlreadyRunning(_)) => {
+            Ok(read_pid(&pid_path(path)).map_or(Held::Unnamed, Held::By))
+        }
         Err(e) => Err(e),
     }
 }
@@ -303,7 +325,8 @@ pub fn await_free_at(path: &Path) -> Result<(), LockError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Held, Instance, LockError, Pid, acquire_at, await_free_at, holder_at, lock_path, state_dir,
+        Held, Instance, LockError, Pid, acquire_at, await_free_at, holder_at, lock_path, pid_path,
+        state_dir,
     };
     use std::path::PathBuf;
     use std::time::Duration;
@@ -381,7 +404,7 @@ mod tests {
         let held = acquire_at(&path).expect("the path is free");
         drop(held);
         assert_eq!(holder_at(&path).expect("probing"), Held::Free);
-        let left = std::fs::read_to_string(&path).expect("the file outlives the lock");
+        let left = std::fs::read_to_string(pid_path(&path)).expect("the pid outlives the lock");
         assert_eq!(left.trim(), std::process::id().to_string());
     }
 
@@ -405,7 +428,7 @@ mod tests {
     fn probes_do_not_refuse_each_other() {
         let path = temp_lock("holder-concurrent");
         std::fs::create_dir_all(path.parent().expect("a parent")).expect("the directory");
-        std::fs::write(&path, "4294967295").expect("a pid from an earlier run");
+        std::fs::write(pid_path(&path), "4294967295").expect("a pid from an earlier run");
         std::thread::scope(|scope| {
             let probes: Vec<_> = (0..8)
                 .map(|_| scope.spawn(|| holder_at(&path).expect("probing")))
@@ -430,9 +453,9 @@ mod tests {
     fn a_recorded_pid_replaces_the_whole_file() {
         let path = temp_lock("holder-truncate");
         std::fs::create_dir_all(path.parent().expect("a parent")).expect("the directory");
-        std::fs::write(&path, "4294967295").expect("a longer pid from an earlier run");
+        std::fs::write(pid_path(&path), "4294967295").expect("a longer pid from an earlier run");
         let _held = acquire_at(&path).expect("the path is free");
-        let written = std::fs::read_to_string(&path).expect("reading it back");
+        let written = std::fs::read_to_string(pid_path(&path)).expect("reading it back");
         assert_eq!(written, std::process::id().to_string());
     }
 
