@@ -8,7 +8,7 @@ isograph's CI builds its compiler for five Rust targets:
 - `aarch64-unknown-linux-musl`
 - `x86_64-pc-windows-msvc`
 
-mercury cannot match three of them. It grabs the keyboard through a `CGEventTap`, draws a status item through `AppKit`, and binds both through `objc2`, none of which exist off macOS. So the Linux and Windows targets are not mercury's to build; for freddie they are the portable crates', and `freddie-cli-off-macos.md` already puts `freddie_cli` and `freddie_single_instance` in CI on `ubuntu-latest` and `windows-latest`.
+mercury cannot match three of them. It grabs the keyboard through a `CGEventTap`, draws a status item through `AppKit`, and binds both through `objc2`, none of which exist off macOS. So the Linux and Windows targets are not mercury's to build; for freddie they are the portable crates', and the `portable` job (`refactors/past/freddie-cli-off-macos.md`) already builds and tests `freddie_cli` and `freddie_single_instance` on `ubuntu-latest` and `windows-latest`.
 
 What mercury shares with isograph is the two macOS targets. freddie's CI builds one of them and not the other.
 
@@ -40,12 +40,12 @@ A job that compiles the workspace for `x86_64-apple-darwin` on the same `macos-l
 `all-checks-passed` gains it:
 
 ```yaml
-    needs: [cargo-fmt, cargo-clippy, cargo-test, cargo-build-intel, extension, build-website]
+    needs: [cargo-fmt, cargo-clippy, cargo-test, cargo-build-intel, portable, extension, build-website]
 ```
 
 ## The other three targets are not mercury's
 
-`freddie-cli-off-macos.md` adds a `portable` job that builds and tests `freddie_cli` and `freddie_single_instance` on `ubuntu-latest` and `windows-latest`. That is the Linux and Windows half of isograph's matrix, on the OSes rather than the exact targets: `ubuntu-latest` is glibc x64, not the two musl targets isograph cross-builds, and neither doc adds `aarch64-unknown-linux-musl`.
+The `portable` job builds and tests `freddie_cli` and `freddie_single_instance` on `ubuntu-latest` and `windows-latest`, and clippy-checks them there too. That is the Linux and Windows half of isograph's matrix, on the OSes rather than the exact targets: `ubuntu-latest` is glibc x64, not the two musl targets isograph cross-builds, and nothing here adds `aarch64-unknown-linux-musl`.
 
 The musl and arm64-Linux targets exist in isograph's CI because it ships a static binary per platform to users who install the compiler. freddie ships no per-platform binary: `freddie_cli` is a library, and mercury runs only where it was built. So the portable crates need to prove they compile and test on each OS, which `ubuntu-latest` and `windows-latest` do, and matching isograph's musl and cross machinery would buy nothing until freddie distributes a binary for those platforms. When it does, this is where that target list grows.
 
