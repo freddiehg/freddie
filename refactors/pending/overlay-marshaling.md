@@ -55,10 +55,8 @@ pub struct Overlay {
     /// The panel this overlay owns. `Retained<NSPanel>` is not `Send`, which keeps `Overlay` on
     /// the thread that built it without a `PhantomData`.
     panel: Panel,
-    /// The sender the sinks clone from. Held so `sink` can be called more than once; the overlay
-    /// itself never sends.
-    message_sender: WakingSender<OverlayMsg>,
-    /// Drained by [`Overlay::pump`] on the main thread when the loop wakes.
+    /// Drained by [`Overlay::pump`] on the main thread when the loop wakes. The overlay holds only
+    /// this end of the channel; the sinks hold the senders.
     message_receiver: Receiver<OverlayMsg>,
 }
 ```
@@ -86,7 +84,7 @@ pub struct OverlaySink {
 }
 ```
 
-`overlay()` takes the main-loop waker, builds the panel, and makes a waking channel so a `show` reaches `pump` at once. before:
+`overlay()` takes the main-loop waker, builds the panel and a waking channel, and hands back the panel-owning `Overlay` beside the first `OverlaySink`. before:
 
 ```rust
 pub fn overlay() -> Overlay {
@@ -108,28 +106,21 @@ pub fn overlay() -> Overlay {
 after:
 
 ```rust
-pub fn overlay(waker: &MainWaker) -> Overlay {
+pub fn overlay(waker: &MainWaker) -> (Overlay, OverlaySink) {
     let mtm = MainThreadMarker::new().expect("overlay must be built on the main thread");
     let (message_sender, message_receiver) = waker.channel();
     debug!("overlay built");
-    Overlay {
-        panel: build(mtm),
-        message_sender,
-        message_receiver,
-    }
+    (
+        Overlay {
+            panel: build(mtm),
+            message_receiver,
+        },
+        OverlaySink { message_sender },
+    )
 }
 ```
 
-`sink` clones the sender out; the overlay holds the original so `sink` can be called more than once:
-
-```rust
-impl Overlay {
-    #[must_use]
-    pub fn sink(&self) -> OverlaySink {
-        OverlaySink { message_sender: self.message_sender.clone() }
-    }
-}
-```
+Each end lives on its own side: the receiver on the `Overlay`, which drains it, and the sender on the `OverlaySink`. There is no `Overlay::sink()` — a caller that wants another producer clones the sink it was handed, since `OverlaySink` is `Clone`.
 
 `show`/`hide` become sends, off any thread, with no libdispatch:
 
@@ -191,11 +182,11 @@ impl Drop for Overlay {
 }
 ```
 
-`daemon.rs` builds the overlay with the same `waker` the title channel uses (`refactors/past/wake-the-main-loop.md` creates it) and drains it on each wake, beside the title:
+`daemon.rs` builds the overlay with the same `waker` the title channel uses (`refactors/past/wake-the-main-loop.md` creates it), keeps the `Overlay` for the panel's life, and hands the sink to `Boot`. It drains the overlay on each wake, beside the title:
 
 ```rust
-    let overlay = freddie_overlay::overlay(&waker);
-    // ...
+    let (overlay, overlay_sink) = freddie_overlay::overlay(&waker);
+    // ... `Boot { overlay: overlay_sink, .. }`; the `Overlay` is held here, like `menu_bar` ...
     main_loop.run(|| {
         if let Some(name) = title_rx.try_iter().last() {
             menu_bar.set_title(Some(&format!(" {name}")));
@@ -215,4 +206,4 @@ impl Drop for Overlay {
 - The `dispatch2::DispatchQueue` dependency and import, and the `std::cell::{Cell, RefCell}` import.
 - The `PhantomData` marker on `Overlay`; the owned `Panel` (`!Send`) keeps it on its thread.
 
-`OverlaySink` stops being `Copy` (a `Sender` is not `Copy`); it stays `Clone`. Its one holder, `daemon.rs`'s `Boot { overlay: overlay.sink() }`, calls `sink()` once, so nothing depends on the `Copy`.
+`OverlaySink` stops being `Copy` (a `Sender` is not `Copy`); it stays `Clone`. Its one holder, `daemon.rs`'s `Boot { overlay: overlay_sink, .. }`, takes the sink `overlay()` returns, so nothing depends on the `Copy`.
