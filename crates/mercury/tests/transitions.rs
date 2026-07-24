@@ -754,9 +754,8 @@ fn ghostty_j_is_previous_window_and_k_is_next() {
     assert_eq!(m.foreground.app(), App::Ghostty);
 }
 
-// The command carries no modifiers. Emitting it inside the prefix chord is the bug
-// that would make tmux see `ctrl-p` rather than `p`, and the shape now says so:
-// the prefix is one tap and the command is another.
+// The command carries no modifiers. Emitting it inside the prefix chord would make tmux see
+// `ctrl-p` rather than `p`; the shape says so: the prefix is one tap and the command is another.
 #[test]
 fn the_tmux_command_is_a_bare_tap() {
     let mut m = home();

@@ -120,10 +120,9 @@ impl MainLoop {
         // while its `Drop` sends, but is still a stop.
         while matches!(self.stop.try_recv(), Err(TryRecvError::Empty)) {
             autoreleasepool(|_| {
-                // One event per slice, dequeued and dispatched. This is the pump a bare
-                // CFRunLoop was missing: `nextEventMatchingMask` pulls a window-server
-                // event and `sendEvent` delivers it, so a status-item click reaches the
-                // menu. The SLICE deadline bounds how long a stopped loop takes to notice;
+                // One event per slice, dequeued and dispatched: `nextEventMatchingMask` pulls a
+                // window-server event and `sendEvent` delivers it, so a status-item click reaches
+                // the menu. The SLICE deadline bounds how long a stopped loop takes to notice;
                 // the `Stopper` also breaks the run loop, and the deadline is the floor.
                 #[expect(unsafe_code)]
                 // SAFETY: on the main thread; dequeuing one event with a 100ms deadline.

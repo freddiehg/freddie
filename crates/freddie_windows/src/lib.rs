@@ -648,7 +648,6 @@ unsafe extern "C" fn on_notification(
     // arrive after the pointer goes stale.
     let registration = unsafe { &*refcon.cast::<Registration>() };
 
-    // The watcher is gone, so there is nothing to report into.
     let Some(state) = registration.state.upgrade() else {
         return;
     };
@@ -954,8 +953,7 @@ fn watch_notifications(state: &Rc<WatcherState>) -> Vec<Observation> {
                 return;
             };
             if launched {
-                // A UI service launching is not something to watch, so there is nothing here
-                // to observe.
+                // ObservableApp::of drops UI services: they have no windows a placement aims at.
                 if let Some(app) = ObservableApp::of(&app) {
                     observe_app(&state, app);
                 }

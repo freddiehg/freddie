@@ -193,7 +193,6 @@ mod tests {
 
     #[test]
     fn from_box_can_capture() {
-        // A setlist of track lengths.
         let mut setlist = vec![10_u32, 20, 30];
         let index = 1_usize;
         {
@@ -222,7 +221,6 @@ mod tests {
         let attack: &Outer = inner.ascend_to::<Outer>();
         assert_eq!(attack.get().length, 7);
 
-        // The leaf is still usable afterwards.
         *inner.get_mut() += 1;
         assert_eq!(*inner.get(), 8);
     }

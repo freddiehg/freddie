@@ -300,9 +300,7 @@ fn dispatch_event(
     event: &MercuryEvent,
     effect_tx: &UnboundedSender<MercuryEffect>,
 ) {
-    // state.handle returns None if the event was unhandled. That is expected! We don't
-    // subscribe to only the events that we actually care about in a given state, but instead
-    // to all events that we may ever be interested in.
+    // Unhandled is fine: the tap delivers every key, not only those the current layer binds.
     let effects = state.handle(event).unwrap_or_default();
     info!(event = ?event, effects = ?effects, state = ?state, "dispatch");
     for effect in effects {

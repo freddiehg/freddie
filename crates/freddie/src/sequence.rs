@@ -153,7 +153,6 @@ impl KeySequence {
                     KeySequenceOutcome::Advanced
                 }
             }
-            // A key the run took, coming up.
             PressType::Up if self.is_down(ev.key) => {
                 self.swallowed.push(ev.key.up());
                 KeySequenceOutcome::Advanced

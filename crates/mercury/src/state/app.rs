@@ -86,7 +86,7 @@ fn app_data<'a, P: Ascend<MercuryPath<'a>>>(path: &P) -> Option<AppData> {
     }
 }
 
-/// Chrome's level. A unit for now: mercury tracks nothing per app. It stops being one when it
+/// Chrome's level. A unit: mercury tracks nothing per Chrome app. It stops being one when it
 /// carries something (a tab name).
 #[derive(Bind, Debug)]
 #[derived_node(parent = AppLayerPath)]

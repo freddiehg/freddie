@@ -769,8 +769,6 @@ mod tests {
         );
     }
 
-    // Anything that did not come out of the formatter is not a record, and `show_record` writes it
-    // through rather than dropping it.
     #[test]
     fn a_line_that_is_not_a_record_does_not_parse() {
         assert!(

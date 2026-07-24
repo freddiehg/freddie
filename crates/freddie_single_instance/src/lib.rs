@@ -276,7 +276,7 @@ pub fn holder(app: &str) -> Result<Held, LockError> {
 /// locked.
 pub fn holder_at(path: &Path) -> Result<Held, LockError> {
     match lock_shared(path) {
-        // Dropping the file here closes it, which releases the lock we just took.
+        // Shared lock acquired means nothing holds exclusive; dropping the file frees the lock.
         Ok(_probe) => Ok(Held::Free),
         Err(LockError::AlreadyRunning(_)) => {
             Ok(read_pid(&pid_path(path)).map_or(Held::Unnamed, Held::By))

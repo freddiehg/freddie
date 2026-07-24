@@ -222,7 +222,6 @@ mod tests {
         assert!(record["timestamp"].is_string());
         assert_eq!(record["level"], serde_json::json!("INFO"));
         assert!(record["target"].is_string());
-        // Flat, not nested under `fields`.
         assert_eq!(record["message"], serde_json::json!("dispatch"));
         assert_eq!(record["event"], serde_json::json!("Key(KeyR)"));
         assert_eq!(record["state"], serde_json::json!("Mercury { .. }"));

@@ -4,9 +4,6 @@ use bind::EventTrigger;
 use freddie_keys::KeyEvent;
 use freddie_windows::WindowChange;
 
-// A specific key is its own trigger: `Key::KeyR` binds that key. The type and its
-// `EventTrigger` impl live in `freddie_keys`, so no wrapper is needed here.
-
 /// A keyboard trigger matching every key, modifier or not, on either press.
 ///
 /// Bound at the root as the last resort (dispatch is leafward, so a key the active layer binds
@@ -80,7 +77,7 @@ impl EventTrigger for Tabbed {
     }
 }
 
-/// A quit request, wherever it came from (the menu bar for now). It carries no key: it is a
+/// A quit request, wherever it came from (menu bar, SIGTERM). It carries no key: it is a
 /// single, layer-independent "quit now", so one type is both the trigger and the event.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Quit;

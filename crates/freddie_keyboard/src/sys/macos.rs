@@ -523,9 +523,8 @@ mod tests {
         assert_eq!(decide(&down, Some(up.clone())), Decision::Remap(up));
     }
 
-    // The bug this constructor exists to prevent: an arrow key leaves NumericPad in a source's
-    // state, so a `cmd`-`space` built from that source later posts 0x00300000 rather than
-    // 0x00100000 and is no longer the Spotlight hotkey. A source per event cannot carry it.
+    // A source per event carries only this event's flags: an arrow must not leave NumericPad on a
+    // later `cmd`-`space`, or Spotlight's hotkey posts 0x00300000 instead of 0x00100000.
     #[test]
     fn a_chord_carries_its_modifier_and_nothing_else() {
         let space =
@@ -561,8 +560,7 @@ mod tests {
         );
     }
 
-    // `encode` dropped the flags it was handed, so a remapped key carried whatever the source
-    // had baked in. Both paths share the constructor now.
+    // A remapped key carries the flags it was given, not whatever a shared source baked in.
     #[test]
     fn a_remapped_key_carries_the_flags_it_was_given() {
         let event =
@@ -570,7 +568,7 @@ mod tests {
         assert!(event.get_flags().contains(CGEventFlags::CGEventFlagCommand));
     }
 
-    // The OS picks the type from the keycode; the emitter neither asks for this nor needs to.
+    // The OS picks the type from the keycode: a modifier is FlagsChanged, anything else KeyDown/Up.
     #[test]
     fn a_modifier_is_a_flags_changed_and_a_key_is_not() {
         let cmd =
