@@ -1,6 +1,6 @@
 # source-device attribution on the CGEventTap
 
-One half of device-conditioned input. This doc is the freddie half: each key gets an `Option<DeviceInfo>` off the CGEventTap. The figaro half is `figaro/refactors/pending/device-conditioned-keymaps.md` (classify into `DeviceClass`, pair events, layer gate, `On`).
+One half of device-conditioned input. This doc is the freddie half: each physical source is resolved once, categorized once into a consumer-chosen `T`, and every later key from that source carries that `T`. The figaro half is `figaro/refactors/pending/device-conditioned-keymaps.md` (`DeviceClass` as `T`, model events, layer gate, `On`).
 
 No seize, no virtual device, no root, no Karabiner: the source device is read directly off each `CGEvent`. figaro calls `intercept_with_source`; mercury keeps plain `intercept` and never sees a device.
 
@@ -15,7 +15,7 @@ IOHIDEventRef CGEventCopyIOHIDEvent(CGEventRef);   // CoreGraphics, private; NUL
 uint64_t      IOHIDEventGetSenderID(IOHIDEventRef); // IOKit SPI; the registry entry id of the source HID service
 ```
 
-`senderID` is an IOKit registry entry id. `IORegistryEntryIDMatching(senderID)` → `IOServiceGetMatchingService` → walk parents to the `IOHIDDevice` → read `VendorID`, `ProductID`, `Built-In`.
+`senderID` is an IOKit registry entry id. `IORegistryEntryIDMatching(senderID)` → `IOServiceGetMatchingService` → walk parents to the `IOHIDDevice` → read `VendorID`, `ProductID`, `Product`, `Built-In`.
 
 Injected and software-synthesized events (untagged posts from other apps) have no HID backing: `CGEventCopyIOHIDEvent` returns `NULL` or the sender id is `0`. A real-hardware key always carries a source; a synthetic one never does. Own emits are tagged by the interceptor and never reach the callback, so the consumer does not classify them.
 
@@ -29,7 +29,7 @@ Nothing may be seizing the keyboard upstream. A seizing remapper (Karabiner-Elem
 
 The two private symbols are not in the `core-graphics`/`io-kit-sys` safe wrappers, so the FFI lives in a leaf crate, `freddie_hid_device`, with its own lint table (`unsafe_code = "deny"`, same shape as `freddie_windows` / planned `freddie_keyboard_win_sys`). Everything above it stays under workspace `forbid(unsafe_code)`.
 
-`SourceId` is the cache key for resolve and never appears in the consumer callback. Consumers of `intercept_with_source` get a resolved `DeviceInfo`. `KeyEvent` carries neither; `freddie_keys` never learns they exist.
+`SourceId` is the cache key and never appears on the key callback. Resolve yields a `DeviceInfo` (rich, including a product name string) only as input to the consumer's categorize function, once per `SourceId`. What the key callback sees is `T`, not `DeviceInfo`. `KeyEvent` carries neither; `freddie_keys` never learns they exist.
 
 ```rust
 // crates/freddie_hid_device/Cargo.toml
@@ -70,7 +70,7 @@ use std::os::raw::c_char;
 use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
 use core_foundation::boolean::{CFBoolean, CFBooleanGetTypeID, CFBooleanGetValue};
 use core_foundation::number::{CFNumber, CFNumberGetTypeID, CFNumberRef};
-use core_foundation::string::CFString;
+use core_foundation::string::{CFString, CFStringGetTypeID, CFStringRef};
 use core_graphics::event::CGEvent;
 use io_kit_sys::ret::KERN_SUCCESS;
 use io_kit_sys::types::{io_object_t, io_registry_entry_t, IO_OBJECT_NULL};
@@ -116,17 +116,19 @@ pub fn source_of(event: &CGEvent) -> Option<SourceId> {
 /// Resolved identity of a source. Fields come off the service the id names, or the nearest
 /// ancestor that carries them (some live on the parent `IOHIDDevice`).
 ///
-/// No product name string: consumers match on `vendor_id`/`product_id` and `built_in`.
-/// That keeps `DeviceInfo` `Copy` with no interning and no allocation on the hot path.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+/// Built only on first sight of a `SourceId`, as the argument to the consumer's categorize
+/// function. Not cached and not handed to `on_key` — only the categorize result `T` is.
+/// A product name `String` is fine here: this path runs once per device per process.
+#[derive(Clone, Debug)]
 pub struct DeviceInfo {
     pub vendor_id: u16,
     pub product_id: u16,
+    pub product: String,
     pub built_in: bool,
 }
 
 /// Registry lookup for a `SourceId`. `None` if nothing matches (device gone since the press).
-/// `intercept_with_source` caches successful results by `SourceId`.
+/// Called only on a cache miss inside `intercept_with_source`, then fed to categorize.
 pub fn resolve(id: SourceId) -> Option<DeviceInfo> {
     // SAFETY: IORegistryEntryIDMatching returns +1 dict; IOServiceGetMatchingService consumes
     // it and returns +1 service, or IO_OBJECT_NULL when nothing matches.
@@ -140,6 +142,7 @@ pub fn resolve(id: SourceId) -> Option<DeviceInfo> {
     let info = DeviceInfo {
         vendor_id: prop_u32(service, "VendorID").unwrap_or(0) as u16,
         product_id: prop_u32(service, "ProductID").unwrap_or(0) as u16,
+        product: prop_string(service, "Product").unwrap_or_default(),
         built_in: prop_bool(service, "Built-In").unwrap_or(false),
     };
     // SAFETY: release the +1 service.
@@ -151,7 +154,7 @@ pub fn resolve(id: SourceId) -> Option<DeviceInfo> {
 }
 
 /// Walk `entry` and its parents on the service plane until `key` is present with the expected
-/// CF type. `Built-In` is CFBoolean; `VendorID`/`ProductID` are CFNumber.
+/// CF type. `Built-In` is CFBoolean; `VendorID`/`ProductID` are CFNumber; `Product` is CFString.
 fn prop_bool(entry: io_registry_entry_t, key: &str) -> Option<bool> {
     with_prop(entry, key, CFBooleanGetTypeID(), |raw| {
         // SAFETY: type id matched CFBoolean.
@@ -167,6 +170,16 @@ fn prop_u32(entry: io_registry_entry_t, key: &str) -> Option<u32> {
             CFNumber::wrap_under_get_rule(raw as CFNumberRef)
         };
         n.to_i64().and_then(|v| u32::try_from(v).ok())
+    })
+}
+
+fn prop_string(entry: io_registry_entry_t, key: &str) -> Option<String> {
+    with_prop(entry, key, CFStringGetTypeID(), |raw| {
+        let s = unsafe {
+            // SAFETY: type id matched CFString; wrap without taking ownership of the Get ref.
+            CFString::wrap_under_get_rule(raw as CFStringRef)
+        };
+        Some(s.to_string())
     })
 }
 
@@ -243,7 +256,9 @@ fn with_prop<T>(
 
 ## The device-aware entry point
 
-`KeyEvent` and `freddie_keys` do not change. The device rides alongside the key: `freddie_keyboard` exposes two entry points over one internal tap. Only code that holds the `CGEvent` can read the source, so the resolve lives here.
+`KeyEvent` and `freddie_keys` do not change. `freddie_keyboard` exposes two entry points over one internal tap. Only code that holds the `CGEvent` can read the source, so resolve and categorize live here.
+
+Per key, the hot path is: `source_of` → cache lookup by `SourceId` → hand `T` to `on_key`. On a miss: `resolve` (registry walk, may allocate a product `String`) → `categorize(Option<DeviceInfo>)` → store `T` → hand `T` to `on_key`. Categorize may be expensive; it runs once per `SourceId` (and once for the synthetic/no-source case).
 
 ```rust
 // freddie_keyboard, macOS. mercury uses intercept; figaro uses intercept_with_source.
@@ -252,10 +267,16 @@ pub fn intercept(
     on_key: impl Fn(KeyEvent) -> Option<KeyEvent> + Send + 'static,
 ) -> Result<(Interceptor, Emitter), CaptureError>;
 
-// One argument: key paired with resolved device (`None` = synthetic / no HID origin).
-pub fn intercept_with_source(
-    on_key: impl Fn((KeyEvent, Option<DeviceInfo>)) -> Option<KeyEvent> + Send + 'static,
-) -> Result<(Interceptor, Emitter), CaptureError>;
+/// Same tap. `categorize` turns a resolved device (or `None` for synthetic / unresolvable)
+/// into a consumer value `T`, once per distinct source. `on_key` sees only `T`.
+pub fn intercept_with_source<T, C, F>(
+    mut categorize: C,
+    on_key: F,
+) -> Result<(Interceptor, Emitter), CaptureError>
+where
+    T: Clone + Send + 'static,
+    C: FnMut(Option<DeviceInfo>) -> T + Send + 'static,
+    F: Fn((KeyEvent, T)) -> Option<KeyEvent> + Send + 'static;
 ```
 
 ### Before (`sys/macos.rs`)
@@ -272,7 +293,7 @@ pub fn intercept(
 
 ### After
 
-Shared `run_tap` owns the thread and the tap. The two entry points only differ in how they build the callback argument:
+Shared `run_tap` owns the thread and the tap. `intercept` ignores the event. `intercept_with_source` owns the source cache and the categorize function:
 
 ```rust
 pub fn intercept(
@@ -281,20 +302,31 @@ pub fn intercept(
     run_tap(move |input, _event| on_key(input))
 }
 
-pub fn intercept_with_source(
-    on_key: impl Fn((KeyEvent, Option<DeviceInfo>)) -> Option<KeyEvent> + Send + 'static,
-) -> Result<(Interceptor, Emitter), CaptureError> {
-    let mut cache: HashMap<SourceId, DeviceInfo> = HashMap::new();
+pub fn intercept_with_source<T, C, F>(
+    mut categorize: C,
+    on_key: F,
+) -> Result<(Interceptor, Emitter), CaptureError>
+where
+    T: Clone + Send + 'static,
+    C: FnMut(Option<DeviceInfo>) -> T + Send + 'static,
+    F: Fn((KeyEvent, T)) -> Option<KeyEvent> + Send + 'static,
+{
+    // Cached categorize results only. DeviceInfo is not retained.
+    let mut by_source: HashMap<SourceId, T> = HashMap::new();
+    // Synthetic / no HID origin: one categorize(None), reused for every such key.
+    let mut no_source: Option<T> = None;
+
     run_tap(move |input, event| {
-        let device = source_of(event).and_then(|id| {
-            if let Some(&cached) = cache.get(&id) {
-                return Some(cached); // Copy
-            }
-            let info = resolve(id)?; // once per SourceId
-            cache.insert(id, info);
-            Some(info)
-        });
-        on_key((input, device))
+        let class = match source_of(event) {
+            None => no_source
+                .get_or_insert_with(|| categorize(None))
+                .clone(),
+            Some(id) => by_source
+                .entry(id)
+                .or_insert_with(|| categorize(resolve(id)))
+                .clone(),
+        };
+        on_key((input, class))
     })
 }
 
@@ -306,13 +338,19 @@ fn run_tap(
     // same install as today's intercept: tag, thread, CGEventTap::with_enabled,
     // press_of / from_code / flags, then:
     //   match decide(&input, on_key(input.clone(), event)) { Pass / Drop / Remap }
-    // cache and SourceId never leave this module except through DeviceInfo on the pair.
 }
 ```
 
-The cache is a plain `HashMap` local to the tap-thread closure. It is not `Arc`/`Mutex` and is not shared across threads: only the tap thread mutates it. `DeviceInfo` is `Copy` (ids + bool only), so a cache hit is a load and the value is free to send to the worker.
+`categorize` arguments:
 
-`intercept` never calls `source_of` or `resolve`. `intercept_with_source` does one registry walk on first sight of a `SourceId` and a map hit thereafter.
+- `None` — no `SourceId` (synthetic / injected from another app), or `resolve` failed (id gone). Figaro maps both to its policy (e.g. `Injected` vs `Other` only if it can tell them apart; with a single `Option` they share `None`, so figaro treats `None` as non-hardware / unusable for desktop layers — typically `Injected` or `Other` by choice; prefer treating `None` as "no device class worth remapping," i.e. figaro's `Injected`).
+- `Some(DeviceInfo)` — full resolve, including `product: String`. Figaro may match vendor/product ids and ignore the name, or log the name; the string never enters the model.
+
+If synthetic and failed-resolve must be distinct later, change the categorize argument to an enum (`Synthetic` / `Gone` / `Device(DeviceInfo)`). One `Option` is enough for figaro today.
+
+The cache is a plain `HashMap` local to the tap-thread closure. It is not `Arc`/`Mutex` and is not shared across threads. Only `T` is stored; `DeviceInfo` is dropped after categorize returns.
+
+`intercept` never calls `source_of`, `resolve`, or categorize.
 
 ### Re-exports and deps
 
@@ -321,8 +359,7 @@ The cache is a plain `HashMap` local to the tap-thread closure. It is not `Arc`/
 pub use freddie_keys::{Key, KeyEvent, PressType};
 #[cfg(target_os = "macos")]
 pub use freddie_hid_device::DeviceInfo;
-// SourceId / source_of / resolve stay in freddie_hid_device for demos/tests; not re-exported
-// from freddie_keyboard unless a consumer needs them.
+// SourceId / source_of / resolve stay in freddie_hid_device for demos/tests.
 
 // sys/mod.rs
 pub use macos::{Emitter, Interceptor, intercept, intercept_with_source};
@@ -337,24 +374,40 @@ No feature gate. mercury depends on `freddie_keyboard` as today and keeps callin
 
 ## Hand-off to figaro
 
-This doc ends at `(KeyEvent, Option<DeviceInfo>)` on the callback. Classification, model pairs, and keymap gates are `device-conditioned-keymaps.md`.
+This doc ends at `(KeyEvent, T)` on the callback, with figaro supplying `T = DeviceClass` via categorize. Model events and keymap gates are `device-conditioned-keymaps.md`.
+
+```rust
+// figaro (summary)
+intercept_with_source(
+    |info| match info {
+        None => DeviceClass::Injected,
+        Some(d) if d.built_in => DeviceClass::Laptop,
+        Some(d) if d.vendor_id == 0x29ea && d.product_id == 0x0360 => DeviceClass::Desktop,
+        Some(_) => DeviceClass::Other,
+    },
+    |(key, class)| {
+        let _ = raw_tx.send((key, class));
+        None
+    },
+);
+```
 
 ## Cost, stated plainly
 
 - No remapping inside secure input (password fields): the CGEventTap is bypassed there. That is the one thing the HID route would still buy; out of scope here (`hid-backend.md`).
-- The two device symbols are private. Every call guards for `NULL`/`0` and degrades to `None` (no `DeviceInfo`) rather than failing, so a break costs device-awareness, not the remapper.
-- First key from a newly seen device does a registry walk on the tap thread. That is once per attachment per process; later keys are a map lookup.
+- The two device symbols are private. Missing HID origin degrades to `categorize(None)` rather than failing the remapper.
+- First key from a newly seen device does a registry walk and one categorize on the tap thread. That is once per attachment per process; later keys are a map lookup and a `T::clone`. Prefer a cheap `T` (`Copy` or a small enum).
 
 ## Tests
 
-- `prop_bool` / `prop_u32` read the right CF types and walk to a parent when the entry itself lacks the key (built-in keyboard's `Built-In` lives up the plane). Real test against a known attached service when running on macOS with a keyboard.
-- `source_of` returns `None` for a synthetic event (`CGEvent::new_keyboard_event`, no HID origin). Hardware `Some` is a manual check: type on two keyboards, see two distinct `DeviceInfo` id pairs.
-- Resolve cache: second key with the same `SourceId` does not call `resolve` again (exercise via a small demo binary that logs, or a test seam if one is introduced).
+- `prop_bool` / `prop_u32` / `prop_string` read the right CF types and walk to a parent when the entry itself lacks the key (built-in keyboard's `Built-In` lives up the plane). Real test against a known attached service when running on macOS with a keyboard.
+- `source_of` returns `None` for a synthetic event (`CGEvent::new_keyboard_event`, no HID origin). Hardware path: two keyboards yield two `SourceId`s and two categorize calls.
+- Cache: second key with the same `SourceId` does not call `resolve` or `categorize` again (demo that counts categorize invocations).
 
 ## Order of changes
 
 Each step is independently shippable.
 
-1. `freddie_hid_device` leaf: `SourceId`, `source_of`, `resolve`, `DeviceInfo`, `prop_*` as above. Workspace member. Demo binary (or `examples/`) that installs a listen-only tap, prints `resolve(source_of(e))` per key, and is the end-to-end proof of the leaf. No `freddie_keyboard` change.
-2. `freddie_keyboard`: extract `run_tap`, add `intercept_with_source` with the tap-thread cache, re-export `DeviceInfo`. `intercept` becomes the thin wrapper that ignores the event. mercury binary still compiles and behaves as today (still calls `intercept`).
-3. Stop. Figaro work is the other doc (`device-conditioned-keymaps.md`), after richer keys.
+1. `freddie_hid_device` leaf: `SourceId`, `source_of`, `resolve`, `DeviceInfo`, `prop_*` as above. Workspace member. Demo: listen tap, print `resolve(source_of(e))` per key. No `freddie_keyboard` change.
+2. `freddie_keyboard`: extract `run_tap`, add generic `intercept_with_source` with categorize + `HashMap<SourceId, T>`. `intercept` stays the thin wrapper. mercury still calls `intercept`.
+3. Stop. Figaro work is the other doc (`device-conditioned-keymaps.md`).
