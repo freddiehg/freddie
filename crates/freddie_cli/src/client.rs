@@ -495,6 +495,31 @@ fn level_color(level: Level) -> &'static str {
     }
 }
 
+/// A dispatch's `duration_us`, in the units it reads best in: microseconds under a
+/// millisecond, milliseconds under a second, seconds beyond that. Two decimals in the
+/// larger units, in integer arithmetic so no float rounds the count the daemon measured.
+fn format_duration(us: u64) -> String {
+    if us < 1_000 {
+        format!("{us}µs")
+    } else if us < 1_000_000 {
+        format!("{}.{:02}ms", us / 1_000, (us % 1_000) / 10)
+    } else {
+        format!("{}.{:02}s", us / 1_000_000, (us % 1_000_000) / 10_000)
+    }
+}
+
+/// How a dispatch's duration reads at a glance: grey while it is nothing, white as it
+/// grows, yellow when it is worth noticing, red when it is a problem. A pure handler
+/// runs in microseconds, so anything into the milliseconds is already unusual.
+const fn duration_color(us: u64) -> &'static str {
+    match us {
+        0..=199 => "\x1b[90m",       // grey
+        200..=999 => "\x1b[37m",     // white
+        1_000..=9_999 => "\x1b[33m", // yellow
+        _ => "\x1b[31m",             // red
+    }
+}
+
 /// Show one record, colouring it the way the daemon's own terminal would have.
 ///
 /// The file is written with ANSI off, because `CLAUDE.md` sends a person or an agent to read it
@@ -522,6 +547,17 @@ fn show(out: &mut impl Write, record: &Record, view: &LogsView, color: bool) -> 
     }
     for (key, value) in &record.fields {
         if key == "message" || (!view.include_state && VERBOSE_FIELDS.contains(&key.as_str())) {
+            continue;
+        }
+        if key == "duration_us"
+            && let Some(us) = value.as_u64()
+        {
+            let took_color = if color { duration_color(us) } else { "" };
+            write!(
+                out,
+                " {dim}took={reset}{took_color}{}{reset}",
+                format_duration(us)
+            )?;
             continue;
         }
         write!(out, " {dim}{key}={reset}{}", as_text(value))?;
@@ -727,10 +763,12 @@ fn ran(command: &mut Command) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LogsView, Record, show};
+    use super::{LogsView, Record, format_duration, show};
     use tracing::Level;
 
     const DISPATCH: &str = r#"{"pid":1,"timestamp":"2026-07-21T09:14:02.114Z","level":"INFO","message":"dispatch","event":"Key(KeyR)","effects":"[]","state":"Mercury { .. }","target":"mercury::daemon"}"#;
+
+    const TIMED: &str = r#"{"pid":1,"timestamp":"2026-07-21T09:14:02.114Z","level":"INFO","message":"dispatch","event":"Key(KeyR)","effects":"[]","duration_us":1740,"state":"Mercury { .. }","target":"mercury::daemon"}"#;
 
     fn view(include_state: bool) -> LogsView {
         LogsView {
@@ -767,6 +805,25 @@ mod tests {
             line.trim_end(),
             "2026-07-21T09:14:02.114Z pid=1 mercury::daemon INFO dispatch event=Key(KeyR) effects=[]"
         );
+    }
+
+    #[test]
+    fn a_duration_reads_pretty_as_took() {
+        assert_eq!(format_duration(42), "42µs");
+        assert_eq!(format_duration(1_740), "1.74ms");
+        assert_eq!(format_duration(2_500_000), "2.50s");
+
+        // The raw microsecond field is rendered as a pretty `took=`, not `duration_us=`.
+        let line = shown(TIMED, &view(false), false);
+        assert!(line.contains("took=1.74ms"), "{line}");
+        assert!(!line.contains("duration_us"), "{line}");
+    }
+
+    // The duration is coloured by how long it was: a millisecond-scale dispatch is yellow.
+    #[test]
+    fn a_slow_duration_is_coloured() {
+        let line = shown(TIMED, &view(false), true);
+        assert!(line.contains("\x1b[33m1.74ms"), "{line}");
     }
 
     #[test]
