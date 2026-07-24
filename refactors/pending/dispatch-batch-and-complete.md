@@ -45,13 +45,15 @@ pub struct AtRoot<'a> {
 }
 impl<'a> AtRoot<'a> {
     pub fn get_mut(&mut self) -> &mut Root { self.root }
-    pub fn complete(self) -> Completed { Completed(()) }   // (feature: Completed { gathered })
+    pub fn complete(self) -> Completed { Completed { _seal: () } }   // (feature: adds `gathered`)
 }
 
 /// Proof a handler reached the root. Sealed: the field is private, so `AtRoot::complete` is the ONLY
 /// constructor. A handler that must return one cannot fabricate it, so its return type forces the
 /// ascent. It exposes nothing.
-pub struct Completed(());
+pub struct Completed {
+    _seal: (),   // private: only `AtRoot::complete` can build one
+}
 
 /// Climb to the root, minting the handle. In this prefactor it is `ascend_mut` wrapped in `AtRoot`;
 /// the pre/post work makes the climb run the crossed posts.
