@@ -520,53 +520,44 @@ Same indexed opts. A bare `#[pre]` is `opt_i = Some(pre_return)` and the ascent 
 ```text
 DESCENT
   Outer owns path
-  opt_0? = pre_foo return   (Foo pre_post)
-  opt_1? = pre_bar return   (Bar pre_post)
-  opt_2? = ()               (KeyA bind)
+  opt_0? opt_1? opt_2?
   move path into inner_path
 
-ASCENT  claim starts None
-  Inner bind scheduled:
-    ctx = Context { structure: Structure::Valid, claim: None }
-    run_exclusive sees None, runs body, claim = Some(Claimed)
+ASCENT  one &mut ctx (structure Valid, claim None)
+  Inner bind:
+    ctx.set_structure(Valid)
+    run_exclusive: claim None → body → ctx.set_claim(Claimed)
   Outer into_parent:
-    structure = Valid | Invalidated after reshape
-    if opt_0: post_foo gets Context { structure, claim: Some(Claimed) }
-    if opt_1: post_bar same
-  Outer bind (opt_2):
-    ctx = Context { structure, claim: Some(Claimed) }
-    run_exclusive sees Some(Claimed), skips body
+    ctx.set_structure(Valid|Invalidated)
+    post_foo / post_bar get &mut ctx (claim already Some)
+  Outer bind:
+    run_exclusive: claim Some → skip body
 ```
 
 ### `KeyA` only
 
 ```text
-Inner exclusive runs, claim Some(Claimed)
-Outer opt_2 exclusive sees Some(Claimed), skips
+Inner set_claim; Outer exclusive sees Some and skips
 ```
 
 ### `Foo` only
 
 ```text
-opt_0 = Some(hits_before)
-Inner: no bind
-Outer post_foo(hits_before, path, ctx) with None and Structure::Valid
-opt_2 not scheduled
+post_foo runs with claim None; no exclusive
 ```
 
 ### `Foo` and `KeyA`
 
 ```text
-Inner exclusive may reshape, claim Some(Claimed)
-Outer post_foo (opt_0) still runs — ctx.claim() is Some(Claimed)
-Outer exclusive (opt_2) skips
+Inner exclusive may reshape and set_claim
+Outer post_foo still runs (reads ctx)
+Outer exclusive skips
 ```
 
 ### Logging `AnyKey` pre_post also present
 
 ```text
-also schedules, also runs; does not write claim
-does not change structure unless it mutates the child
+runs; never set_claim
 ```
 
 ## Rearm
