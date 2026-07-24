@@ -4,6 +4,27 @@ Not done. Standalone.
 
 Descent schedules which pre/posts/binds will run. That set is final. Ascent runs every scheduled post leaf to root; mutation is free; each post is told whether its child field still exists. Exclusive deepest-wins is a separate `claimed` bit used only by `#[bind]`.
 
+## Paths: shared down, owned up
+
+The path type is the normal owned `PathMut` (same as today). What changes is when the handler may hold it.
+
+- **Descent (pre):** the framework still owns the path for the walk. Pre gets a shared borrow: `Node<&P, D>`. Read-only; no reshape.
+- **Ascent (post / bind):** `into_parent` has recovered this level's path as an owned `P` again (built the usual way: `from_fn` on the way down, `into_parent` on the way up). Post and bind receive that owned path: `Node<P, D>` — same shape as today's exclusive handlers. `get_mut`, `ascend_mut`, the usual tools.
+
+There is no parallel "`&mut Path`" API for posts. Mutation is allowed because ownership of the normal path is back at this level on the way up, not because the signature is a mutable reference.
+
+To thread ownership through several posts at one level, each post/bind returns the path with its effects:
+
+```rust
+fn post_foo(
+    t: TFoo,
+    node: Node<OuterPath, ()>,
+    v: Validity,
+) -> (Vec<M::Effect>, OuterPath)
+```
+
+(A later sugar can hide the path in the return for bodies that only `get_mut`.)
+
 ## Developer experience
 
 ```rust
@@ -26,38 +47,48 @@ struct Outer {
 struct Inner;
 ```
 
-What the user writes:
-
 ```rust
-// pre: immutable path, returns carriage value T
+// pre: shared path
 fn pre_foo(ev: &FooEvent, node: Node<&OuterPath, ()>) -> TFoo { ... }
 
-// post: mut path, carriage T, Validity of the resolve_into child (tag only — see below)
-fn post_foo(t: TFoo, path: &mut OuterPath, v: Validity) -> Vec<M::Effect> {
+// post: owned path in, path out, Validity tag for the resolve_into child
+fn post_foo(
+    t: TFoo,
+    node: Node<OuterPath, ()>,
+    v: Validity,
+) -> (Vec<M::Effect>, OuterPath) {
     match v {
         Validity::Valid => {
-            // path.get_mut().inner is still Inner (invariant of Valid)
-            vec![]
+            // node.parent.get_mut().inner is still Inner
+            (vec![], node.parent)
         }
-        Validity::Invalidated => vec![],
+        Validity::Invalidated => (vec![], node.parent),
     }
 }
 
-// bind: one function; runs on ascent if scheduled and nothing deeper claimed
-fn outer_handler(ev: &KeyEvent, path: &mut OuterPath, v: Validity) -> Vec<M::Effect> { ... }
+// bind: one function; owned path; exclusive via claimed
+fn outer_handler(
+    ev: &KeyEvent,
+    node: Node<OuterPath, ()>,
+    v: Validity,
+) -> (Vec<M::Effect>, OuterPath) { ... }
 
-fn inner_handler(ev: &KeyEvent, path: &mut InnerPath, v: Validity) -> Vec<M::Effect> { ... }
+fn inner_handler(
+    ev: &KeyEvent,
+    node: Node<InnerPath, ()>,
+    v: Validity,
+) -> (Vec<M::Effect>, InnerPath) { ... }
 
-// sugar: only act when the child survived; body gets &mut Child, not the parent path
-fn rearm(node: &mut AndReturnHome) -> Vec<MercuryEffect> {
+// sugar: act only when the child survived
+fn rearm(child: &mut AndReturnHome) -> Vec<MercuryEffect> {
     let (guard, schedule) = arm_return_home();
-    node.guard = guard;
+    child.guard = guard;
     vec![schedule]
 }
 // #[post(AnyKey => only_if_valid(|p| &mut p.get_mut().return_home, rearm))]
 ```
 
-Expression positions work as today (`#handler(…)` splice): `only_if_valid(project, rearm)` is an expression that yields the post. Pinned by `crates/bind/tests/expr_handler.rs`.
+Expression positions work as today (`#handler(…)` splice). Pinned by `crates/bind/tests/expr_handler.rs`.
 
 ## Semantics
 
@@ -65,47 +96,45 @@ Expression positions work as today (`#handler(…)` splice): `only_if_valid(proj
 
 For each pre/post/bind on the node, if the trigger matches:
 
-- `#[pre_post]` / `#[pre]`: call pre with immutable path, store `opt_i = Some(t)`
+- `#[pre_post]` / `#[pre]`: call pre with `Node<&P, D>`, store `opt_i = Some(t)`
 - `#[post]`: store `opt_i = Some(())`
-- `#[bind]`: store `opt_i = Some(ev)` (event stashed for the body)
+- `#[bind]`: store `opt_i = Some(ev)`
 
-If the trigger misses, `opt_i = None`. The ascent never re-checks triggers and never changes which opts are `Some`.
-
-Pre signature:
+If the trigger misses, `opt_i = None`. Ascent never re-checks triggers and never changes which opts are `Some`.
 
 ```rust
-fn pre(ev: &SourceEvent, node: Node<&Path, D>) -> T
+fn pre(ev: &SourceEvent, node: Node<&P, D>) -> T
 ```
 
-Immutable only. No reshape on the descent (that would change which children exist mid-schedule).
-
-Whether pre may also return now-effects (`(T, Vec<Effect>)`) is open; generate is `-> T` only.
+No reshape on the descent. Whether pre may also return now-effects is open; generate is `-> T` only.
 
 ### Execute on the way up (all scheduled posts run)
 
-Leaf to root. At each level:
+Leaf to root. At each level the framework holds an owned path again.
 
 1. Apply any reshape scheduled for this level's child field.
 2. Build `Validity` of that field.
-3. For each `opt_i` that is `Some`, run the post (or `drop(t)` if `#[pre]` alone).
-4. For each scheduled `#[bind]`, if `!claimed`, set `claimed = true` and run the handler.
+3. For each `opt_i` that is `Some`, run the post with the owned path (or `drop(t)` if `#[pre]` alone); take path back from the return.
+4. For each scheduled `#[bind]`, if `!claimed`, set `claimed = true`, run with owned path, take path back.
 
-Mutation during (3) or (4) at deeper levels is already visible as `Validity` here. Mutation here is visible to shallower levels. A scheduled post always runs; `Invalidated` is how it learns it lost the child.
+A scheduled post always runs. `Invalidated` is how it learns it lost the child.
 
 ```rust
 enum Validity {
+    /// Child field is still the scheduled type. Projections through the path are sound.
     Valid,
+    /// Child field was replaced.
     Invalidated,
 }
 ```
 
 ### Three signals (do not conflate)
 
-- `opt: Option<T>` — this slot was scheduled. Set on descent. Read only by that post.
-- `Validity` — child field still `N` or not. Structural. Every post at this level sees it.
+- `opt: Option<T>` — this slot was scheduled (descent). Read only by that post.
+- `Validity` — child field still that type or not (structural). Every post at this level sees it.
 - `claimed: bool` — a `#[bind]` already took this event. Bind-only. Posts never see it.
 
-A logging `#[pre_post(AnyKey => (log_pre, log_post))]` schedules and runs, and does not set `claimed` and does not change `Validity` unless it mutates the child. Exclusive deepest-wins and rearm stay correct.
+A logging `#[pre_post(AnyKey => …)]` schedules and runs; it does not set `claimed` and does not change `Validity` unless it mutates the child.
 
 ### Defaults
 
@@ -120,36 +149,40 @@ Several pairs on one node: several independent `opt_i`, one `on_into_parent` clo
 
 ```rust
 // user:
-fn handler(ev: &E, path: &mut Path, v: Validity) -> impl Into<Vec<Effect>>;
+fn handler(
+    ev: &E,
+    node: Node<P, ()>,
+    v: Validity,
+) -> (impl Into<Vec<Effect>>, P);
 
-// framework post half:
+// framework (path owned at this level; posts already ran):
 if let Some(ev) = opt {
     if !*claimed {
         *claimed = true;
-        Extend::extend(effs, handler(ev, path, v).into());
+        let (out, path) = handler(ev, Node { parent: path, data: () }, v);
+        Extend::extend(effs, out.into());
+        // path continues to the caller
     }
 }
 ```
 
-Deepest-wins is only among binds. pre_post posts at the same level all still run.
+Deepest-wins is only among binds. pre_post posts at the same level all still run (before the bind).
 
 ### `only_if_valid`
-
-Projects the child for the body when `Valid`, so the body never holds `&mut Path` and `&mut Child` at once:
 
 ```rust
 fn only_if_valid<P, N>(
     project: impl Fn(&mut P) -> &mut N,
     f: impl FnOnce(&mut N) -> Vec<Effect>,
-) -> impl FnOnce(&mut P, Validity) -> Vec<Effect> {
-    move |path, v| match v {
-        Validity::Valid => f(project(path)),
-        Validity::Invalidated => Vec::new(),
+) -> impl FnOnce(Node<P, ()>, Validity) -> (Vec<Effect>, P) {
+    move |mut node, v| {
+        let effs = match v {
+            Validity::Valid => f(project(&mut node.parent)),
+            Validity::Invalidated => Vec::new(),
+        };
+        (effs, node.parent)
     }
 }
-
-// use:
-// #[post(AnyKey => only_if_valid(|p| &mut p.get_mut().return_home, rearm))]
 ```
 
 ## Types
@@ -161,29 +194,30 @@ pub trait Bindings {
     type Effect;
 }
 
+#[derive(Clone, Copy)]
 pub enum Validity {
     Valid,
     Invalidated,
 }
 
 pub struct PathMut<N, P, F> {
-    // projection to N, parent P
-    on_into_parent: F, // FnOnce(&mut P, Validity) -> Vec<Effect>
+    // owned parent P + projections to N (as today)
+    on_into_parent: F, // FnOnce(P, Validity) -> (P, Vec<Effect>)
 }
 
-fn no_post<P>(_path: &mut P, _: Validity) -> Vec<Effect> {
-    Vec::new()
+fn no_post<P>(parent: P, _: Validity) -> (P, Vec<Effect>) {
+    (parent, Vec::new())
 }
 
 impl<N, P, F> PathMut<N, P, F>
 where
-    F: FnOnce(&mut P, Validity) -> Vec<Effect>,
+    F: FnOnce(P, Validity) -> (P, Vec<Effect>),
 {
     /// Apply reshape of the child field if any, classify, run posts, return parent.
     pub fn into_parent(self, sink: &mut Vec<Effect>) -> P {
-        let mut parent = self.parent;
-        let v = self.apply_reshape_and_classify(&mut parent); // Validity
-        Extend::extend(sink, (self.on_into_parent)(&mut parent, v));
+        let v = self.classify_after_reshape(); // Validity
+        let (parent, post_effs) = (self.on_into_parent)(self.parent, v);
+        Extend::extend(sink, post_effs);
         parent
     }
 }
@@ -215,9 +249,7 @@ where
 }
 ```
 
-Handlers return effects; only framework code holds `&mut Vec<Effect>`. `from_fn` is crate-private.
-
-`claimed` is not an argument to `into_parent`. It is threaded on the dispatch stack for binds only.
+Handlers return effects; only framework code holds the batch sink. `from_fn` is crate-private. `claimed` is not an argument to `into_parent`.
 
 ## Generated code
 
@@ -226,7 +258,7 @@ Handlers return effects; only framework code holds `&mut Vec<Effect>`. `from_fn`
 ```rust
 impl Dispatch<M> for Inner {
     fn dispatch<'a>(
-        mut path: <Inner as Place>::Path<'a>,
+        path: <Inner as Place>::Path<'a>,
         event: &M::Event,
         effs: &mut Vec<M::Effect>,
         claimed: &mut bool,
@@ -234,19 +266,27 @@ impl Dispatch<M> for Inner {
     where
         Self: 'a,
     {
-        // schedule + execute bind (leaf has no child to into_parent through)
         if let ::core::option::Option::Some(ev) =
             ::core::convert::TryFrom::try_from(event).ok()
         {
             let trigger = KeyA;
             if ::bind::EventTrigger::is_matching(&trigger, ev) && !*claimed {
                 *claimed = true;
+                let (out, path) = inner_handler(
+                    ev,
+                    ::bind::Node {
+                        parent: path,
+                        data: (),
+                    },
+                    ::bind::Validity::Valid,
+                );
                 ::core::iter::Extend::extend(
                     effs,
-                    ::core::convert::Into::<::std::vec::Vec<<M as ::bind::Bindings>::Effect>>::into(
-                        inner_handler(ev, &mut path, ::bind::Validity::Valid),
-                    ),
+                    ::core::convert::Into::<
+                        ::std::vec::Vec<<M as ::bind::Bindings>::Effect>,
+                    >::into(out),
                 );
+                return path;
             }
         }
         path
@@ -254,7 +294,7 @@ impl Dispatch<M> for Inner {
 }
 ```
 
-### Outer (two pre_posts + one bind + resolve_into child)
+### Outer (two pre_posts + one bind)
 
 ```rust
 impl Dispatch<M> for Outer {
@@ -267,7 +307,7 @@ impl Dispatch<M> for Outer {
     where
         Self: 'a,
     {
-        // ----- descent: schedule -----
+        // ----- descent: schedule (shared borrow) -----
         let opt_foo = if let ::core::option::Option::Some(ev) =
             ::core::convert::TryFrom::try_from(event).ok()
         {
@@ -319,20 +359,39 @@ impl Dispatch<M> for Outer {
             ::core::option::Option::None
         };
 
+        // move owned path into child; on_into_parent re-owns parent for posts
         let inner_path = ::laserbeam::PathMut::from_fn(
             path,
             |p| &mut p.get_mut().inner,
             |p| &p.get().inner,
             move |parent, v| {
                 let mut local = ::std::vec::Vec::new();
+                let mut path = parent;
                 if let ::core::option::Option::Some(t) = opt_foo {
-                    ::core::iter::Extend::extend(&mut local, post_foo(t, parent, v));
+                    let (out, p) = post_foo(
+                        t,
+                        ::bind::Node {
+                            parent: path,
+                            data: (),
+                        },
+                        v,
+                    );
+                    ::core::iter::Extend::extend(&mut local, out);
+                    path = p;
                 }
                 if let ::core::option::Option::Some(t) = opt_bar {
-                    ::core::iter::Extend::extend(&mut local, post_bar(t, parent, v));
+                    let (out, p) = post_bar(
+                        t,
+                        ::bind::Node {
+                            parent: path,
+                            data: (),
+                        },
+                        v,
+                    );
+                    ::core::iter::Extend::extend(&mut local, out);
+                    path = p;
                 }
-                // #[pre] alone would drop(t) here instead of calling a post
-                local
+                (path, local)
             },
         );
 
@@ -342,17 +401,26 @@ impl Dispatch<M> for Outer {
         // ----- ascent: reshape + pre_post posts -----
         let mut path = inner_path.into_parent(effs);
 
-        // ----- bind post half -----
+        // ----- bind last at this level -----
         if let ::core::option::Option::Some(ev) = opt_a {
             if !*claimed {
                 *claimed = true;
-                let v = path.validity_of_inner(); // Valid | Invalidated after reshape
+                let v = path.validity_of_inner();
+                let (out, p) = outer_handler(
+                    ev,
+                    ::bind::Node {
+                        parent: path,
+                        data: (),
+                    },
+                    v,
+                );
                 ::core::iter::Extend::extend(
                     effs,
                     ::core::convert::Into::<
                         ::std::vec::Vec<<M as ::bind::Bindings>::Effect>,
-                    >::into(outer_handler(ev, &mut path, v)),
+                    >::into(out),
                 );
+                path = p;
             }
         }
         path
@@ -360,45 +428,51 @@ impl Dispatch<M> for Outer {
 }
 ```
 
-`Validity` is `Copy`, so several posts in one closure all receive the same tag. Each post that needs the child projects through `path` under the `Valid` invariant.
-
-### `#[pre]` alone / `#[post]` alone in the closure
+### `#[pre]` / `#[post]` alone in the closure
 
 ```rust
-// #[pre(Baz => track)] — opt_baz: Option<TBaz>, post is drop
+// #[pre(Baz => track)]
 if let ::core::option::Option::Some(t) = opt_baz {
     ::core::mem::drop(t);
 }
 
-// #[post(Qux => guard)] — opt_qux: Option<()>
+// #[post(Qux => guard)]
 if let ::core::option::Option::Some(()) = opt_qux {
-    ::core::iter::Extend::extend(&mut local, guard((), parent, v));
+    let (out, p) = guard(
+        (),
+        ::bind::Node {
+            parent: path,
+            data: (),
+        },
+        v,
+    );
+    ::core::iter::Extend::extend(&mut local, out);
+    path = p;
 }
 ```
 
 ## Walk
 
 ```text
-DESCENT (schedule — final)
-  Outer: opt_foo? opt_bar? opt_a?
-  build inner_path (closure captures opts)
+DESCENT
+  Outer owns path
+  pre_foo? pre_bar? with &path → opt_*
+  opt_a? (bind scheduled)
+  move path into inner_path (from_fn)
   Inner: bind KeyA?
 
-ASCENT (execute — every scheduled post runs)
-  Inner: if opt_a && !claimed → claimed=true, inner_handler(…, Valid)
+ASCENT
+  Inner: if scheduled && !claimed → claimed, inner_handler(owned path) → path back
   Outer into_parent:
-    apply reshape of .inner
-    v = Valid | Invalidated
-    if opt_foo → post_foo(t, path, v)
-    if opt_bar → post_bar(t, path, v)
-  Outer: if opt_a && !claimed → claimed=true, outer_handler(…, v)
+    reshape .inner, v = Valid | Invalidated
+    post_foo? post_bar? each with owned path in/out
+  Outer bind: if scheduled && !claimed → outer_handler(owned path) → path back
 ```
 
 ### `KeyA` only
 
 ```text
-schedule opt_a at Outer and Inner
-Inner bind runs, claimed = true
+Inner bind runs, claimed = true, path returned for into_parent
 Outer posts: none
 Outer bind skips
 ```
@@ -406,25 +480,24 @@ Outer bind skips
 ### `Foo` only
 
 ```text
-schedule opt_foo = Some(t)
+opt_foo = Some(t)
 Inner bind skips
-Outer post_foo(t, path, Valid)
+Outer post_foo(t, owned path, Valid) → path back
 Outer bind skips
 ```
 
 ### `Foo` and `KeyA`
 
 ```text
-schedule opt_foo, opt_a
-Inner bind runs (may reshape .inner), claimed = true
-Outer post_foo still runs — Valid or Invalidated
+Inner bind may reshape .inner, claimed = true, path returned
+Outer post_foo still runs (Valid or Invalidated)
 Outer bind skips
 ```
 
 ### Logging `AnyKey` pre_post also present
 
 ```text
-also schedules, also runs on ascent
+also schedules, also runs
 does not set claimed
 does not change Validity unless it mutates the child
 ```
@@ -440,144 +513,52 @@ fn rearm(node: &mut AndReturnHome) -> Vec<MercuryEffect> {
 }
 ```
 
-Stay in the set: `Valid`, rearm. Leave: `Invalidated`, skip; `Drop` of the guard cancels the timer.
+`Valid`: rearm. `Invalidated`: skip; `Drop` of the guard cancels the timer.
 
 ## Prefactor
 
-Shippable alone, before pre/post attributes exist. Behavior-identical exclusive dispatch once exclusives borrow the path and set `claimed`.
+Shippable alone, before pre/post attributes exist.
 
-Before (`crates/bind/src/lib.rs`):
-
-```rust
-pub trait Bindings {
-    type Trigger: Eq + Hash;
-    type Event;
-    type Output;
-}
-
-pub trait Dispatch<M: Bindings>: Place {
-    fn dispatch<'a>(
-        path: Self::Path<'a>,
-        event: &M::Event,
-    ) -> ControlFlow<M::Output, Self::Path<'a>>
-    where
-        Self: 'a;
-}
-
-pub fn dispatch<'a, M, N>(path: N::Path<'a>, event: &M::Event) -> Option<M::Output>
-where
-    M: Bindings,
-    N: Dispatch<M> + 'a,
-{
-    match <N as Dispatch<M>>::dispatch(path, event) {
-        ControlFlow::Break(out) => Some(out),
-        ControlFlow::Continue(_) => None,
-    }
-}
-```
+Before: `type Output`, `ControlFlow<Output, Path>`, exclusive takes path by value and `Break`s.
 
 After:
 
-```rust
-pub trait Bindings {
-    type Trigger: Eq + Hash;
-    type Event;
-    type Effect;
-}
+- `type Effect`
+- `dispatch` threads `effs` and `claimed`, always returns `Path`
+- exclusive is the bind post half: set `claimed`, push effects, return path
+- `into_parent(self, sink)` exists; no post yet
+- top-level `Some` when `claimed || !effs.is_empty()`
+- `V: Into<Vec<Effect>>`; expression handlers already work
 
-pub trait Dispatch<M: Bindings>: Place {
-    fn dispatch<'a>(
-        path: Self::Path<'a>,
-        event: &M::Event,
-        effs: &mut Vec<M::Effect>,
-        claimed: &mut bool,
-    ) -> Self::Path<'a>
-    where
-        Self: 'a;
-}
-
-pub fn dispatch<'a, M, N>(path: N::Path<'a>, event: &M::Event) -> Option<Vec<M::Effect>>
-where
-    M: Bindings,
-    N: Dispatch<M> + 'a,
-{
-    let mut effs = Vec::new();
-    let mut claimed = false;
-    let _path = <N as Dispatch<M>>::dispatch(path, event, &mut effs, &mut claimed);
-    if claimed || !effs.is_empty() {
-        Some(effs)
-    } else {
-        None
-    }
-}
-```
-
-- mercury: `type Effect = MercuryEffect`
-- exclusive handlers take `&mut Path`, set `claimed`, push `V: Into<Vec<Effect>>`
-- `into_parent(self, _sink)` exists; body still just returns parent
-- `from_fn` crate-private
-- `impl From<MercuryEffect> for Vec<MercuryEffect>`
-
-Handler before/after (shape only; reshape carrier still open):
-
-```rust
-// before
-fn to_nav<'a, E, P: AscendMut<MercuryPath<'a>>>(
-    _ev: &E,
-    node: Node<P, ()>,
-) -> Vec<MercuryEffect> {
-    let (nav, timer) = NavLayer::new();
-    let mut effects = node.parent.ascend_mut().set_layer(nav);
-    effects.push(timer);
-    effects
-}
-
-// after — path borrowed so the framework keeps the path for ascent
-fn to_nav(
-    _ev: &KeyEvent,
-    path: &mut LayerPath<'_>,
-    _v: Validity,
-) -> Vec<MercuryEffect> {
-    let (nav, timer) = NavLayer::new();
-    let mut effects = path.ascend_mut().set_layer(nav);
-    effects.push(timer);
-    effects
-}
-```
-
-Exact path types for mercury binds wait on the reshape carrier (Open). Prefactor: borrowed path + `claimed`, no `ControlFlow`.
+Mercury binds that today `ascend_mut` + `set_layer` wait on the reshape carrier (Open): under full ascent they should schedule the layer replace for the owner's `into_parent`, then return the path, rather than consuming the path mid-walk. Prefactor may keep today's by-value exclusive + `Break` for a behavior-identical cut; the feature wants full ascent + path returned.
 
 ## Rules
 
 1. Descent schedules; that set is final.
 2. Ascent runs every scheduled post; mutation does not cancel them.
-3. `Validity = Valid | Invalidated` only (tag; child access is a projection of `path` when `Valid`).
-4. `claimed` is bind-only; posts never see it; logging never sets it.
-5. pre: immutable, `T` in `Option`. post: `&mut path` + `Validity` + `T`.
+3. Pre: shared path (`Node<&P, D>`). Post/bind: owned path (`Node<P, D>`), path returned with effects.
+4. `Validity = Valid | Invalidated` only (tag).
+5. `claimed` is bind-only; logging never sets it.
 6. no pre → `()`. no post → `drop`.
-7. `#[bind]` = one function = schedule down + exclusive body up.
+7. `#[bind]` = one function = schedule down + exclusive body up (after pre_post posts at that level).
 8. Reshape of a field applied in that field's `into_parent` before posts at that level.
-9. One live `&mut` at a time: no `Valid(&mut N)` beside `&mut Path`.
 
 ## Tests
 
-`crates/bind/tests/`, tree shaped like Outer/Inner:
-
-- scheduled post runs after deep bind, including when reshape yields `Invalidated`
-- logging `AnyKey` pre_post does not set `claimed`; parent bind still wins when leaf has no bind
+- scheduled post runs after deep bind, including `Invalidated`
+- logging `AnyKey` pre_post does not set `claimed`
 - deepest bind wins; parent bind runs when leaf misses
-- drop counter on `T`: consumed once
+- path is returned through two posts at one level
+- drop counter on `T`: once
 - pre miss: no post
-- `#[pre]` alone: drop; `#[post]` alone: receives `()`
-- two posts both receive the same `Validity` tag; each may project the child when `Valid`
+- `#[pre]` alone: drop; `#[post]` alone: `()`
 - expression post: `only_if_valid(project, rearm)`
-
-Mercury: rearm moves off `handle`'s discriminant check onto `#[post(AnyKey => only_if_valid(project, rearm))]`; transition tests keep the same effects.
 
 ## Open
 
 - Whether `pre` may emit now-effects (`-> (T, Vec<Effect>)`).
-- How a deep bind schedules a reshape of a field it does not own (carrier applied in owner's `into_parent`).
-- Product nodes: one `Validity` per live child field, join in `into_parent`.
-- Fallbacks that must not run if something "handled" the event (e.g. root `AnyKey` passthrough only when no special key bind claimed). That is not `Validity` and not "any pre/post scheduled." It is closer to `claimed`, or a separate policy bit. Deferred; do not overload `Validity` or logging-safe signals to solve it.
-- Third Validity state (survived but descendant reshaped): deferred until a case needs it.
+- How a deep bind schedules a reshape of a field it does not own (carrier applied in owner's `into_parent`). Until then, binds that `ascend_mut` + `set_layer` and path return do not compose cleanly.
+- Sugar so user posts can write `-> Vec<Effect>` while the derive still threads path.
+- Product nodes: one `Validity` per live child field.
+- Fallbacks that must not run if something claimed the event (e.g. root `AnyKey` passthrough). Closer to `claimed` than to `Validity`. Deferred.
+- Third Validity state: deferred.
