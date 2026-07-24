@@ -20,7 +20,7 @@ That is odd: two unrelated facts glued under one name because the ascent happens
 ## Shape
 
 ```rust
-// Framework (sketch): the ascent threads C, and every post receives C.
+// Framework (sketch): the ascent mutates one C; every post receives &mut C.
 pub trait Dispatch<M: Bindings, C = ()>: Place {
     fn dispatch<'a>(
         path: Self::Path<'a>,
@@ -33,10 +33,10 @@ pub trait Dispatch<M: Bindings, C = ()>: Place {
 }
 
 // Post signature:
-//   fn post(t: T, node: Node<P, ()>, ctx: C) -> (Vec<Effect>, P)
+//   fn post(t: T, node: Node<P, ()>, ctx: &mut C) -> (Vec<Effect>, P)
 ```
 
-`C` is chosen by the app (or by a layer of the stack), not by `bind`. `bind` only requires whatever bounds posts need to run (`Copy`, or a small trait). No `bool` flags in the framework API.
+`C` is chosen by the app (or by a layer of the stack), not by `bind`. Posts mutate `C` in place (claim, structure, whatever the app puts there). No parallel flags beside `C`.
 
 ## What mercury would supply
 
@@ -55,8 +55,10 @@ pub struct MercuryContext {
 }
 
 impl MercuryContext {
-    pub fn structure(self) -> Structure { self.structure }
-    pub fn claim(self) -> Option<Claimed> { self.claim }
+    pub fn structure(&self) -> Structure { self.structure }
+    pub fn claim(&self) -> Option<Claimed> { self.claim }
+    pub fn set_structure(&mut self, s: Structure) { self.structure = s; }
+    pub fn set_claim(&mut self, c: Claimed) { self.claim = Some(c); }
 }
 ```
 
@@ -71,9 +73,8 @@ impl MercuryContext {
 
 ## Open
 
-- Snapshot (`C: Copy`) vs `&C` / `&mut C` for posts that update context mid-ascent.
-- Whether `structure` (field survival) is still computed by laserbeam/`into_parent` and *injected into* `C` via a trait (`C::with_structure(Structure)`), so the framework owns invalidation but not claim.
-- How exclusive claim becomes a method on `C` when claim is app-defined (`C: Claimable` with `Option<Claimed>`, not a bool).
+- Whether `structure` (field survival) is still computed by laserbeam/`into_parent` and written into `C` via a trait (`C::set_structure`), so the framework owns invalidation timing but not claim policy.
+- How exclusive claim becomes a method on `C` when claim is app-defined (`C: Claimable`).
 - Interaction with the prefactor (threaded batch only, `C = ()`).
 
 No implementation plan here. When `invalidation.md` is implemented, either keep the concrete bag as a first cut or land `C` first if the bag already feels wrong at the type boundary.

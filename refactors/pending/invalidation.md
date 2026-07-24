@@ -49,7 +49,7 @@ fn pre_foo(ev: &FooEvent, node: Node<&OuterPath, ()>) -> u32 {
 fn post_foo(
     hits_before: u32,
     node: Node<OuterPath, ()>,
-    ctx: Context,
+    ctx: &mut Context,
 ) -> (Vec<M::Effect>, OuterPath) {
     match ctx.structure() {
         Structure::Valid => {
@@ -68,13 +68,13 @@ fn post_foo(
 fn outer_handler(
     ev: &KeyEvent,
     node: Node<OuterPath, ()>,
-    ctx: Context,
+    ctx: &mut Context,
 ) -> (Vec<M::Effect>, OuterPath) { ... }
 
 fn inner_handler(
     ev: &KeyEvent,
     node: Node<InnerPath, ()>,
-    ctx: Context,
+    ctx: &mut Context,
 ) -> (Vec<M::Effect>, InnerPath) { ... }
 
 // sugar: act only when the child survived (no pre carriage)
@@ -109,14 +109,14 @@ No reshape on the descent. Whether pre may also return now-effects is open; gene
 
 ### Execute on the way up (all scheduled posts run)
 
-Leaf to root. The ascent threads one monotone `Option<Claimed>` (`None` at the leaf, `Some` after an exclusive post runs). At each level the framework holds an owned path again.
+Leaf to root. The ascent threads one **`&mut Context`**. There is no parallel claim bit beside it — claim lives on the context and is mutated in place.
 
 1. Apply any reshape scheduled for this level's child field.
-2. Build `Context` from the field's structure and the ascent's claim.
-3. For each scheduled post, call it with that `Context` and the owned path; take path and claim delta back from the return.
-4. If the post reports `Some(Claimed)`, the ascent claim becomes `Some` for everything shallower.
+2. `ctx.set_structure(...)` for that field (Valid / Invalidated).
+3. For each scheduled post, call it with owned path and `&mut ctx`; take path back from the return.
+4. Exclusive posts mutate `ctx` when they take the event (`ctx.set_claim(Claimed)`).
 
-A scheduled post always runs (is called). What it does with `ctx.claim()` is its business. Structure `Invalidated` is how it learns it lost the child.
+A scheduled post always runs (is called). What it does with `ctx.claim()` / `ctx.structure()` is its business.
 
 ```rust
 #[derive(Clone, Copy)]
@@ -131,45 +131,46 @@ enum Structure {
 #[derive(Clone, Copy)]
 struct Claimed;
 
-#[derive(Clone, Copy)]
 struct Context {
     structure: Structure,
     claim: Option<Claimed>,
 }
 
 impl Context {
-    fn structure(self) -> Structure { self.structure }
-    /// `None` = open; `Some(Claimed)` = an exclusive deeper already took this event.
-    fn claim(self) -> Option<Claimed> { self.claim }
+    fn structure(&self) -> Structure { self.structure }
+    /// `None` = open; `Some(Claimed)` = an exclusive already took this event.
+    fn claim(&self) -> Option<Claimed> { self.claim }
+    fn set_structure(&mut self, s: Structure) { self.structure = s; }
+    fn set_claim(&mut self, c: Claimed) { self.claim = Some(c); }
 }
 ```
 
-Access is flat on `Context`: `ctx.claim()`, `ctx.structure()`. No nested bag. Fields stay private so we can grow later without breaking call sites.
+Access is flat on `Context`. Fields private. Posts that only read use `&Context` if we want; the ascent always has `&mut Context` so exclusive can write claim and `into_parent` can write structure.
 
-`claim()` is a snapshot at the moment this post runs. It is not "any pre/post below matched" — only exclusive posts raise `Some(Claimed)`. A logging `AnyKey` pre/post never does.
+`claim()` is not "any pre/post below matched" — only exclusive posts call `set_claim`. A logging `AnyKey` pre/post never does.
 
 ### How claim moves
 
 ```text
-framework holds:  claim: Option<Claimed>   (monotone None → Some)
+framework holds:  ctx: Context   (one value for the whole ascent)
+
+at each level:
+  ctx.set_structure(Valid | Invalidated)   // for this field after reshape
 
 each plain post:
-  ctx = Context { structure, claim }
-  (effects, path) = post(..., ctx)
-  // claim unchanged
+  (effects, path) = post(..., &mut ctx)    // may read; must not need to set claim
 
-each exclusive post (#[bind] / exclusive(h)):
-  ctx = Context { structure, claim }
+each exclusive (#[bind]):
   match ctx.claim() {
     Some(_) => skip body
     None => {
-      (effects, path) = h(..., ctx)
-      claim = Some(Claimed)
+      (effects, path) = h(..., &mut ctx)
+      ctx.set_claim(Claimed)
     }
   }
 ```
 
-Posts return `(Vec<Effect>, P)` only — path threading, nothing else. Claim is not a third return channel; exclusive is sugar around the framework's `claim` and the `Context` snapshot, not a special output type.
+Posts return `(Vec<Effect>, P)` — path threading only. Claim and structure are mutated on `Context`, not returned.
 
 ### Defaults
 
@@ -182,7 +183,7 @@ Several pairs on one node: several independent `opt_i` (each its own concrete pa
 
 ### `#[bind]` is a post with no pre
 
-There is no third handler kind and no secret claim flag outside `Context`.
+There is no third handler kind and no claim channel outside `Context`. Mutate the context.
 
 ```rust
 #[bind(KeyA => outer_handler)]
@@ -191,55 +192,39 @@ There is no third handler kind and no secret claim flag outside `Context`.
 ```
 
 ```rust
-// user body — same signature as any post that needs the event:
+// user body — &mut Context (may read structure/claim; exclusive writes claim):
 fn outer_handler(
     ev: &KeyEvent,
     node: Node<OuterPath, ()>,
-    ctx: Context,
+    ctx: &mut Context,
 ) -> (Vec<M::Effect>, OuterPath);
 
-// thin sugar — reads ctx.claim(), writes the ascent claim when the body runs:
-fn exclusive<E, P>(
-    h: impl FnOnce(&E, Node<P, ()>, Context) -> (Vec<Effect>, P),
-) -> impl FnOnce(&E, Node<P, ()>, Context, &mut Option<Claimed>) -> (Vec<Effect>, P) {
-    move |ev, node, ctx, claim| {
-        match ctx.claim() {
-            Some(_) => (Vec::new(), node.parent),
-            None => {
-                let (effects, path) = h(ev, node, ctx);
-                *claim = Some(Claimed);
-                (effects, path)
-            }
+// call site (or thin exclusive helper) — all mutation of claim goes through ctx:
+fn run_exclusive<E, P>(
+    ev: &E,
+    path: P,
+    ctx: &mut Context,
+    h: impl FnOnce(&E, Node<P, ()>, &mut Context) -> (Vec<Effect>, P),
+) -> (P, Vec<Effect>) {
+    match ctx.claim() {
+        Some(_) => (path, Vec::new()),
+        None => {
+            let (effects, path) = h(ev, Node { parent: path, data: () }, ctx);
+            ctx.set_claim(Claimed);
+            (path, effects)
         }
     }
 }
 ```
 
-Or, equivalent and simpler for the derive: do not name `exclusive` as a return-type wrapper at all — emit the `match ctx.claim()` inline at the bind call site (see generate). User handlers always return `(Vec<Effect>, P)`.
-
-Framework when running a plain scheduled post:
+Plain post call site:
 
 ```rust
-let ctx = Context { structure, claim: *claim };
 let (effects, path) = post_fn(ev, Node { parent: path, data: () }, ctx);
 Extend::extend(effs, effects);
 ```
 
-Framework when running a `#[bind]`:
-
-```rust
-let ctx = Context { structure, claim: *claim };
-match ctx.claim() {
-    Some(_) => { /* skip */ }
-    None => {
-        let (effects, path) = handler(ev, Node { parent: path, data: () }, ctx);
-        *claim = Some(Claimed);
-        Extend::extend(effs, effects);
-    }
-}
-```
-
-pre_post posts at the same level are not exclusive: they all still run (before the bind at that level). Bind sees claims from below only — sibling pre_posts never set claim.
+pre_post posts at the same level are not exclusive: they all still run (before the bind). Sibling pre_posts never call `set_claim`.
 
 ### `only_if_valid`
 
@@ -247,7 +232,7 @@ pre_post posts at the same level are not exclusive: they all still run (before t
 fn only_if_valid<P, N>(
     project: impl Fn(&mut P) -> &mut N,
     f: impl FnOnce(&mut N) -> Vec<Effect>,
-) -> impl FnOnce(Node<P, ()>, Context) -> (Vec<Effect>, P) {
+) -> impl FnOnce(Node<P, ()>, &mut Context) -> (Vec<Effect>, P) {
     move |mut node, ctx| {
         let effects = match ctx.structure() {
             Structure::Valid => f(project(&mut node.parent)),
@@ -274,40 +259,38 @@ pub enum Structure {
 }
 
 /// ZST marker: an exclusive took this event.
-#[derive(Clone, Copy)]
 pub struct Claimed;
 
-#[derive(Clone, Copy)]
 pub struct Context {
     structure: Structure,
     claim: Option<Claimed>,
 }
 
 impl Context {
-    pub fn structure(self) -> Structure { self.structure }
+    pub fn structure(&self) -> Structure { self.structure }
     /// `None` = open; `Some(Claimed)` = exclusive already took this event.
-    pub fn claim(self) -> Option<Claimed> { self.claim }
+    pub fn claim(&self) -> Option<Claimed> { self.claim }
+    pub fn set_structure(&mut self, s: Structure) { self.structure = s; }
+    pub fn set_claim(&mut self, c: Claimed) { self.claim = Some(c); }
 }
 
 pub struct PathMut<N, P, F> {
     // owned parent P + projections to N (as today)
-    // F receives claim so posts can build Context; returns path + effects
-    on_into_parent: F, // FnOnce(P, Structure, Option<Claimed>) -> (P, Vec<Effect>)
+    on_into_parent: F, // FnOnce(P, &mut Context) -> (P, Vec<Effect>)
 }
 
-fn no_post<P>(parent: P, _: Structure, _: Option<Claimed>) -> (P, Vec<Effect>) {
+fn no_post<P>(parent: P, _ctx: &mut Context) -> (P, Vec<Effect>) {
     (parent, Vec::new())
 }
 
 impl<N, P, F> PathMut<N, P, F>
 where
-    F: FnOnce(P, Structure, Option<Claimed>) -> (P, Vec<Effect>),
+    F: FnOnce(P, &mut Context) -> (P, Vec<Effect>),
 {
-    /// Apply reshape of the child field if any, run posts, return parent.
-    /// Claim is updated by exclusive bind sites, not by on_into_parent's return.
-    pub fn into_parent(self, sink: &mut Vec<Effect>, claim: &mut Option<Claimed>) -> P {
-        let structure = self.classify_after_reshape();
-        let (parent, post_effs) = (self.on_into_parent)(self.parent, structure, *claim);
+    /// Apply reshape, set structure on ctx, run posts, return parent.
+    pub fn into_parent(self, sink: &mut Vec<Effect>, ctx: &mut Context) -> P {
+        ctx.set_structure(self.classify_after_reshape());
+        let (parent, post_effs) = (self.on_into_parent)(self.parent, ctx);
         Extend::extend(sink, post_effs);
         parent
     }
@@ -318,7 +301,7 @@ pub trait Dispatch<M: Bindings>: Place {
         path: Self::Path<'a>,
         event: &M::Event,
         effs: &mut Vec<M::Effect>,
-        claim: &mut Option<Claimed>,
+        ctx: &mut Context,
     ) -> Self::Path<'a>
     where
         Self: 'a;
@@ -330,53 +313,44 @@ where
     N: Dispatch<M> + 'a,
 {
     let mut effs = Vec::new();
-    let mut claim = None;
-    let _path = <N as Dispatch<M>>::dispatch(path, event, &mut effs, &mut claim);
-    match claim {
-        Some(Claimed) => Some(effs),
-        None if !effs.is_empty() => Some(effs),
-        None => None,
+    let mut ctx = Context {
+        structure: Structure::Valid,
+        claim: None,
+    };
+    let _path = <N as Dispatch<M>>::dispatch(path, event, &mut effs, &mut ctx);
+    if ctx.claim().is_some() || !effs.is_empty() {
+        Some(effs)
+    } else {
+        None
     }
 }
 ```
 
-Handlers return `(Vec<Effect>, P)`; only framework code holds the batch sink. `from_fn` is crate-private. The ascent's `Option<Claimed>` is snapshotted into every `Context`.
+Handlers return `(Vec<Effect>, P)`; only framework code holds the batch sink. `from_fn` is crate-private. One `Context` is mutated for the whole ascent.
 
 ## Generated code
 
-### Helper the generate uses for every post
+### Helpers
 
 ```rust
-// plain post
 fn run_post<P>(
-    claim: &Option<Claimed>,
-    structure: Structure,
     path: P,
-    body: impl FnOnce(Node<P, ()>, Context) -> (Vec<Effect>, P),
+    ctx: &mut Context,
+    body: impl FnOnce(Node<P, ()>, &mut Context) -> (Vec<Effect>, P),
 ) -> (P, Vec<Effect>) {
-    let ctx = Context {
-        structure,
-        claim: *claim,
-    };
     body(Node { parent: path, data: () }, ctx)
 }
 
-// exclusive post (#[bind]) — only place claim is written
 fn run_exclusive<P>(
-    claim: &mut Option<Claimed>,
-    structure: Structure,
     path: P,
-    body: impl FnOnce(Node<P, ()>, Context) -> (Vec<Effect>, P),
+    ctx: &mut Context,
+    body: impl FnOnce(Node<P, ()>, &mut Context) -> (Vec<Effect>, P),
 ) -> (P, Vec<Effect>) {
-    let ctx = Context {
-        structure,
-        claim: *claim,
-    };
     match ctx.claim() {
         Some(_) => (path, Vec::new()),
         None => {
             let (effects, path) = body(Node { parent: path, data: () }, ctx);
-            *claim = Some(Claimed);
+            ctx.set_claim(Claimed);
             (path, effects)
         }
     }
@@ -391,7 +365,7 @@ impl Dispatch<M> for Inner {
         path: <Inner as Place>::Path<'a>,
         event: &M::Event,
         effs: &mut Vec<M::Effect>,
-        claim: &mut Option<Claimed>,
+        ctx: &mut Context,
     ) -> <Inner as Place>::Path<'a>
     where
         Self: 'a,
@@ -412,10 +386,10 @@ impl Dispatch<M> for Inner {
 
         if let ::core::option::Option::Some(()) = opt_0 {
             let ev = /* &KeyEvent from event */;
+            ctx.set_structure(Structure::Valid); // leaf
             let (path, out_effs) = run_exclusive(
-                claim,
-                Structure::Valid, // leaf: no child field to invalidate
                 path,
+                ctx,
                 |node, ctx| inner_handler(ev, node, ctx),
             );
             ::core::iter::Extend::extend(effs, out_effs);
@@ -434,7 +408,7 @@ impl Dispatch<M> for Outer {
         mut path: <Outer as Place>::Path<'a>,
         event: &M::Event,
         effs: &mut Vec<M::Effect>,
-        claim: &mut Option<Claimed>,
+        ctx: &mut Context,
     ) -> <Outer as Place>::Path<'a>
     where
         Self: 'a,
@@ -495,27 +469,21 @@ impl Dispatch<M> for Outer {
             ::core::option::Option::None
         };
 
-        // into_parent passes (structure, claim) into this closure.
-        // opt_0 / opt_1 are captured; their types differ (Option of each pre's return).
+        // into_parent passes &mut Context (structure already set for this field).
         let inner_path = ::laserbeam::PathMut::from_fn(
             path,
             |p| &mut p.get_mut().inner,
             |p| &p.get().inner,
-            move |parent, structure, claim_now| {
-                let mut claim = claim_now;
+            move |parent, ctx| {
                 let mut local = ::std::vec::Vec::new();
                 let mut path = parent;
                 if let ::core::option::Option::Some(t0) = opt_0 {
-                    let (p, e) = run_post(&claim, structure, path, |node, ctx| {
-                        post_foo(t0, node, ctx)
-                    });
+                    let (p, e) = run_post(path, ctx, |node, ctx| post_foo(t0, node, ctx));
                     path = p;
                     ::core::iter::Extend::extend(&mut local, e);
                 }
                 if let ::core::option::Option::Some(t1) = opt_1 {
-                    let (p, e) = run_post(&claim, structure, path, |node, ctx| {
-                        post_bar(t1, node, ctx)
-                    });
+                    let (p, e) = run_post(path, ctx, |node, ctx| post_bar(t1, node, ctx));
                     path = p;
                     ::core::iter::Extend::extend(&mut local, e);
                 }
@@ -524,18 +492,15 @@ impl Dispatch<M> for Outer {
         );
 
         let inner_path =
-            <Inner as ::bind::Dispatch<M>>::dispatch(inner_path, event, effs, claim);
+            <Inner as ::bind::Dispatch<M>>::dispatch(inner_path, event, effs, ctx);
 
-        // ----- ascent: reshape + pre_post posts (Context built inside run_post) -----
-        let mut path = inner_path.into_parent(effs, claim);
+        // ----- ascent: reshape + set_structure + pre_post posts -----
+        let mut path = inner_path.into_parent(effs, ctx);
 
         // ----- bind opt_2: exclusive post -----
         if let ::core::option::Option::Some(()) = opt_2 {
-            let structure = path.structure_of_inner();
             let ev = /* &KeyEvent from event */;
-            let (p, e) = run_exclusive(claim, structure, path, |node, ctx| {
-                outer_handler(ev, node, ctx)
-            });
+            let (p, e) = run_exclusive(path, ctx, |node, ctx| outer_handler(ev, node, ctx));
             path = p;
             ::core::iter::Extend::extend(effs, e);
         }
@@ -544,7 +509,7 @@ impl Dispatch<M> for Outer {
 }
 ```
 
-Plain posts go through `run_post`; binds go through `run_exclusive`. Both build `Context` from structure + current claim. Only `run_exclusive` writes `Some(Claimed)`.
+Plain posts go through `run_post`; binds go through `run_exclusive`. Both take `&mut Context`. Only `run_exclusive` calls `ctx.set_claim(Claimed)`.
 
 ### `#[pre]` / `#[post]` alone
 
@@ -657,7 +622,7 @@ Miss-unwind threads the sink. With no posts, untouched.
 
 ### P4 — full ascent + claim (`Option<Claimed>`) (still no user posts)
 
-Drop `Break`. Every level returns its path. Thread `claim: &mut Option<Claimed>`.
+Drop `Break`. Every level returns its path. Thread `ctx: &mut Context`.
 
 - child always returns path
 - this level's exclusive runs only if claim is `None`, then sets `Some(Claimed)`
@@ -670,9 +635,9 @@ Generate rephrases `#[bind]` through `run_exclusive` (match on `ctx.claim()`, se
 
 ### Feature steps (after P0–P5)
 
-1. `#[post(trig => body)]` — schedule `opt_N = Some(())`; run on ascent with owned path + context (claim from ascent; structure always Valid until step 2).
-2. `Structure` Valid/Invalidated — classify in `into_parent` after reshape (reshape may still be empty).
-3. `exclusive` + `#[bind]` as `#[post(exclusive(h))]` — claim via `Context` at the call site.
+1. `#[post(trig => body)]` — schedule `opt_N = Some(())`; run on ascent with owned path + `&mut Context`.
+2. `Structure` Valid/Invalidated — `ctx.set_structure` in `into_parent` after reshape.
+3. `exclusive` + `#[bind]` as sugar — mutates `ctx` claim at the call site.
 4. `#[pre]` / `#[pre_post]` — carriage; immutable path on descent.
 5. mercury rearm as post; drop `handle` discriminant rearm; timed-layer wrapper when ready.
 6. reshape carrier (open) — deep bind schedules field replace at owner.
@@ -689,12 +654,12 @@ Generate rephrases `#[bind]` through `run_exclusive` (match on `ctx.claim()`, se
 1. Descent schedules; that set is final.
 2. Ascent runs every scheduled post; mutation does not cancel them.
 3. Pre: shared path. Post: owned path in/out as `(Vec<Effect>, P)`.
-4. Every post receives `Context`; `ctx.claim() -> Option<Claimed>`, `ctx.structure()` (fields private).
-5. Ascent holds `Option<Claimed>`; each post sees a snapshot via `ctx.claim()`; exclusive call sites write `Some(Claimed)` after the body runs.
-6. Logging never writes claim. Only exclusive (`#[bind]`) call sites set `Some(Claimed)`.
+4. Ascent threads one `&mut Context`. Posts take `&mut Context`. No parallel claim flag.
+5. `ctx.claim() -> Option<Claimed>`, `ctx.structure()`, `set_structure` / `set_claim` (fields private).
+6. Logging never calls `set_claim`. Only exclusive (`#[bind]`) does.
 7. no pre → `()`. no post → `drop`.
-8. `#[bind]` = `#[post]` + exclusive call site (read `ctx.claim()`, write ascent claim).
-9. Reshape of a field applied in that field's `into_parent` before posts at that level.
+8. `#[bind]` = `#[post]` + `run_exclusive` (read/write claim on the same context).
+9. Reshape of a field applied in that field's `into_parent` before posts at that level (`set_structure` first).
 
 ## Tests
 
