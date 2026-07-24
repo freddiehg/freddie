@@ -630,22 +630,80 @@ fn rearm(node: &mut AndReturnHome) -> Vec<MercuryEffect> {
 
 `structure: Valid`: rearm. `Invalidated`: skip; `Drop` of the guard cancels the timer. Does not care about `claimed`.
 
-## Prefactor
+## Prefactors (ordered, each shippable alone)
 
-Shippable alone, before pre/post attributes exist.
+Behavior-identical to master until a step says otherwise. No `#[pre]` / `#[post]` until the feature steps. No completion token.
 
-Before: `type Output`, `ControlFlow<Output, Path>`, exclusive takes path by value and `Break`s.
+### P0 — `Bindings::Effect` + threaded batch (keep `Break`)
+
+Today: `type Output`, handler return collected into `Break(out)`.
 
 After:
 
-- `type Effect`
-- `dispatch` threads `effs` and `claimed`, always returns `Path`
-- exclusive is `#[post(exclusive(h))]`; claim flows through `Context` / `PostOut`
-- `into_parent(self, sink, claimed)` exists; no post yet in the prefactor
-- top-level `Some` when `claimed || !effs.is_empty()`
-- `V: Into<Vec<Effect>>`; expression handlers already work
+- `type Effect` is the **item** (`MercuryEffect`), not the vec
+- `dispatch(path, event, effs: &mut Vec<Effect>) -> ControlFlow<(), Path>`
+- exclusive pushes onto `effs` and `Break(())`; miss is `Continue(path)`
+- top-level seeds `Vec`, `Some(effs)` on win, `None` on total miss
+- handler return `V: Into<Vec<Effect>>` (single effect or vec)
+- mercury: `From<MercuryEffect> for Vec<MercuryEffect>`
 
-Mercury binds that today `ascend_mut` + `set_layer` wait on the reshape carrier (Open): under full ascent they should schedule the layer replace for the owner's `into_parent`, then return the path, rather than consuming the path mid-walk. Prefactor may keep today's by-value exclusive + `Break` for a behavior-identical cut; the feature wants full ascent + path returned.
+Exclusive still takes path by value and may `ascend_mut`. No posts, no `claimed`.
+
+### P1 — `into_parent` sink seam
+
+```rust
+// before
+fn into_parent(self) -> Parent
+// after
+fn into_parent(self, _sink: &mut Vec<Effect>) -> Parent  // still just returns parent
+```
+
+Miss-unwind threads the sink. With no posts, untouched.
+
+### P2 — `PathMut` carries `on_into_parent: F`, default `no_post`
+
+`from_fn` takes a `FnOnce` that runs inside `into_parent`. All current sites pass `no_post` (returns path + empty effects). No user-facing posts yet. User code never constructs `F`.
+
+### P3 — `from_fn` framework-only
+
+`from_fn` / `from_box` crate-private (or sealed). Only the derive builds child paths.
+
+### P4 — full ascent + `claimed` (still no user posts)
+
+Drop `Break`. Every level returns its path. Thread `claimed: &mut bool`.
+
+- child always returns path
+- this level's exclusive runs only if `!claimed`, then sets `claimed = true`
+
+Deepest-wins without short-circuit past parents. Requires exclusives to **return the path**. Handlers that only `get_mut` adapt easily. Handlers that `ascend_mut` + `set_layer` wait on the reshape carrier (open) — do not invent `complete` to paper over it. If mercury blocks, ship P4 against bind tests first; mercury stays on Break until reshape.
+
+### P5 — `PostOut` under existing `#[bind]` only
+
+```rust
+struct PostOut<P> {
+    effects: Vec<Effect>,
+    path: P,
+    claim: bool,
+}
+```
+
+Generate rephrases `#[bind]` as a post-shaped call that sets `claim: true`. No new attributes. Behavior-identical to P4.
+
+### Feature steps (after P0–P5)
+
+1. `#[post(trig => body)]` — schedule `opt_N = Some(())`; run on ascent with owned path + context (claimed from ascent; structure always Valid until step 2).
+2. `Structure` Valid/Invalidated — classify in `into_parent` after reshape (reshape may still be empty).
+3. `exclusive` + `#[bind]` as `#[post(exclusive(h))]` — claim via `Context` / `PostOut.claim`.
+4. `#[pre]` / `#[pre_post]` — carriage; immutable path on descent.
+5. mercury rearm as post; drop `handle` discriminant rearm; timed-layer wrapper when ready.
+6. reshape carrier (open) — deep bind schedules field replace at owner.
+7. generic `C` — `context-as-generic.md`.
+
+### Not prefactors
+
+- Completion token / gather-on-climb
+- Root-owned reshape scheduler
+- AndReturnHome tree move (needs a post for rearm)
 
 ## Rules
 
