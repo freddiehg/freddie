@@ -357,7 +357,7 @@ fn run_tap(
 | `Some(Err((id, failure)))` | had a `SourceId`, resolve failed; id + `ResolveFailure` (e.g. `NoMatchingService`) |
 | `Some(Ok(info))` | full resolve, including `product: String` |
 
-Figaro can map `None` → `Injected` and `Some(Err(_))` → `Other` (or a dedicated variant), and can log the id/failure. The product string never enters the model unless categorize puts it in `T`.
+Figaro maps non-BuiltIn / non-Kinesis (including `None` and `Err`) to `Unknown`; see `device-conditioned-keymaps.md`. The product string never enters the model unless categorize puts it in `T`.
 
 The cache is a plain `HashMap` local to the tap-thread closure. It is not `Arc`/`Mutex` and is not shared across threads. Only `T` is stored; `DeviceInfo` is dropped after categorize returns.
 
@@ -439,41 +439,18 @@ where
 
 `D: EventTrigger` — reuse the existing bind trait. The event's device field is `D::Event` (usually `D` itself for a tag enum).
 
-### `self_eq_trigger!` (in `bind`, next to `self_trigger!`)
+### `self_trigger!` for tag enums
 
-`self_trigger!` is for unit signals (`Quit`, timeouts): `Event = Self`, `is_matching` always `true`. Device tags need the other shape: same type as event, **equality** so variants discriminate.
-
-```rust
-// crates/bind/src/lib.rs  (next to self_trigger!)
-
-/// Implements [`EventTrigger`] for a type that is its own event and matches by
-/// `PartialEq`. For tag enums (`DeviceClass`) and other values that discriminate
-/// on equality — not for bare signals (use [`self_trigger!`]).
-#[macro_export]
-macro_rules! self_eq_trigger {
-    ($t:ty) => {
-        impl $crate::EventTrigger for $t {
-            type Event = Self;
-            fn is_matching(&self, event: &Self) -> bool {
-                self == event
-            }
-        }
-    };
-}
-```
-
-`$t` must be `PartialEq` (typically derived). Figaro:
+`bind::self_trigger!` implements `EventTrigger` with `Event = Self` and `is_matching` by `PartialEq`. Unit signals (`Quit`) still work: one value, so equality is always true. Tag enums (`DeviceClass`) discriminate variants so `on_device(Kinesis)` does not match BuiltIn.
 
 ```rust
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub enum DeviceClass { Desktop, Laptop, Other, Injected }
+pub enum DeviceClass { BuiltIn, Kinesis, Unknown }
 
-bind::self_eq_trigger!(DeviceClass);
+bind::self_trigger!(DeviceClass);
 ```
 
-Do **not** use `self_trigger!(DeviceClass)` — that would make every class match every class and break `on_device`.
-
-Wider device filters are separate `EventTrigger` types (same idea as `AnyKey` for keys), not either macro on the tag enum.
+Timers stay hand-written (`TimerTrigger` / `TimerFired` — different types, match on id). Wider device filters are separate `EventTrigger` types (same idea as `AnyKey` for keys).
 
 ### Constructor: blanket `WithDevice` on every key trigger
 
@@ -500,10 +477,10 @@ Import `WithDevice` at the bind site. Then:
 
 ```rust
 Key::KeyN.down() => to_nav                              // any device
-Key::Escape.down().on_device(DeviceClass::Desktop) => foo
-Key::KeyH.down().on_device(DeviceClass::Desktop) => tile_left
-Key::KeyH.down().on_device(DeviceClass::Laptop) => tile_left
-AnyKey.on_device(DeviceClass::Desktop) => desktop_passthrough
+Key::Escape.down().on_device(DeviceClass::Kinesis) => foo
+Key::KeyH.down().on_device(DeviceClass::Kinesis) => tile_left
+Key::KeyH.down().on_device(DeviceClass::BuiltIn) => tile_left
+AnyKey.on_device(DeviceClass::Kinesis) => kinesis_passthrough
 ```
 
 `AnyKey` can stay app-local; the blanket impl still applies. Same dispatch caveats as bare `AnyKey`.
@@ -546,11 +523,9 @@ type DeviceKey = DeviceKeyed<KeyEvent, DeviceClass>;
 
 intercept_with_source(
     |src| match src {
-        None => DeviceClass::Injected,
-        Some(Err((_id, _failure))) => DeviceClass::Other,
-        Some(Ok(d)) if d.built_in => DeviceClass::Laptop,
-        Some(Ok(d)) if d.vendor_id == 0x29ea && d.product_id == 0x0360 => DeviceClass::Desktop,
-        Some(Ok(_)) => DeviceClass::Other,
+        Some(Ok(d)) if d.built_in => DeviceClass::BuiltIn,
+        Some(Ok(d)) if d.vendor_id == 0x29ea && d.product_id == 0x0360 => DeviceClass::Kinesis,
+        _ => DeviceClass::Unknown,
     },
     |(key, device)| {
         let _ = event_tx.send(FigaroEvent::Key(DeviceKey { key, device }));
@@ -576,7 +551,7 @@ intercept_with_source(
 Each step is independently shippable.
 
 1. `freddie_hid_device` leaf: `SourceId`, `source_of`, `resolve`, `DeviceInfo`, `prop_*` as above. Workspace member. Demo: listen tap, print `resolve(source_of(e))` per key. No `freddie_keyboard` change.
-2. `bind`: `self_eq_trigger!` macro next to `self_trigger!`. Independently shippable.
+2. `bind`: `self_trigger!` matches by `PartialEq` (prefactor; Quit unchanged in behavior). Independently shippable.
 3. `freddie_keys`: `DeviceKeyed`, `OnDevice` (`T: EventTrigger`, `D: EventTrigger`), `WithDevice` blanket, unit tests for `is_matching` (no macOS). mercury unaffected until it opts in.
 4. `freddie_keyboard`: extract `run_tap`, add generic `intercept_with_source` with categorize + `HashMap<SourceId, T>`. `intercept` stays the thin wrapper. mercury still calls `intercept`.
-5. Stop. Figaro work is the other doc (`device-conditioned-keymaps.md`): `self_eq_trigger!(DeviceClass)`, model `DeviceKeyed`, dual `TryFrom`, daemon wire-up, device-scoped binds.
+5. Stop. Figaro work is the other doc (`device-conditioned-keymaps.md`): `self_trigger!(DeviceClass)`, model `DeviceKeyed`, dual `TryFrom`, daemon wire-up, device-scoped binds.
