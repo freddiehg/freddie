@@ -2,7 +2,7 @@
 
 Not done. Standalone.
 
-Descent schedules which pre/posts/binds will run. That set is final. Ascent runs every scheduled post leaf to root; mutation is free. One `&mut Context` is threaded up the ascent and mutated in place: **invalidation depth** (how many `into_parent` hops are still inside a destroyed region) and **claim** (exclusive try-take). `#[bind]` is a post with no pre, gated by `ctx.claim()`.
+Descent schedules which pre/posts/binds will run. That set is final. Ascent runs every scheduled post leaf to root; mutation is free. One `&mut Context` is threaded up the ascent and mutated in place. **Context holds the depth** (remaining `into_parent` hops still inside a destroyed region) and **claim** (exclusive try-take). Validity is not stored — it is derived from depth. `#[bind]` is a post with no pre, gated by `ctx.claim()`.
 
 **Generate stays thin.** The derive only schedules `opt_N` and calls helpers (`run_post`, `run_exclusive`, `into_parent`). Depth math, claim try-take, and sink extension live in ordinary functions in `bind` / laserbeam — not hand-rolled in every expanded `Dispatch` impl.
 
@@ -123,21 +123,21 @@ No reshape on the descent. Whether pre may also return now-effects is open; gene
 
 Leaf to root. One **`&mut Context`** for the whole ascent — same object, mutated as we go. No descent mutation of context.
 
-Two fields, different update rules (same pointer):
+`Context` is a small bag with two fields (same pointer the whole ascent):
 
 | field | rule |
 |---|---|
-| `claim` | Ascent-global, monotone. `claim()` try-takes. Once taken, every shallower exclusive fails. |
-| `invalidation_depth` | Integer remaining hops inside a destroyed region. `invalidate(d)` raises it; each `into_parent` calls `step_up` (decrement). `validity()` is **derived**: depth 0 → Valid, else Invalidated. |
+| `depth: u32` | Remaining hops inside a destroyed region. Lives **on Context**. `invalidate(d)` raises it (max with current); each `into_parent` calls `step_up` (decrement). `0` means valid. |
+| `claim: Option<Claimed>` | Ascent-global, monotone. `claim()` try-takes. Once taken, every shallower exclusive fails. |
 
-Binary `set_validity(Valid|Invalidated)` per level is wrong: not every level is invalidated, and a flag does not track how far destruction reaches. The depth counter does.
+There is no stored `Validity` flag and no per-level context. Posts that want a binary read use `validity()`, which is pure sugar over `depth == 0`. Binary `set_validity(Valid|Invalidated)` per level is wrong: not every level is invalidated, and a flag does not track how far destruction reaches.
 
-There is no "context goes down then up" for these facts — only up. Descent only schedules.
+Descent does not touch Context. Only the ascent mutates it.
 
 At each level:
 
 1. Apply reshape if scheduled; may `invalidate(d)` (depth rule open).
-2. Run scheduled posts (`&mut ctx`); they see `validity()` from **current** depth.
+2. Run scheduled posts (`&mut ctx`); they see **current** `ctx.depth` / `validity()`.
 3. Exclusive: `match ctx.claim() { None => skip; Some(Claimed) => body }` — try-take, not a separate getter + set.
 4. `step_up` when leaving the level (`into_parent`).
 
@@ -153,28 +153,32 @@ struct Claimed;
 
 struct Context {
     /// Remaining into_parent hops still inside the destroyed region. 0 = valid.
-    invalidation_depth: u32,
+    depth: u32,
     claim: Option<Claimed>,
 }
 
 impl Context {
-    /// Derived from the depth counter — not a stored flag.
+    fn depth(&self) -> u32 {
+        self.depth
+    }
+
+    /// Sugar over depth. Not a stored field.
     fn validity(&self) -> Validity {
-        if self.invalidation_depth == 0 {
+        if self.depth == 0 {
             Validity::Valid
         } else {
             Validity::Invalidated
         }
     }
 
-    /// Raise the invalidated zone by `depth` hops (max with current).
-    fn invalidate(&mut self, depth: u32) {
-        self.invalidation_depth = self.invalidation_depth.max(depth);
+    /// Raise the invalidated zone by `d` hops (max with current).
+    fn invalidate(&mut self, d: u32) {
+        self.depth = self.depth.max(d);
     }
 
     /// One hop up. Called from into_parent after this level's posts.
     fn step_up(&mut self) {
-        self.invalidation_depth = self.invalidation_depth.saturating_sub(1);
+        self.depth = self.depth.saturating_sub(1);
     }
 
     /// Try to take exclusive ownership of this event.
@@ -196,15 +200,15 @@ impl Context {
 ### How the fields move
 
 ```text
-ctx: invalidation_depth = 0, claim = None
+ctx: depth = 0, claim = None
 
-DESCENT: schedule opt_N only
+DESCENT: schedule opt_N only — Context untouched
 
 ASCENT leaf → root:
   exclusive may invalidate(d) when it kills a spine of height d
   at each level:
     reshape if any; may invalidate(…)
-    posts: validity() from current depth
+    posts: read ctx.depth / validity()
     exclusive: match ctx.claim() { None => skip; Some(_) => h(...) }
     step_up: depth = depth.saturating_sub(1)
 ```
@@ -218,7 +222,7 @@ level +3 owner: depth 1 → Invalidated; step_up → 0
 above:          depth 0 → Valid
 ```
 
-`claim` never decrements. Depth only moves via `invalidate` / `step_up`.
+`claim` never decrements. Depth only moves via `invalidate` / `step_up`, and the counter lives on Context the whole time.
 
 Posts return `(Vec<Effect>, P)` only.
 
@@ -326,25 +330,30 @@ pub enum Validity {
 pub struct Claimed;
 
 pub struct Context {
-    invalidation_depth: u32,
+    depth: u32,
     claim: Option<Claimed>,
 }
 
 impl Context {
+    pub fn depth(&self) -> u32 {
+        self.depth
+    }
+
+    /// Sugar over depth == 0. Not a stored field.
     pub fn validity(&self) -> Validity {
-        if self.invalidation_depth == 0 {
+        if self.depth == 0 {
             Validity::Valid
         } else {
             Validity::Invalidated
         }
     }
 
-    pub fn invalidate(&mut self, depth: u32) {
-        self.invalidation_depth = self.invalidation_depth.max(depth);
+    pub fn invalidate(&mut self, d: u32) {
+        self.depth = self.depth.max(d);
     }
 
     pub fn step_up(&mut self) {
-        self.invalidation_depth = self.invalidation_depth.saturating_sub(1);
+        self.depth = self.depth.saturating_sub(1);
     }
 
     /// Try-take. Some(Claimed) if open (now taken). None if already taken.
@@ -403,7 +412,7 @@ where
 {
     let mut effs = Vec::new();
     let mut ctx = Context {
-        invalidation_depth: 0,
+        depth: 0,
         claim: None,
     };
     let _path = <N as Dispatch<M>>::dispatch(path, event, &mut effs, &mut ctx);
@@ -694,7 +703,7 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 3. Pre: shared path. Post: owned path, return `(Vec<Effect>, P)`.
 4. One `&mut Context` for the ascent. Posts take `&mut Context`.
 5. `claim(&mut self) -> Option<Claimed>` try-takes. Not a getter. Not a parallel flag.
-6. Invalidation is `invalidation_depth`: `invalidate(d)` / `step_up`; `validity()` derived. Not a binary flag overwritten per field.
+6. Context holds `depth: u32`. `invalidate(d)` / `step_up` move it; `validity()` is sugar over `depth == 0`. Not a stored Validity flag.
 7. Logging never calls `claim()`. Only exclusive does.
 8. Every pre/post attr is a pre_post pair. Missing pre is well-known `noop_pre` (macro drops it in).
 9. No `#[pre]` alone. A pre exists only as the first half of `#[pre_post]`.

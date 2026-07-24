@@ -5,9 +5,9 @@ Not done. Stub. Companion to `invalidation.md`.
 `invalidation.md` currently fixes post context as a concrete bag:
 
 ```rust
-// invalidation_depth: u32  — step_up each into_parent; invalidate(d) raises it
+// depth: u32               — lives on Context; step_up each into_parent; invalidate(d) raises it
 // claim: Option<Claimed>   — claim() try-take
-// validity() derived from depth
+// validity() sugar over depth == 0 (not stored)
 ```
 
 That is odd: two unrelated facts glued under one name because the ascent happens to need both today. The next field (fallback policy, …) would make the bag worse. This doc is the alternative: **context is a type parameter of the dispatch machine**, not a single struct in `bind`.
@@ -40,13 +40,14 @@ pub trait Dispatch<M: Bindings, C = ()>: Place {
 pub struct Claimed;
 
 pub struct MercuryContext {
-    invalidation_depth: u32,
+    depth: u32,
     claim: Option<Claimed>,
 }
 
 impl MercuryContext {
+    pub fn depth(&self) -> u32 { self.depth }
     pub fn validity(&self) -> Validity { /* depth == 0 → Valid else Invalidated */ }
-    pub fn invalidate(&mut self, depth: u32) { /* max with current */ }
+    pub fn invalidate(&mut self, d: u32) { /* max with current */ }
     pub fn step_up(&mut self) { /* saturating_sub(1) on into_parent */ }
     pub fn claim(&mut self) -> Option<Claimed> { /* try-take */ }
 }
