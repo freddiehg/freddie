@@ -406,16 +406,7 @@ pub struct DeviceKeyed<E, D> {
     pub device: D,
 }
 
-/// How a trigger's device filter relates to the device on an event.
-///
-/// Equality is the usual case (`DeviceClass::Desktop` matches only Desktop). A consumer
-/// can implement wider filters (e.g. `AnyReal` matches Laptop | Desktop) without a
-/// second trigger type.
-pub trait MatchDevice {
-    fn matching(&self, event_device: &Self) -> bool;
-}
-
-/// Restricts an inner key trigger to devices that satisfy `device.matching(...)`.
+/// Restricts an inner key trigger to exactly one device tag (`PartialEq` on `D`).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct OnDevice<T, D> {
     pub device: D,
@@ -425,33 +416,23 @@ pub struct OnDevice<T, D> {
 impl<T, D> EventTrigger for OnDevice<T, D>
 where
     T: EventTrigger,
-    D: MatchDevice,
+    D: PartialEq,
 {
     type Event = DeviceKeyed<T::Event, D>;
 
     fn is_matching(&self, event: &Self::Event) -> bool {
-        self.device.matching(&event.device) && self.inner.is_matching(&event.key)
+        self.device == event.device && self.inner.is_matching(&event.key)
     }
 }
 
-impl<T, D: MatchDevice> OnDevice<T, D> {
+impl<T, D: PartialEq> OnDevice<T, D> {
     pub const fn new(device: D, inner: T) -> Self {
         Self { device, inner }
     }
 }
 ```
 
-`D: MatchDevice` for the device half. For `MercuryTrigger` / accumulate it also needs `Eq + Hash + Copy` (or `Clone`) like every other trigger. Figaro's usual impl:
-
-```rust
-impl MatchDevice for DeviceClass {
-    fn matching(&self, event_device: &Self) -> bool {
-        self == event_device
-    }
-}
-```
-
-Match against the full `DeviceKeyed` is not used: the key half is already delegated to `inner.is_matching(&event.key)`. Extending `matching` to take `&DeviceKeyed<…>` would only matter if device policy needed the key (it does not).
+`D: PartialEq` for the device half — the existing std trait; no `MatchDevice`. Enums like figaro's `DeviceClass` already derive it. For `MercuryTrigger` / accumulate, `D` also needs `Eq + Hash + Copy` (or `Clone`) like every other trigger. Non-equality filters (e.g. "any real keyboard") are a later problem: either a coarser tag from categorize or a dedicated filter type that still uses `PartialEq`.
 
 ### Constructor: blanket `WithDevice` on every key trigger
 
@@ -463,7 +444,7 @@ Not per-type methods on `Key` / `KeyPress` / `KeyChord` only. A trait on all `Ev
 /// Attach a device filter to any key-side trigger.
 pub trait WithDevice: Sized {
     #[must_use]
-    fn on_device<D: MatchDevice>(self, device: D) -> OnDevice<Self, D> {
+    fn on_device<D: PartialEq>(self, device: D) -> OnDevice<Self, D> {
         OnDevice {
             device,
             inner: self,
@@ -549,6 +530,6 @@ intercept_with_source(
 Each step is independently shippable.
 
 1. `freddie_hid_device` leaf: `SourceId`, `source_of`, `resolve`, `DeviceInfo`, `prop_*` as above. Workspace member. Demo: listen tap, print `resolve(source_of(e))` per key. No `freddie_keyboard` change.
-2. `freddie_keys`: `DeviceKeyed`, `OnDevice`, `MatchDevice`, `WithDevice` blanket on `EventTrigger`, unit tests for `is_matching` (no macOS). mercury unaffected until it opts in.
+2. `freddie_keys`: `DeviceKeyed`, `OnDevice`, `WithDevice` blanket on `EventTrigger` (`D: PartialEq`), unit tests for `is_matching` (no macOS). mercury unaffected until it opts in.
 3. `freddie_keyboard`: extract `run_tap`, add generic `intercept_with_source` with categorize + `HashMap<SourceId, T>`. `intercept` stays the thin wrapper. mercury still calls `intercept`.
 4. Stop. Figaro work is the other doc (`device-conditioned-keymaps.md`): `DeviceClass`, model `DeviceKeyed`, dual `TryFrom`, daemon wire-up, device-scoped binds.
