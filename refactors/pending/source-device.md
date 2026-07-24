@@ -406,7 +406,8 @@ pub struct DeviceKeyed<E, D> {
     pub device: D,
 }
 
-/// Restricts an inner key trigger to exactly one device tag (`PartialEq` on `D`).
+/// Restricts an inner key trigger to devices the filter `D` matches.
+/// Both halves are `EventTrigger`s: key policy and device policy use the same mechanism.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct OnDevice<T, D> {
     pub device: D,
@@ -416,27 +417,45 @@ pub struct OnDevice<T, D> {
 impl<T, D> EventTrigger for OnDevice<T, D>
 where
     T: EventTrigger,
-    D: PartialEq,
+    D: EventTrigger,
 {
-    type Event = DeviceKeyed<T::Event, D>;
+    type Event = DeviceKeyed<T::Event, D::Event>;
 
     fn is_matching(&self, event: &Self::Event) -> bool {
-        self.device == event.device && self.inner.is_matching(&event.key)
+        self.device.is_matching(&event.device) && self.inner.is_matching(&event.key)
     }
 }
 
-impl<T, D: PartialEq> OnDevice<T, D> {
+impl<T, D> OnDevice<T, D>
+where
+    T: EventTrigger,
+    D: EventTrigger,
+{
     pub const fn new(device: D, inner: T) -> Self {
         Self { device, inner }
     }
 }
 ```
 
-`D: PartialEq` for the device half — the existing std trait; no `MatchDevice`. Enums like figaro's `DeviceClass` already derive it. For `MercuryTrigger` / accumulate, `D` also needs `Eq + Hash + Copy` (or `Clone`) like every other trigger. Non-equality filters (e.g. "any real keyboard") are a later problem: either a coarser tag from categorize or a dedicated filter type that still uses `PartialEq`.
+`D: EventTrigger` — reuse the existing bind trait, not `PartialEq` and not a new matching trait. The event's device field is `D::Event` (usually `D` itself for a tag enum). Figaro:
+
+```rust
+// DeviceClass is both the categorize result and a trigger against that field.
+impl EventTrigger for DeviceClass {
+    type Event = DeviceClass;
+    fn is_matching(&self, event: &DeviceClass) -> bool {
+        self == event
+    }
+}
+// or bind::self_trigger!(DeviceClass) if/when that fits unit-like tags;
+// with data variants, the explicit impl above is the shape.
+```
+
+Wider device filters are just more `EventTrigger`s (same idea as `AnyKey` for keys), not a second mechanism.
 
 ### Constructor: blanket `WithDevice` on every key trigger
 
-Not per-type methods on `Key` / `KeyPress` / `KeyChord` only. A trait on all `EventTrigger`s so consumer-local triggers (`AnyKey`, etc.) get the same sugar:
+Extension on all `EventTrigger`s so app-local triggers (`AnyKey`, etc.) get the same sugar. Lives next to `OnDevice` in `freddie_keys` (cannot add a method to `bind::EventTrigger` without putting `OnDevice` in `bind`).
 
 ```rust
 // crates/freddie_keys/src/lib.rs
@@ -444,7 +463,7 @@ Not per-type methods on `Key` / `KeyPress` / `KeyChord` only. A trait on all `Ev
 /// Attach a device filter to any key-side trigger.
 pub trait WithDevice: Sized {
     #[must_use]
-    fn on_device<D: PartialEq>(self, device: D) -> OnDevice<Self, D> {
+    fn on_device<D: EventTrigger>(self, device: D) -> OnDevice<Self, D> {
         OnDevice {
             device,
             inner: self,
@@ -455,19 +474,19 @@ pub trait WithDevice: Sized {
 impl<T: EventTrigger> WithDevice for T {}
 ```
 
-Import `WithDevice` at the bind site (same pattern as other extension traits). Then:
+Import `WithDevice` at the bind site. Then:
 
 ```rust
 Key::KeyN.down() => to_nav                              // any device
 Key::Escape.down().on_device(DeviceClass::Desktop) => foo
 Key::KeyH.down().on_device(DeviceClass::Desktop) => tile_left
 Key::KeyH.down().on_device(DeviceClass::Laptop) => tile_left
-AnyKey.on_device(DeviceClass::Desktop) => desktop_passthrough  // mercury/figaro AnyKey
+AnyKey.on_device(DeviceClass::Desktop) => desktop_passthrough
 ```
 
-`AnyKey` can stay app-local (`EventTrigger<Event = KeyEvent>`); the blanket impl still applies. Same dispatch caveats as bare `AnyKey` (a leaf `AnyKey.on_device` still claims every key on that device).
+`AnyKey` can stay app-local; the blanket impl still applies. Same dispatch caveats as bare `AnyKey`.
 
-Handlers for `OnDevice` receive `&DeviceKeyed<KeyEvent, D>`; bare keys still receive `&KeyEvent`.
+Handlers for `OnDevice` receive `&DeviceKeyed<T::Event, D::Event>`; bare keys still receive `&KeyEvent`.
 
 ### App wiring (figaro summary)
 
@@ -535,6 +554,6 @@ intercept_with_source(
 Each step is independently shippable.
 
 1. `freddie_hid_device` leaf: `SourceId`, `source_of`, `resolve`, `DeviceInfo`, `prop_*` as above. Workspace member. Demo: listen tap, print `resolve(source_of(e))` per key. No `freddie_keyboard` change.
-2. `freddie_keys`: `DeviceKeyed`, `OnDevice`, `WithDevice` blanket on `EventTrigger` (`D: PartialEq`), unit tests for `is_matching` (no macOS). mercury unaffected until it opts in.
+2. `freddie_keys`: `DeviceKeyed`, `OnDevice` (`T: EventTrigger`, `D: EventTrigger`), `WithDevice` blanket, unit tests for `is_matching` (no macOS). mercury unaffected until it opts in.
 3. `freddie_keyboard`: extract `run_tap`, add generic `intercept_with_source` with categorize + `HashMap<SourceId, T>`. `intercept` stays the thin wrapper. mercury still calls `intercept`.
 4. Stop. Figaro work is the other doc (`device-conditioned-keymaps.md`): `DeviceClass`, model `DeviceKeyed`, dual `TryFrom`, daemon wire-up, device-scoped binds.
