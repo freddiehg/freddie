@@ -495,6 +495,19 @@ fn level_color(level: Level) -> &'static str {
     }
 }
 
+/// The wall-clock time out of an RFC 3339 stamp: `2026-07-24T04:31:38.337010Z` reads as
+/// `04:31:38.337`. A follower watches live, so the date is the file's and the microseconds
+/// are noise on screen; `--json` keeps the whole stamp for anything that needs it. A stamp
+/// that is not the shape the daemon writes is shown as it is rather than mangled.
+fn format_timestamp(ts: &str) -> &str {
+    let time = ts.split_once('T').map_or(ts, |(_, rest)| rest);
+    let time = time.strip_suffix('Z').unwrap_or(time);
+    match time.split_once('.') {
+        Some((hms, frac)) => &time[..hms.len() + 1 + frac.len().min(3)],
+        None => time,
+    }
+}
+
 /// A dispatch's `duration_us`, in the units it reads best in: microseconds under a
 /// millisecond, milliseconds under a second, seconds beyond that. Two decimals in the
 /// larger units, in integer arithmetic so no float rounds the count the daemon measured.
@@ -540,7 +553,10 @@ fn show(out: &mut impl Write, record: &Record, view: &LogsView, color: bool) -> 
     write!(
         out,
         "{dim}{} pid={} {}{reset} {level_color}{}{reset}",
-        record.timestamp, record.pid, record.target, record.level
+        format_timestamp(&record.timestamp),
+        record.pid,
+        record.target,
+        record.level
     )?;
     if let Some(message) = record.fields.get("message") {
         write!(out, " {}", as_text(message))?;
@@ -763,7 +779,7 @@ fn ran(command: &mut Command) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{LogsView, Record, format_duration, show};
+    use super::{LogsView, Record, format_duration, format_timestamp, show};
     use tracing::Level;
 
     const DISPATCH: &str = r#"{"pid":1,"timestamp":"2026-07-21T09:14:02.114Z","level":"INFO","message":"dispatch","event":"Key(KeyR)","effects":"[]","state":"Mercury { .. }","target":"mercury::daemon"}"#;
@@ -803,8 +819,19 @@ mod tests {
         let line = shown(DISPATCH, &view(false), false);
         assert_eq!(
             line.trim_end(),
-            "2026-07-21T09:14:02.114Z pid=1 mercury::daemon INFO dispatch event=Key(KeyR) effects=[]"
+            "09:14:02.114 pid=1 mercury::daemon INFO dispatch event=Key(KeyR) effects=[]"
         );
+    }
+
+    #[test]
+    fn a_timestamp_reads_as_the_wall_clock_time() {
+        assert_eq!(
+            format_timestamp("2026-07-24T04:31:38.337010Z"),
+            "04:31:38.337"
+        );
+        assert_eq!(format_timestamp("2026-07-24T04:31:38Z"), "04:31:38");
+        // A stamp that is not the daemon's shape is shown untouched.
+        assert_eq!(format_timestamp("whenever"), "whenever");
     }
 
     #[test]
