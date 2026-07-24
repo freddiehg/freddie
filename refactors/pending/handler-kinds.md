@@ -1,70 +1,96 @@
-# Handler kinds
+# The handler model: pre, exclusive, post
 
-Discussion, not scheduled. Dispatch has one handler kind today (exclusive, `bind`) and one planned (the pre-descent also-bind, `also_bind`, in `also-binds.md`). This maps the full space — pre, exclusive, post, and the paired pre+post — what each can and cannot do given how dispatch consumes the path, and which one the rearm actually wants.
+Not done. This is the spec for what a dispatched handler can be. It replaces the also-bind design (`refactors/past/also-binds.md`): an also-bind is just this model's `pre` with a no-op `post`, so it is not a separate feature. The return-home wrapper (`timed-layer-wrapper.md`) is the first user.
 
-## The four positions
+## The three positions
 
-- exclusive (`bind`): post-descent, one winner per event, CONSUMES the event (`Break` short-circuits). Runs at the winning node's turn.
-- pre (`also_bind`): pre-descent, on every event that reaches the node, node-local (`Node<&mut P>`), does NOT consume. Runs at every node on the way down.
-- post: post-descent, on the way up, on every event. Not yet built.
-- pre+post: a paired handler — `pre` runs on the way down and returns an intermediate value, `post` runs on the way up and receives it. `pre`-only and `post`-only are this with the other half a no-op.
+A node can hang three things off an event:
 
-We control the proc macro, so emitting a post phase is mechanically easy. The constraint is not the macro; it is the path.
+- exclusive (`bind`): at most one fires per event, the leafward-most match; it is the winner and produces effects. Today's only kind.
+- pre: runs on the way DOWN, at every node the event passes through, before descending into the child. Node-local.
+- post: runs on the way UP, paired with a pre. It consumes what the pre produced.
 
-## Post can only run at the root
+Pre and post are one paired handler, always together; either half may be a no-op. A bare pre (post is a no-op) is what the also-bind was. A bare post (pre is a no-op) is a plain after-hook. The full pair threads a value from pre to post.
 
-An exclusive winner consumes the path: every mercury handler `ascend_mut`s to the root to mutate root state, which walks up and takes the whole `PathMut` chain with it, and then `Break`s. On `Break` there is no unwind, so no ancestor holds a path, so no ancestor's post can run.
+## The guarantee
 
-A mid-tree post could still run in one case — when the subtree MISSES (returns `Continue`), the node recovers its path and could run a post on the way up. But "runs only when nothing deeper won" is exactly the timing of an exclusive bind; the only difference is that it would not consume. So a mid-tree post is either equivalent to a non-consuming exclusive bind (fires on a miss) or, if it must fire regardless of the outcome, impossible.
+If a node's `pre` ran, its `post` runs, exactly once. This is what makes the pair safe to reason about: `pre` can take an action it expects `post` to complete or discard, with no path where `pre` fires and `post` silently does not.
 
-An UNCONDITIONAL post — one that fires whether or not something deeper won — therefore exists only where the path survives the entire descent. That is the root: `handle` holds `&mut Mercury`, lends it to `dispatch`, and has it back when `dispatch` returns. There is no mid-tree unconditional post. Post is a root post-dispatch hook.
+## The three cases, and the one that matters
 
-## Tracing the unwind mechanism
+For a node whose `pre` ran, the event's exclusive handler determines how `post` runs:
 
-The natural way to picture a post is on the unwind: descend into the child, and right before ascending back to the parent — when the child's dispatch returns, or hooked into the `into_parent` step — run the node's post. That is the right instinct, and tracing it shows why it collapses to the root.
+1. No exclusive handler fires in the subtree — the child missed. The path is intact; the framework unwinds through the node and runs `post`. STAYED.
+2. An exclusive handler fires but is node-local — it took `Node<&mut P>`, did not ascend, did not consume the path. The path is still intact, so the framework still unwinds through the node and runs `post`. STAYED.
+3. An exclusive handler ASCENDED past the node — it took `Node<P>`, consumed the path north to `&mut Mercury`, and `set_layer`d. The path is gone and the node is dropped by the layer swap. Its `post` cannot run on the unwind. LEFT.
 
-Descent projects a path chain, each link borrowing the one above:
+Cases 1 and 2 are the easy ones: the path survives, so the framework runs `post` normally. Case 3 is the only hard one, and the design makes it work rather than ruling it out.
 
-```
-&mut Mercury ▸ layer_path ▸ AndReturnHome_path ▸ NavLayer_path
-```
+## How case 3 keeps the guarantee: the drop is the post
 
-An exclusive handler that changes the layer — `open_chrome` — must reach `&mut Mercury` to call `set_layer`, and the only way there is `ascend_mut`, which CONSUMES the chain: it walks `NavLayer_path` up through `AndReturnHome_path` and `layer_path` to `&mut Mercury`, taking all of them. This is not incidental. `set_layer` does `self.layer = new`, and the borrow checker will not let you hold a path INTO `self.layer` while reassigning `self.layer`; the path has to be released first, and consuming it is the release.
+In case 3 the framework cannot run `post` — but `post`'s job on a leave is to DISCARD what `pre` held, and the drop does exactly that. `pre` holds its intermediate value IN the node; when the ascending handler's `set_layer` replaces the layer, the node is dropped and the held value goes with it. So the guarantee holds as an exclusive-or:
 
-So after the handler runs, two things are true at once: the path chain is gone (consumed), and the nodes it addressed are gone (the old `Layer`, `AndReturnHome`, `NavLayer` were dropped when `self.layer` was overwritten). The suspended frames — `AndReturnHome::dispatch`, `Layer::dispatch` — have no path to run a post with and no node to run it on. There is nothing to unwind through.
+- Stayed (cases 1, 2): the framework runs `post`, which consumes the held value.
+- Left (case 3): the node is dropped, which discards the held value.
 
-The root is the sole survivor because it never held a path INTO `self.layer`. It held `&mut Mercury`, lent a path built from it, and gets `&mut Mercury` back when dispatch returns; `self.layer` is a FIELD of the thing it owns, so overwriting the field does not invalidate the owner, and `handle` reads the new `self.layer` safely. So the root post is not merely the easy place, it is the only place — and the reason is a borrow-checker necessity, not a design preference.
+Exactly one happens for every event whose `pre` ran. The distinction — stayed vs left — is carried by whether an exclusive handler ascended past the node, NOT by reading the after-state. That is why this needs no root before/after comparison and works mid-tree.
 
-## What would make mid-tree post real
+## Why this respects the effects invariant
 
-A true mid-tree post needs the descent to be free of structural mutation, so the unwind path stays valid. That means handlers cannot `set_layer` inline; they would return a COMMAND — change the layer to X — that the framework applies at the root AFTER the unwind. Dispatch then becomes a pure walk: pre on the way down, the handler returns effects and commands without touching the tree, posts on the way up with the path and nodes intact, and the root applies the commands last. It is a command-pattern rewrite of the handler model — handlers stop reaching the root and start describing what should change — and far larger than adding a post phase. Under the model we have, where handlers mutate the root inline, post is root-only, full stop.
+Effects leave for the world only on the STAY path, through the framework's ordered output. The LEAVE path only drops a held value; `Drop` emits nothing. This is the inverse of `drop-emits-effects.md` — drop-DISCARDS-effects — and is trivially ordered and safe. No handler issues an effect that mutates state, and no drop emits an effect; state changes only in `handle`, by a handler, directly.
 
-Worth noting the tension it would resolve, since it recurs: a post that runs BEFORE the command is applied sees the pre-transition state, and one that runs after sees the post-transition state, so a before/after compare still wants the root (where "after" is unambiguous). The command rewrite buys mid-tree posts that observe the pre-transition tree, which is a different thing from what the rearm's before/after needs.
+## The handler API
 
-## The pair is a before/after with a threaded snapshot
+Both handlers take the node with `parent` borrowed (`Node<&mut P, D>`), so they can `get_mut` their own node and `ascend` to READ the root, but cannot `ascend_mut` to consume it — the borrow is the restriction. The value `pre` produces is NOT threaded through the framework; `pre` stashes it in a field on its own node, and `post` takes it back out. That is what makes the leave case a plain drop: the stash lives in the node, so `set_layer` dropping the node discards it.
 
-`pre` returns an intermediate value and `post` receives it, which is the shape of a before/after comparison: snapshot on the way down, compare on the way up. Since an unconditional post is root-only, the useful pair is at the root: `pre` snapshots before dispatch, `post` compares after. That is exactly what `Mercury::handle` does by hand today for the rearm — snapshot `discriminant(&self.layer)`, dispatch, compare — written as a declarative handler pair instead of inline driver code.
+- A `pre` handler: `fn(&Event, Node<&mut P, D>)`. It mutates its own node — mints, stashes — and returns nothing; whatever it needs `post` to see, it leaves in a node field.
+- A `post` handler: `fn(&Event, Node<&mut P, D>, Descent) -> Vec<Effect>`. It reads what `pre` stashed and emits. `Descent` is the one outcome exposed, an enum rather than a bool so the meaning is named and the set can grow without churning every signature:
 
-The pair also states the missing symmetry cleanly. The full handler is pre+post; `also_bind` is the pair with a no-op post (act on the way down, ignore the outcome); a bare post is the pair with a no-op pre (ignore the snapshot, act on the outcome). One mechanism, three shapes.
+  ```rust
+  /// What the descent below a post did, for the post to branch on.
+  enum Descent {
+      /// An exclusive bind fired at or below this node.
+      Handled,
+      /// Nothing exclusive fired at or below this node.
+      Unhandled,
+  }
+  ```
 
-## What the rearm wants
+  It is a semantic fact, not the mechanism — the API does NOT expose whether `post` is being called mid-ascent or on a normal unwind, and there is no `DescendedPast` variant, because that case never reaches a `post` (it is the drop). `Descent` is exposed because it is a clean thing a `post` might branch on; the rearm ignores it.
+- An exclusive handler is either node-local (`Node<&mut P>`, does not ascend — the framework keeps the path and can run ancestor posts) or ascending (`Node<P>`, consumes the path to reach the root). Which one separates case 2 from case 3, and it is declared, because the framework must know whether the path survives: the ascending kind is the one that reaches the root to `set_layer`.
 
-The rearm is a before/after: reset the timer only when a key left you in the same layer. Two ways to spell it, and they trade off:
+## The dispatch-contract change
 
-- Pre-only also-bind (`stay`) on `AndReturnHome`, from `timed-layer-wrapper.md`. The rearm lives ON the wrapper, where the timer lives — clean ownership. But it fires on EVERY key, including the ones that leave, arming a fresh timer the leaving handler then drops, so the schedule self-cancels. That wasted arm is the extra work.
+`bind`'s `Dispatch` gains the pre/post phases and the "run posts on the unwind" behavior. The shape:
 
-- Pre+post pair at the root, over the home-vs-rest enum. `pre` snapshots the layer discriminant; `post` compares it after dispatch and rearms only when it is unchanged and the event was a key. No wasted arm — it never arms on a leave, because it sees the leave before deciding. But the decision is root-level and reaches into the current timed layer to rearm, which is the "the outside does the rearming" shape the also-bind was chosen to avoid, and it is a bigger proc-macro feature (paired handlers, a threaded value, a root post phase).
+- Descend visits every node on the active path; each runs its `pre` (which stashes in the node) before recursing into the child.
+- On the way up, each node runs its `post`, EVEN past a node-local exclusive `Break` — a node-local exclusive handler hands the path back, so the unwind continues. `post` receives a `Descent` — `Handled` if an exclusive matched at or below this node, `Unhandled` if not.
+- An ascending exclusive handler consumes the path and short-circuits the unwind; the nodes below the ascent are dropped, and their stashed values with them — the leave case, handled by the drop, never a `post` call.
 
-The mechanics of the pair are sound: `set_layer` runs deep during dispatch (the exclusive handler ascends and swaps `self.layer`), so by the time the root post runs, the layer has already changed. The discriminant compare sees the post-transition layer and correctly declines to rearm on a leave. Post is not "too early"; it is strictly after every state change the event caused.
+The one thing the framework must thread that it does not today is the path back from a node-local exclusive `Break` so the unwind can proceed; the pre/post values ride in node fields, not the framework. The exclusive winner's effects and every `post`'s effects accumulate into one output.
 
-So it is ownership-plus-waste (also-bind) versus no-waste-plus-root-decision (pre+post). The pre+post is the general, "missing" handler and it removes the only blemish on the also-bind rearm (the self-cancelling timer on leaves); the also-bind is the smaller feature and keeps the rearm on the wrapper.
+The exact generated bodies (`dispatch_impl`, `descend_impl`, the derived-level impls) follow from this contract and are written out during implementation; the decisions above — the three cases, the guarantee, the borrowed-node handler shape, the stash-in-the-node value passing, `Descent` as the only exposed outcome, node-local vs ascending exclusive handlers, drop-discards-the-stash — are what the implementation must not re-decide.
 
-## The open decision
+## The rearm is the first user
 
-Whether to build post/pre+post at all, or ship the rearm as the pre-only also-bind and accept the wasted arm. Points:
+`AndReturnHome` gets a pre/post pair instead of an also-bind:
 
-- The also-bind (pre-only) is already fully specified (`also-binds.md`) and needed regardless — a genuine pre-descent per-event effect (modifier tracking, an overlay clear) has no post half.
-- Post/pre+post is additional proc-macro surface: a root-only post phase, and the threading of `pre`'s value into `post`. Given post is root-only, an alternative to a full handler kind is to keep the rearm's before/after as the named `rearm_after` method it already is, and NOT generalize — the pair earns its keep only if a second before/after concern appears.
-- If it is built, `also_bind` becomes the pre-only special case of it, and the taxonomy is one mechanism (pre+post) with three degenerate spellings, which is tidier than two unrelated attributes.
+- `pre` arms a fresh timer — `arm_return_home()` gives a `(guard, schedule_effect)` — and holds BOTH in the node without emitting the schedule. The held value is the schedule effect.
+- `post` (stay) emits the held schedule. The timer is reset; the reschedule reaches the world.
+- On a leave (case 3), the ascending handler's `set_layer` drops `AndReturnHome`, dropping the held schedule and the guard. Nothing is emitted, nothing is scheduled, nothing self-cancels.
 
-Recommendation deferred to review: the wasted arm is cosmetic (a self-cancelling effect visible in tests), so the also-bind is shippable now; the pre+post is the cleaner end state but should wait for a second before/after user, so the general machine is justified by more than one case.
+This is the wasteless rearm, on the wrapper, owning its own timer — no root `rearm_after`, and none of the also-bind's self-cancelling arm on the keys that leave. `AndReturnHome` also keeps its exclusive firing (`guard.trigger() => to_home`), unchanged.
+
+## Tests
+
+In `crates/bind/tests/`, a fixture with a pre/post node over the existing tree, its `pre` incrementing a counter and holding a value, its `post` recording what it consumed.
+
+- Case 1: an event that misses the subtree runs `pre` then `post`; `post` sees the held value.
+- Case 2: a node-local exclusive handler fires below the pre/post node; `pre` and `post` still both run, and the exclusive winner's effect and the `post`'s effect both appear in the output.
+- Case 3: an ascending exclusive handler (one that consumes the path) fires below; `pre` runs, `post` does NOT run, and the held value is dropped — asserted by a drop counter on the held type.
+- The guarantee: across all three, `pre`-count equals `post`-count-plus-drop-count.
+- The exclusive winner is unchanged: the leafward-most exclusive still wins and still consumes; pre/post are additive around it.
+
+## Status
+
+The design is decided; the bind-core implementation is the work — the pre/post phases, the held-value threading, the path-return on a node-local exclusive `Break`, and the node-local-vs-ascending exclusive distinction. It subsumes the also-bind entirely (`pre` with a no-op `post`), so there is one mechanism, not two, and the rearm is its first user.

@@ -45,15 +45,15 @@ pub enum ReturnHomeLayers {
 Mercury ─▶ Layer ─▶ AndReturnHome ─▶ ReturnHomeLayers ─▶ NavLayer | ResizeLayer | AppLayer | SiteLayer
 ```
 
-`AndReturnHome` is a concrete node the existing derive handles — no generics. It binds the firing once and resets the timer with an also-bind; the four leaves lose their timer field and firing entirely; and `handle` sheds its timer-reset block. The one thing it needs that mercury does not have yet is also-bind dispatch itself (the Prerequisite). The shared exit keys (`escape`, `o`, `t`) stay on the leaves for now; lifting them onto the wrapper is a follow-up, as is grouping `Home`/`Typing`.
+`AndReturnHome` is a concrete node the existing derive handles — no generics. It binds the firing once and resets the timer with a pre/post pair; the four leaves lose their timer field and firing entirely; and `handle` sheds its timer-reset block. The one thing it needs that mercury does not have yet is the pre/post handler model (the Prerequisite). The shared exit keys (`escape`, `o`, `t`) stay on the leaves for now; lifting them onto the wrapper is a follow-up, as is grouping `Home`/`Typing`.
 
 ## Prerequisite
 
-The reset-on-activity is an also-bind on the wrapper, so also-bind dispatch (`also-binds.md`) has to land first. That is why this is sequenced after it. The payoff: `handle` sheds the timer reset entirely — no before/after discriminant check, no `Layer::rearm_timeout` — because the also-bind does the resetting.
+The reset-on-activity is a pre/post pair on the wrapper, so the pre/post handler model (`handler-kinds.md`) has to land first. That is why this is sequenced after it. The payoff: `handle` sheds the timer reset entirely — no before/after discriminant check, no `Layer::rearm_timeout` — because the pair does the resetting, on the wrapper, with no wasted work: `pre` (`arm`) mints and holds the reschedule, `post` (`stay`) emits it on a stay, and a leave drops the held reschedule with the node.
 
 ## The change
 
-Atomic: the tree restructure, the leaf reparenting, the constructors, the handlers, `handle`, and the test assertions move together, because the old flat `Layer` variants disappear. Behavior is unchanged but for the extra work the also-bind `stay` does on the keys that leave (a fresh timer that self-cancels; see `also-binds.md`).
+Atomic: the tree restructure, the leaf reparenting, the constructors, the handlers, `handle`, and the test assertions move together, because the old flat `Layer` variants disappear. Behavior is unchanged: the pre/post pair rearms on a stay and discards the held reschedule on a leave (the drop is the leave-post), so unlike a bare pre it does no wasted work.
 
 ### The new module
 
@@ -71,28 +71,32 @@ use super::{AppLayer, LayerPath, NavLayer, ResizeLayer, SiteLayer, arm_return_ho
 
 /// The layers that return home after [`RETURN_TO_HOME_TIMEOUT`](super::RETURN_TO_HOME_TIMEOUT) of
 /// idle, wrapped in the one timer they share. `AndReturnHome` owns the guard, the firing that goes
-/// home, and the also-bind that resets the timer on any key reaching it; its [`layers`](Self::layers)
-/// is which such layer is active. Home and typing are not here: home is the destination the timer
-/// returns to, and typing is passthrough, so neither carries a timer.
+/// home, and the pre/post pair that resets the timer on a key that keeps you in the layer; its
+/// [`layers`](Self::layers) is which such layer is active. Home and typing are not here: home is the
+/// destination the timer returns to, and typing is passthrough, so neither carries a timer.
 #[derive(Bind, Debug)]
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
-// The firing goes home (exclusive, post-descend); a key reaching the wrapper resets the timer
-// (also-bind, pre-descend). Only this node's own timer: a firing from a layer already left matches
-// nothing.
+// The firing goes home (exclusive). On any key, a pre/post pair resets the timer (`handler-kinds.md`):
+// `pre` (`arm`) mints a fresh timer and holds the schedule in `pending` without emitting; `post`
+// (`stay`) emits it on a stay; a leave drops the node, dropping `pending` unemitted — no wasted arm.
 #[bind(|path| path.get().guard.trigger() => to_home)]
-#[also_bind(AnyKey => stay)]
+#[pre_post(AnyKey => arm, stay)]
 pub struct AndReturnHome {
     #[resolve_into]
     layers: ReturnHomeLayers,
     // Read by the trigger matching its firing, and held for its `Drop`: dropping the guard cancels
     // the return-home timer.
     guard: TimerGuard,
+    // The schedule effect `arm` minted and `stay` emits on a stay; `None` between dispatches. On a
+    // leave the node is dropped and this goes with it, unemitted — the drop is the leave-post.
+    pending: Option<MercuryEffect>,
 }
 
 impl AndReturnHome {
     /// Enter a return-home layer with its timer armed, returning the wrapper and the effect that
-    /// schedules it.
+    /// schedules it. `pending` is `None`: entry emits its schedule directly (it is not a stay), and
+    /// only `arm`/`stay` on later keys use the held slot.
     #[must_use]
     pub(crate) fn new(layers: impl Into<ReturnHomeLayers>) -> (Self, MercuryEffect) {
         let (guard, timer) = arm_return_home();
@@ -100,18 +104,19 @@ impl AndReturnHome {
             Self {
                 layers: layers.into(),
                 guard,
+                pending: None,
             },
             timer,
         )
     }
 
-    /// Reset the return-home timer on in-layer activity: drop the old guard (cancelling it) and arm
-    /// a fresh one, returning the effect that schedules it.
-    #[must_use]
-    pub(crate) fn stay(&mut self) -> MercuryEffect {
+    /// `pre`: mint a fresh timer, replacing the old guard (which cancels its timer), and stash the
+    /// schedule in `pending` WITHOUT emitting. `stay` emits it on a stay; a leave drops the node and
+    /// the stashed schedule with it.
+    pub(crate) fn arm(&mut self) {
         let (guard, timer) = arm_return_home();
         self.guard = guard;
-        timer
+        self.pending = Some(timer);
     }
 
     /// `pub` because the integration test crate reads it to assert which layer is active.
@@ -214,9 +219,9 @@ pub fn overlay_content(&self, foreground: &Foreground) -> &'static str {
 }
 ```
 
-`Layer::is_passthrough` is unchanged: `matches!(self, Self::Typing(_))`. `Layer::rearm_timeout` is deleted — the also-bind `stay` on `AndReturnHome` replaces it.
+`Layer::is_passthrough` is unchanged: `matches!(self, Self::Typing(_))`. `Layer::rearm_timeout` is deleted — the pre/post pair on `AndReturnHome` replaces it.
 
-`Mercury::handle` sheds the timer-reset block it grew for the earlier bug fix and goes back to a bare dispatch, because the also-bind does the resetting. Before:
+`Mercury::handle` sheds the timer-reset block it grew for the earlier bug fix and goes back to a bare dispatch, because the pre/post pair does the resetting. Before:
 
 ```rust
 pub fn handle(&mut self, event: &MercuryEvent) -> Option<Vec<MercuryEffect>> {
@@ -232,7 +237,7 @@ pub fn handle(&mut self, event: &MercuryEvent) -> Option<Vec<MercuryEffect>> {
 }
 ```
 
-after (the top-level `bind::dispatch` signature is unchanged by also-bind dispatch; it builds the accumulator and returns it, per `also-binds.md`):
+after (the top-level `bind::dispatch` signature is unchanged; it builds the accumulator and returns it, per `handler-kinds.md`):
 
 ```rust
 pub fn handle(&mut self, event: &MercuryEvent) -> Option<Vec<MercuryEffect>> {
@@ -240,13 +245,22 @@ pub fn handle(&mut self, event: &MercuryEvent) -> Option<Vec<MercuryEffect>> {
 }
 ```
 
-The also-bind handler the bind names lives with the other handlers; it takes the also-bind `Node<&mut P, ()>` shape (`also-binds.md`) and calls the wrapper's `stay`:
+The pre and post handlers the bind names live with the other handlers, both on the `Node<&mut P, ()>` shape (`handler-kinds.md`). `arm` (pre) mints a fresh timer and stashes the guard and the schedule in the node without emitting; `post` takes no outcome parameter (not needed here) and emits what `arm` stashed:
 
 ```rust
-pub(crate) fn stay<'a>(_ev: &KeyEvent, node: Node<&mut AndReturnHomePath<'a>, ()>) -> MercuryEffect {
-    node.parent.get_mut().stay()
+// pre: mint, stash, do not emit. On a leave the node is dropped and `pending` goes with it.
+pub(crate) fn arm<'a>(_ev: &KeyEvent, node: Node<&mut AndReturnHomePath<'a>, ()>) {
+    node.parent.get_mut().arm();
+}
+
+// post (stay): emit what `arm` stashed. Runs only when the key kept you in the layer. `Descent`
+// (whether an exclusive matched below) is exposed by the post model but the rearm ignores it.
+pub(crate) fn stay<'a>(_ev: &KeyEvent, node: Node<&mut AndReturnHomePath<'a>, ()>, _descent: Descent) -> Option<MercuryEffect> {
+    node.parent.get_mut().pending.take()
 }
 ```
+
+`AndReturnHome::arm` replaces the old guard (cancelling its timer) and stores the fresh `(guard, schedule)`; `pending.take()` in `stay` hands the schedule to the output on a stay, and leaves `None` behind.
 
 ### The four leaf layers
 
@@ -393,4 +407,4 @@ Two changes this doc deliberately leaves out, each its own later doc:
 
 ## Note
 
-`AndReturnHome` is a concrete named node with a `#[resolve_into]` field, which the existing derive handles — no generics, no new node machinery. Its one dependency is also-bind dispatch (`also-binds.md`), for the `#[also_bind]` stay; that is the Prerequisite and the reason for the sequencing. The positional-`#[resolve_into]` capability (`positional-resolve-into.md`, landed) is not exercised by this shape — a two-field wrapper is a named struct, not a tuple.
+`AndReturnHome` is a concrete named node with a `#[resolve_into]` field, which the existing derive handles — no generics, no new node machinery. Its one dependency is the pre/post handler model (`handler-kinds.md`), for the `arm`/`stay` pair; that is the Prerequisite and the reason for the sequencing. The positional-`#[resolve_into]` capability (`positional-resolve-into.md`, landed) is not exercised by this shape — a two-field wrapper is a named struct, not a tuple.
