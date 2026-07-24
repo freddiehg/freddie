@@ -6,11 +6,11 @@
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::spanned::Spanned;
-use syn::{Fields, Ident, Path, Type};
+use syn::{Fields, Ident, Index, Member, Path, Type};
 
 /// The `#[resolve_into]` field of a struct: its name, child type, and, when the
 /// child has multiple parents, the route-enum variant to wrap this node into.
-pub type ResolveInto = (Ident, Type, Option<Path>);
+pub type ResolveInto = (Member, Type, Option<Path>);
 
 /// Finds the single `#[resolve_into]` field of a struct, if any.
 ///
@@ -19,22 +19,21 @@ pub type ResolveInto = (Ident, Type, Option<Path>);
 /// Errors if more than one field carries `#[resolve_into]`.
 pub fn find_resolve_into(fields: &Fields) -> syn::Result<Option<ResolveInto>> {
     let mut found: Option<ResolveInto> = None;
-    if let Fields::Named(named) = fields {
-        for f in &named.named {
-            if !f.attrs.iter().any(|a| a.path().is_ident("resolve_into")) {
-                continue;
-            }
-            if found.is_some() {
-                return Err(syn::Error::new(
-                    f.span(),
-                    "at most one `#[resolve_into]` field per struct",
-                ));
-            }
-            let Some(ident) = f.ident.clone() else {
-                continue;
-            };
-            found = Some((ident, f.ty.clone(), parent_route(&f.attrs)?));
+    for (i, f) in fields.iter().enumerate() {
+        if !f.attrs.iter().any(|a| a.path().is_ident("resolve_into")) {
+            continue;
         }
+        if found.is_some() {
+            return Err(syn::Error::new(
+                f.span(),
+                "at most one `#[resolve_into]` field per struct",
+            ));
+        }
+        let member = f
+            .ident
+            .clone()
+            .map_or_else(|| Member::Unnamed(Index::from(i)), Member::Named);
+        found = Some((member, f.ty.clone(), parent_route(&f.attrs)?));
     }
     Ok(found)
 }
@@ -155,8 +154,8 @@ pub fn node_parent(attrs: &[syn::Attribute]) -> syn::Result<Option<Path>> {
 
 /// How a child hangs off its parent node, for building the descent projection.
 pub enum Via<'a> {
-    /// A struct `#[resolve_into]` field.
-    Field(&'a Ident),
+    /// A struct `#[resolve_into]` field, named (`.field`) or positional (`.0`).
+    Field(&'a Member),
     /// A single-field enum variant `Parent::Variant(Child)`.
     Variant(&'a Ident),
 }
