@@ -434,35 +434,38 @@ impl<T, D> OnDevice<T, D> {
 
 `D` must be `PartialEq` for matching. For `MercuryTrigger` / accumulate it also needs `Eq + Hash + Copy` (or `Clone`) like every other trigger. No other trait: the consumer owns what a device *is*.
 
-### Constructor (key-side)
+### Constructor: blanket `WithDevice` on every key trigger
 
-Same chaining style as `Key::down().with(flags)`:
+Not per-type methods on `Key` / `KeyPress` / `KeyChord` only. A trait on all `EventTrigger`s so consumer-local triggers (`AnyKey`, etc.) get the same sugar:
 
 ```rust
-impl KeyPress {
-    /// Match only when the event's device is `device`.
+// crates/freddie_keys/src/lib.rs
+
+/// Attach a device filter to any key-side trigger.
+pub trait WithDevice: Sized {
     #[must_use]
-    pub const fn on_device<D>(self, device: D) -> OnDevice<Self, D> {
-        OnDevice { device, inner: self }
+    fn on_device<D>(self, device: D) -> OnDevice<Self, D> {
+        OnDevice {
+            device,
+            inner: self,
+        }
     }
 }
 
-// Same method on Key and KeyChord (or a small extension trait for all three).
+impl<T: EventTrigger> WithDevice for T {}
 ```
 
-### Bind lines
+Import `WithDevice` at the bind site (same pattern as other extension traits). Then:
 
 ```rust
-// any device (bare key trigger; Event = KeyEvent via projecting TryFrom)
-Key::KeyN.down() => to_nav
-
-// one device
+Key::KeyN.down() => to_nav                              // any device
 Key::Escape.down().on_device(DeviceClass::Desktop) => foo
-
-// same handler on two devices: two lines
 Key::KeyH.down().on_device(DeviceClass::Desktop) => tile_left
 Key::KeyH.down().on_device(DeviceClass::Laptop) => tile_left
+AnyKey.on_device(DeviceClass::Desktop) => desktop_passthrough  // mercury/figaro AnyKey
 ```
+
+`AnyKey` can stay app-local (`EventTrigger<Event = KeyEvent>`); the blanket impl still applies. Same dispatch caveats as bare `AnyKey` (a leaf `AnyKey.on_device` still claims every key on that device).
 
 Handlers for `OnDevice` receive `&DeviceKeyed<KeyEvent, D>`; bare keys still receive `&KeyEvent`.
 
@@ -527,6 +530,6 @@ intercept_with_source(
 Each step is independently shippable.
 
 1. `freddie_hid_device` leaf: `SourceId`, `source_of`, `resolve`, `DeviceInfo`, `prop_*` as above. Workspace member. Demo: listen tap, print `resolve(source_of(e))` per key. No `freddie_keyboard` change.
-2. `freddie_keys`: `DeviceKeyed`, `OnDevice`, `on_device` on `Key` / `KeyPress` / `KeyChord`. Unit tests for `is_matching` (no macOS). mercury unaffected (does not use them).
+2. `freddie_keys`: `DeviceKeyed`, `OnDevice`, `WithDevice` blanket on `EventTrigger`, unit tests for `is_matching` (no macOS). mercury unaffected until it opts in.
 3. `freddie_keyboard`: extract `run_tap`, add generic `intercept_with_source` with categorize + `HashMap<SourceId, T>`. `intercept` stays the thin wrapper. mercury still calls `intercept`.
 4. Stop. Figaro work is the other doc (`device-conditioned-keymaps.md`): `DeviceClass`, model `DeviceKeyed`, dual `TryFrom`, daemon wire-up, device-scoped binds.
