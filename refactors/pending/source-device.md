@@ -611,6 +611,6 @@ intercept_with_source(
 Each step is independently shippable.
 
 1. `freddie_hid_device` leaf: `SourceId`, `source_of`, `resolve`, `DeviceInfo`, `prop_*` as above. Workspace member. Demo: listen tap, print `resolve(source_of(e))` per key. No `freddie_keyboard` change.
-2. `freddie_keys`: `DeviceKeyed`, `OnDevice`, `AsDeviceSlice`, `on_device` / `on_devices` on `Key` / `KeyPress` / `KeyChord`. Unit tests for `is_matching` (no macOS). mercury unaffected (does not use them).
+2. `freddie_keys`: `DeviceKeyed`, `OnDevice`, `on_device` on `Key` / `KeyPress` / `KeyChord`. Unit tests for `is_matching` (no macOS). mercury unaffected (does not use them).
 3. `freddie_keyboard`: extract `run_tap`, add generic `intercept_with_source` with categorize + `HashMap<SourceId, T>`. `intercept` stays the thin wrapper. mercury still calls `intercept`.
-4. Stop. Figaro work is the other doc (`device-conditioned-keymaps.md`): `DeviceClass: AsDeviceSlice`, model `DeviceKeyed`, dual `TryFrom`, daemon wire-up, device-scoped binds.
+4. Stop. Figaro work is the other doc (`device-conditioned-keymaps.md`): `DeviceClass`, model `DeviceKeyed`, dual `TryFrom`, daemon wire-up, device-scoped binds.
