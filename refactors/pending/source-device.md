@@ -325,14 +325,12 @@ where
 {
     // Cached categorize results only. DeviceInfo is not retained.
     let mut by_source: HashMap<SourceId, T> = HashMap::new();
-    // No HID origin: one categorize(None), reused for every such key.
-    let mut no_source: Option<T> = None;
+    // No HID origin is always the same outcome: categorize once at install, clone per key.
+    let no_source = categorize(None);
 
     run_tap(move |input, event| {
         let class = match source_of(event) {
-            None => no_source
-                .get_or_insert_with(|| categorize(None))
-                .clone(),
+            None => no_source.clone(),
             Some(id) => by_source
                 .entry(id)
                 .or_insert_with(|| {
