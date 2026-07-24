@@ -592,39 +592,43 @@ After:
 
 Exclusive still takes path by value and may `ascend_mut`. No posts, no claim tracking.
 
-### P1 — `into_parent` sink seam
+### P1 — `on_into_parent` + sink (together, not sink alone)
+
+Do not add an unused `sink` argument "for later." The sink appears in the same change that runs a post and pushes into it.
 
 ```rust
 // before
 fn into_parent(self) -> Parent
-// after
-fn into_parent(self, _sink: &mut Vec<Effect>) -> Parent  // still just returns parent
+
+// after — one step
+PathMut { …, on_into_parent: F }
+fn into_parent(self, sink: &mut Vec<Effect>) -> Parent {
+    let (parent, effs) = (self.on_into_parent)(self.parent /*, … */);
+    sink.extend(effs);
+    parent
+}
 ```
 
-Miss-unwind threads the sink. With no posts, untouched.
+All current sites pass `no_post` (returns parent + empty effects). Behavior-identical. User code never constructs `F`.
 
-### P2 — `PathMut` carries `on_into_parent: F`, default `no_post`
+### P2 — `from_fn` framework-only
 
-`from_fn` takes a `FnOnce` that runs inside `into_parent`. All current sites pass `no_post` (returns path + empty effects). No user-facing posts yet. User code never constructs `F`.
+`from_fn` / `from_box` crate-private (or sealed). Only the derive builds child paths. Can ship with P1 or immediately after.
 
-### P3 — `from_fn` framework-only
-
-`from_fn` / `from_box` crate-private (or sealed). Only the derive builds child paths.
-
-### P4 — full ascent + one `&mut Context` (still no user posts)
+### P3 — full ascent + one `&mut Context` (still no user posts)
 
 Drop `Break`. Every level returns its path. Thread `ctx: &mut Context` (starts structure Valid, claim None).
 
 - child always returns path
 - exclusive runs only if `ctx.claim()` is `None`, then `ctx.set_claim(Claimed)`
 
-Deepest-wins without short-circuit past parents. Requires exclusives to **return the path**. Handlers that only `get_mut` adapt easily. Handlers that `ascend_mut` + `set_layer` wait on the reshape carrier (open). If mercury blocks, ship P4 against bind tests first.
+Deepest-wins without short-circuit past parents. Requires exclusives to **return the path**. Handlers that only `get_mut` adapt easily. Handlers that `ascend_mut` + `set_layer` wait on the reshape carrier (open). If mercury blocks, ship P3 against bind tests first.
 
-### P5 — exclusive call shape under existing `#[bind]` only
+### P4 — exclusive call shape under existing `#[bind]` only
 
-Generate rephrases `#[bind]` through `run_exclusive` (read/write claim on `&mut Context`). Handlers return `(Vec<Effect>, P)`. No new attributes. Behavior-identical to P4.
+Generate rephrases `#[bind]` through `run_exclusive` / `if_unclaimed` (read/write claim on `&mut Context`). Handlers return `(Vec<Effect>, P)`. No new attributes. Behavior-identical to P3. Naming: `exclusive` or `if_unclaimed` — both fine; `exclusive` names the role, `if_unclaimed` names the gate (and does not by itself imply mutation — `set_claim` does).
 
-### Feature steps (after P0–P5)
+### Feature steps (after P0–P4)
 
 1. `#[post(trig => body)]` — schedule `opt_N = Some(())`; run on ascent with owned path + `&mut Context`.
 2. `Structure` Valid/Invalidated — `ctx.set_structure` in `into_parent` after reshape.
