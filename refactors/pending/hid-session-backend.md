@@ -1,8 +1,8 @@
-# freddie_keyboard_hid: the interface crate
+# freddie_keyboard_hid: the grab crate
 
-The new crate figaro depends on, exposing the same `intercept`/`Interceptor`/`Emitter` as `freddie_keyboard`, but backed by `freddie_hidd`'s socket instead of a CGEventTap: the interceptor's reader turns each `Uplink::Input` into an `on_key` call, and the emitter turns `emit`/`tap` into `Downlink::Emit`s. This is the first, minimal change. It compiles and figaro can depend on it with the emitter logic unit-tested; it does nothing end to end until `freddie_hidd` exists (`hidd.md`).
+The new crate figaro depends on. It grabs the keyboard through `freddie_hidd`'s socket: `intercept`'s reader turns each `Uplink::Input` into an `on_key` call, and the `Emitter` turns `emit`/`tap` into `Downlink::Emit`s. This is the first, minimal change. It compiles and figaro can depend on it with the emitter logic unit-tested; it does nothing end to end until `freddie_hidd` exists (`hidd.md`).
 
-Nothing above `intercept` changes. figaro is the mercury shape against this crate; its model, event loop, effect loop, `freddie_app_nav`, and menu bar are untouched.
+The grab is observe-plus-emit: `on_key` is `Fn(KeyEvent)` with no return, because HID has no chain to return a key into. This is not `freddie_keyboard`'s `intercept` signature (its tap can pass, replace, or drop by return), and it is not forced to be. figaro is written against this crate, mercury against `freddie_keyboard`; they share the `freddie_keys` vocabulary and an `Emitter` that means the same thing, and diverge where the backends genuinely differ. figaro is otherwise the mercury shape: its model, event loop, effect loop, `freddie_app_nav`, and menu bar are untouched.
 
 ## The crate
 
@@ -78,15 +78,15 @@ Prefactor within this change: `freddie_keys::{Key, PressType, ModifierFlags, Key
 ## intercept
 
 ```rust
-/// Connect to `freddie_hidd` and hand back the interceptor and emitter. `on_key` runs on the
-/// reader thread for each physical key the daemon forwards.
+/// Grab the keyboard through `freddie_hidd`. `on_key` runs on the reader thread for each
+/// physical key the daemon forwards; the caller drives output through the `Emitter`.
 ///
 /// # Errors
 ///
 /// [`CaptureError`] if the daemon socket cannot be reached: `freddie_hidd` is not running,
 /// or this user is not the one it was installed for.
 pub fn intercept(
-    on_key: impl Fn(KeyEvent) -> Option<KeyEvent> + Send + 'static,
+    on_key: impl Fn(KeyEvent) + Send + 'static,
 ) -> Result<(Interceptor, Emitter), CaptureError> {
     let sock = UnixStream::connect(daemon_socket_path()).map_err(|_| CaptureError)?;
     let writer = sock.try_clone().map_err(|_| CaptureError)?;
@@ -95,11 +95,7 @@ pub fn intercept(
         let mut sock = sock;
         loop {
             match freddie_hid_wire::read_msg::<Uplink>(&mut sock) {
-                Ok(Uplink::Input(event)) => {
-                    // The return is ignored: there is no chain to return a key into. A key the
-                    // model passes is one it re-emits through the Emitter, never one it returns.
-                    let _ = on_key(event);
-                }
+                Ok(Uplink::Input(event)) => on_key(event),
                 Err(_) => break, // daemon closed the socket; the interceptor is done
             }
         }
@@ -111,7 +107,7 @@ pub fn intercept(
 }
 ```
 
-`on_key`'s `Option<KeyEvent>` return is part of the shared signature and is ignored here, exactly as the CGEventTap backend's return path is unused by mercury today. Both backends are observe-plus-emit.
+`on_key` takes no return: HID has no chain to return a key into, so a key the model passes is one it re-emits through the `Emitter`. This is the honest shape, not `freddie_keyboard`'s returning `intercept` with the return ignored.
 
 ## Interceptor
 
