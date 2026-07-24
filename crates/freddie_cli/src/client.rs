@@ -495,17 +495,22 @@ fn level_color(level: Level) -> &'static str {
     }
 }
 
-/// The wall-clock time out of an RFC 3339 stamp: `2026-07-24T04:31:38.337010Z` reads as
-/// `04:31:38.337`. A follower watches live, so the date is the file's and the microseconds
-/// are noise on screen; `--json` keeps the whole stamp for anything that needs it. A stamp
-/// that is not the shape the daemon writes is shown as it is rather than mangled.
-fn format_timestamp(ts: &str) -> &str {
-    let time = ts.split_once('T').map_or(ts, |(_, rest)| rest);
+/// The month-day and wall-clock time out of an RFC 3339 stamp: `2026-07-24T04:31:38.337010Z`
+/// reads as `07-24 04:31:38.337`. The year rarely changes across a log and the microseconds are
+/// noise on screen; `--json` keeps the whole stamp for anything that needs it. A stamp that is not
+/// the shape the daemon writes is shown as it is rather than mangled.
+fn format_timestamp(ts: &str) -> Cow<'_, str> {
+    let Some((date, time)) = ts.split_once('T') else {
+        return Cow::Borrowed(ts);
+    };
     let time = time.strip_suffix('Z').unwrap_or(time);
-    match time.split_once('.') {
+    let hms = match time.split_once('.') {
         Some((hms, frac)) => &time[..hms.len() + 1 + frac.len().min(3)],
         None => time,
-    }
+    };
+    // `2026-07-24` -> `07-24`: drop the year.
+    let month_day = date.split_once('-').map_or(date, |(_, rest)| rest);
+    Cow::Owned(format!("{month_day} {hms}"))
 }
 
 /// A dispatch's `duration_us`, in the units it reads best in: microseconds under a
@@ -819,19 +824,19 @@ mod tests {
         let line = shown(DISPATCH, &view(false), false);
         assert_eq!(
             line.trim_end(),
-            "09:14:02.114 pid=1 mercury::daemon INFO dispatch event=Key(KeyR) effects=[]"
+            "07-21 09:14:02.114 pid=1 mercury::daemon INFO dispatch event=Key(KeyR) effects=[]"
         );
     }
 
     #[test]
-    fn a_timestamp_reads_as_the_wall_clock_time() {
+    fn a_timestamp_reads_as_the_month_day_and_wall_clock_time() {
         assert_eq!(
-            format_timestamp("2026-07-24T04:31:38.337010Z"),
-            "04:31:38.337"
+            &*format_timestamp("2026-07-24T04:31:38.337010Z"),
+            "07-24 04:31:38.337"
         );
-        assert_eq!(format_timestamp("2026-07-24T04:31:38Z"), "04:31:38");
+        assert_eq!(&*format_timestamp("2026-07-24T04:31:38Z"), "07-24 04:31:38");
         // A stamp that is not the daemon's shape is shown untouched.
-        assert_eq!(format_timestamp("whenever"), "whenever");
+        assert_eq!(&*format_timestamp("whenever"), "whenever");
     }
 
     #[test]
