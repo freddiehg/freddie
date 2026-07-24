@@ -149,23 +149,6 @@ fn stay(node: &mut AndReturnHome, _nested: Nested) -> Option<MercuryEffect> {
 
 Note this resets the timer on any key that reaches the wrapper, INCLUDING keys that then leave (`c`), whose `stay` runs during the ascent (before `set_layer`) and emits a schedule that the imminent layer swap cancels — the wasted arm. Distinguishing a stay from a leave needs to know the layer changed, which happens after the ascent, so it is a root fact; `pre/post` cannot see it, and the rearm either accepts the wasted arm or the reset stays at the root (`rearm_after`). `pre/post` is exact for effects whose decision does not depend on a state change that happens after the crossing; the rearm is a marginal fit, and that is a real input to whether to build this for the rearm specifically versus for a cleaner first user.
 
-## What this obviates in no-clobber
-
-Most of `refactors/pending/no-clobber.md` exists to license one pattern: a fallback catch-all (`AnyKey => passthru`) that every specific bind beneath it necessarily shadows. That is what forces the three clobber modes (`no_clobber`/`expects_clobber`/`may_clobber`), the `AnyKey.except(..)` lists, and the "a catch-all is not exempt" rule. `post` + `Nested` dissolves the pattern: a fallback is not an exclusive bind that everything below shadows, it is a `post` that reads `Nested`.
-
-```rust
-// was: TypingLayer #[bind(AnyKey.except(..) => passthru)], every descendant `expects_clobber`
-// now: a post that passes the key through only if nothing exclusive claimed it
-fn passthru(node: &mut TypingLayer, nested: Nested) -> Option<Effect> {
-    match nested {
-        Nested::Missed => Some(emit(node.key)),   // nothing claimed it → pass through
-        Nested::Handled => None,                  // a bind claimed it → do not
-    }
-}
-```
-
-The specific binds (`Escape => to_home`) stay ordinary exclusive binds; there is no catch-all exclusive for them to shadow, so no `expects_clobber`, no `except` list, no forced clobber. Modifier tracking, the other half of `maybe_pass_through`, is a `pre` that runs on every key regardless. What survives of no-clobber is only its simplest piece — expanding a trigger to its concrete `(key, press)` set so `Key::KeyR` and `Key::KeyR.down()` stop silently shadowing — which is a real, small win. The bulk of it, the modes and the catch-all rules, is obviated, because the additive and fallback cases they existed to license are `pre`/`post` now, not exclusive binds fighting for one slot.
-
 ## Tests
 
 `crates/bind/tests/`, a `#[pre_post]` node over the existing tree:
