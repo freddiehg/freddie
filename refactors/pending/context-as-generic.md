@@ -5,9 +5,9 @@ Not done. Stub. Companion to `invalidation.md`.
 `invalidation.md` currently fixes post context as a concrete bag:
 
 ```rust
-// depth: u32               — lives on Context; step_up each into_parent; invalidate(d) raises it
+// invalidation_depth: u32               — lives on Context; step_up each into_parent; invalidate(d) raises it
 // claim: Option<Claimed>   — claim() try-take
-// validity(&self) -> Validity  — getter over depth == 0 (not stored)
+// validity(&self) -> Validity  — getter over invalidation_depth == 0 (not stored)
 ```
 
 That is odd: two unrelated facts glued under one name because the ascent happens to need both today. The next field (fallback policy, …) would make the bag worse. This doc is the alternative: **context is a type parameter of the dispatch machine**, not a single struct in `bind`.
@@ -40,14 +40,14 @@ pub trait Dispatch<M: Bindings, C = ()>: Place {
 pub struct Claimed;
 
 pub struct MercuryContext {
-    depth: u32,
+    invalidation_depth: u32,
     claim: Option<Claimed>,
 }
 
 impl MercuryContext {
-    pub fn depth(&self) -> u32 { self.depth }
-    /// Getter over depth. Not a stored field.
-    pub fn validity(&self) -> Validity { /* depth == 0 → Valid else Invalidated */ }
+    pub fn invalidation_depth(&self) -> u32 { self.invalidation_depth }
+    /// Getter over invalidation_depth. Not a stored field.
+    pub fn validity(&self) -> Validity { /* invalidation_depth == 0 → Valid else Invalidated */ }
     pub fn invalidate(&mut self, d: u32) { /* max with current */ }
     pub fn step_up(&mut self) { /* saturating_sub(1) on into_parent */ }
     pub fn claim(&mut self) -> Option<Claimed> { /* try-take */ }
@@ -65,7 +65,7 @@ impl MercuryContext {
 
 ## Open
 
-- Whether `invalidate` / `step_up` are framework-owned methods injected via a trait on `C`, so the derive never hand-rolls depth math.
+- Whether `invalidate` / `step_up` are framework-owned methods injected via a trait on `C`, so the derive never hand-rolls invalidation_depth math.
 - How exclusive try-take (`claim(&mut self) -> Option<Claimed>`) becomes a method on app-defined `C`.
 - Interaction with the prefactor (threaded batch only, `C = ()`).
 
