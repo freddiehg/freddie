@@ -24,9 +24,9 @@ To thread ownership through several posts at one level, each post returns the pa
 #[node(parent = RootPath)]
 #[binds(M)]
 #[pre_post(Foo => (pre_foo, post_foo), Bar => (pre_bar, post_bar))]
-#[pre(Baz => track)]                 // post is drop
-#[post(Qux => guard)]                // pre is trigger → ()
-#[bind(KeyA => outer_handler)]       // post + exclusive (ctx.claim())
+#[pre(Baz => track)]                 // post is drop (framework discards pre return)
+#[post(Qux => guard)]                // no pre; post is (node, ctx) only
+#[bind(KeyA => outer_handler)]       // post + exclusive (ctx.claim()); has event
 struct Outer {
     #[resolve_into]
     inner: Inner,
@@ -45,7 +45,7 @@ fn pre_foo(ev: &FooEvent, node: Node<&OuterPath, ()>) -> u32 {
     node.parent.get().hits
 }
 
-// post: owned path in/out; pre return; &mut Context.
+// pre_post post: pre return is a real argument (only when there was a pre).
 // Must not call ctx.claim() — that try-takes. Read validity() only unless exclusive.
 fn post_foo(
     hits_before: u32,
@@ -61,7 +61,16 @@ fn post_foo(
     }
 }
 
-// bind body: ordinary post shape. Gating is run_exclusive / exclusive() at the call site.
+// #[post] alone: no pre, so no data arg. Never `((), node, ctx)`.
+fn guard(
+    node: Node<OuterPath, ()>,
+    ctx: &mut Context,
+) -> (Vec<M::Effect>, OuterPath) {
+    let _ = ctx.validity();
+    (vec![], node.parent)
+}
+
+// bind body: event + node + ctx. Gating is run_exclusive at the call site.
 fn outer_handler(
     ev: &KeyEvent,
     node: Node<OuterPath, ()>,
@@ -91,11 +100,13 @@ Expression positions work as today (`#handler(…)` splice). Pinned by `crates/b
 
 For each pre/post/bind on the node, if the trigger matches:
 
-- `#[pre_post]` / `#[pre]`: call pre with `Node<&P, D>`, store `opt_N = Some(pre_return)`
-- `#[post]`: store `opt_N = Some(())`
-- `#[bind]`: store `opt_N = Some(())` (same as `#[post]`; event stays the dispatch `&Event`)
+- `#[pre_post]` / `#[pre]`: call pre with `Node<&P, D>`, store `opt_N = Some(pre_return)` (real carriage)
+- `#[post]`: store `opt_N = Some(())` as a **schedule token only** — not an argument to the post
+- `#[bind]`: store `opt_N = Some(())` the same way; body still gets the dispatch event
 
 `N` is the attribute index on the node (`opt_0`, `opt_1`, …). Never names from triggers or handlers. Miss → `None`. Ascent never re-checks triggers.
+
+`Some(())` on the schedule means "run this post." It is not a pre return and is never passed into the user function.
 
 ```rust
 fn pre(ev: &SourceEvent, node: Node<&P, D>) -> /* concrete type, inferred */
@@ -208,12 +219,16 @@ Posts return `(Vec<Effect>, P)` only.
 
 ### Defaults
 
-- `#[pre_post(trig => (pre, post))]` — user pre returns a value, user post receives it
-- `#[pre(trig => pre)]` — user pre returns a value, post is `drop`
-- `#[post(trig => post)]` — pre is trigger → `()`, user post receives `()`
-- `#[bind(trig => handler)]` — `#[post]` + `exclusive` / `run_exclusive` (`ctx.claim()` try-take)
+| attr | pre | post body args |
+|---|---|---|
+| `#[pre_post(trig => (pre, post))]` | user pre → `T` | `(T, node, ctx)` — `T` only if pre exists |
+| `#[pre(trig => pre)]` | user pre → `T` | framework `drop(T)`; no user post |
+| `#[post(trig => post)]` | none | `(node, ctx)` — **no** unit data arg |
+| `#[bind(trig => handler)]` | none | exclusive gate + `(ev, node, ctx)` |
 
-Several pairs on one node: `opt_0`, `opt_1`, … (indexed; each its own concrete payload type), one `on_into_parent` closure.
+No invented pre of `()` just so post can take and drop it. Schedule tokens (`opt_N = Some(())`) are framework-only.
+
+Several attrs on one node: `opt_0`, `opt_1`, … (indexed; each pre_post has its own concrete `T`), one `on_into_parent` closure.
 
 ### `#[bind]` is a post with no pre
 
@@ -221,6 +236,7 @@ Several pairs on one node: `opt_0`, `opt_1`, … (indexed; each its own concrete
 #[bind(KeyA => outer_handler)]
 // desugars to:
 #[post(KeyA => exclusive(outer_handler))]
+// exclusive gate is run_exclusive; body still takes the event.
 ```
 
 ```rust
@@ -244,11 +260,21 @@ fn run_exclusive<P>(
 }
 ```
 
-Plain post:
+Plain `#[post]` (no pre return to thread):
 
 ```rust
-let (effects, path) = post_fn(ev, Node { parent: path, data: () }, ctx);
+// schedule was Some(()) — match only; not passed in
+let (path, effects) = run_post(path, ctx, |node, ctx| guard(node, ctx));
 Extend::extend(effs, effects);
+```
+
+`pre_post` call site threads the real pre value:
+
+```rust
+if let Some(t0) = opt_0 {
+    let (path, effects) = run_post(path, ctx, |node, ctx| post_foo(t0, node, ctx));
+    Extend::extend(effs, effects);
+}
 ```
 
 Sibling pre_posts never call `claim()`. Order at a level: pre_post posts first, then bind.
@@ -547,7 +573,7 @@ impl Dispatch<M> for Outer {
 
 ### `#[pre]` / `#[post]` alone
 
-Same indexed opts. `#[pre]`: ascent arm is `drop(t_N)`. `#[post]`: `run_post` (never `claim()`).
+Same indexed opts. `#[pre]`: ascent arm is framework `drop(t_N)` — no user post. `#[post]`: `run_post(|node, ctx| post(node, ctx))` — no unit first arg, never `claim()`.
 
 ## Walk
 
@@ -655,9 +681,11 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 5. `claim(&mut self) -> Option<Claimed>` try-takes. Not a getter. Not a parallel flag.
 6. Invalidation is `invalidation_depth`: `invalidate(d)` / `step_up`; `validity()` derived. Not a binary flag overwritten per field.
 7. Logging never calls `claim()`. Only exclusive does.
-8. no pre → `()`. no post → `drop`.
-9. `#[bind]` = `#[post]` + `run_exclusive`.
-10. Generate stays thin: schedule + call helpers. Bookkeeping is not expanded per node.
+8. Pre return is a post argument only when a pre exists. No pre → no data arg (not `()`).
+9. No user post → framework `drop` of pre return (`#[pre]` alone).
+10. `#[bind]` = schedule like `#[post]` + `run_exclusive` + event in the body.
+11. Generate stays thin: schedule + call helpers. Bookkeeping is not expanded per node.
+12. `opt_N = Some(())` for post/bind is a schedule token, never a user-function argument.
 
 ## Tests
 
@@ -667,7 +695,8 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 - path threaded through two posts at one level
 - pre return value consumed once
 - pre miss: no post
-- `#[pre]` alone: drop; `#[post]` alone: `()`
+- `#[pre]` alone: framework drop of pre return; no user post
+- `#[post]` alone: body is `(node, ctx)` — no unit data arg
 - `only_if_valid` / expression post
 - depth: `invalidate(3)` → three levels Invalidated then Valid above (after step_ups)
 
