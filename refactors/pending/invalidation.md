@@ -620,18 +620,18 @@ Miss-unwind threads the sink. With no posts, untouched.
 
 `from_fn` / `from_box` crate-private (or sealed). Only the derive builds child paths.
 
-### P4 — full ascent + claim (`Option<Claimed>`) (still no user posts)
+### P4 — full ascent + one `&mut Context` (still no user posts)
 
-Drop `Break`. Every level returns its path. Thread `ctx: &mut Context`.
+Drop `Break`. Every level returns its path. Thread `ctx: &mut Context` (starts structure Valid, claim None).
 
 - child always returns path
-- this level's exclusive runs only if claim is `None`, then sets `Some(Claimed)`
+- exclusive runs only if `ctx.claim()` is `None`, then `ctx.set_claim(Claimed)`
 
-Deepest-wins without short-circuit past parents. Requires exclusives to **return the path**. Handlers that only `get_mut` adapt easily. Handlers that `ascend_mut` + `set_layer` wait on the reshape carrier (open) — do not invent `complete` to paper over it. If mercury blocks, ship P4 against bind tests first; mercury stays on Break until reshape.
+Deepest-wins without short-circuit past parents. Requires exclusives to **return the path**. Handlers that only `get_mut` adapt easily. Handlers that `ascend_mut` + `set_layer` wait on the reshape carrier (open). If mercury blocks, ship P4 against bind tests first.
 
 ### P5 — exclusive call shape under existing `#[bind]` only
 
-Generate rephrases `#[bind]` through `run_exclusive` (match on `ctx.claim()`, set `Some(Claimed)` after the body). Handlers still return `(Vec<Effect>, P)`. No new attributes. Behavior-identical to P4.
+Generate rephrases `#[bind]` through `run_exclusive` (read/write claim on `&mut Context`). Handlers return `(Vec<Effect>, P)`. No new attributes. Behavior-identical to P4.
 
 ### Feature steps (after P0–P5)
 
