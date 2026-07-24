@@ -41,9 +41,9 @@ Nothing about the ascent mechanics is exposed — a `post` cannot tell whether i
 
 ## The mechanism: stash on the path, run in `into_parent`
 
-`pre`'s output does not thread through the framework; `pre` stashes it in a field on its own node. The `post` is a `fn` pointer stashed on the CHILD path when it is constructed, and `into_parent` — the one funnel every ascent goes through, whether the normal unwind or a handler's `ascend_mut` — runs it. `Option::take` is the exactly-once.
+`pre`'s output does not thread through the framework; `pre` stashes it in a field on its own node. The `post` is a `fn` pointer given to the CHILD path when it is constructed, and `into_parent` — the one funnel every ascent goes through, whether the normal unwind or a handler's `ascend_mut` — runs it. `into_parent` consumes the level (a level cannot be ascended through twice), so the `post` runs exactly once with no bookkeeping.
 
-`laserbeam`, `PathMut` gains one field and `into_parent` gains the post-running step. Before:
+`laserbeam`, `PathMut` gains one field, always set at construction, and `into_parent` runs it. Before:
 
 ```rust
 pub struct PathMut<'a, N, P> { /* projection to N, parent P */ }
@@ -59,26 +59,23 @@ after (`O` is the marker's `Output`, threaded so a run `post` can push its effec
 ```rust
 pub struct PathMut<'a, N, P, O> {
     /* projection to N, parent P */
-    post: Option<fn(&mut N, Nested, &mut O)>,
+    post: fn(&mut N, Nested, &mut O),   // always present; a no-op for a node with no pre/post
 }
 
 impl<'a, N, P, O> PathMut<'a, N, P, O> {
-    /// Descend and stash the post on the child in one step; `None` for a node with no pre/post.
-    pub fn with_post(mut self, post: fn(&mut N, Nested, &mut O)) -> Self {
-        self.post = Some(post);
-        self
-    }
-
-    /// Ascend, running the stashed post exactly once. `nested` says what the descent did; `out`
-    /// takes the post's effects, in order with the rest of the batch.
+    /// Ascend, running the post exactly once — `into_parent` consumes the level.
     pub fn into_parent(mut self, nested: Nested, out: &mut O) -> P {
-        if let Some(post) = self.post.take() {
-            post(self.node_mut(), nested, out);
-        }
+        (self.post)(self.node_mut(), nested, out);
         self.parent
     }
 }
+
+/// The default a node with no pre/post gets. A `fn` item, so a plain pointer; monomorphized per
+/// `(N, O)`.
+fn no_post<N, O>(_: &mut N, _: Nested, _: &mut O) {}
 ```
+
+`from_fn` takes the `post` as an argument — the child path is built with it, never mutated afterward. A pre/post node passes its glue; every other descent passes `no_post`.
 
 `AscendMut::ascend_mut` gains the same `out: &mut O` parameter and threads it into each `into_parent` it walks through, passing `Nested::Handled` — that is how a handler climbing to the root runs the posts of the levels it crosses. The reflexive and per-depth `ascend_mut` impls all take and forward `out`.
 
@@ -98,10 +95,10 @@ impl Dispatch<M> for Foo {
             }
         }
 
-        // descend, stashing the post fn pointer on the child path
-        let bar_path = ::laserbeam::PathMut::from_fn(path, |p| &mut p.get_mut().bar, |p| &p.get().bar)
-            .into()
-            .with_post(stay_glue);
+        // descend, building the child path with Foo's post (a plain node would pass `no_post`)
+        let bar_path = ::laserbeam::PathMut::from_fn(
+            path, |p| &mut p.get_mut().bar, |p| &p.get().bar, stay_glue,
+        ).into();
 
         match <Bar as ::bind::Dispatch<M>>::dispatch(bar_path, event, out) {
             // A handler ascended THROUGH Foo — its `ascend_mut` ran `stay_glue` (Nested::Handled)
@@ -126,7 +123,7 @@ fn stay_glue(node: &mut Foo, nested: ::bind::Nested, out: &mut M::Output) {
 
 ## The guarantee
 
-`pre` ran ⟹ `post` ran, exactly once. `pre` stashes the post on the child path. There is exactly one ascent through that level — either the framework's unwind (the `Continue` arm) or one handler's `ascend_mut` climbing past it — and that ascent calls `into_parent` once, which `take`s the post and runs it. `take` makes a second call (there is none) a no-op. No case matrix, no drop trickery: one stash, one funnel.
+`pre` ran ⟹ `post` ran, exactly once. The post rides on the child path from construction. There is exactly one ascent through that level — either the framework's unwind (the `Continue` arm) or one handler's `ascend_mut` climbing past it — and that ascent is one `into_parent`, which consumes the level and runs the post. You cannot ascend through a moved-out level twice, so the once-ness is the ownership, not any flag. No case matrix, no drop trickery: one post per level, one funnel.
 
 ## The rearm as a user
 
