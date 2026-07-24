@@ -281,6 +281,60 @@ after:
 
 `&mut root.timer_ids` is released at the call, and `root.typing_state` is a different field, so the store on the next line does not collide. Every call to a `*Layer::new()` is updated to pass the source: the `home.rs` transitions and the `handlers/nav.rs` in-app transition. `Windows::placing` forwards its own `&mut TimerIds` to `asking_for`.
 
+### Re-arming a layer's timer on activity
+
+`Layer::rearm_timeout` (`mod.rs:538`) resets the current layer's return-home timer, and `Mercury::handle` calls it after dispatch when a key kept you in the layer. It arms through `arm_return_home`, so it takes the source too. This is a root-level site, not a leaf handler holding a typed path: `handle` has `&mut self`, and `self.layer` and `self.timer_ids` are disjoint fields, so it passes one beside the other. No shared borrow, and no interior mutability, is needed.
+
+`Layer::rearm_timeout`, before:
+
+```rust
+fn rearm_timeout(&mut self) -> Option<MercuryEffect> {
+    let home_timeout = match self {
+        Self::Nav(nav) => &mut nav.home_timeout,
+        Self::Resize(resize) => &mut resize.home_timeout,
+        Self::InApp(inapp) => &mut inapp.home_timeout,
+        Self::Site(site) => &mut site.home_timeout,
+        Self::Home(_) | Self::Typing(_) => return None,
+    };
+    let (guard, timer) = arm_return_home();
+    *home_timeout = guard;
+    Some(timer)
+}
+```
+
+after:
+
+```rust
+fn rearm_timeout(&mut self, timer_ids: &mut TimerIds) -> Option<MercuryEffect> {
+    let home_timeout = match self {
+        Self::Nav(nav) => &mut nav.home_timeout,
+        Self::Resize(resize) => &mut resize.home_timeout,
+        Self::InApp(inapp) => &mut inapp.home_timeout,
+        Self::Site(site) => &mut site.home_timeout,
+        Self::Home(_) | Self::Typing(_) => return None,
+    };
+    let (guard, timer) = arm_return_home(timer_ids);
+    *home_timeout = guard;
+    Some(timer)
+}
+```
+
+`home_timeout` borrows `self` (the layer) and `timer_ids` is a separate parameter, so minting and the store coexist. The match is on `self`, which is the current layer, and it writes to that layer's own `home_timeout`: there is no way to store onto a layer other than the one in hand, which is what makes this safe without the typed leaf.
+
+Its caller, `Mercury::handle` (`mod.rs:610`), before:
+
+```rust
+            && let Some(reset) = self.layer.rearm_timeout()
+```
+
+after:
+
+```rust
+            && let Some(reset) = self.layer.rearm_timeout(&mut self.timer_ids)
+```
+
+`self.layer` (the receiver) and `self.timer_ids` (the argument) are disjoint fields of `Mercury`, so both mutable borrows are allowed at once, the same shape as `Windows::asking_for`.
+
 ## The tests
 
 `crates/mercury/tests/transitions.rs` builds expected timer effects and now needs a source to mint from. The helpers at `transitions.rs:26,33,1209,1448` gain a `&mut TimerIds` argument threaded from the test's expected state and drop the `fired` closure, wrapping the `TimerEffect` with `MercuryEffect::Timer` as the code under test does, so the id in the expected effect matches the id the transition minted. The `fired` free function (`transitions.rs:39`) goes with the closure.
