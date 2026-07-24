@@ -64,16 +64,18 @@ pub trait Ascend<'a> {
 
 `Root` is the concrete root type the tree ascends to (mercury's `Mercury`). `laserbeam` is generic over it exactly as `AscendMut`'s `Target` is; the snippet writes `Root` for the node the whole tree bottoms out at.
 
-## Change 3: `Nested` and `into_parent`'s new parameters
+`ascend` and `into_parent` are the same climb: `ascend` is `into_parent` in a loop to the root. So the pre/post feature hangs its post on `into_parent`, and `ascend`/`complete` run every crossed post for free on the fire path. The prefactor puts the seam in place; nothing runs through it yet.
 
-`into_parent` gains the two parameters the pre/post ascent needs — which level's post to run, and where its effects go. In this prefactor there are no posts, so the body ignores them and projects up as before; they are the seams the feature fills.
+## Change 3: `Nested` and `into_parent`'s post seam
+
+`into_parent` gains the two parameters a post needs — which arm is ascending, and where effects go. In this prefactor there is no post, so it projects up as on master and touches neither; they are the seam the feature fills, and the reason `into_parent` stays the single funnel both the miss-unwind and `complete` go through.
 
 ```rust
 /// Whether a handler won at or below the level being ascended out of. Consulted only once posts
-/// exist; defined here so the signature is stable across the prefactor and the feature.
+/// exist; defined here so the `into_parent` signature is stable across prefactor and feature.
 pub enum Nested {
-    Handled,
-    Missed,
+    Handled,   // complete drove this ascent: a handler won below
+    Missed,    // the miss-unwind drove it
 }
 ```
 
@@ -88,6 +90,8 @@ after:
 ```rust
 pub fn into_parent(self, _nested: Nested, _sink: &mut Vec<Effect>) -> P { /* project up */ }
 ```
+
+`ascend` threads `Nested::Handled` and its scratch sink through the `into_parent`s it loops over; the miss-unwind threads `Nested::Missed` and the batch.
 
 ## Change 4: `Dispatch`/`Descend` thread the batch
 
@@ -119,7 +123,7 @@ pub trait Descend<M: Bindings>: HasParent + Sized {
 }
 ```
 
-The generated bodies follow. In `dispatch_body` the recover threads `effs` and `Nested::Missed` into `into_parent`; the recursion threads `effs`. Before:
+The generated bodies follow. In `dispatch_body` the recover threads the seam (`Nested::Missed`, `effs`) into `into_parent`; the recursion threads `effs`. Before:
 
 ```rust
 let child = <Child as Dispatch<M>>::dispatch(child_path, event)?;
@@ -157,7 +161,7 @@ Continue(path)
 
 The `collect` this replaces accepted any `IntoIterator`; `Into<Vec<Effect>>` is the analogue that also admits a bare `Effect`. mercury adds `impl From<MercuryEffect> for Vec<MercuryEffect>`, and `Vec<Effect>` converts to itself, so both a single effect and a `Vec` are valid returns.
 
-`descend_impl`'s `Continue` arm threads `effs`/`Nested::Missed` into its `into_parent` the same way; its `Break` arm becomes `Break(()) => Break(())`.
+`descend_impl` threads `effs` and the seam (`Nested::Missed`, `effs`) into its `into_parent` on the `Continue` arm; its `Break` arm becomes `Break(()) => Break(())`.
 
 ## Change 5: handlers ascend, mutate through `get_mut`, and complete
 
