@@ -6,8 +6,8 @@ Not done. Adds two handler positions to `bind` beside the existing exclusive one
 
 Two changes, the first shippable alone on master.
 
-- Prefactor (no pre/post): the return shape. `Bindings` drops `type Output` for `type Effect`; dispatch returns `Vec<M::Effect>`. Exclusive handlers return `(Vec<Effect>, Completed)` instead of bare effects, and reach the root through `complete` instead of `ascend_mut` — `complete` is `ascend_mut` plus a token whose only constructor is the ascent, so a handler cannot return without having reached the root. With no posts nothing on the ascent emits, so `complete` returns no effects and this is behavior-identical to master.
-- Feature (this doc): `#[pre_post]` / `#[pre]` / `#[post]`. Pres arm `opt_i` on the descent; `into_parent` and `complete` now run the crossed posts, so their returned `Vec`s carry effects.
+- Prefactor (no pre/post): the plumbing. `Bindings` drops `type Output` for `type Effect`; dispatch threads one `effs: &mut Vec<M::Effect>` and returns `ControlFlow<(), Path>`. Exclusive handlers return `(Vec<Effect>, Completed)` instead of bare effects, and reach the root through `complete` instead of `ascend_mut` — `complete` is `ascend_mut` plus a token whose only constructor is the ascent, so a handler cannot return without having reached the root. `into_parent` takes `(nested, sink)`. With no posts nothing on the ascent pushes, so this is behavior-identical to master.
+- Feature (this doc): `#[pre_post]` / `#[pre]` / `#[post]`. Pres arm `opt_i` on the descent; `into_parent` and `complete` now run the crossed posts, pushing their effects onto the threaded batch.
 
 ## Syntax
 
@@ -59,31 +59,32 @@ Dispatch is one pass down and one pass up.
 
 Down. Each node builds its child path (`from_fn`) and recurses. A pre/post node runs its `pre`s here, binding each to `opt_i: Option<T>` (`Some` iff the trigger matched) and storing them on the child path beside the posts. Nothing fires and nothing emits on the way down.
 
-No handler ever touches a shared accumulator or sees another handler's effects. Every handler, post or exclusive, returns only its OWN effects; the framework does every concatenation. That is the whole ergonomic goal, and it is why `complete` gathers rather than the handler.
+No handler ever touches a shared accumulator or sees another handler's effects, and this is enforced by the types, not by convention. Every handler, post or exclusive, RETURNS its effects (`-> Vec<Effect>`, `-> (Vec<Effect>, Completed)`); the only holder of a `&mut Vec<Effect>` is framework code — `into_parent`, `complete`, `dispatch`. The accumulator appears in no user-facing signature, so user code cannot push, pop, clear, or read the batch. There is nothing to defend against with an append-only wrapper, because the capability is absent.
 
-Up. The recursion unwinds leaf to root. Every level's post is stored on its child's path, so `into_parent` — ascending out of a child, back into the node — runs the node's post and hands back `(Vec<Effect>, ParentPath)`. Two things drive that ascent:
+The matching restriction is on the path a handler receives. `from_fn` — the only way to build a child path, and thus the only way to choose an `on_post` — is framework-only (crate-private or sealed). A `pre`'s `Node<&mut P>` exposes `get_mut` and `ascend`; an exclusive's `Node<P>` exposes `complete`; neither exposes `from_fn`. So a handler cannot build a nested path and smuggle in an `on_post` that would pop the batch — the descent, and the choice of every post, stays in generated code.
 
-- the miss-unwind: a subtree that bound nothing returns `Continue`, and the `Continue` arm `into_parent`s with `Nested::Missed`, concatenating the level's post effects below what it already has.
-- `complete`: when a bind matches, its handler ascends to the root through `complete`, which is `into_parent` in a loop with `Nested::Handled`. It GATHERS the crossed posts into the `Completed` token it returns — the handler never sees them. The handler returns `(its own effects, Completed)`, and the framework drains the token's gathered posts and then the handler's own effects into the batch. The whole thing propagates up as `Break` without any further `into_parent` — `complete` already climbed those levels.
+Up. The recursion unwinds leaf to root, threading one `effs: &mut Vec<Effect>` — the batch. Every level's post is stored on its child's path, so `into_parent(nested, sink)` — ascending out of a child, back into the node — runs the node's post and PUSHES its effects onto `sink`, returning just the parent. Two things drive that ascent:
+
+- the miss-unwind: a subtree that bound nothing returns `Continue`, and the `Continue` arm calls `into_parent(Nested::Missed, effs)`, pushing the level's post effects straight onto the batch.
+- `complete`: when a bind matches, its handler ascends to the root through `complete`, which loops `into_parent(Nested::Handled, ..)`. To keep `complete` argument-free and the handler batch-free, it pushes into a scratch vec it OWNS and moves that into the `Completed` token it returns. The handler returns `(its own effects, Completed)`; the framework drains the token's gathered posts and then the handler's own effects onto `effs`. The whole thing propagates up as `Break(())` without any further `into_parent` — `complete` already climbed those levels.
 
 Effects land in crossing order, posts before the winner: the misses below accumulate up to the winning level, the token's gathered posts go next, and the winner's own effects last.
 
 ```rust
-// Dispatch for a node, sketch. ControlFlow<Break=(Vec, Completed), Continue=(Vec, Path)>.
+// Dispatch for a node, sketch. One `effs: &mut Vec<Effect>` is threaded; ControlFlow<(), Path>.
 let child_path = from_fn(node_path, /* this node's post + opt_i from its pre */);
-match Child::Dispatch::dispatch(child_path) {
+match Child::Dispatch::dispatch(child_path, event, effs) {
     // subtree won: complete already ran this node's post (Handled) as it climbed; just propagate
-    Break(won) => Break(won),
-    Continue((below, child_path)) => {
-        // subtree missed: ascend into this node, running its post as Missed
-        let (mine, node_path) = child_path.into_parent(Nested::Missed);
-        let mut effs = below; effs.extend(mine);
+    Break(()) => Break(()),
+    Continue(child_path) => {
+        // subtree missed: ascend into this node, running its post as Missed (pushed onto effs)
+        let node_path = child_path.into_parent(Nested::Missed, effs);
         // now try this node's own exclusive binds against node_path (see below). On a match:
-        //   let (own, mut done) = handler(..);         // handler returns only its own effects
-        //   effs.extend(done.take_gathered());          // framework drains the token's posts
-        //   effs.extend(own);                           // then the winner's own
-        //   return Break((effs, done));
-        Continue((effs, node_path))
+        //   let (own, mut done) = handler(..);        // handler returns only its own effects
+        //   effs.extend(done.take_gathered());         // framework drains the token's posts
+        //   effs.extend(own);                          // then the winner's own
+        //   return Break(());
+        Continue(node_path)
     }
 }
 ```
@@ -107,16 +108,16 @@ impl<'a> Completed<'a> {
 impl<'a> Complete<'a> for &'a mut Root {                       // base: already at root, nothing gathered
     fn complete(self) -> Completed<'a> { Completed { root: self, gathered: Vec::new() } }
 }
-impl<'a, ..> Complete<'a> for PathMut<..> {                    // run this level's post, recurse up
+impl<'a, ..> Complete<'a> for PathMut<..> {                    // owns the scratch vec, climbs pushing into it
     fn complete(self) -> Completed<'a> {
-        let (mut gathered, parent) = self.into_parent(Nested::Handled);   // this level's post, lower
-        let mut done = parent.complete();                                 // the levels above
-        gathered.extend(done.gathered);                                   // crossing order: lower then higher
-        done.gathered = gathered;
-        done
+        let mut gathered = Vec::new();
+        let root = self.climb(&mut gathered);   // loops `into_parent(Nested::Handled, &mut gathered)` to the root
+        Completed { root, gathered }
     }
 }
 ```
+
+`climb` is `into_parent(Nested::Handled, sink)` in a loop to the root — the framework holds the scratch vec, the handler never sees it.
 
 So the winner author writes nothing about the posts it climbs past:
 
@@ -154,11 +155,14 @@ pub struct PathMut<'a, N, P, T> {
 }
 
 impl<'a, N, P, T> PathMut<'a, N, P, T> {
-    /// Ascend one level, running the post at most once, and hand back its effects with the parent.
+    /// Ascend one level, running the post at most once and PUSHING its effects onto `sink`.
     /// `into_parent` consumes the level, so the value moves into the post and cannot be run twice.
-    pub fn into_parent(mut self, nested: Nested) -> (Vec<Effect>, P) {
-        let effs = self.held.take().map_or_else(Vec::new, |t| (self.post)(t, self.node_mut(), nested));
-        (effs, self.parent)
+    /// It returns just the parent — no caller ever holds another handler's effects.
+    pub fn into_parent(mut self, nested: Nested, sink: &mut Vec<Effect>) -> P {
+        if let Some(t) = self.held.take() {
+            Extend::extend(sink, (self.post)(t, self.node_mut(), nested));
+        }
+        self.parent
     }
 }
 
@@ -174,8 +178,8 @@ For `#[pre_post(AnyKey => (arm, stay))] Foo { #[resolve_into] bar: Bar }` — on
 
 ```rust
 impl Dispatch<M> for Foo {
-    fn dispatch<'a>(mut path: <Foo as Place>::Path<'a>, event: &M::Event)
-        -> ControlFlow<(Vec<Effect>, Completed<'a>), (Vec<Effect>, <Foo as Place>::Path<'a>)>
+    fn dispatch<'a>(mut path: <Foo as Place>::Path<'a>, event: &M::Event, effs: &mut Vec<Effect>)
+        -> ControlFlow<(), <Foo as Place>::Path<'a>>
     {
         // down: run the pre if its trigger matches, binding its return. `opt_0` is inferred from
         // `arm`'s return and never named. `None` records that the trigger missed, decided HERE.
@@ -191,14 +195,10 @@ impl Dispatch<M> for Foo {
 
         // up. (Foo has no exclusive bind of its own; a node that did would try it in the Continue
         // arm, below.)
-        match <Bar as ::bind::Dispatch<M>>::dispatch(bar_path, event) {
-            ::core::ops::ControlFlow::Break(won) => ::core::ops::ControlFlow::Break(won),
-            ::core::ops::ControlFlow::Continue((below, bar_path)) => {
-                let (mine, path) = bar_path.into_parent(::bind::Nested::Missed);
-                let mut effs = below;
-                ::core::iter::Extend::extend(&mut effs, mine);
-                ::core::ops::ControlFlow::Continue((effs, path))
-            }
+        match <Bar as ::bind::Dispatch<M>>::dispatch(bar_path, event, effs) {
+            ::core::ops::ControlFlow::Break(()) => ::core::ops::ControlFlow::Break(()),
+            ::core::ops::ControlFlow::Continue(bar_path) =>
+                ::core::ops::ControlFlow::Continue(bar_path.into_parent(::bind::Nested::Missed, effs)),
         }
     }
 }
@@ -213,12 +213,12 @@ if let Some(ev) = <&KeyEvent as TryFrom<_>>::try_from(event).ok() {
     if Key::KeyN.down().is_matching(ev) {
         // to_nav returns ONLY its own effects plus the token; `complete` gathered the posts above
         let (own, mut done) = to_nav(ev, ::bind::Node { parent: path, data });
-        ::core::iter::Extend::extend(&mut effs, done.take_gathered());   // upper posts (Handled)
-        ::core::iter::Extend::extend(&mut effs, own);                    // then the winner
-        return ::core::ops::ControlFlow::Break((effs, done));
+        ::core::iter::Extend::extend(effs, done.take_gathered());   // upper posts (Handled)
+        ::core::iter::Extend::extend(effs, own);                    // then the winner
+        return ::core::ops::ControlFlow::Break(());
     }
 }
-::core::ops::ControlFlow::Continue((effs, path))
+::core::ops::ControlFlow::Continue(path)
 ```
 
 ## The guarantee
@@ -248,7 +248,7 @@ fn stay(schedule: MercuryEffect, _node: &mut AndReturnHome, _nested: Nested) -> 
 
 `crates/bind/tests/`, a `#[pre_post]` node over the existing tree:
 
-- `pre` then `post` on a miss: an event the subtree does not bind runs `pre` (into `opt_0`), descends, misses, and the `Continue` arm's `into_parent` runs `post` with `Nested::Missed`; its effect lands in the returned `Vec`.
+- `pre` then `post` on a miss: an event the subtree does not bind runs `pre` (into `opt_0`), descends, misses, and the `Continue` arm's `into_parent` runs `post` with `Nested::Missed`; its effect lands on the threaded `effs`.
 - `post` on a handled subtree: a leaf exclusive wins and `complete` climbs; `post` runs with `Nested::Handled` as `complete` crosses the pre/post node, and its effect lands in crossing order — after the posts below, before the winner's own.
 - exactly-once: a drop counter on `pre`'s returned value shows it is consumed once, never twice and never zero, across both drivers.
 - `pre` did not match: an event whose trigger `pre` rejects stores `None`, and `into_parent` runs no `post`.
@@ -258,7 +258,9 @@ fn stay(schedule: MercuryEffect, _node: &mut AndReturnHome, _nested: Nested) -> 
 
 The work, prefactor first:
 
-- prefactor, on master: `Bindings` drops `type Output` for `type Effect`; dispatch returns `Vec<M::Effect>`. `Dispatch`/`Descend` return `ControlFlow<(Vec<Effect>, Completed), (Vec<Effect>, Path)>`. laserbeam adds `Complete` (in the `AscendMut` family) and the sealed `Completed`; exclusive handlers return `(Vec<Effect>, Completed)` and reach root through `complete`, not `ascend_mut`. `into_parent` returns `(Vec<Effect>, Parent)`, empty until posts exist. Behavior-identical to master.
-- feature: `PathMut` gains `post: fn(T, &mut N, Nested) -> Vec<Effect>`, `held: Option<T>`, and the `T` param; `into_parent` and `complete` run the posts. `bind_macro` gains `#[pre_post]` / `#[pre]` / `#[post]` — the descent-time trigger check binding `opt_i`, `from_fn` storing the user's `post` directly.
+- prefactor, on master: `Bindings` drops `type Output` for `type Effect`; dispatch threads `effs: &mut Vec<M::Effect>` and returns `ControlFlow<(), Path>`. laserbeam adds `Complete` (in the `AscendMut` family) and the sealed `Completed`; exclusive handlers return `(Vec<Effect>, Completed)` and reach root through `complete`, not `ascend_mut`. `into_parent` takes `(nested, sink)` and returns just `Parent`, pushing nothing until posts exist. `from_fn` becomes framework-only. Behavior-identical to master.
+- feature: `PathMut` gains `post: fn(T, &mut N, Nested) -> Vec<Effect>`, `held: Option<T>`, and the `T` param; `into_parent` and `complete` run the posts, pushing onto the threaded batch. `bind_macro` gains `#[pre_post]` / `#[pre]` / `#[post]` — the descent-time trigger check binding `opt_i`, `from_fn` storing the user's `post` directly.
+
+The `&mut Vec<Effect>` batch appears in no user-facing signature — posts and handlers return effects, the framework pushes — so user code cannot pop or read the batch, and no append-only wrapper is needed.
 
 Open surface question: naming (`pre_post` vs two attributes; timing vs intent names).
