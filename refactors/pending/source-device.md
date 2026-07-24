@@ -27,19 +27,15 @@ Nothing may be seizing the keyboard upstream. A seizing remapper (Karabiner-Elem
 
 The two private symbols are not in the `core-graphics`/`io-kit-sys` safe wrappers, so the FFI is quarantined in a leaf crate, `freddie_hid_device`, the pattern the workspace already uses for `unsafe`. Everything above it stays under `forbid(unsafe_code)`.
 
-`SourceId`, the cheap `Copy` id a `KeyEvent` carries, lives in `freddie_keys` (the vocabulary crate) so `KeyEvent` names it without depending on the leaf. Everything that needs the private symbols or the registry lives in `freddie_hid_device`.
+`SourceId` lives in `freddie_hid_device`, next to the code that produces it. `KeyEvent` does not carry it, so `freddie_keys` never learns it exists.
 
 ```rust
-// crates/freddie_keys/src/lib.rs
+// crates/freddie_hid_device/src/lib.rs  — opts out of forbid(unsafe_code), FFI in a private module.
+
 /// A source device's identity for the run: the IOKit registry entry id of the originating HID
 /// service. Stable while the device stays attached; a replug yields a new one.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SourceId(pub u64);
-```
-
-```rust
-// crates/freddie_hid_device/src/lib.rs  — opts out of forbid(unsafe_code), FFI in a private module.
-use freddie_keys::SourceId;
 
 // The two private symbols, forward-declared: neither is in a public -sys crate.
 unsafe extern "C" {
@@ -105,66 +101,31 @@ fn prop_string(entry: io_registry_entry_t, key: &str) -> Option<String>;
 
 `CGEventCopyIOHIDEvent` and `IOHIDEventGetSenderID` are the only private symbols; everything `resolve` calls is public IOKit (`IORegistryEntryIDMatching`, `IOServiceGetMatchingService`, `IORegistryEntryCreateCFProperty`, `IORegistryEntryGetParentEntry`, `IOObjectRelease`). That is the whole crate: stamp an id onto the event, and turn an id into a `DeviceInfo`. Deciding which device is which is the consumer's, and it is small.
 
-## The change to `freddie_keys`
+## The device-aware entry point
 
-`KeyEvent` gains the source, and the field's very type says whether this build can read it. `freddie_keys` carries the `source-device` feature (enabled through `freddie_keyboard`'s); with it, `device` is `Option<SourceId>` (`Some` hardware, `None` injected, both real states); without it, `device` is `()`, so a build that cannot read the device says so rather than carrying a permanently-`None` option:
-
-```rust
-// before
-pub struct KeyEvent { pub key: Key, pub press: PressType, pub flags: ModifierFlags }
-// after
-pub struct KeyEvent {
-    pub key: Key,
-    pub press: PressType,
-    pub flags: ModifierFlags,
-    #[cfg(feature = "source-device")]
-    pub device: Option<SourceId>,   // Some: hardware; None: injected/synthetic
-    #[cfg(not(feature = "source-device"))]
-    pub device: (),                 // this build has no device dimension
-}
-```
-
-`SourceId` is a plain `Copy` id, sixteen bytes, and it is on the event only under the feature. The Debug impl omits `device` when `None`, as it already does for empty `flags`. The rich `DeviceInfo` is never on the event; a consumer that cares calls `resolve` and classifies off the keystroke path.
-
-```toml
-# freddie_keys/Cargo.toml
-[features]
-source-device = []
-```
-
-## The change to `freddie_keyboard`, behind a feature
-
-Reading the device is opt-in. mercury does not want it and should not link an undocumented private CoreGraphics symbol or do the work for a field it ignores. So a feature gates it:
-
-```toml
-# freddie_keyboard/Cargo.toml
-[features]
-default = []
-source-device = ["dep:freddie_hid_device", "freddie_keys/source-device"]
-```
-
-The feature also turns on `freddie_keys`'s, so the `device` field is `Option<SourceId>` here and `()` in a build without it. Off (mercury): `freddie_hid_device` is not a dependency and the private symbols never enter the binary; on (figaro): the tap reads the source. The callback constructs the field it has:
+`KeyEvent` does not change, and neither does `freddie_keys`. The source rides alongside the key, not inside it: `freddie_keyboard` exposes two streams over its one internal tap. That tap's callback closes over the `CGEventRef`, and nothing above `freddie_keyboard` ever sees it, so only a stream built here can read the source. `intercept` is the stream without it; `intercept_with_source` is the same stream, closing over the `CGEventRef` to compute the source per key.
 
 ```rust
-// sys/macos.rs tap callback
-let input = KeyEvent {
-    key: from_code(code),
-    press,
-    flags: from_cg(event.get_flags()),
-    #[cfg(feature = "source-device")]
-    device: freddie_hid_device::source_of(event.as_ptr()),  // two calls + a release, tap thread
-    #[cfg(not(feature = "source-device"))]
-    device: (),
-};
+// freddie_keyboard, macOS. `intercept` is unchanged; what mercury uses.
+pub fn intercept(
+    on_key: impl Fn(KeyEvent) -> Option<KeyEvent> + Send + 'static,
+) -> Result<(Interceptor, Emitter), CaptureError>;
+
+// The same tap, plus the source id of each key. What figaro uses.
+pub fn intercept_with_source(
+    on_key: impl Fn(KeyEvent, Option<SourceId>) -> Option<KeyEvent> + Send + 'static,
+) -> Result<(Interceptor, Emitter), CaptureError>;
 ```
 
-The read on the tap thread is the cheap half; resolving an id to a class is the costly half, and it does not happen here. It happens where the model boundary classifies, off the tap thread and cached (see below). The `Emitter` builds synthetic keys, so its `device` is `None` under the feature and `()` without it. `intercept`'s signature does not change.
+Both are thin entry points over the same tap; `intercept_with_source`'s callback additionally computes `source_of(event.as_ptr())` (two calls and a release, on the tap thread) and hands it over as the second argument. A consumer that wants nothing to do with the device calls `intercept` and never triggers the source read.
 
-Under the feature, `freddie_keyboard` re-exports `freddie_hid_device::{resolve, DeviceInfo}` so a consumer names one crate, not the leaf.
+No feature gates this. `freddie_keyboard` always depends on `freddie_hid_device` (the unsafe leaf) and re-exports `SourceId`, `resolve`, and `DeviceInfo`, so a consumer names one crate. The private symbol lives in CoreGraphics, which the crate already links, and it has been stable for over a decade and ships in notarized apps, so guarding mercury against its disappearance is not worth a build flag. mercury just calls `intercept`; the other entry point exists and it ignores it.
+
+The read on the tap thread is the cheap half; resolving an id to a class is the costly half, and it does not happen here. It happens where figaro classifies, off the tap thread and cached (below).
 
 ## What figaro does with it
 
-figaro depends on `freddie_keyboard` with `source-device` on, exactly the same backend as mercury otherwise — there is no separate keyboard crate. At its key boundary (the worker, off the tap thread) it turns `event.device` into its own class and caches it, so the registry walk happens once per device and never in a handler. There is no shared classifier: figaro cares about two keyboards, so its whole policy is a few lines over `DeviceInfo`. The consumer-side design is `figaro/refactors/pending/device-conditioned-keymaps.md`.
+figaro calls `intercept_with_source` and gets a `(KeyEvent, Option<SourceId>)` per key. At its boundary (the worker, off the tap thread) it turns the source id into its own class and caches it, so the registry walk happens once per device and never in a handler. There is no shared classifier: figaro cares about two keyboards, so its whole policy is a few lines over `DeviceInfo`. The consumer-side design is `figaro/refactors/pending/device-conditioned-keymaps.md`.
 
 ```rust
 // figaro, at the boundary. `resolve` and `DeviceInfo` are freddie's; the rest is figaro's.
