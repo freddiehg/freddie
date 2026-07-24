@@ -2,7 +2,7 @@
 
 Not done. Standalone.
 
-Descent schedules which pre/posts/binds will run. That set is final. Ascent runs every scheduled post leaf to root; mutation is free. **AscentState is constructed at the leaf turnaround** (not during descent) and one `&mut AscentState` is threaded up the ascent and mutated in place. **AscentState holds `invalidation_depth`** (remaining `into_parent` hops still inside a destroyed region) and **claim** (exclusive try-take). Posts read validity through the getter **`validity()`** — not a stored field; pure view of `invalidation_depth == 0`. `#[bind]` is a post with no pre, gated by `ctx.claim()`.
+Descent schedules which pre/posts/binds will run. That set is final. Ascent runs every scheduled post leaf to root; mutation is free. **`AscentState` is bind (freddie) machinery** — not a consumer type. It is constructed at the leaf turnaround (not during descent) and one `&mut AscentState` is threaded up the ascent and mutated in place. It holds `invalidation_depth` (remaining `into_parent` hops still inside a destroyed region) and **claim** (exclusive try-take). Posts read validity through the getter **`validity()`** — not a stored field; pure view of `invalidation_depth == 0`. `#[bind]` is a post with no pre, gated by `ctx.claim()`.
 
 **Generate stays thin.** The derive only schedules `opt_N` and calls helpers (`run_post`, `run_exclusive`, `into_parent`). Invalidation-depth math, claim try-take, and sink extension live in ordinary functions in `bind` / laserbeam — not hand-rolled in every expanded `Dispatch` impl.
 
@@ -123,7 +123,7 @@ No reshape on the descent. Whether pre may also return now-effects is open; gene
 
 Leaf to root. **AscentState is constructed when the ascent begins** (leaf turnaround: no further child to enter). It does not exist during descent. One object is then threaded up and mutated in place.
 
-`AscentState` is a small bag with two fields (same pointer for the whole ascent):
+`AscentState` lives in `bind`. Small bag, two fields (same pointer for the whole ascent):
 
 | field | rule |
 |---|---|
@@ -347,6 +347,7 @@ pub enum Validity {
 
 pub struct Claimed;
 
+// crates/bind — shared by every freddie consumer (mercury, figaro, …)
 pub struct AscentState {
     invalidation_depth: u32,
     claim: Option<Claimed>,
@@ -728,9 +729,9 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 1. Descent schedules; that set is final. Generate: `opt_0`, `opt_1`, … only.
 2. Ascent runs every scheduled post; mutation does not cancel them.
 3. Pre: shared path. Post: owned path, return `(Vec<Effect>, P)`.
-4. AscentState is constructed at the leaf turnaround; none during descent. One object for the ascent; posts take `&mut AscentState`.
+4. `AscentState` is bind/freddie (not a consumer type). Constructed at the leaf turnaround; none during descent. One object for the ascent; posts take `&mut AscentState`.
 5. `claim(&mut self) -> Option<Claimed>` try-takes. Not a getter. Not a parallel flag.
-6. AscentState holds `invalidation_depth: u32`. A kill's N× `into_parent` does `invalidation_depth = invalidation_depth.max(N)`. Framework ascent `step_up` decrements. Getter `validity(&self) -> Validity` is `invalidation_depth == 0`.
+6. `AscentState` holds `invalidation_depth: u32`. A kill's N× `into_parent` does `invalidation_depth = invalidation_depth.max(N)`. Framework ascent `step_up` decrements. Getter `validity(&self) -> Validity` is `invalidation_depth == 0`.
 7. Logging never calls `claim()`. Only exclusive does.
 8. Every pre/post attr is a pre_post pair. Missing pre is well-known `noop_pre` (macro drops it in).
 9. No `#[pre]` alone. A pre exists only as the first half of `#[pre_post]`.
