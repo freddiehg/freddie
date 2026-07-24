@@ -1,6 +1,13 @@
 # pre/post handlers
 
-Not done. Adds two handler positions to `bind` beside the existing exclusive one: `pre`, run on the way down and returning a value, and `post`, run on the way up with that value, guaranteed to run once if its `pre` ran. The mechanism is a `fn`-pointer and an `Option<T>` stored on the child path and run by `into_parent`.
+Not done. Adds two handler positions to `bind` beside the existing exclusive one: `pre`, run on the way down and returning a value, and `post`, run on the way up with that value, guaranteed to run once if its `pre` ran. Dispatch becomes one descent and one leaf-to-root ascent (the sweep): the pres arm on the way down, the posts and the exclusive winner run on the way up, all folding into one `Vec<Effect>` threaded by ref.
+
+## Two open decisions
+
+Marked here because they set the shape of everything below and each contradicts an earlier call.
+
+- Exclusive handler node type. This doc is written on the SYMMETRIC sweep: the winner does not consume the path, it reborrows the root through `root_mut`, so dispatch keeps owning the path and the sweep runs the posts above the winner. That forces the exclusive handler to take `Node<&mut P>` (borrowed, like a `pre`), not the owned `Node<P>` set earlier. Keeping owned `Node<P>` means the winner consumes to root (`ascend_mut`), which is the ASYMMETRIC version: `Break` carries no path, and every post runs before the winner instead of in crossing order.
+- Effect order. Symmetric gives crossing order: the misses below the winner, the winner, the handled posts above it. Asymmetric gives all posts, then the winner. This doc assumes crossing order.
 
 ## Syntax
 
@@ -21,10 +28,10 @@ struct Foo { #[resolve_into] bar: Bar }
 
 ## What the two handlers are
 
-Both handlers are `fn` items, not closures. That is the whole reason this is cheap: what gets stashed is a `fn` pointer, `Copy`, no `Box`, no `Rc`, no `dyn`.
+Both handlers are `fn` items, not closures. That is the whole reason this is cheap: what gets stored is a `fn` pointer, `Copy`, no `Box`, no `Rc`, no `dyn`.
 
-- `pre`: `fn(&Event, Node<&mut P, D>) -> T`. Runs on the descent if the trigger matches. Node borrowed (`&mut P`), so it can `get_mut` its own node and `ascend` to READ the root, but not `ascend_mut` to consume. It RETURNS `T`.
-- `post`: `fn(T, &mut N, Nested, &mut Output)`. Runs on the way up when `pre` ran, taking `pre`'s return `T`, and pushes effects into `Output`. Unlike an exclusive `#[bind]`, which returns effects the generated body extends into the batch, a `post` is a stored `fn` pointer run by generic `into_parent`, which cannot extend an opaque `impl IntoIterator` return through a pointer — so the `post` writes `Output` itself, and is stored as-is with no glue.
+- `pre`: `fn(&Event, Node<&mut P, D>) -> T`. Runs on the descent if the trigger matches. Node borrowed (`&mut P`), so it can `get_mut` its own node and `ascend` to READ the root, but not consume. It RETURNS `T`.
+- `post`: `fn(T, &mut N, Nested, &mut Vec<Effect>)`. Runs on the way up when `pre` ran, taking `pre`'s return `T`, and pushes effects into the batch. Unlike an exclusive `#[bind]`, which returns effects the generated body extends into the batch, a `post` is a stored `fn` pointer run by generic `into_parent`, which cannot extend an opaque `impl IntoIterator` return through a pointer — so the `post` writes the `Vec` itself, and is stored as-is with no glue.
 
 `pre`'s return survives the descent as an `Option<T>`: `Some(t)` when the trigger matched, `None` when it did not. The match is decided at the descent, up front — the `Option` records it — so `into_parent` runs `post` on the `Some` and skips the `None`, and nothing re-checks a trigger on the way up. `post` sees `T`, never the `Option`; the `Option` is only how the value is carried. `T` is inferred from `pre`'s return, never written (there is no name for it).
 
@@ -35,22 +42,44 @@ The two standalone forms are this same machine, not special cases:
 - `#[pre]` alone: the `post` is `drop`. `pre` runs for its effect on the node, returns `T`, and `into_parent` calls `drop(t)`.
 - `#[post]` alone: the `pre` is the trigger check, returning `()`. `Some(())` when it matched, `None` when it did not; `post` takes `()`.
 
-`Nested` is the one outcome exposed — whether the descent below this node matched a handler — as an enum, so the meaning is named and the set can grow:
+`Nested` is the one outcome exposed — whether a handler won at or below this node — as an enum, so the meaning is named and the set can grow:
 
 ```rust
 enum Nested {
-    /// A handler ran at or below this node (the descent Broke).
+    /// A handler won at or below this node (the sweep arm was Break).
     Handled,
-    /// Nothing matched below this node (the descent missed).
+    /// Nothing matched at or below this node (the sweep arm was Continue).
     Missed,
 }
 ```
 
-Nothing about the ascent mechanics is exposed — a `post` cannot tell whether it is being run by the normal unwind or by a handler climbing past it, only `Nested`.
+Nothing about the sweep mechanics is exposed — a `post` sees only `Nested`.
 
-## The mechanism: stash on the path, run in `into_parent`
+## The sweep: one descent, one ascent
 
-Each `pre` returns a value the generated body binds to a local; a node's pre values are carried, as `Option`s, on the CHILD path when it is constructed, beside a single generated `post` `fn` that runs them. `into_parent` — the one funnel every ascent goes through, the normal unwind or a handler's `ascend_mut` — runs that `fn`, once, because it consumes the level.
+Dispatch is one pass down and one pass up.
+
+Down. Each node builds its child path (`from_fn`) and recurses. A pre/post node runs its `pre`s HERE, binding each to `opt_i: Option<T>` (`Some` iff the trigger matched) and storing them on the child path beside the posts. Nothing fires on the way down.
+
+Up. The recursion unwinds leaf to root. At each level the node tries its own exclusive binds, deepest-first, unchanged from master. `into_parent(nested, out)` ascends one level and runs that level's post. The exclusive winner fires at its own level via `root_mut()` (reborrow the root, mutate, push effects) so the path survives and the sweep keeps running above it.
+
+`out` is `&mut Vec<Effect>`, threaded through the whole pass. Effects land in crossing order: the misses below the winner, then the winner, then the handled posts above it.
+
+Both control-flow arms ascend; the difference is `Nested` and whether the parent still tries its binds:
+
+```rust
+// Descend impl, implemented for the CHILD path. Both arms into_parent — symmetric.
+match Child::Dispatch::dispatch(child_path, event, out) {
+    // a winner was chosen below: ascend running the post as Handled, ancestors skip their binds
+    Break(child_path)    => Break(child_path.into_parent(Nested::Handled, out)),
+    // nothing below: ascend running the post as Missed, the parent will try its binds
+    Continue(child_path) => Continue(child_path.into_parent(Nested::Missed, out)),
+}
+```
+
+`Break` and `Continue` both carry the path now (on master `Break` carried the output). The path is what the sweep needs; the effects live in `out`.
+
+## `PathMut`
 
 `PathMut` carries the `post` and its held `Option<T>`. Before:
 
@@ -63,19 +92,19 @@ impl<'a, N, P> HasParent for PathMut<'a, N, P> {
 }
 ```
 
-after (`O` is the marker's `Output`, threaded so a run post can push effects into the batch in order; `T` is `pre`'s return, inferred):
+after (`T` is `pre`'s return, inferred; the output is the concrete `Vec<Effect>`):
 
 ```rust
-pub struct PathMut<'a, N, P, O, T> {
+pub struct PathMut<'a, N, P, T> {
     /* projection to N, parent P */
-    post: fn(T, &mut N, Nested, &mut O),   // `no_post` for a node with none
-    held: Option<T>,                       // `Some` iff `pre`'s trigger matched; `None` otherwise
+    post: fn(T, &mut N, Nested, &mut Vec<Effect>),   // `no_post` for a node with none
+    held: Option<T>,                                 // `Some` iff `pre`'s trigger matched
 }
 
-impl<'a, N, P, O, T> PathMut<'a, N, P, O, T> {
-    /// Ascend, running the post at most once — `into_parent` consumes the level, so the value moves
-    /// into the post and cannot be run twice. Runs only when `pre` matched (`held` is `Some`).
-    pub fn into_parent(mut self, nested: Nested, out: &mut O) -> P {
+impl<'a, N, P, T> PathMut<'a, N, P, T> {
+    /// Ascend one level, running the post at most once. `into_parent` consumes the level, so the
+    /// value moves into the post and cannot be run twice. Runs only when `pre` matched.
+    pub fn into_parent(mut self, nested: Nested, out: &mut Vec<Effect>) -> P {
         if let Some(t) = self.held.take() {
             (self.post)(t, self.node_mut(), nested, out);
         }
@@ -84,14 +113,21 @@ impl<'a, N, P, O, T> PathMut<'a, N, P, O, T> {
 }
 
 /// The default a node with no pre/post gets: `held` is `None`, so this is never called.
-fn no_post<N, O, T>(_: T, _: &mut N, _: Nested, _: &mut O) {}
+fn no_post<N, T>(_: T, _: &mut N, _: Nested, _: &mut Vec<Effect>) {}
 ```
 
-`from_fn` takes the `post` and the held `Option<T>` — the child path is built with them, never mutated afterward. A pre/post node passes its `post` and `Some`/`None` from the descent-time trigger check; every other descent passes `no_post` and `None`.
+`from_fn` takes the `post` and the held `Option<T>` — the child path is built with them, never mutated afterward. A pre/post node passes its `post` and `Some`/`None` from the descent-time trigger check; every other descent passes `no_post` and `None`. A node with several pre/posts stacks one such level per pre/post, each with its own `opt_i` and `post`, so each gets its own `into_parent` on the way up.
 
-`AscendMut::ascend_mut` gains the same `out: &mut O` parameter and threads it into each `into_parent` it walks through, passing `Nested::Handled` — that is how a handler climbing to the root runs the posts of the levels it crosses. The reflexive and per-depth `ascend_mut` impls all take and forward it.
+## `root_mut`: the winner mutates without consuming
 
-A node with several pre/posts is several levels' worth of this, one `(post, Option<T>)` per pre/post; the generated descent chains them so each gets its own `into_parent`.
+The exclusive winner reaches the root to mutate it. If it consumes the path to get there (`ascend_mut`), the path is gone and the sweep cannot run the posts above the winner. So laserbeam gains a non-consuming reborrow:
+
+```rust
+// walks the parent chain by &mut reborrow; the root path returns itself
+fn root_mut(&mut self) -> &mut Root;
+```
+
+The winner does `node.parent.root_mut().set_layer(nav)`; the `&mut Root` dies at the end of that statement, so `node.parent` is free to be handed back in `Break`. Every mercury handler ascends to root today via `ascend_mut`, so each becomes `root_mut` and its node type flips from `Node<P>` to `Node<&mut P>` (see the open decisions).
 
 ## The generated `Dispatch`
 
@@ -99,13 +135,11 @@ For `#[pre_post(AnyKey => (arm, stay))] Foo { #[resolve_into] bar: Bar }` — on
 
 ```rust
 impl Dispatch<M> for Foo {
-    fn dispatch<'a>(mut path: <Foo as Place>::Path<'a>, event: &M::Event, out: &mut M::Output)
-        -> ControlFlow<(), <Foo as Place>::Path<'a>>
+    fn dispatch<'a>(mut path: <Foo as Place>::Path<'a>, event: &M::Event, out: &mut Vec<Effect>)
+        -> ControlFlow<<Foo as Place>::Path<'a>, <Foo as Place>::Path<'a>>
     {
-        // pre: run it if its trigger matches, binding its return. `opt_0` is Foo's first (only)
-        // pre/post; its type is inferred from `arm`'s return and never named. `None` records that
-        // `arm`'s trigger did not match this event — that decision is made HERE, up front, so the
-        // ascent runs `stay` on the `Some` and re-checks nothing.
+        // down: run the pre if its trigger matches, binding its return. `opt_0` is inferred from
+        // `arm`'s return and never named. `None` records that the trigger missed, decided HERE.
         let opt_0 = match <&KeyEvent as TryFrom<_>>::try_from(event).ok() {
             Some(ev) if AnyKey.is_matching(ev) => Some(arm(ev, ::bind::Node { parent: &mut path, data: () })),
             _ => None,
@@ -116,11 +150,11 @@ impl Dispatch<M> for Foo {
             path, |p| &mut p.get_mut().bar, |p| &p.get().bar, stay, opt_0,
         ).into();
 
+        // up: both arms into_parent, running `stay` on the way past Foo. (Foo has no exclusive bind
+        // of its own; a node that did would try it in the Continue arm, below.)
         match <Bar as ::bind::Dispatch<M>>::dispatch(bar_path, event, out) {
-            // a handler ascended THROUGH Foo — its `ascend_mut` ran `stay` (Nested::Handled), but
-            // only if `opt_0` was `Some`
-            ::core::ops::ControlFlow::Break(()) => ::core::ops::ControlFlow::Break(()),
-            // bar missed — we ascend, running `stay` (Nested::Missed) if `opt_0` was `Some`
+            ::core::ops::ControlFlow::Break(bar_path) =>
+                ::core::ops::ControlFlow::Break(bar_path.into_parent(::bind::Nested::Handled, out)),
             ::core::ops::ControlFlow::Continue(bar_path) =>
                 ::core::ops::ControlFlow::Continue(bar_path.into_parent(::bind::Nested::Missed, out)),
         }
@@ -128,11 +162,23 @@ impl Dispatch<M> for Foo {
 }
 ```
 
-`stay` is stored as-is: it already has the `post` shape `fn(T, &mut N, Nested, &mut O)`. `into_parent` unwraps `opt_0` and, on `Some(t)`, calls `stay(t, node, nested, out)`. A node with several pre/posts stacks one such level per pre/post, each with its own `opt_i` and `post`, so each still stores the user's fn directly and there is no generated wrapper.
+A node WITH an exclusive bind tries it in the `Continue` arm (nothing won below, so this level gets its turn). The winner fires via `root_mut`, pushes effects into `out`, and the level returns `Break` so ancestors skip their binds:
+
+```rust
+// inside the Continue arm, after the child subtree missed:
+if let Some(ev) = <&KeyEvent as TryFrom<_>>::try_from(event).ok() {
+    if Key::KeyN.down().is_matching(ev) {
+        // to_nav does `node.parent.root_mut().set_layer(nav)` and returns its effects
+        Extend::extend(out, to_nav(ev, ::bind::Node { parent: &mut this_path, data }));
+        return ::core::ops::ControlFlow::Break(this_path);   // path kept; the sweep runs posts above
+    }
+}
+::core::ops::ControlFlow::Continue(this_path)
+```
 
 ## The guarantee
 
-`pre` ran ⟹ `post` ran, exactly once. The post rides on the child path from construction. There is exactly one ascent through that level — either the framework's unwind (the `Continue` arm) or one handler's `ascend_mut` climbing past it — and that ascent is one `into_parent`, which consumes the level and runs the post. You cannot ascend through a moved-out level twice, so the once-ness is the ownership, not any flag. No case matrix, no drop trickery: one post per level, one funnel.
+`pre` ran ⟹ `post` ran, exactly once. The post rides on the child path from construction, and there is exactly one ascent through that level — one `into_parent`, in the `Break` arm or the `Continue` arm, both of which ascend. `into_parent` consumes the level, so the value moves into the post and cannot be run twice. The once-ness is the ownership, not a flag.
 
 ## The rearm as a user
 
@@ -148,8 +194,8 @@ fn arm(_ev: &KeyEvent, node: Node<&mut AndReturnHomePath, ()>) -> MercuryEffect 
 }
 
 // post: emit the schedule `arm` returned. `Nested` and the node unused here.
-fn stay(schedule: MercuryEffect, _node: &mut AndReturnHome, _nested: Nested, out: &mut Output) {
-    Extend::extend(out, [schedule]);
+fn stay(schedule: MercuryEffect, _node: &mut AndReturnHome, _nested: Nested, out: &mut Vec<MercuryEffect>) {
+    out.push(schedule);
 }
 ```
 
@@ -157,8 +203,8 @@ fn stay(schedule: MercuryEffect, _node: &mut AndReturnHome, _nested: Nested, out
 
 `crates/bind/tests/`, a `#[pre_post]` node over the existing tree:
 
-- `pre` then `post` on a miss: an event the subtree does not bind runs `pre` (returns its value into `opt_0`), descends, misses, and `into_parent` runs `post` with `Nested::Missed`.
-- `post` on a handled descent: a leaf exclusive fires and ascends; `post` runs with `Nested::Handled` as `ascend_mut` crosses the pre/post node, and its effects land in `out` in order before the exclusive winner's.
+- `pre` then `post` on a miss: an event the subtree does not bind runs `pre` (into `opt_0`), descends, misses, and the `Continue` arm's `into_parent` runs `post` with `Nested::Missed`.
+- `post` on a handled descent: a leaf exclusive wins and the sweep ascends; `post` runs with `Nested::Handled` in the `Break` arm as the sweep crosses the pre/post node, and its effect lands in crossing order — after the winner's, before an ancestor pre/post's.
 - exactly-once: a drop counter on `pre`'s returned value shows it is consumed once, never twice and never zero, across both arms.
 - `pre` did not match: an event whose trigger `pre` rejects stores `None`, and `into_parent` runs no `post`.
 - the exclusive winner is unchanged: leafward-most still wins.
@@ -167,9 +213,9 @@ fn stay(schedule: MercuryEffect, _node: &mut AndReturnHome, _nested: Nested, out
 
 The work:
 
-- `bind`: `Dispatch::dispatch` and `Descend::dispatch` thread `out: &mut Output` by-ref and return `ControlFlow<(), Path>` (was `ControlFlow<Output, Path>`). Effects accumulate into `out` in ascent order; `Break(())` means a handler fired, `Continue(path)` a miss.
-- `laserbeam`: `PathMut` gains `post: fn(T, &mut N, Nested, &mut O)`, `held: Option<T>`, and the `O`/`T` params. `into_parent` takes `(nested, out)`, unwraps `held`, and runs `post` on `Some`. `ascend_mut` takes `out`, passes `Nested::Handled` into each `into_parent` it crosses, so a firing handler's climb runs the crossed posts.
-- handlers: a firing handler hands `out` to `ascend_mut`, so its signature gains `out`. The fired handler's own effects land after the crossed posts.
-- `bind_macro`: the `#[pre_post]` / `#[pre]` / `#[post]` attributes and the generated body above — the descent-time trigger check binding `opt_i`, and `from_fn` storing the user's `post` fn directly.
+- `bind`: `Bindings` drops `type Output` and names `type Effect`; dispatch returns `Vec<M::Effect>`, seeded empty and threaded `&mut` so posts and the winner fold in order. `Dispatch`/`Descend` return `ControlFlow<Path, Path>` (was `ControlFlow<Output, Path>`); both arms `into_parent`.
+- `laserbeam`: `PathMut` gains `post: fn(T, &mut N, Nested, &mut Vec<Effect>)`, `held: Option<T>`, and the `T` param; `into_parent` takes `(nested, out)`, unwraps `held`, runs `post` on `Some`. Adds `root_mut(&mut self) -> &mut Root`, a `&mut` reborrow up the parent chain.
+- handlers: the exclusive handler stops consuming — `ascend_mut` becomes `root_mut`, and its node becomes `Node<&mut P>`. It still returns effects; the generated body extends `out`.
+- `bind_macro`: the `#[pre_post]` / `#[pre]` / `#[post]` attributes and the generated body above — the descent-time trigger check binding `opt_i`, `from_fn` storing the user's `post` directly, and the symmetric `Break`/`Continue` arms.
 
-The `fn`-pointer post is what keeps it cheap. Naming (`pre_post` vs two attributes; timing vs intent names) is the one open surface question.
+Open surface question beyond the two decisions at the top: naming (`pre_post` vs two attributes; timing vs intent names).
