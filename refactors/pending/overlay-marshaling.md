@@ -57,9 +57,9 @@ pub struct Overlay {
     panel: Panel,
     /// The sender the sinks clone from. Held so `sink` can be called more than once; the overlay
     /// itself never sends.
-    outgoing: WakingSender<OverlayMsg>,
+    message_sender: WakingSender<OverlayMsg>,
     /// Drained by [`Overlay::pump`] on the main thread when the loop wakes.
-    incoming: Receiver<OverlayMsg>,
+    message_receiver: Receiver<OverlayMsg>,
 }
 ```
 
@@ -82,7 +82,7 @@ after:
 /// is a harmless error, which is what hiding an already-gone overlay would have been.
 #[derive(Clone, Debug)]
 pub struct OverlaySink {
-    outgoing: WakingSender<OverlayMsg>,
+    message_sender: WakingSender<OverlayMsg>,
 }
 ```
 
@@ -110,12 +110,12 @@ after:
 ```rust
 pub fn overlay(waker: &MainWaker) -> Overlay {
     let mtm = MainThreadMarker::new().expect("overlay must be built on the main thread");
-    let (outgoing, incoming) = waker.channel();
+    let (message_sender, message_receiver) = waker.channel();
     debug!("overlay built");
     Overlay {
         panel: build(mtm),
-        outgoing,
-        incoming,
+        message_sender,
+        message_receiver,
     }
 }
 ```
@@ -126,7 +126,7 @@ pub fn overlay(waker: &MainWaker) -> Overlay {
 impl Overlay {
     #[must_use]
     pub fn sink(&self) -> OverlaySink {
-        OverlaySink { outgoing: self.outgoing.clone() }
+        OverlaySink { message_sender: self.message_sender.clone() }
     }
 }
 ```
@@ -138,12 +138,12 @@ impl OverlaySink {
     /// Show the overlay with `text`, from any thread. The send wakes the main loop, so `pump` runs
     /// and the panel updates at once rather than at the next slice.
     pub fn show(&self, text: String) {
-        let _ = self.outgoing.send(OverlayMsg::Show(text));
+        let _ = self.message_sender.send(OverlayMsg::Show(text));
     }
 
     /// Hide the overlay, from any thread. A no-op if it is not up. The panel stays built.
     pub fn hide(&self) {
-        let _ = self.outgoing.send(OverlayMsg::Hide);
+        let _ = self.message_sender.send(OverlayMsg::Hide);
     }
 }
 ```
@@ -160,7 +160,7 @@ impl Overlay {
     pub fn pump(&self) {
         let mtm = MainThreadMarker::new().expect("Overlay::pump must run on the main thread");
         let Panel { panel, label } = &self.panel;
-        for msg in self.incoming.try_iter() {
+        for msg in self.message_receiver.try_iter() {
             match msg {
                 OverlayMsg::Show(text) => {
                     label.setStringValue(&NSString::from_str(text.trim_end()));

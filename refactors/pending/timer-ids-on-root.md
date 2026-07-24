@@ -82,11 +82,11 @@ after:
 
 ```rust
 pub fn timer_effect_and_guard<E: From<TimerFired>>(
-    ids: &mut TimerIds,
+    timer_ids: &mut TimerIds,
     delay: Duration,
 ) -> (TimerGuard, TimerEffect<E>) {
     let (guard, receiver) = drop_guard();
-    let id = ids.next();
+    let id = timer_ids.next();
     (
         TimerGuard { id, guard },
         TimerEffect {
@@ -201,8 +201,8 @@ after:
 after:
 
 ```rust
-    fn asking_for(&mut self, ids: &mut TimerIds, target: WindowFrame) -> Vec<MercuryEffect> {
-        let (timer, effect) = timer_effect_and_guard(ids, PLACEMENT_SETTLE);
+    fn asking_for(&mut self, timer_ids: &mut TimerIds, target: WindowFrame) -> Vec<MercuryEffect> {
+        let (timer, effect) = timer_effect_and_guard(timer_ids, PLACEMENT_SETTLE);
 ```
 
 Its caller passes `&mut root.timer_ids` beside the `&mut root.windows` receiver: `root.windows.placing(&mut root.timer_ids, target)`. Different fields of `Mercury`, so the two mutable borrows do not collide.
@@ -217,8 +217,8 @@ The layer constructors that arm a return-home timer take the source. `NavLayer::
 after:
 
 ```rust
-    pub(crate) fn new(ids: &mut TimerIds) -> (Self, MercuryEffect) {
-        let (timeout, timer) = arm_return_home(ids);
+    pub(crate) fn new(timer_ids: &mut TimerIds) -> (Self, MercuryEffect) {
+        let (timeout, timer) = arm_return_home(timer_ids);
 ```
 
 The transition handlers ascend to the root for `set_layer` and pass `&mut root.timer_ids` to the constructor. `handlers/home.rs`'s nav transition is representative, before:
@@ -257,8 +257,8 @@ pub(crate) fn arm_jk_timeout(window: Duration) -> (TimerGuard, MercuryEffect) {
 after (`arm_jk_timeout` deleted):
 
 ```rust
-fn arm_return_home(ids: &mut TimerIds) -> (TimerGuard, MercuryEffect) {
-    let (guard, effect) = timer_effect_and_guard(ids, RETURN_TO_HOME_TIMEOUT);
+fn arm_return_home(timer_ids: &mut TimerIds) -> (TimerGuard, MercuryEffect) {
+    let (guard, effect) = timer_effect_and_guard(timer_ids, RETURN_TO_HOME_TIMEOUT);
     (guard, MercuryEffect::Timer(effect))
 }
 ```
