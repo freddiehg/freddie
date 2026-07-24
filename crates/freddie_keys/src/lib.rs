@@ -347,6 +347,60 @@ impl EventTrigger for KeyChord {
     }
 }
 
+/// A key event tagged with the consumer's device identity `D`.
+///
+/// `D` is whatever `intercept_with_source`'s categorize returns. The model event carries this
+/// (or a newtype of it); bare [`Key`] / [`KeyPress`] still match only the key half via a
+/// projecting `TryFrom` in the app.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct DeviceKeyed<E, D> {
+    pub key: E,
+    pub device: D,
+}
+
+/// Restricts an inner key trigger to devices the filter `D` matches.
+///
+/// Both halves are [`EventTrigger`]s: key policy and device policy use the same mechanism.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct OnDevice<T, D> {
+    pub device: D,
+    pub inner: T,
+}
+
+impl<T, D> EventTrigger for OnDevice<T, D>
+where
+    T: EventTrigger,
+    D: EventTrigger,
+{
+    type Event = DeviceKeyed<T::Event, D::Event>;
+
+    fn is_matching(&self, event: &Self::Event) -> bool {
+        self.device.is_matching(&event.device) && self.inner.is_matching(&event.key)
+    }
+}
+
+impl<T, D> OnDevice<T, D> {
+    /// Build a device-scoped trigger.
+    #[must_use]
+    pub const fn new(device: D, inner: T) -> Self {
+        Self { device, inner }
+    }
+}
+
+/// Attach a device filter to any key-side trigger.
+pub trait WithDevice: Sized {
+    /// Match only when the event's device satisfies `device`.
+    #[must_use]
+    fn on_device<D: EventTrigger>(self, device: D) -> OnDevice<Self, D> {
+        OnDevice {
+            device,
+            inner: self,
+        }
+    }
+}
+
+impl<T: EventTrigger> WithDevice for T {}
+
 #[cfg(test)]
 mod tests {
     use super::{Key, KeyEvent, ModifierFlags, PressType};
@@ -462,5 +516,45 @@ mod tests {
         assert!(Key::Raw(64000).is_matching(&event));
         assert!(!Key::Raw(1).is_matching(&event));
         assert!(!Key::KeyA.is_matching(&event));
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    enum TestDevice {
+        A,
+        B,
+    }
+
+    bind::self_trigger!(TestDevice);
+
+    #[test]
+    fn on_device_matches_key_and_device() {
+        use super::{DeviceKeyed, WithDevice};
+
+        let trigger = Key::KeyR.down().on_device(TestDevice::A);
+        let matching = DeviceKeyed {
+            key: KeyEvent {
+                key: Key::KeyR,
+                press: PressType::Down,
+                flags: ModifierFlags::empty(),
+            },
+            device: TestDevice::A,
+        };
+        assert!(trigger.is_matching(&matching));
+        assert!(!trigger.is_matching(&DeviceKeyed {
+            key: KeyEvent {
+                key: Key::KeyR,
+                press: PressType::Down,
+                flags: ModifierFlags::empty(),
+            },
+            device: TestDevice::B,
+        }));
+        assert!(!trigger.is_matching(&DeviceKeyed {
+            key: KeyEvent {
+                key: Key::KeyS,
+                press: PressType::Down,
+                flags: ModifierFlags::empty(),
+            },
+            device: TestDevice::A,
+        }));
     }
 }

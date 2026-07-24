@@ -10,8 +10,11 @@ use std::fmt;
 
 pub use freddie_keys::{Key, KeyEvent, PressType};
 
+#[cfg(target_os = "macos")]
+pub use freddie_hid_device::{DeviceInfo, ResolveFailure, SourceId};
+
 mod sys;
-pub use sys::{Emitter, Interceptor, intercept};
+pub use sys::{Emitter, Interceptor, intercept, intercept_with_source};
 
 /// The keyboard could not be intercepted. On macOS this usually means
 /// Accessibility (or Input Monitoring) is not granted.

@@ -607,6 +607,7 @@ version = "0.0.1"
 dependencies = [
  "core-foundation",
  "core-graphics",
+ "freddie_hid_device",
  "freddie_keys",
  "tracing",
 ]

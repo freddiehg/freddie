@@ -2,6 +2,8 @@
 //! pass/remap/drop decision, the modifier flags) are unit-tested below; the tap
 //! and the posting are FFI that needs a real keyboard to exercise.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher, RandomState};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
@@ -13,6 +15,7 @@ use core_graphics::event::{
     CGEventType, CGKeyCode, CallbackResult, EventField, KeyCode,
 };
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+use freddie_hid_device::{DeviceInfo, ResolveFailure, SourceId, resolve, source_of};
 use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 
 use crate::{CaptureError, EmitError};
@@ -254,9 +257,50 @@ fn keyboard_event(key: Key, press: PressType, flags: ModifierFlags) -> Result<CG
 pub fn intercept(
     on_key: impl Fn(KeyEvent) -> Option<KeyEvent> + Send + 'static,
 ) -> Result<(Interceptor, Emitter), CaptureError> {
+    run_tap(move |input, _event| on_key(input))
+}
+
+/// Same tap as [`intercept`], with per-key source device categorization.
+///
+/// `categorize` runs once per distinct HID source (and on every synthetic key for
+/// `None`). `on_key` receives the key and the categorized value `T`.
+///
+/// # Errors
+///
+/// Returns [`CaptureError`] if the tap cannot be installed (usually missing
+/// Accessibility).
+pub fn intercept_with_source<T, C, F>(
+    mut categorize: C,
+    on_key: F,
+) -> Result<(Interceptor, Emitter), CaptureError>
+where
+    T: Clone + Send + 'static,
+    C: FnMut(Option<Result<DeviceInfo, (SourceId, ResolveFailure)>>) -> T + Send + 'static,
+    F: Fn((KeyEvent, T)) -> Option<KeyEvent> + Send + 'static,
+{
+    let mut by_source: HashMap<SourceId, T> = HashMap::new();
+    run_tap(move |input, event| {
+        let class = match source_of(event) {
+            None => categorize(None),
+            Some(id) => by_source
+                .entry(id)
+                .or_insert_with(|| categorize(Some(resolve(id))))
+                .clone(),
+        };
+        on_key((input, class))
+    })
+}
+
+/// Shared tap install. `on_key` already decided pass/remap/drop via its return.
+/// `event` is the live `CGEvent` for the key; only [`intercept_with_source`] reads it.
+fn run_tap(
+    on_key: impl FnMut(KeyEvent, &CGEvent) -> Option<KeyEvent> + Send + 'static,
+) -> Result<(Interceptor, Emitter), CaptureError> {
     let tag = Tag::new();
     let (ready_tx, ready_rx) = mpsc::channel::<Result<CFRunLoop, ()>>();
     let signal = ready_tx.clone();
+    // The tap callback is `Fn`, not `FnMut`; cache-owning categorize needs mutability.
+    let on_key = RefCell::new(on_key);
 
     let thread = std::thread::spawn(move || {
         let outcome = CGEventTap::with_enabled(
@@ -293,7 +337,7 @@ pub fn intercept(
                 let source_pid =
                     event.get_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID);
                 tracing::trace!(?input, source_pid, "tap");
-                match decide(&input, on_key(input.clone())) {
+                match decide(&input, on_key.borrow_mut()(input.clone(), event)) {
                     Decision::Pass => CallbackResult::Keep,
                     Decision::Drop => CallbackResult::Drop,
                     Decision::Remap(out) => match keyboard_event(out.key, out.press, out.flags) {

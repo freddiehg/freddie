@@ -13,6 +13,7 @@ tracing = "0.1"
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = { version = "0.25", features = ["link"] }
 core-foundation = { version = "0.10", features = ["link"] }
+freddie_hid_device = { path = "../freddie_hid_device", version = "0.0.1" }
 
 [lints]
 workspace = true
