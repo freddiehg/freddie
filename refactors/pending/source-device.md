@@ -437,22 +437,43 @@ where
 }
 ```
 
-`D: EventTrigger` — reuse the existing bind trait. The event's device field is `D::Event` (usually `D` itself for a tag enum). Figaro:
+`D: EventTrigger` — reuse the existing bind trait. The event's device field is `D::Event` (usually `D` itself for a tag enum).
+
+### `self_eq_trigger!` (in `bind`, next to `self_trigger!`)
+
+`self_trigger!` is for unit signals (`Quit`, timeouts): `Event = Self`, `is_matching` always `true`. Device tags need the other shape: same type as event, **equality** so variants discriminate.
 
 ```rust
-// DeviceClass is both the categorize result and a trigger against that field.
-// Equality: Desktop must not match Laptop.
-impl EventTrigger for DeviceClass {
-    type Event = DeviceClass;
-    fn is_matching(&self, event: &DeviceClass) -> bool {
-        self == event
-    }
+// crates/bind/src/lib.rs  (next to self_trigger!)
+
+/// Implements [`EventTrigger`] for a type that is its own event and matches by
+/// `PartialEq`. For tag enums (`DeviceClass`) and other values that discriminate
+/// on equality — not for bare signals (use [`self_trigger!`]).
+#[macro_export]
+macro_rules! self_eq_trigger {
+    ($t:ty) => {
+        impl $crate::EventTrigger for $t {
+            type Event = Self;
+            fn is_matching(&self, event: &Self) -> bool {
+                self == event
+            }
+        }
+    };
 }
 ```
 
-Do **not** use `self_trigger!(DeviceClass)`. That macro is for unit signals (`Quit`, timeouts) whose `is_matching` is always `true` and which carry nothing to discriminate. On an enum with variants, it would make every class match every class and break `on_device`.
+`$t` must be `PartialEq` (typically derived). Figaro:
 
-Wider device filters are separate `EventTrigger` types (same idea as `AnyKey` for keys), not `self_trigger!` on the tag enum.
+```rust
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum DeviceClass { Desktop, Laptop, Other, Injected }
+
+bind::self_eq_trigger!(DeviceClass);
+```
+
+Do **not** use `self_trigger!(DeviceClass)` — that would make every class match every class and break `on_device`.
+
+Wider device filters are separate `EventTrigger` types (same idea as `AnyKey` for keys), not either macro on the tag enum.
 
 ### Constructor: blanket `WithDevice` on every key trigger
 
@@ -555,6 +576,7 @@ intercept_with_source(
 Each step is independently shippable.
 
 1. `freddie_hid_device` leaf: `SourceId`, `source_of`, `resolve`, `DeviceInfo`, `prop_*` as above. Workspace member. Demo: listen tap, print `resolve(source_of(e))` per key. No `freddie_keyboard` change.
-2. `freddie_keys`: `DeviceKeyed`, `OnDevice` (`T: EventTrigger`, `D: EventTrigger`), `WithDevice` blanket, unit tests for `is_matching` (no macOS). mercury unaffected until it opts in.
-3. `freddie_keyboard`: extract `run_tap`, add generic `intercept_with_source` with categorize + `HashMap<SourceId, T>`. `intercept` stays the thin wrapper. mercury still calls `intercept`.
-4. Stop. Figaro work is the other doc (`device-conditioned-keymaps.md`): `DeviceClass`, model `DeviceKeyed`, dual `TryFrom`, daemon wire-up, device-scoped binds.
+2. `bind`: `self_eq_trigger!` macro next to `self_trigger!`. Independently shippable.
+3. `freddie_keys`: `DeviceKeyed`, `OnDevice` (`T: EventTrigger`, `D: EventTrigger`), `WithDevice` blanket, unit tests for `is_matching` (no macOS). mercury unaffected until it opts in.
+4. `freddie_keyboard`: extract `run_tap`, add generic `intercept_with_source` with categorize + `HashMap<SourceId, T>`. `intercept` stays the thin wrapper. mercury still calls `intercept`.
+5. Stop. Figaro work is the other doc (`device-conditioned-keymaps.md`): `self_eq_trigger!(DeviceClass)`, model `DeviceKeyed`, dual `TryFrom`, daemon wire-up, device-scoped binds.
