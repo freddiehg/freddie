@@ -81,10 +81,10 @@ impl DeviceMatch {
 /// (no source) gets `injected`. This is where "which keyboard is which" is decided, once, so a
 /// consumer supplies only its class type and its rules.
 pub struct Classifier<C> { /* Devices + Vec<(DeviceMatch, C)> + other + injected */ }
-impl<C: Copy> Classifier<C> {
+impl<C: Clone> Classifier<C> {
     pub fn new(rules: Vec<(DeviceMatch, C)>, other: C, injected: C) -> Self;
-    /// The class of a key's source. `None` -> `injected`; the resolve is cached, so steady state
-    /// is a hash lookup.
+    /// The class of a key's source. `None` -> `injected`; the class is cloned out of the matched
+    /// rule (trivial for a tag enum), and the resolve is cached, so steady state is a hash lookup.
     pub fn class_of(&mut self, source: Option<SourceId>) -> C;
 }
 ```
