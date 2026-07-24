@@ -172,9 +172,9 @@ enum DeviceClass { Desktop, Laptop, Other, Injected }
 
 fn classify(id: SourceId) -> DeviceClass {
     match resolve(id) {
+        Some(d) if d.built_in => DeviceClass::Laptop, // a bool, so test it first
         Some(d) if d.vendor_id == 0x29ea && d.product_id == 0x0360 => DeviceClass::Desktop, // Kinesis Adv360
-        Some(d) if d.built_in => DeviceClass::Laptop,
-        _ => DeviceClass::Other, // matched nothing, or the id no longer resolves
+        _ => DeviceClass::Other, // every other keyboard is Other, or the id no longer resolves
     }
 }
 
