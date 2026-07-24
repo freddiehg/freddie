@@ -94,11 +94,11 @@ Expression positions work as today (`#handler(…)` splice). Pinned by `crates/b
 
 For each pre/post/bind on the node, if the trigger matches:
 
-- `#[pre_post]` / `#[pre]`: call pre with `Node<&P, D>`, store `opt_i = Some(pre_return)`
-- `#[post]`: store `opt_i = Some(())`
-- `#[bind]`: store `opt_i = Some(())` (same as `#[post]`; event stays the dispatch `&Event`)
+- `#[pre_post]` / `#[pre]`: call pre with `Node<&P, D>`, store `opt_N = Some(pre_return)`
+- `#[post]`: store `opt_N = Some(())`
+- `#[bind]`: store `opt_N = Some(())` (same as `#[post]`; event stays the dispatch `&Event`)
 
-If the trigger misses, `opt_i = None`. Ascent never re-checks triggers and never changes which opts are `Some`.
+`N` is the attribute index on the node (0, 1, 2, …). The derive always emits `opt_0`, `opt_1`, … — never names from triggers or handlers. If the trigger misses, `opt_N = None`. Ascent never re-checks triggers and never changes which opts are `Some`.
 
 ```rust
 // shape only — return type is whatever the pre function returns (concrete, inferred)
@@ -393,17 +393,27 @@ impl Dispatch<M> for Inner {
     where
         Self: 'a,
     {
-        // schedule: Option<()> if KeyA matches (same as any #[post]); index 0 on this node
-        let opt_0 = /* trigger check → Some(()) or None */;
+        // index 0 on this node: #[bind(KeyA => inner_handler)]
+        let opt_0 = if let ::core::option::Option::Some(ev) =
+            ::core::convert::TryFrom::try_from(event).ok()
+        {
+            let trigger = KeyA;
+            if ::bind::EventTrigger::is_matching(&trigger, ev) {
+                ::core::option::Option::Some(())
+            } else {
+                ::core::option::Option::None
+            }
+        } else {
+            ::core::option::Option::None
+        };
 
         if let ::core::option::Option::Some(()) = opt_0 {
             let ev = /* &KeyEvent from event */;
-            // exclusive(inner_handler) is the post body
             let (path, out_effs) = run_post(
                 claimed,
                 Structure::Valid, // leaf: no child field to invalidate
                 path,
-                |node, v| exclusive(inner_handler)(ev, node, v),
+                |node, ctx| exclusive(inner_handler)(ev, node, ctx),
             );
             ::core::iter::Extend::extend(effs, out_effs);
             return path;
@@ -426,15 +436,64 @@ impl Dispatch<M> for Outer {
     where
         Self: 'a,
     {
-        // ----- descent: schedule (indexed opts — no names from triggers/handlers) -----
-        // 0: pre_post Foo => (pre_foo, post_foo)  → Option<u32>
-        // 1: pre_post Bar => (pre_bar, post_bar)  → Option<…>
-        // 2: bind KeyA => outer_handler           → Option<()>
-        let opt_0 = /* Foo match → Some(pre_foo(...)) */;
-        let opt_1 = /* Bar match → Some(pre_bar(...)) */;
-        let opt_2 = /* KeyA match → Some(()) */;
+        // ----- descent: schedule -----
+        // Attribute order on Outer is the index:
+        //   0  #[pre_post(Foo => (pre_foo, post_foo))]
+        //   1  #[pre_post(Bar => (pre_bar, post_bar))]
+        //   2  #[bind(KeyA => outer_handler)]
+        let opt_0 = if let ::core::option::Option::Some(ev) =
+            ::core::convert::TryFrom::try_from(event).ok()
+        {
+            let trigger = Foo;
+            if ::bind::EventTrigger::is_matching(&trigger, ev) {
+                ::core::option::Option::Some(pre_foo(
+                    ev,
+                    ::bind::Node {
+                        parent: &path,
+                        data: (),
+                    },
+                ))
+            } else {
+                ::core::option::Option::None
+            }
+        } else {
+            ::core::option::Option::None
+        };
+
+        let opt_1 = if let ::core::option::Option::Some(ev) =
+            ::core::convert::TryFrom::try_from(event).ok()
+        {
+            let trigger = Bar;
+            if ::bind::EventTrigger::is_matching(&trigger, ev) {
+                ::core::option::Option::Some(pre_bar(
+                    ev,
+                    ::bind::Node {
+                        parent: &path,
+                        data: (),
+                    },
+                ))
+            } else {
+                ::core::option::Option::None
+            }
+        } else {
+            ::core::option::Option::None
+        };
+
+        let opt_2 = if let ::core::option::Option::Some(ev) =
+            ::core::convert::TryFrom::try_from(event).ok()
+        {
+            let trigger = KeyA;
+            if ::bind::EventTrigger::is_matching(&trigger, ev) {
+                ::core::option::Option::Some(())
+            } else {
+                ::core::option::Option::None
+            }
+        } else {
+            ::core::option::Option::None
+        };
 
         // into_parent passes (structure, claimed) into this closure.
+        // opt_0 / opt_1 are captured; their types differ (Option of each pre's return).
         let inner_path = ::laserbeam::PathMut::from_fn(
             path,
             |p| &mut p.get_mut().inner,
@@ -443,7 +502,6 @@ impl Dispatch<M> for Outer {
                 let mut claimed = claimed_now;
                 let mut local = ::std::vec::Vec::new();
                 let mut path = parent;
-                // each opt is its own type; each if-let has its own binding name
                 if let ::core::option::Option::Some(t0) = opt_0 {
                     let (p, e) = run_post(&mut claimed, structure, path, |node, ctx| {
                         let (effects, path) = post_foo(t0, node, ctx);
@@ -482,10 +540,10 @@ impl Dispatch<M> for Outer {
         // ----- ascent: reshape + pre_post posts (Context built inside run_post) -----
         let mut path = inner_path.into_parent(effs, claimed);
 
-        // ----- bind opt_2: exclusive post, same run_post path -----
-        if opt_2.is_some() {
+        // ----- bind opt_2: exclusive post -----
+        if let ::core::option::Option::Some(()) = opt_2 {
             let structure = path.structure_of_inner();
-            let ev = /* &KeyEvent */;
+            let ev = /* &KeyEvent from event */;
             let (p, e) = run_post(claimed, structure, path, |node, ctx| {
                 exclusive(outer_handler)(ev, node, ctx)
             });
