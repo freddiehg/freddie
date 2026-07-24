@@ -139,7 +139,7 @@ struct Context {
 impl Context {
     fn structure(&self) -> Structure { self.structure }
     /// `None` = open; `Some(Claimed)` = an exclusive already took this event.
-    fn claim(&self) -> Option<Claimed> { self.claim }
+    fn claim(&mut self) -> Option<Claimed> { self.claim }
     fn set_structure(&mut self, s: Structure) { self.structure = s; }
     fn set_claim(&mut self, c: Claimed) { self.claim = Some(c); }
 }
@@ -269,7 +269,7 @@ pub struct Context {
 impl Context {
     pub fn structure(&self) -> Structure { self.structure }
     /// `None` = open; `Some(Claimed)` = exclusive already took this event.
-    pub fn claim(&self) -> Option<Claimed> { self.claim }
+    pub fn claim(&mut self) -> Option<Claimed> { self.claim }
     pub fn set_structure(&mut self, s: Structure) { self.structure = s; }
     pub fn set_claim(&mut self, c: Claimed) { self.claim = Some(c); }
 }

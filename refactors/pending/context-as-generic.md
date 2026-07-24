@@ -56,7 +56,7 @@ pub struct MercuryContext {
 
 impl MercuryContext {
     pub fn structure(&self) -> Structure { self.structure }
-    pub fn claim(&self) -> Option<Claimed> { self.claim }
+    pub fn claim(&mut self) -> Option<Claimed> { self.claim }
     pub fn set_structure(&mut self, s: Structure) { self.structure = s; }
     pub fn set_claim(&mut self, c: Claimed) { self.claim = Some(c); }
 }
