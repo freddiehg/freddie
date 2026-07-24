@@ -33,42 +33,34 @@ pub trait Bindings {
 
 mercury's marker sets `type Effect = MercuryEffect` where it set `type Output = Vec<MercuryEffect>`.
 
-## Change 2: `Completed` and `Complete`
+## Change 2: `ascend`, `AtRoot`, and `Completed`
 
-`laserbeam` gains a sealed token and a trait that mints it by ascending to the root. In this prefactor `complete` is `ascend_mut` wrapped in the token; the pre/post work makes it run the crossed posts.
+The ascent and the proof are two things, not one. `ascend::<Root>()` climbs to the root and hands back a handle to it, `AtRoot`, which you MUTATE through `get_mut`. `complete` turns that handle into `Completed`, a sealed proof that exposes nothing — it does not `Deref` to the root, because a proof has no business handing out root access.
 
 ```rust
-/// Proof that a handler ascended to the root, and the handle it mutates through. Sealed: the field
-/// is private, so `complete` is the ONLY constructor. A handler that must return one cannot
-/// fabricate it, so its return type forces the ascent.
-pub struct Completed<'a> {
+/// The handle `ascend` produces: the root, reachable to mutate, and completable. Awkward but
+/// accurate — at the root the path and the root object are the same thing.
+pub struct AtRoot<'a> {
     root: &'a mut Root,
 }
-
-impl<'a> core::ops::Deref for Completed<'a> {
-    type Target = Root;
-    fn deref(&self) -> &Root { self.root }
-}
-impl<'a> core::ops::DerefMut for Completed<'a> {
-    fn deref_mut(&mut self) -> &mut Root { self.root }
+impl<'a> AtRoot<'a> {
+    pub fn get_mut(&mut self) -> &mut Root { self.root }
+    pub fn complete(self) -> Completed { Completed(()) }   // (feature: Completed { gathered })
 }
 
-/// Ascend to the root, minting the token. Every path level and the root path implement it, the same
-/// shape `AscendMut` already has.
-pub trait Complete<'a> {
-    fn complete(self) -> Completed<'a>;
-}
+/// Proof a handler reached the root. Sealed: the field is private, so `AtRoot::complete` is the ONLY
+/// constructor. A handler that must return one cannot fabricate it, so its return type forces the
+/// ascent. It exposes nothing.
+pub struct Completed(());
 
-impl<'a> Complete<'a> for &'a mut Root {
-    fn complete(self) -> Completed<'a> { Completed { root: self } }
-}
-impl<'a, N, P> Complete<'a> for PathMut<'a, N, P>
-where
-    P: Complete<'a>,
-{
-    fn complete(self) -> Completed<'a> { self.into_parent(Nested::Missed, &mut Vec::new()).complete() }
+/// Climb to the root, minting the handle. In this prefactor it is `ascend_mut` wrapped in `AtRoot`;
+/// the pre/post work makes the climb run the crossed posts.
+pub trait Ascend<'a> {
+    fn ascend<Root>(self) -> AtRoot<'a>;
 }
 ```
+
+`ascend` is generic over the root type the same way laserbeam's `ascend_to_mut::<Target>` already is; a handler writes `node.parent.ascend::<Mercury>()`.
 
 `Root` is the concrete root type the tree ascends to (mercury's `Mercury`). `laserbeam` is generic over it exactly as `AscendMut`'s `Target` is; the snippet writes `Root` for the node the whole tree bottoms out at.
 
@@ -167,9 +159,9 @@ The `collect` this replaces accepted any `IntoIterator`; `Into<Vec<Effect>>` is 
 
 `descend_impl`'s `Continue` arm threads `effs`/`Nested::Missed` into its `into_parent` the same way; its `Break` arm becomes `Break(()) => Break(())`.
 
-## Change 5: handlers return `(Vec<Effect>, Completed)` and `complete`
+## Change 5: handlers ascend, mutate through `get_mut`, and complete
 
-Each exclusive handler stops calling `ascend_mut` and calls `complete`, returning its own effects with the token. Before (`crates/mercury/src/handlers/home.rs`):
+Each exclusive handler ascends to the root, mutates through `get_mut`, and hands back its effects with the proof. Before (`crates/mercury/src/handlers/home.rs`):
 
 ```rust
 pub(crate) fn to_nav<'a, E, P: AscendMut<MercuryPath<'a>>>(
@@ -185,18 +177,18 @@ pub(crate) fn to_nav<'a, E, P: AscendMut<MercuryPath<'a>>>(
 after:
 
 ```rust
-pub(crate) fn to_nav<'a, E, P: Complete<'a>>(
+pub(crate) fn to_nav<'a, E, P: Ascend<'a>>(
     _ev: &E, node: Node<P, ()>,
-) -> (Vec<MercuryEffect>, Completed<'a>) {
+) -> (Vec<MercuryEffect>, Completed) {
     let (nav, timer) = NavLayer::new();
-    let mut done = node.parent.complete();     // Completed, DerefMut to Mercury
-    let mut effects = done.set_layer(nav);
+    let mut a = node.parent.ascend::<Mercury>();     // AtRoot: the root, reachable and completable
+    let mut effects = a.get_mut().set_layer(nav);
     effects.push(timer);
-    (effects, done)
+    (effects, a.complete())                          // mutate first, then mint the proof
 }
 ```
 
-`done.set_layer(nav)` reaches `Mercury::set_layer` through `DerefMut`. Every bind handler in `crates/mercury/src/handlers/` changes the same way: the `AscendMut` bound becomes `Complete`, the `ascend_mut()` call becomes `complete()`, and the return becomes `(V, Completed<'a>)` with `V: Into<Vec<MercuryEffect>>` and the token handed back. A handler with a single effect returns `(MercuryEffect, Completed<'a>)`; one that already builds a `Vec` (like `to_nav`) returns `(Vec<MercuryEffect>, Completed<'a>)`. mercury adds the conversion once:
+Every bind handler in `crates/mercury/src/handlers/` changes the same way: the `AscendMut` bound becomes `Ascend`, `ascend_mut()` becomes `ascend::<Mercury>()`, root mutation goes through `a.get_mut()`, and the return becomes `(V, Completed)` with `V: Into<Vec<MercuryEffect>>` and `a.complete()` handed back. A handler with a single effect returns `(MercuryEffect, Completed)`; one that already builds a `Vec` (like `to_nav`) returns `(Vec<MercuryEffect>, Completed)`. mercury adds the conversion once:
 
 ```rust
 impl From<MercuryEffect> for Vec<MercuryEffect> {
