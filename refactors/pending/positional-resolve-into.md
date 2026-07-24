@@ -150,41 +150,45 @@ Data::Struct(s) => match find_resolve_into(&s.fields)? {
 
 ## The test: `bind`
 
-The existing tree in `crates/bind/tests/common/mod.rs` has named `#[resolve_into]` at the root (`App.layer`), at a non-root node (`Typing.deep`), and through a `Box` (`Box<Deep>`). Add a positional mirror that exercises the same three: a tuple root, a non-root tuple node, and a boxed positional field.
+The change touches both generated halves: `dispatch_body` and `accumulate_body` each call `find_resolve_into` and build the `Edge` projection. So the fixture is exercised by a dispatch test and an accumulate test, and both live in one new file rather than in the shared `common/mod.rs`: the tuple tree is specific to this prefactor, not part of the full tree the two suites share, and both `bind::dispatch` and `bind::accumulate` are callable from a single test binary.
 
-Add to `common/mod.rs`:
+The fixture mirrors the named tree's three positions: positional `#[resolve_into]` at the root (`.0`), at a non-root node (`.0` through `get_mut`), and through a `Box`. It reuses `common`'s marker, handler, and helpers.
+
+New file `crates/bind/tests/tuple.rs`:
 
 ```rust
-// A tuple-struct tree: `#[resolve_into]` through `.0` at the root, at a non-root node, and through
-// a Box. `esc` is bound at the root as the ancestor fallback; `g` on the leaf.
+//! `#[resolve_into]` on a positional field descends the same as a named one.
+
+mod common;
+
+use std::collections::HashSet;
+
+use bind::Bind;
+use common::{Demo, Keyboard, ignore, kb, key};
+use laserbeam::PathMut;
+
 #[derive(Bind)]
 #[node(root)]
 #[binds(Demo)]
 #[bind(Keyboard("esc") => ignore)]
-pub struct TupleRoot(#[resolve_into] pub TupleMid);
+struct TupleRoot(#[resolve_into] TupleMid);
 
 #[derive(Bind)]
 #[node(parent = TupleRootPath)]
 #[binds(Demo)]
-pub struct TupleMid(#[resolve_into] pub Box<TupleLeaf>);
+struct TupleMid(#[resolve_into] Box<TupleLeaf>);
 
 #[derive(Bind)]
 #[node(parent = TupleMidPath)]
 #[binds(Demo)]
 #[bind(Keyboard("g") => ignore)]
-pub struct TupleLeaf;
+struct TupleLeaf;
 
-pub type TupleRootPath<'a> = &'a mut TupleRoot;
-pub type TupleMidPath<'a> = PathMut<TupleMid, TupleRootPath<'a>>;
-pub type TupleLeafPath<'a> = PathMut<TupleLeaf, TupleMidPath<'a>>;
-```
+type TupleRootPath<'a> = &'a mut TupleRoot;
+type TupleMidPath<'a> = PathMut<TupleMid, TupleRootPath<'a>>;
 
-Add to `crates/bind/tests/dispatch.rs` (importing `TupleRoot`, `TupleMid`, `TupleLeaf`):
-
-```rust
-// `#[resolve_into]` on a positional field descends the same as a named one: the leaf binding is
-// reached through `root.0 -> mid.0 (Box) -> leaf`, and the root fallback fires when the subtree
-// misses.
+// The leaf binding is reached through `root.0 -> mid.0 (Box) -> leaf`, and the root fallback fires
+// when the subtree misses. `ignore` returns the fired key's length.
 #[test]
 fn positional_resolve_into_descends() {
     let mut root = TupleRoot(TupleMid(Box::new(TupleLeaf)));
@@ -192,11 +196,9 @@ fn positional_resolve_into_descends() {
     assert_eq!(bind::dispatch::<Demo, TupleRoot>(&mut root, &key("esc")), Some(vec![3]));
     assert_eq!(bind::dispatch::<Demo, TupleRoot>(&mut root, &key("zzz")), None);
 }
-```
 
-Add to `crates/bind/tests/accumulate.rs` (which drives the check through the same `Edge` projection, so it confirms the positional descent on that half too):
-
-```rust
+// The check projects through the same `Edge`, so it collects the root's and leaf's triggers across
+// the positional descent.
 #[test]
 fn positional_resolve_into_accumulates() {
     let mut root = TupleRoot(TupleMid(Box::new(TupleLeaf)));
@@ -204,6 +206,8 @@ fn positional_resolve_into_accumulates() {
     assert_eq!(set, HashSet::from([kb("esc"), kb("g")]));
 }
 ```
+
+`common`'s `ignore`, `Keyboard`, `Demo`, `key`, and `kb` are already `pub`; `bind::accumulate` is behind the `check` feature, which the test target already enables (the existing `accumulate.rs` calls it). `TupleLeaf` has no children, so no `TupleLeafPath` alias is defined.
 
 ## Status
 
