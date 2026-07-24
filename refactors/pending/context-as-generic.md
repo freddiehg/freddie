@@ -7,7 +7,7 @@ Not done. Stub. Companion to `invalidation.md`.
 ```rust
 // depth: u32               — lives on Context; step_up each into_parent; invalidate(d) raises it
 // claim: Option<Claimed>   — claim() try-take
-// validity() sugar over depth == 0 (not stored)
+// validity(&self) -> Validity  — getter over depth == 0 (not stored)
 ```
 
 That is odd: two unrelated facts glued under one name because the ascent happens to need both today. The next field (fallback policy, …) would make the bag worse. This doc is the alternative: **context is a type parameter of the dispatch machine**, not a single struct in `bind`.
@@ -46,6 +46,7 @@ pub struct MercuryContext {
 
 impl MercuryContext {
     pub fn depth(&self) -> u32 { self.depth }
+    /// Getter over depth. Not a stored field.
     pub fn validity(&self) -> Validity { /* depth == 0 → Valid else Invalidated */ }
     pub fn invalidate(&mut self, d: u32) { /* max with current */ }
     pub fn step_up(&mut self) { /* saturating_sub(1) on into_parent */ }

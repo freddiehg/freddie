@@ -2,7 +2,7 @@
 
 Not done. Standalone.
 
-Descent schedules which pre/posts/binds will run. That set is final. Ascent runs every scheduled post leaf to root; mutation is free. One `&mut Context` is threaded up the ascent and mutated in place. **Context holds the depth** (remaining `into_parent` hops still inside a destroyed region) and **claim** (exclusive try-take). Validity is not stored — it is derived from depth. `#[bind]` is a post with no pre, gated by `ctx.claim()`.
+Descent schedules which pre/posts/binds will run. That set is final. Ascent runs every scheduled post leaf to root; mutation is free. One `&mut Context` is threaded up the ascent and mutated in place. **Context holds `depth`** (remaining `into_parent` hops still inside a destroyed region) and **claim** (exclusive try-take). Posts read validity through the getter **`validity()`** — not a stored field; pure view of `depth == 0`. `#[bind]` is a post with no pre, gated by `ctx.claim()`.
 
 **Generate stays thin.** The derive only schedules `opt_N` and calls helpers (`run_post`, `run_exclusive`, `into_parent`). Depth math, claim try-take, and sink extension live in ordinary functions in `bind` / laserbeam — not hand-rolled in every expanded `Dispatch` impl.
 
@@ -130,7 +130,7 @@ Leaf to root. One **`&mut Context`** for the whole ascent — same object, mutat
 | `depth: u32` | Remaining hops inside a destroyed region. Lives **on Context**. `invalidate(d)` raises it (max with current); each `into_parent` calls `step_up` (decrement). `0` means valid. |
 | `claim: Option<Claimed>` | Ascent-global, monotone. `claim()` try-takes. Once taken, every shallower exclusive fails. |
 
-There is no stored `Validity` flag and no per-level context. Posts that want a binary read use `validity()`, which is pure sugar over `depth == 0`. Binary `set_validity(Valid|Invalidated)` per level is wrong: not every level is invalidated, and a flag does not track how far destruction reaches.
+There is no stored `Validity` flag and no per-level context. The binary read is a getter: `fn validity(&self) -> Validity` over `depth == 0`. Binary `set_validity(Valid|Invalidated)` per level is wrong: not every level is invalidated, and a flag does not track how far destruction reaches.
 
 Descent does not touch Context. Only the ascent mutates it.
 
@@ -162,7 +162,7 @@ impl Context {
         self.depth
     }
 
-    /// Sugar over depth. Not a stored field.
+    /// Getter. Valid iff depth == 0. Not a stored field.
     fn validity(&self) -> Validity {
         if self.depth == 0 {
             Validity::Valid
@@ -339,7 +339,7 @@ impl Context {
         self.depth
     }
 
-    /// Sugar over depth == 0. Not a stored field.
+    /// Getter. Valid iff depth == 0. Not a stored field.
     pub fn validity(&self) -> Validity {
         if self.depth == 0 {
             Validity::Valid
@@ -703,7 +703,7 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 3. Pre: shared path. Post: owned path, return `(Vec<Effect>, P)`.
 4. One `&mut Context` for the ascent. Posts take `&mut Context`.
 5. `claim(&mut self) -> Option<Claimed>` try-takes. Not a getter. Not a parallel flag.
-6. Context holds `depth: u32`. `invalidate(d)` / `step_up` move it; `validity()` is sugar over `depth == 0`. Not a stored Validity flag.
+6. Context holds `depth: u32`. `invalidate(d)` / `step_up` move it. Getter `validity(&self) -> Validity` is `depth == 0`. Not a stored Validity flag.
 7. Logging never calls `claim()`. Only exclusive does.
 8. Every pre/post attr is a pre_post pair. Missing pre is well-known `noop_pre` (macro drops it in).
 9. No `#[pre]` alone. A pre exists only as the first half of `#[pre_post]`.
