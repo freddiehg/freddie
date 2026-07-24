@@ -437,21 +437,22 @@ where
 }
 ```
 
-`D: EventTrigger` — reuse the existing bind trait, not `PartialEq` and not a new matching trait. The event's device field is `D::Event` (usually `D` itself for a tag enum). Figaro:
+`D: EventTrigger` — reuse the existing bind trait. The event's device field is `D::Event` (usually `D` itself for a tag enum). Figaro:
 
 ```rust
 // DeviceClass is both the categorize result and a trigger against that field.
+// Equality: Desktop must not match Laptop.
 impl EventTrigger for DeviceClass {
     type Event = DeviceClass;
     fn is_matching(&self, event: &DeviceClass) -> bool {
         self == event
     }
 }
-// or bind::self_trigger!(DeviceClass) if/when that fits unit-like tags;
-// with data variants, the explicit impl above is the shape.
 ```
 
-Wider device filters are just more `EventTrigger`s (same idea as `AnyKey` for keys), not a second mechanism.
+Do **not** use `self_trigger!(DeviceClass)`. That macro is for unit signals (`Quit`, timeouts) whose `is_matching` is always `true` and which carry nothing to discriminate. On an enum with variants, it would make every class match every class and break `on_device`.
+
+Wider device filters are separate `EventTrigger` types (same idea as `AnyKey` for keys), not `self_trigger!` on the tag enum.
 
 ### Constructor: blanket `WithDevice` on every key trigger
 
