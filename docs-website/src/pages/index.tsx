@@ -226,7 +226,9 @@ function DontStopMeNow() {
     <section className="alt-background">
       <div className="container">
         <div className="kicker">It’s powerful</div>
-        <h2 className={styles.centeredHeading}>For programmers, by programmers</h2>
+        <h2 className={styles.centeredHeading}>
+          For&nbsp;programmers, by&nbsp;programmers
+        </h2>
         <Prose>
           <p>
             Other programs for remapping keys are configuration-driven, and that makes it difficult or impossible to handle unanticipated use cases.

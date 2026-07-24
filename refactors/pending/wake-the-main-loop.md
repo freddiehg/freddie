@@ -1,64 +1,92 @@
-# waking the main loop on send
+# an event-driven main loop: wake on send, no idle poll
 
-`MainLoop::run` parks the main thread in `nextEventMatchingMask_untilDate_inMode_dequeue` with a `SLICE` (100ms) deadline, and runs `on_wake` each time that returns — on an `AppKit` event or the deadline. Work handed to the main thread through a channel drained in `on_wake` therefore waits until the next return. A plain channel send neither posts an `NSEvent` nor breaks the wait, so on a quiet loop the value sits up to `SLICE`.
+`MainLoop::run` parks the main thread in `nextEventMatchingMask_untilDate_inMode_dequeue` with a `SLICE` (100ms) deadline and runs `on_wake` each time it returns. That costs two things:
 
-The menu-bar title already pays this. Its channel is drained in `on_wake`, and a layer change driven by a swallowed key posts no `NSEvent`, so the title can update up to 100ms after the keystroke. Anything else that marshals to the main thread this way — the overlay, once it stops using GCD — pays the same.
+- Work handed to `on_wake` over a channel waits up to `SLICE`. A plain send does not break the block, so the value sits until the loop next surfaces. The menu-bar title pays this today; a keyboard-only layer change posts no `NSEvent`, so the title can update 100ms late.
+- An idle loop wakes every `SLICE` to run `on_wake` over an empty channel and go back to sleep. Nothing is happening, and the thread is busy 10 times a second.
 
-This change adds a handle that breaks the wait so `on_wake` runs at once, and a channel sender that wakes on every send, so a consumer cannot forget to. The title moves to it here; the overlay change is a later consumer.
+The stop is the same shape. `Stopper` breaks the loop with `CFRunLoop::stop`, which is a no-op against a loop that has not started, so a stop that races the block is lost and `SLICE` is the backstop that keeps main from hanging. `CFRunLoop::stop` is also unproven to break `nextEventMatchingMask` at all: the loop tolerates the `SLICE`, so a stop that never worked would look identical to one that did.
 
-## The wake mechanism
+The loop should be event-driven: asleep at no cost when nothing is happening, and turning at once when something is. That needs one wake that both breaks `nextEventMatchingMask` reliably and cannot be lost if it races the block. A posted application-defined `NSEvent` is that wake: `nextEventMatchingMask` dequeues it and returns, and a post that lands before the loop blocks sits in the event queue and is dequeued the instant it does. With it, the loop blocks on `distantFuture`, `SLICE` is deleted, an idle loop truly sleeps, and a wake and a stop both reach main immediately through the same mechanism.
 
-`wake` has to make a blocked `nextEventMatchingMask` return. `CFRunLoop::stop` on the main run loop, called from another thread, is the candidate: it is already how `Stopper` breaks the loop, `CFRunLoop` is `Send`, and `get_main` works off the main thread. The loop returns from `nextEventMatchingMask`, runs `on_wake`, checks its stop channel (unchanged, still open), and turns again. A `wake` and a shutdown both stop the run loop; the loop tells them apart by the stop channel, not by the stop call.
+## The spike this gates on
 
-### Verify before implementing
+The design below stands on one platform fact: a posted application-defined `NSEvent`, from a thread other than main, makes a main-thread `nextEventMatchingMask_untilDate_inMode_dequeue(distantFuture)` return promptly. `postEvent:atStart:` is the documented way to wake such a loop and is described as callable off the main thread, but this codebase has never relied on it, so confirm it in a scratch binary before implementing: init `NSApplication` as accessory on the main thread, park it in the loop below with `distantFuture`, and from a spawned thread post an application-defined event after a delay. If `on_wake` fires at the delay rather than never, the mechanism holds and `SLICE` can go.
 
-`Stopper` has never proven `CFRunLoop::stop` breaks `nextEventMatchingMask`, because it falls back on the `SLICE`: a shutdown that takes 100ms instead of being instant is invisible, so the poke could be a no-op and no test would catch it. Wake-on-send has no such fallback — the whole point is promptness — so this must be confirmed with a spike (in a scratch binary, not the repo): init `NSApplication` as accessory on the main thread, park it in the same `nextEventMatchingMask` loop with a multi-second `SLICE`, and from a spawned thread call `CFRunLoop::get_main().stop()` after a delay. If `on_wake` fires at the delay rather than at the `SLICE`, `stop` is the mechanism and the design below stands.
+If it does not hold, the loop cannot be fully event-driven this way, and the fallback is to keep a `SLICE` as a backstop but make it long (seconds, not 100ms) so idle cost is negligible, with the posted event still doing prompt delivery when it works. The rest of this doc assumes it holds.
 
-If it does not, `wake` instead posts a dummy event, which `nextEventMatchingMask` dequeues and returns:
+## The wake handle
+
+Posting needs `NSApp`, which is a process-global singleton reachable only on the main thread through `MainThreadMarker`. The handle captures it once, on the main thread, and is `Send` so the worker threads can poke. See `docs/platform-apis.md` for holding an OS resource this way.
+
+`crates/freddie_main_loop/src/lib.rs`:
 
 ```rust
-// fallback wake: post an application-defined NSEvent to the front of the queue.
-// `postEvent:atStart:` is callable off the main thread. The event carries no meaning; `sendEvent`
-// ignores an application-defined event with no handler, and the point is only that the dequeue
-// returns so the loop runs `on_wake`.
+/// The subtype stamped on the events posted only to wake the loop, to tell them from real ones.
+const WAKE_SUBTYPE: i16 = 1;
+
+/// A handle to the process `NSApplication`, for posting a wake event from any thread.
+///
+/// `NSApp` outlives the process, so the pointer is stable, and `postEvent:atStart:` is thread-safe,
+/// so a `&` call off the main thread is sound. Built on the main thread, where `NSApp` is reachable.
+#[derive(Clone)]
+struct AppHandle(NonNull<NSApplication>);
+
+// SAFETY: `NSApp` lives for the whole process and `postEvent:atStart:` is documented thread-safe, so
+// the pointer stays valid and the call is sound from any thread.
+unsafe impl Send for AppHandle {}
+unsafe impl Sync for AppHandle {}
+
+impl AppHandle {
+    fn new(app: &NSApplication) -> Self {
+        Self(NonNull::from(app))
+    }
+
+    /// Post an application-defined event, which `nextEventMatchingMask` dequeues and returns.
+    fn poke(&self) {
+        // SAFETY: `self.0` is the process `NSApp`, valid for the process; `postEvent:atStart:` is
+        // thread-safe; the event is a fresh application-defined event carrying `WAKE_SUBTYPE`.
+        #[expect(unsafe_code)]
+        unsafe {
+            let app = self.0.as_ref();
+            // Method names to confirm against objc2's `NSEvent`/`NSApplication` bindings in the spike.
+            let event = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
+                NSEventType::ApplicationDefined,
+                NSPoint::ZERO,
+                NSEventModifierFlags::empty(),
+                0.0,
+                0,
+                None,
+                WAKE_SUBTYPE,
+                0,
+                0,
+            );
+            if let Some(event) = event {
+                app.postEvent_atStart(&event, true);
+            }
+        }
+    }
+}
 ```
 
-The rest of this doc assumes `stop` works. If the fallback is needed, `MainWaker` holds what it needs to post the event instead of a `CFRunLoop`, and only `MainWaker::wake` changes.
+## `MainWaker` and `WakingSender`
 
-## Change 1: `MainWaker` and `WakingSender`
-
-`crates/freddie_main_loop/src/lib.rs`, added below `Stopper`:
+`crates/freddie_main_loop/src/lib.rs`:
 
 ```rust
-/// Wakes the main loop from any thread, so work queued for `on_wake` runs now rather than at the
-/// next `SLICE`. Cheap to clone; give one to each thread that sends on a channel `on_wake` drains.
+/// Wakes the main loop from any thread, so work queued for `on_wake` runs now. Cheap to clone; give
+/// one to each thread that sends on a channel `on_wake` drains.
 #[derive(Clone)]
 pub struct MainWaker {
-    run_loop: CFRunLoop,
-}
-
-impl Default for MainWaker {
-    fn default() -> Self {
-        Self::new()
-    }
+    app: AppHandle,
 }
 
 impl MainWaker {
-    /// A waker for this process's main run loop. Callable from any thread; `get_main` returns the
-    /// main run loop wherever it is called.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            run_loop: CFRunLoop::get_main(),
-        }
-    }
-
-    /// Break the main loop's current wait so it turns and runs `on_wake` at once.
+    /// Wake the main loop: `nextEventMatchingMask` returns and `on_wake` runs.
     ///
-    /// Send on the channel first, then call this: the send has to be visible when `on_wake` drains,
-    /// the same ordering `Stopper` uses for its flag and stop.
+    /// Send on the channel first, then call this: the send has to be visible when `on_wake` drains.
     pub fn wake(&self) {
-        self.run_loop.stop();
+        self.app.poke();
     }
 
     /// A channel whose sender wakes the loop on every send. The receiver is a plain
@@ -76,11 +104,9 @@ impl MainWaker {
     }
 }
 
-/// A channel sender that wakes the main loop after each send, so the value reaches `on_wake` now
-/// instead of at the next `SLICE`. `Send` and `Clone`, for the worker threads that send.
-///
-/// Waking on send is the point: a consumer holds one of these instead of a bare `Sender`, so it
-/// cannot send without waking. That is enforced here rather than left to each send site to remember.
+/// A channel sender that wakes the main loop after each send, so the value reaches `on_wake` at once.
+/// `Send` and `Clone`. A consumer holds one of these instead of a bare `Sender`, so it cannot send
+/// without waking; that is enforced here rather than left to each send site to remember.
 pub struct WakingSender<T> {
     tx: Sender<T>,
     waker: MainWaker,
@@ -109,48 +135,169 @@ impl<T> WakingSender<T> {
 }
 ```
 
-`Sender` and `Receiver` come from a widened import; `crates/freddie_main_loop/src/lib.rs`, before:
+## Construction, `Stopper`, and the loop
+
+The wake handle needs `NSApp`, so `main_loop` is built on the main thread and hands out the handle. It takes a `MainThreadMarker` and returns the waker beside the loop and the stopper.
+
+`main_loop`, before:
 
 ```rust
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+pub fn main_loop() -> (MainLoop, Stopper) {
+    let (signal, stop) = std::sync::mpsc::channel();
+    let main_loop = MainLoop { stop };
+    let stopper = Stopper {
+        signal,
+        run_loop: CFRunLoop::get_main(),
+    };
+    (main_loop, stopper)
+}
 ```
 
 after:
 
 ```rust
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+pub fn main_loop(mtm: MainThreadMarker) -> (MainLoop, Stopper, MainWaker) {
+    let app = AppHandle::new(&NSApplication::sharedApplication(mtm));
+    let (signal, stop) = std::sync::mpsc::channel();
+    (
+        MainLoop { stop },
+        Stopper {
+            signal,
+            app: app.clone(),
+        },
+        MainWaker { app },
+    )
+}
 ```
 
-is unchanged — `Receiver` and `Sender` are already imported for the stop channel.
-
-`MainWaker` is `Send` because `CFRunLoop` is (the `Stopper: Send` test already turns on that guarantee). `WakingSender<T>: Send` where `T: Send`, for the same reasons `mpsc::Sender<T>` is.
-
-## Change 2: the title channel wakes on send
-
-`crates/mercury/src/daemon.rs`, before:
+`Stopper` pokes instead of stopping the run loop; it no longer holds a `CFRunLoop`. before:
 
 ```rust
-    // Titles for the status item. The effect loop, on the worker, sends; the main thread applies
-    // them on its next wake, because an NSStatusItem is main-thread-only. A std channel rather
-    // than tokio's: the receiving end is the main thread, which is not in the runtime.
+pub struct Stopper {
+    signal: Sender<()>,
+    run_loop: CFRunLoop,
+}
+
+impl Drop for Stopper {
+    fn drop(&mut self) {
+        let _ = self.signal.send(());
+        self.run_loop.stop();
+    }
+}
+```
+
+after:
+
+```rust
+pub struct Stopper {
+    signal: Sender<()>,
+    app: AppHandle,
+}
+
+impl Drop for Stopper {
+    fn drop(&mut self) {
+        // Signal first, then wake, the same ordering as any waking send: the loop must see the stop
+        // when the posted event breaks its wait. A post that lands before the loop blocks is not
+        // lost, so there is no SLICE backstop and none is needed.
+        let _ = self.signal.send(());
+        self.app.poke();
+    }
+}
+```
+
+`run` blocks on `distantFuture` and drops `SLICE`. The `SLICE` constant and the `core_foundation` run-loop imports go. before:
+
+```rust
+        while matches!(self.stop.try_recv(), Err(TryRecvError::Empty)) {
+            autoreleasepool(|_| {
+                #[expect(unsafe_code)]
+                let event = unsafe {
+                    let deadline = NSDate::dateWithTimeIntervalSinceNow(SLICE.as_secs_f64());
+                    app.nextEventMatchingMask_untilDate_inMode_dequeue(
+                        NSEventMask::Any,
+                        Some(&deadline),
+                        NSDefaultRunLoopMode,
+                        true,
+                    )
+                };
+                if let Some(event) = event {
+                    app.sendEvent(&event);
+                }
+                on_wake();
+            });
+        }
+```
+
+after:
+
+```rust
+        while matches!(self.stop.try_recv(), Err(TryRecvError::Empty)) {
+            autoreleasepool(|_| {
+                // Block until something happens: a real window-server event, or a posted wake. No
+                // deadline, so an idle loop sleeps at no cost.
+                #[expect(unsafe_code)]
+                // SAFETY: on the main thread; dequeuing one event, waiting indefinitely.
+                let event = unsafe {
+                    app.nextEventMatchingMask_untilDate_inMode_dequeue(
+                        NSEventMask::Any,
+                        Some(&NSDate::distantFuture()),
+                        NSDefaultRunLoopMode,
+                        true,
+                    )
+                };
+                if let Some(event) = event {
+                    // A wake event exists only to break the wait; do not dispatch it. Everything else
+                    // is a real event the status item and menu tracking need.
+                    if !is_wake_event(&event) {
+                        app.sendEvent(&event);
+                    }
+                }
+                on_wake();
+            });
+        }
+```
+
+and the predicate, beside `is_main_thread`:
+
+```rust
+/// Whether this is one of the events posted only to wake the loop.
+fn is_wake_event(event: &NSEvent) -> bool {
+    // `type`/`subtype` accessor names to confirm against objc2's `NSEvent`.
+    event.r#type() == NSEventType::ApplicationDefined && event.subtype() == Some(WAKE_SUBTYPE)
+}
+```
+
+The `SLICE` constant and its doc comment are deleted, along with `use core_foundation::...::CFRunLoop` and the `core-foundation` dependency if nothing else uses it.
+
+## The tests change
+
+The off-main tests exist because `main_loop` touched no `NSApp`. It does now, so they change:
+
+- `dropping_the_stopper_signals_stop` tested the stop by dropping a `Stopper` off-main. The channel half of the stop is what it asserts, so it moves to constructing the `Sender`/`Receiver` directly and checking a send lands, without an `AppHandle`. The poke half is a main-thread `NSApp` call, covered by the spike, not by an off-main unit test.
+- `the_stopper_is_send` stands: `AppHandle` is `Send`, so `Stopper` stays `Send`.
+- `run_off_the_main_thread_panics` and `the_test_thread_is_not_main` are unchanged.
+
+## Consumers
+
+`crates/mercury/src/daemon.rs`. The title channel becomes a waking channel; the same `waker` is handed to the overlay (`refactors/pending/overlay-marshaling.md`). before:
+
+```rust
+    let (main_loop, stopper) = freddie_main_loop::main_loop();
+    // ...
     let (title_tx, title_rx) = std::sync::mpsc::channel::<&'static str>();
 ```
 
 after:
 
 ```rust
-    // Titles for the status item. The effect loop, on the worker, sends; the main thread applies
-    // them on its next wake, because an NSStatusItem is main-thread-only. A waking channel, so a
-    // title change reaches the status item at once rather than at the next SLICE. A std channel
-    // under the waker rather than tokio's: the receiving end is the main thread, not in the runtime.
-    let waker = freddie_main_loop::MainWaker::new();
+    let mtm = MainThreadMarker::new().expect("daemon::run is on the main thread");
+    let (main_loop, stopper, waker) = freddie_main_loop::main_loop(mtm);
+    // ...
     let (title_tx, title_rx) = waker.channel::<&'static str>();
 ```
 
-`title_tx` is now a `WakingSender<&'static str>`; its `send` has the same signature as `mpsc::Sender::send`, so the effect loop's send sites and the `title_rx.try_iter()` drain in `on_wake` are unchanged.
+`title_tx` is now a `WakingSender<&'static str>`; its `send` has the same signature as `mpsc::Sender::send`, so the effect loop's send sites and the `title_rx.try_iter()` drain in `on_wake` are unchanged. `init_menu_bar_app` still runs first, so `NSApp` exists when `main_loop(mtm)` builds the handle. The overlay change takes the same `waker`.
 
-The `waker` binding is otherwise unused here, but keeping it is what makes the overlay change cheap: it hands the same `waker` to `freddie_overlay::overlay` so the overlay's channel wakes too. Until then, `waker.channel` is the only use, and the binding can be inlined as `freddie_main_loop::MainWaker::new().channel::<&'static str>()` if the overlay change is not next.
+## What this buys
 
-## What this unblocks
-
-The overlay change (`refactors/pending/overlay-marshaling.md`) drains an overlay channel in `on_wake`. Built on a plain channel it would show the overlay up to `SLICE` late — a regression from the GCD dispatch it replaces, which wakes the run loop for free. Built on `WakingSender` it matches GCD's promptness with no `thread_local`. That doc is updated to take its channel from a `MainWaker` rather than a bare `mpsc::channel`, and to drop its "the latency this trades for" section, which was wrong: the trade only exists without this prefactor.
+An idle daemon does nothing: the main thread sleeps in `nextEventMatchingMask` until a real event or a poke, with no periodic wakeups. A title change, an overlay show, or a stop reaches main the instant it is sent, through one mechanism. `SLICE` and the poll it drove are gone.
