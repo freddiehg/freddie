@@ -27,17 +27,23 @@ Nothing may be seizing the keyboard upstream. A seizing remapper (Karabiner-Elem
 
 The two private symbols are not in the `core-graphics`/`io-kit-sys` safe wrappers, so the FFI is quarantined in a leaf crate, `freddie_hid_device`, the pattern the workspace already uses for `unsafe`. Everything above it stays under `forbid(unsafe_code)`.
 
-```rust
-// crates/freddie_hid_device/src/lib.rs  — opts out of forbid(unsafe_code), FFI in a private module.
+`SourceId`, the cheap `Copy` id a `KeyEvent` carries, lives in `freddie_keys` (the vocabulary crate) so `KeyEvent` names it without depending on the leaf. Everything that needs the private symbols or the registry lives in `freddie_hid_device`.
 
+```rust
+// crates/freddie_keys/src/lib.rs
 /// A source device's identity for the run: the IOKit registry entry id of the originating HID
 /// service. Stable while the device stays attached; a replug yields a new one.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct SourceId(pub u64);
+```
+
+```rust
+// crates/freddie_hid_device/src/lib.rs  — opts out of forbid(unsafe_code), FFI in a private module.
+use freddie_keys::SourceId;
 
 /// The source HID service of a `CGEvent`, or `None` for an injected/synthetic event (no HID
 /// backing, or sender id 0). `event` is the raw `CGEventRef` the tap callback already holds,
-/// from `core_graphics`' `CGEvent`.
+/// from `core_graphics`' `CGEvent`. Two calls and a release, no allocation, no registry walk.
 pub fn source_of(event: CGEventRef) -> Option<SourceId>;
 
 /// What a source resolves to. Read from the `IOHIDDevice` behind the service.
@@ -58,13 +64,36 @@ impl Devices {
     pub fn new() -> Self;
     pub fn resolve(&mut self, id: SourceId) -> Option<&DeviceInfo>;
 }
+
+/// A test against a resolved device. The mechanism is generic; the classes a consumer sorts
+/// devices into are the consumer's.
+pub enum DeviceMatch {
+    BuiltIn(bool),
+    Vendor { vendor_id: u16, product_id: u16 },
+    NameContains(&'static str),
+}
+impl DeviceMatch {
+    pub fn matches(&self, info: &DeviceInfo) -> bool;
+}
+
+/// Sorts each source into one of a consumer's classes `C`. Owns the device cache and the ordered
+/// rules: first matching rule wins, a real device matching none gets `other`, an injected key
+/// (no source) gets `injected`. This is where "which keyboard is which" is decided, once, so a
+/// consumer supplies only its class type and its rules.
+pub struct Classifier<C> { /* Devices + Vec<(DeviceMatch, C)> + other + injected */ }
+impl<C: Copy> Classifier<C> {
+    pub fn new(rules: Vec<(DeviceMatch, C)>, other: C, injected: C) -> Self;
+    /// The class of a key's source. `None` -> `injected`; the resolve is cached, so steady state
+    /// is a hash lookup.
+    pub fn class_of(&mut self, source: Option<SourceId>) -> C;
+}
 ```
 
-`source_of` is the only place the private symbols are called; `Devices::resolve` is public IOKit (`IORegistryEntryIDMatching`, `IOServiceGetMatchingService`, `IORegistryEntryCreateCFProperty`, `IORegistryEntryGetParentEntry`, `IOObjectRelease`) plus CF property reads. Each call guards for a failed copy and for sender id 0, and yields `None` rather than a wrong device.
+`source_of` is the only place the private symbols are called; `Devices::resolve` is public IOKit (`IORegistryEntryIDMatching`, `IOServiceGetMatchingService`, `IORegistryEntryCreateCFProperty`, `IORegistryEntryGetParentEntry`, `IOObjectRelease`) plus CF property reads. Each call guards for a failed copy and for sender id 0, and yields `None` rather than a wrong device. `Classifier` is safe logic over those; a consumer never touches `DeviceInfo` or the registry to decide a device's class.
 
 ## The change to `freddie_keys`
 
-`KeyEvent` gains the source, `None` when the key was not real hardware:
+Besides `SourceId` above, `KeyEvent` gains the source, `None` when the key was not real hardware:
 
 ```rust
 // before
@@ -74,36 +103,44 @@ pub struct KeyEvent {
     pub key: Key,
     pub press: PressType,
     pub flags: ModifierFlags,
-    /// Which physical device produced this key, or `None` for an injected/synthetic event.
-    pub device: Option<freddie_hid_device::SourceId>,
+    /// Which physical device produced this key, or `None` for an injected/synthetic event, or a
+    /// build without the `source-device` feature (the field is always present, the reader is not).
+    pub device: Option<SourceId>,
 }
 ```
 
-`SourceId` is a plain `Copy` id, so it costs nothing on the event. The rich `DeviceInfo` (name, vendor, product, built-in) is what config is written against, and the model resolves it from the id through `Devices` at the point it needs it (building a per-device binding table keyed by vendor:product, or matching a rule), not on every keystroke. The Debug impl omits `device` when `None`, as it already does for empty `flags`.
+`SourceId` is a plain `Copy` id, sixteen bytes, so it costs nothing on the event. The Debug impl omits `device` when `None`, as it already does for empty `flags`. The rich `DeviceInfo` is never on the event; a consumer that cares turns the id into a class through `Classifier`, off the keystroke path.
 
-## The change to `freddie_keyboard`
+## The change to `freddie_keyboard`, behind a feature
 
-`sys/macos.rs`'s tap callback already builds the incoming `KeyEvent`. It stamps the source:
+Reading the device is opt-in. mercury does not want it and should not link an undocumented private CoreGraphics symbol or do the work for a field it ignores. So a feature gates it:
 
-```rust
-// before
-let input = KeyEvent { key: from_code(code), press, flags: from_cg(event.get_flags()) };
-// after
-let input = KeyEvent {
-    key: from_code(code),
-    press,
-    flags: from_cg(event.get_flags()),
-    device: freddie_hid_device::source_of(event.as_ptr()),
-};
+```toml
+# freddie_keyboard/Cargo.toml
+[features]
+default = []
+source-device = ["dep:freddie_hid_device"]
 ```
 
-The `Emitter` fills `device: None` on anything it constructs, since emitted keys are synthetic. `intercept`'s signature does not change; the device rides on the `KeyEvent` the callback already delivers. mercury reads none of it and is unaffected.
+Off (mercury): the tap fills `device: None`, `freddie_hid_device` is not a dependency, and the private symbols never enter the binary. On (figaro): the tap reads the source.
 
-`freddie_keyboard` re-exports `freddie_hid_device::{SourceId, DeviceInfo, Devices}` so a consumer resolves a source without naming the leaf crate directly.
+```rust
+// sys/macos.rs tap callback
+let device = if cfg!(feature = "source-device") {
+    freddie_hid_device::source_of(event.as_ptr())  // two calls + a release, on the tap thread
+} else {
+    None
+};
+let input = KeyEvent { key: from_code(code), press, flags: from_cg(event.get_flags()), device };
+```
+
+The read on the tap thread is the cheap half; resolving an id to a class is the costly half, and it does not happen here. It happens where the model boundary classifies, off the tap thread and cached (see below). The `Emitter` fills `device: None`, since emitted keys are synthetic. `intercept`'s signature does not change.
+
+Under the feature, `freddie_keyboard` re-exports `freddie_hid_device::{DeviceInfo, Devices, DeviceMatch, Classifier}` so a consumer names one crate, not the leaf.
 
 ## What figaro does with it
 
-figaro depends on `freddie_keyboard` (the CGEventTap backend), exactly like mercury — there is no separate keyboard crate. It holds a `Devices` and, when a binding cares about origin, resolves `event.device` to a `DeviceInfo` and matches it against its config. A key with `device: None` is injected, not from a keyboard the user pressed, and figaro treats it as such.
+figaro depends on `freddie_keyboard` with `source-device` on, exactly the same backend as mercury otherwise — there is no separate keyboard crate. It holds a `Classifier<figaro's class enum>` built from its rules, and at its key boundary (the worker, off the tap thread) calls `classifier.class_of(event.device)` to turn the id into a class before the model dispatches. The registry cost is paid once per device and cached there, so it is off the hot path and never in a handler. `device: None` classifies as the injected class. The consumer-side design is `figaro/refactors/pending/device-conditioned-keymaps.md`.
 
 ## Cost, stated plainly
 
