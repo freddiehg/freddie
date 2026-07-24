@@ -93,7 +93,7 @@ impl<C: Clone> Classifier<C> {
 
 ## The change to `freddie_keys`
 
-Besides `SourceId` above, `KeyEvent` gains the source, `None` when the key was not real hardware:
+`KeyEvent` gains the source, and the field's very type says whether this build can read it. `freddie_keys` carries the `source-device` feature (enabled through `freddie_keyboard`'s); with it, `device` is `Option<SourceId>` (`Some` hardware, `None` injected, both real states); without it, `device` is `()`, so a build that cannot read the device says so rather than carrying a permanently-`None` option:
 
 ```rust
 // before
@@ -103,13 +103,20 @@ pub struct KeyEvent {
     pub key: Key,
     pub press: PressType,
     pub flags: ModifierFlags,
-    /// Which physical device produced this key, or `None` for an injected/synthetic event, or a
-    /// build without the `source-device` feature (the field is always present, the reader is not).
-    pub device: Option<SourceId>,
+    #[cfg(feature = "source-device")]
+    pub device: Option<SourceId>,   // Some: hardware; None: injected/synthetic
+    #[cfg(not(feature = "source-device"))]
+    pub device: (),                 // this build has no device dimension
 }
 ```
 
-`SourceId` is a plain `Copy` id, sixteen bytes, so it costs nothing on the event. The Debug impl omits `device` when `None`, as it already does for empty `flags`. The rich `DeviceInfo` is never on the event; a consumer that cares turns the id into a class through `Classifier`, off the keystroke path.
+`SourceId` is a plain `Copy` id, sixteen bytes, and it is on the event only under the feature. The Debug impl omits `device` when `None`, as it already does for empty `flags`. The rich `DeviceInfo` is never on the event; a consumer that cares turns the id into a class through `Classifier`, off the keystroke path.
+
+```toml
+# freddie_keys/Cargo.toml
+[features]
+source-device = []
+```
 
 ## The change to `freddie_keyboard`, behind a feature
 
@@ -119,22 +126,25 @@ Reading the device is opt-in. mercury does not want it and should not link an un
 # freddie_keyboard/Cargo.toml
 [features]
 default = []
-source-device = ["dep:freddie_hid_device"]
+source-device = ["dep:freddie_hid_device", "freddie_keys/source-device"]
 ```
 
-Off (mercury): the tap fills `device: None`, `freddie_hid_device` is not a dependency, and the private symbols never enter the binary. On (figaro): the tap reads the source.
+The feature also turns on `freddie_keys`'s, so the `device` field is `Option<SourceId>` here and `()` in a build without it. Off (mercury): `freddie_hid_device` is not a dependency and the private symbols never enter the binary; on (figaro): the tap reads the source. The callback constructs the field it has:
 
 ```rust
 // sys/macos.rs tap callback
-let device = if cfg!(feature = "source-device") {
-    freddie_hid_device::source_of(event.as_ptr())  // two calls + a release, on the tap thread
-} else {
-    None
+let input = KeyEvent {
+    key: from_code(code),
+    press,
+    flags: from_cg(event.get_flags()),
+    #[cfg(feature = "source-device")]
+    device: freddie_hid_device::source_of(event.as_ptr()),  // two calls + a release, tap thread
+    #[cfg(not(feature = "source-device"))]
+    device: (),
 };
-let input = KeyEvent { key: from_code(code), press, flags: from_cg(event.get_flags()), device };
 ```
 
-The read on the tap thread is the cheap half; resolving an id to a class is the costly half, and it does not happen here. It happens where the model boundary classifies, off the tap thread and cached (see below). The `Emitter` fills `device: None`, since emitted keys are synthetic. `intercept`'s signature does not change.
+The read on the tap thread is the cheap half; resolving an id to a class is the costly half, and it does not happen here. It happens where the model boundary classifies, off the tap thread and cached (see below). The `Emitter` builds synthetic keys, so its `device` is `None` under the feature and `()` without it. `intercept`'s signature does not change.
 
 Under the feature, `freddie_keyboard` re-exports `freddie_hid_device::{DeviceInfo, Devices, DeviceMatch, Classifier}` so a consumer names one crate, not the leaf.
 
