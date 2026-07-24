@@ -9,11 +9,9 @@ The stop is the same shape. `Stopper` breaks the loop with `CFRunLoop::stop`, wh
 
 The loop should be event-driven: asleep at no cost when nothing is happening, and turning at once when something is. That needs one wake that both breaks `nextEventMatchingMask` reliably and cannot be lost if it races the block. A posted application-defined `NSEvent` is that wake: `nextEventMatchingMask` dequeues it and returns, and a post that lands before the loop blocks sits in the event queue and is dequeued the instant it does. With it, the loop blocks on `distantFuture`, `SLICE` is deleted, an idle loop truly sleeps, and a wake and a stop both reach main immediately through the same mechanism.
 
-## The spike this gates on
+## The wake mechanism is confirmed
 
-The design below stands on one platform fact: a posted application-defined `NSEvent`, from a thread other than main, makes a main-thread `nextEventMatchingMask_untilDate_inMode_dequeue(distantFuture)` return promptly. `postEvent:atStart:` is the documented way to wake such a loop and is described as callable off the main thread, but this codebase has never relied on it, so confirm it in a scratch binary before implementing: init `NSApplication` as accessory on the main thread, park it in the loop below with `distantFuture`, and from a spawned thread post an application-defined event after a delay. If `on_wake` fires at the delay rather than never, the mechanism holds and `SLICE` can go.
-
-If it does not hold, the loop cannot be fully event-driven this way, and the fallback is to keep a `SLICE` as a backstop but make it long (seconds, not 100ms) so idle cost is negligible, with the posted event still doing prompt delivery when it works. The rest of this doc assumes it holds.
+The design stands on one platform fact, verified in a scratch spike: a posted application-defined `NSEvent`, from a thread other than main, makes a main-thread `nextEventMatchingMask_untilDate_inMode_dequeue` return promptly. The spike parked the main thread on a 5-second deadline and, from a worker, posted an app-defined event with subtype `1` three times at 500ms spacing; `nextEventMatchingMask` returned at 503ms, 503ms, and 501ms — each posted event, not the deadline — carrying `NSEventType::ApplicationDefined` and `subtype` `Some(NSEventSubtype(1))`. `postEvent:atStart:` is callable off the main thread through objc2 (it takes `&self`, no `MainThreadMarker`), constructing the event off-main works, and the objc2 method names below compile as written. So `nextEventMatchingMask(distantFuture)` blocks until a real event or a posted wake, each posted wake breaks it, and a wake is told apart from a real event by its type and subtype — which is all the design needs.
 
 ## The wake handle
 
@@ -49,7 +47,6 @@ impl AppHandle {
         #[expect(unsafe_code)]
         unsafe {
             let app = self.0.as_ref();
-            // Method names to confirm against objc2's `NSEvent`/`NSApplication` bindings in the spike.
             let event = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
                 NSEventType::ApplicationDefined,
                 NSPoint::ZERO,
@@ -112,6 +109,9 @@ pub struct WakingSender<T> {
     waker: MainWaker,
 }
 
+// Hand-written, not derived: `Sender<T>` is `Clone` for every `T` (a clone duplicates the handle,
+// not a message), so this must be too. `#[derive(Clone)]` would add a spurious `T: Clone` bound,
+// which `std`'s own `impl<T> Clone for Sender<T>` also avoids.
 impl<T> Clone for WakingSender<T> {
     fn clone(&self) -> Self {
         Self {
@@ -157,20 +157,22 @@ after:
 
 ```rust
 pub fn main_loop(mtm: MainThreadMarker) -> (MainLoop, Stopper, MainWaker) {
-    let app = AppHandle::new(&NSApplication::sharedApplication(mtm));
+    let waker = MainWaker {
+        app: AppHandle::new(&NSApplication::sharedApplication(mtm)),
+    };
     let (signal, stop) = std::sync::mpsc::channel();
     (
         MainLoop { stop },
         Stopper {
             signal,
-            app: app.clone(),
+            waker: waker.clone(),
         },
-        MainWaker { app },
+        waker,
     )
 }
 ```
 
-`Stopper` pokes instead of stopping the run loop; it no longer holds a `CFRunLoop`. before:
+`Stopper` holds a `MainWaker` and wakes through it instead of stopping the run loop; it no longer holds a `CFRunLoop`. A stop is a wake that also carries the exit signal. before:
 
 ```rust
 pub struct Stopper {
@@ -191,7 +193,9 @@ after:
 ```rust
 pub struct Stopper {
     signal: Sender<()>,
-    app: AppHandle,
+    // A `Stopper` is a `MainWaker` plus the exit signal: dropping it wakes the loop and tells it to
+    // stop, where a bare wake tells it to keep going.
+    waker: MainWaker,
 }
 
 impl Drop for Stopper {
@@ -200,7 +204,7 @@ impl Drop for Stopper {
         // when the posted event breaks its wait. A post that lands before the loop blocks is not
         // lost, so there is no SLICE backstop and none is needed.
         let _ = self.signal.send(());
-        self.app.poke();
+        self.waker.wake();
     }
 }
 ```
@@ -262,8 +266,9 @@ and the predicate, beside `is_main_thread`:
 ```rust
 /// Whether this is one of the events posted only to wake the loop.
 fn is_wake_event(event: &NSEvent) -> bool {
-    // `type`/`subtype` accessor names to confirm against objc2's `NSEvent`.
-    event.r#type() == NSEventType::ApplicationDefined && event.subtype() == Some(WAKE_SUBTYPE)
+    // The spike confirmed `subtype()` returns `Option<NSEventSubtype>`, a newtype over the `i16`.
+    event.r#type() == NSEventType::ApplicationDefined
+        && event.subtype() == Some(NSEventSubtype(WAKE_SUBTYPE))
 }
 ```
 
@@ -273,8 +278,8 @@ The `SLICE` constant and its doc comment are deleted, along with `use core_found
 
 The off-main tests exist because `main_loop` touched no `NSApp`. It does now, so they change:
 
-- `dropping_the_stopper_signals_stop` tested the stop by dropping a `Stopper` off-main. The channel half of the stop is what it asserts, so it moves to constructing the `Sender`/`Receiver` directly and checking a send lands, without an `AppHandle`. The poke half is a main-thread `NSApp` call, covered by the spike, not by an off-main unit test.
-- `the_stopper_is_send` stands: `AppHandle` is `Send`, so `Stopper` stays `Send`.
+- `dropping_the_stopper_signals_stop` tested the stop by dropping a `Stopper` off-main. The channel half of the stop is what it asserts, so it moves to constructing the `Sender`/`Receiver` directly and checking a send lands, without a `MainWaker`. The poke half is a main-thread `NSApp` call, covered by the spike, not by an off-main unit test.
+- `the_stopper_is_send` stands: `MainWaker` is `Send` (its `AppHandle` is), so `Stopper` stays `Send`.
 - `run_off_the_main_thread_panics` and `the_test_thread_is_not_main` are unchanged.
 
 ## Consumers
