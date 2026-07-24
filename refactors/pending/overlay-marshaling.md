@@ -21,7 +21,7 @@ pub fn show(&self, text: String) {
 
 The table, the id it is keyed by, and the `Cell` that mints the id are all there to route a `Send` block back to a non-`Send` panel. `freddie_main_loop::MainLoop::run` already gives the main thread an `on_wake` callback for exactly this kind of work, and `daemon.rs` already drains the menu-bar title channel there. Sending over a channel drained on `on_wake` lets the `Overlay` own its panel directly, which deletes the `thread_local!`, the id, and the table.
 
-The channel is a `WakingSender`, so a `show` wakes the main run loop and `pump` runs at once rather than at the next slice — the promptness GCD gave for free. This change builds on `refactors/pending/wake-the-main-loop.md`, which lands first.
+The channel is a `WakingSender`, so a `show` wakes the main run loop and `pump` runs at once rather than at the next slice — the promptness GCD gave for free. This change builds on `refactors/past/wake-the-main-loop.md`, which lands first.
 
 ## The shape
 
@@ -191,7 +191,7 @@ impl Drop for Overlay {
 }
 ```
 
-`daemon.rs` builds the overlay with the same `waker` the title channel uses (`refactors/pending/wake-the-main-loop.md` creates it) and drains it on each wake, beside the title:
+`daemon.rs` builds the overlay with the same `waker` the title channel uses (`refactors/past/wake-the-main-loop.md` creates it) and drains it on each wake, beside the title:
 
 ```rust
     let overlay = freddie_overlay::overlay(&waker);
@@ -206,7 +206,7 @@ impl Drop for Overlay {
 
 ## Delivery is prompt
 
-`show`/`hide` send on a `WakingSender`, which wakes the main run loop after the send. So `nextEventMatchingMask` returns at once, `on_wake` runs `pump`, and the panel changes without waiting for the slice — what the GCD dispatch delivered, now with no `thread_local`. This is why the change depends on `refactors/pending/wake-the-main-loop.md` landing first; on a bare channel the overlay would lag up to the slice on the exact keystroke that summons it.
+`show`/`hide` send on a `WakingSender`, which wakes the main run loop after the send. So `nextEventMatchingMask` returns at once, `on_wake` runs `pump`, and the panel changes without waiting for the slice — what the GCD dispatch delivered, now with no `thread_local`. This is why the change depends on `refactors/past/wake-the-main-loop.md` landing first; on a bare channel the overlay would lag up to the slice on the exact keystroke that summons it.
 
 ## What is deleted
 
