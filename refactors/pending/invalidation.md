@@ -147,7 +147,7 @@ The unresolved mechanism. A layer transition replaces `root.layer`, a field the 
 - pre carries the reshape. The deep matcher's `pre` carries the target (a new layer, or a `FnOnce(&mut Owner)`) up as its `T`; the owning level's `post` applies it, then its guard posts run against the reshaped field. This folds the transition into the pre/post machine and drops the exclusive winner entirely. It needs a deepest-wins rule when two pres along one path both carry a reshape for the same field.
 - a scheduler on the root. The descent records the reshape in a field the root owns; the ascent drains it at the owning level. This is the ambient-state shape the repo resists, and it is unjustified until a case needs a reshape that no single carried `T` can express.
 
-Whichever wins, a handler that reshapes a field reaches it through laserbeam's `ascend_mut`, mutates, and returns effects. There is no completion token: reaching the root is not forced by a return type, and a post runs after the reshape rather than climbing past it.
+Whichever wins, the reshape is applied at the owning level on the ascent, before that level's posts run. A post sees the field after the reshape (`Valid` or `Invalidated`); it does not climb past a pending one.
 
 ## Open: other
 
