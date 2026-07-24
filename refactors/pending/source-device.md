@@ -112,12 +112,14 @@ pub fn intercept(
 ) -> Result<(Interceptor, Emitter), CaptureError>;
 
 // The same tap, plus the source id of each key. What figaro uses.
+// The input is one value: the key paired with its source, matching how figaro
+// carries the pair into the model (and how mercury's KeyEvent is a single arg).
 pub fn intercept_with_source(
-    on_key: impl Fn(KeyEvent, Option<SourceId>) -> Option<KeyEvent> + Send + 'static,
+    on_key: impl Fn((KeyEvent, Option<SourceId>)) -> Option<KeyEvent> + Send + 'static,
 ) -> Result<(Interceptor, Emitter), CaptureError>;
 ```
 
-Both are thin entry points over the same tap; `intercept_with_source`'s callback additionally computes `source_of(event.as_ptr())` (two calls and a release, on the tap thread) and hands it over as the second argument. A consumer that wants nothing to do with the device calls `intercept` and never triggers the source read.
+Both are thin entry points over the same tap; `intercept_with_source`'s callback additionally computes `source_of(event.as_ptr())` (two calls and a release, on the tap thread) and hands `(key, source)` as the one argument. A consumer that wants nothing to do with the device calls `intercept` and never triggers the source read.
 
 No feature gates this. `freddie_keyboard` always depends on `freddie_hid_device` (the unsafe leaf) and re-exports `SourceId`, `resolve`, and `DeviceInfo`, so a consumer names one crate. The private symbol lives in CoreGraphics, which the crate already links, and it has been stable for over a decade and ships in notarized apps, so guarding mercury against its disappearance is not worth a build flag. mercury just calls `intercept`; the other entry point exists and it ignores it.
 
