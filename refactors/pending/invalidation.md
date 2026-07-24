@@ -13,17 +13,7 @@ The path type is the normal owned `PathMut` (same as today). What changes is whe
 
 There is no parallel "`&mut Path`" API for posts. Mutation is allowed because ownership of the normal path is back at this level on the way up, not because the signature is a mutable reference.
 
-To thread ownership through several posts at one level, each post/bind returns the path with its effects:
-
-```rust
-fn post_foo(
-    t: TFoo,
-    node: Node<OuterPath, ()>,
-    v: Validity,
-) -> (Vec<M::Effect>, OuterPath)
-```
-
-(A later sugar can hide the path in the return for bodies that only `get_mut`.)
+To thread ownership through several posts at one level, each post/bind returns the path with its effects. The value carried from pre to post is whatever pre returns — a concrete type, inferred, not a type parameter of the framework.
 
 ## Developer experience
 
@@ -48,23 +38,30 @@ struct Inner;
 ```
 
 ```rust
-// pre: shared path
-fn pre_foo(ev: &FooEvent, node: Node<&OuterPath, ()>) -> TFoo { ... }
+// pre: shared path. Return type is ordinary and concrete (here u32); the
+// framework stores it in Option<_> inferred from this function.
+fn pre_foo(ev: &FooEvent, node: Node<&OuterPath, ()>) -> u32 {
+    node.parent.get().hits
+}
 
-// post: owned path in, path out, Validity tag for the resolve_into child
+// post: owned path in, path out; first arg is pre_foo's return (u32)
 fn post_foo(
-    t: TFoo,
+    hits_before: u32,
     node: Node<OuterPath, ()>,
     v: Validity,
 ) -> (Vec<M::Effect>, OuterPath) {
     match v {
         Validity::Valid => {
             // node.parent.get_mut().inner is still Inner
+            let _ = hits_before;
             (vec![], node.parent)
         }
         Validity::Invalidated => (vec![], node.parent),
     }
 }
+
+// pre_bar / post_bar likewise — whatever pre_bar returns is what post_bar receives.
+// Often that is () because the pair only needs timing, not carriage.
 
 // bind: one function; owned path; exclusive via claimed
 fn outer_handler(
@@ -79,7 +76,7 @@ fn inner_handler(
     v: Validity,
 ) -> (Vec<M::Effect>, InnerPath) { ... }
 
-// sugar: act only when the child survived
+// sugar: act only when the child survived (no pre carriage)
 fn rearm(child: &mut AndReturnHome) -> Vec<MercuryEffect> {
     let (guard, schedule) = arm_return_home();
     child.guard = guard;
@@ -96,17 +93,18 @@ Expression positions work as today (`#handler(…)` splice). Pinned by `crates/b
 
 For each pre/post/bind on the node, if the trigger matches:
 
-- `#[pre_post]` / `#[pre]`: call pre with `Node<&P, D>`, store `opt_i = Some(t)`
+- `#[pre_post]` / `#[pre]`: call pre with `Node<&P, D>`, store `opt_i = Some(pre_return)`
 - `#[post]`: store `opt_i = Some(())`
 - `#[bind]`: store `opt_i = Some(ev)`
 
 If the trigger misses, `opt_i = None`. Ascent never re-checks triggers and never changes which opts are `Some`.
 
 ```rust
-fn pre(ev: &SourceEvent, node: Node<&P, D>) -> T
+// shape only — return type is whatever the pre function returns (concrete, inferred)
+fn pre(ev: &SourceEvent, node: Node<&P, D>) -> /* concrete type */
 ```
 
-No reshape on the descent. Whether pre may also return now-effects is open; generate is `-> T` only.
+No reshape on the descent. Whether pre may also return now-effects is open; generate is return-value only (no effect batch from pre).
 
 ### Execute on the way up (all scheduled posts run)
 
@@ -130,7 +128,7 @@ enum Validity {
 
 ### Three signals (do not conflate)
 
-- `opt: Option<T>` — this slot was scheduled (descent). Read only by that post.
+- `opt_i: Option<…>` — this slot was scheduled (descent); payload is pre's return (or `()` / the event). Read only by that post.
 - `Validity` — child field still that type or not (structural). Every post at this level sees it.
 - `claimed: bool` — a `#[bind]` already took this event. Bind-only. Posts never see it.
 
@@ -138,12 +136,12 @@ A logging `#[pre_post(AnyKey => …)]` schedules and runs; it does not set `clai
 
 ### Defaults
 
-- `#[pre_post(trig => (pre, post))]` — user pre → `T`, user post
-- `#[pre(trig => pre)]` — user pre → `T`, post is `drop(t)`
-- `#[post(trig => post)]` — pre is trigger → `()`, user post gets `()`
+- `#[pre_post(trig => (pre, post))]` — user pre returns a value, user post receives it
+- `#[pre(trig => pre)]` — user pre returns a value, post is `drop` of that value
+- `#[post(trig => post)]` — pre is trigger → `()`, user post receives `()`
 - `#[bind(trig => handler)]` — pre is trigger → stash event, post is exclusive body
 
-Several pairs on one node: several independent `opt_i`, one `on_into_parent` closure.
+Several pairs on one node: several independent `opt_i` (each its own concrete payload type), one `on_into_parent` closure.
 
 ### `#[bind]` is one function
 
@@ -480,9 +478,9 @@ Outer bind skips
 ### `Foo` only
 
 ```text
-opt_foo = Some(t)
+opt_foo = Some(hits_before)   // u32 from pre_foo
 Inner bind skips
-Outer post_foo(t, owned path, Valid) → path back
+Outer post_foo(hits_before, owned path, Valid) → path back
 Outer bind skips
 ```
 
@@ -549,14 +547,14 @@ Mercury binds that today `ascend_mut` + `set_layer` wait on the reshape carrier 
 - logging `AnyKey` pre_post does not set `claimed`
 - deepest bind wins; parent bind runs when leaf misses
 - path is returned through two posts at one level
-- drop counter on `T`: once
+- drop counter on a pre return value: consumed once by post (or drop)
 - pre miss: no post
-- `#[pre]` alone: drop; `#[post]` alone: `()`
+- `#[pre]` alone: drop; `#[post]` alone: receives `()`
 - expression post: `only_if_valid(project, rearm)`
 
 ## Open
 
-- Whether `pre` may emit now-effects (`-> (T, Vec<Effect>)`).
+- Whether `pre` may also push now-effects on the way down.
 - How a deep bind schedules a reshape of a field it does not own (carrier applied in owner's `into_parent`). Until then, binds that `ascend_mut` + `set_layer` and path return do not compose cleanly.
 - Sugar so user posts can write `-> Vec<Effect>` while the derive still threads path.
 - Product nodes: one `Validity` per live child field.
