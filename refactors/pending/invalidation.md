@@ -1,134 +1,22 @@
-# Invalidation: descent schedules, ascent executes
+# Invalidation: generated dispatch
 
-Not done. One doc for the whole pre/post/invalidation design. It supersedes `handler-kinds.md`, `exclusive-as-post.md`, and `dispatch-batch-and-complete.md` (all now in `past/`).
+Not done. Standalone. The design is the code the derive emits for this tree.
 
-Dispatch is one pass down and one pass up. On the way DOWN, `pre`s read and reshape nothing, which fixes the set of handlers. On the way UP, `post`s run leaf to root, each handed a `Validity`, and a post acts only where its target still exists. A layer transition is scheduled by the deepest matcher on the descent and applied on the ascent by the level that owns the field; the posts below that field run after it, so a post learns it was invalidated.
-
-## pre and post
-
-Two handler positions, both `fn` items the user writes.
-
-- `pre: fn(&Event, Node<&mut P, D>) -> (T, Vec<Effect>)`. Runs on the descent when the trigger matches. Borrowed node (`&mut P`): it can `get_mut` its own node and read an ancestor, not consume. It returns `(T, now-effects)`. The now-effects push as the descent enters the node. `T` is carried to this node's `post`.
-- `post: fn(Validity<N>) -> Vec<Effect>`, given `pre`'s `T` when there is one. Runs on the ascent, once, iff its `pre` matched. It reads `Validity` (below) and returns effects.
-
-`#[pre]` alone drops `T` (its post is `drop`). `#[post]` alone has a pre that is just the trigger check returning `()`. `#[pre_post]` is the only form that threads a real `T`. A node may carry several, at once.
+## The case
 
 ```rust
-#[pre_post(AnyKey => (arm, stay))]   // arm returns T, stay receives it
-#[pre(AnyKey => track)]              // post is drop
-#[post(AnyKey => guard)]             // pre is the trigger check
-```
-
-`pre`/`post` name the timing. The handlers are named for what they do (`arm`/`stay`, `guard`).
-
-## Validity
-
-A `post` at a node guards a CHILD field. After the node applies whatever reshape was scheduled for that field, it re-reads the field: still the guarded type gives `Valid`, replaced gives `Invalidated`.
-
-```rust
-struct Valid<'n, N> {
-    node: &'n mut N,   // the guarded child, still present, reachable to mutate
-    handled: bool,     // a handler matched at or below this field
-}
-enum Validity<'n, N> {
-    Valid(Valid<'n, N>),
-    Invalidated,       // the field is no longer an N
-}
-```
-
-`Invalidated` carries nothing: there is no `N` to hand out, so touching a replaced node does not compile. `handled` records that a handler MATCHED below, not that state changed. Proving change needs tracking `get_mut` calls (possible, deferred), so `handled` stays conservative: it is true whenever any bound key fired below, whether or not the field moved.
-
-`only_if_valid` runs a body on the valid side and drops the invalid one:
-
-```rust
-fn only_if_valid<N>(f: impl FnOnce(&mut N) -> Vec<Effect>) -> impl FnOnce(Validity<N>) -> Vec<Effect> {
-    move |v| match v {
-        Validity::Valid(valid) => f(valid.node),
-        Validity::Invalidated => Vec::new(),
-    }
-}
-```
-
-It is a from-below signal. A post sees reshapes at or below its field (those ran first on the ascent); a reshape above it runs later and cannot reach effects it already returned.
-
-## Why `&mut node` is sound
-
-A post does not call `into_parent`; the framework does. Ascending one level:
-
-```rust
-pub fn into_parent(self, sink: &mut Vec<Effect>) -> P {
-    // self owns the projection to this level's child field
-    let v: Validity<N> = self.read_child();           // apply scheduled reshape, then classify
-    Extend::extend(sink, (self.on_into_parent)(v));    // post borrows &mut N through Valid
-    self.parent                                        // borrow ended; consume self, project up
-}
-```
-
-The `&mut N` inside `Valid` is a reborrow scoped to the post call. `into_parent` still owns the path and consumes it to project up after the post returns. The two never overlap, so `Valid` handing a `&mut N` and `into_parent` needing ownership coexist.
-
-## The sweep
-
-Down. Each node builds its child path (`from_fn`) and recurses. A pre pushes its now-effects onto the batch and binds its `T` into `opt_i: Option<T>` (`Some` iff the trigger matched), captured by the child path's `on_into_parent` closure.
-
-Up. The recursion unwinds leaf to root, threading one `effs: &mut Vec<Effect>`. Each level's post rides on its child's path as `on_into_parent`; `into_parent(sink)` runs it and pushes its effects onto `sink`, returning just the parent.
-
-No handler ever holds a `&mut Vec<Effect>` or sees another handler's effects. Every handler RETURNS effects; the only holder of the batch is framework code (`into_parent`, `dispatch`). `from_fn`, the only way to build a child path and so the only way to choose an `on_into_parent`, is framework-only (crate-private). So a handler cannot smuggle in a closure that pops the batch. The capability is absent, not defended against.
-
-`pre` ran ⟹ `post` ran, exactly once: the closure rides the child path from construction, there is one ascent through the level, and `into_parent` consumes the level and calls the `FnOnce` once. The once-ness is the ownership, not a flag.
-
-```rust
-pub struct PathMut<'a, N, P, F> {
-    /* projection to N, parent P */
-    on_into_parent: F,   // FnOnce(Validity<N>) -> Vec<Effect>; captures the pre values
+#[pre_post(Foo => (pre_foo, post_foo), Bar => (pre_bar, post_bar))]
+#[bind(a => outer_handler)]
+struct Outer {
+    #[resolve_into]
+    inner: Inner,
 }
 
-fn no_post<N>(_: Validity<N>) -> Vec<Effect> { Vec::new() }   // the default for a node with no post
+#[bind(a => inner_handler)]
+struct Inner;
 ```
 
-## Ordering
-
-Effects land in nesting order: `A_pre, B_pre, <reshape>, B_post, A_post`. Pres on the way down, then the scheduled reshape applied at its owning level, then posts on the way up. A post runs AFTER the reshape that targets its field, so it can be told `Invalidated`. Running before would hide the reshape and re-arm a timer the transition just cancelled.
-
-## The rearm
-
-`AndReturnHome { inner: Layer, guard }` wraps a layer and holds a return-home timer. Its guard lives one level up, in the node that owns the `AndReturnHome` field, as a `#[post]` reading `Validity<AndReturnHome>`:
-
-```rust
-#[post(AnyKey => only_if_valid(rearm))]
-fn rearm(node: &mut AndReturnHome) -> Vec<MercuryEffect> {
-    let (guard, schedule) = arm_return_home();
-    node.guard = guard;   // replaces the old guard, cancelling the old timer
-    vec![schedule]
-}
-```
-
-Navigate WITHIN (inner Home to Nav, `AndReturnHome` survives): `Valid`, rearm. Navigate OUT (the field is replaced by a bare layer): `Invalidated`, `only_if_valid` skips, and the dropped node's guard cancels the old timer. No wasted arm.
-
-## The overlay
-
-`OverlayLayer { shown, inner: Layer }` hides its overlay when a handler ran below. A `#[post]` at `OverlayLayer` reading `handled`, not a hide line in every navigation handler:
-
-```rust
-#[post(AnyKey => hide_on_change)]
-fn hide_on_change(v: Validity<OverlayLayer>) -> Vec<MercuryEffect> {
-    match v {
-        Validity::Valid(valid) if valid.handled => vec![hide_overlay()],
-        _ => vec![],
-    }
-}
-```
-
-It emits an effect and mutates no ancestor, so it needs `post` + `Validity` and nothing more.
-
-## The prefactor (shippable alone, behavior-identical to master)
-
-Independently reviewable and shippable before any pre/post exists. It threads effects as a batch and puts the `into_parent` seam in place; with no posts, nothing runs through it.
-
-- `Bindings` drops `type Output` for `type Effect`. mercury's marker sets `type Effect = MercuryEffect`.
-- `Dispatch`/`Descend` thread one `effs: &mut Vec<M::Effect>` and return `ControlFlow<(), Path>`. A matching bind pushes its effects onto `effs` and returns `Break(())`; a miss is `Continue(path)`.
-- `into_parent` gains its sink parameter (`into_parent(self, sink)`); with no post it projects up and touches nothing.
-- `bind::dispatch` seeds an empty `Vec`, returns `Some(effs)` on a win and `None` on a total miss (never `Some(vec![])`).
-- A handler returns `V: Into<Vec<M::Effect>>`, so a single effect or a `Vec` both work. mercury adds `impl From<MercuryEffect> for Vec<MercuryEffect>`.
+## Types
 
 ```rust
 pub trait Bindings {
@@ -136,22 +24,313 @@ pub trait Bindings {
     type Event;
     type Effect;
 }
+
+struct Valid<'n, N> {
+    node: &'n mut N,
+    handled: bool, // exclusive claimed at or below this field
+}
+
+enum Validity<'n, N> {
+    Valid(Valid<'n, N>),
+    Invalidated, // field is no longer an N after reshape applied on the way up
+}
+
+// pre_foo / pre_bar:
+//   fn(&SourceEvent, Node<&mut OuterPath, ()>) -> (T, Vec<Effect>)
+// post_foo / post_bar:
+//   fn(T, Validity<'_, Inner>) -> Vec<Effect>
+// outer_handler / inner_handler:
+//   fn(&SourceEvent, Node<&mut Path, ()>) -> V  where V: Into<Vec<Effect>>
 ```
 
-Expression handlers already work: `#[bind(Keyboard("x") => plus(10))]` splices as `#handler(ev, node)`, so `plus(10)` is called and its result applied. Pinned by `crates/bind/tests/expr_handler.rs`. This is what an `only_if_valid(rearm)` handler position relies on.
+Exclusives and pres take `Node<&mut P, D>` (borrowed path). The framework keeps the path so every level can still `into_parent` after a deep exclusive. Deepest-wins is a threaded `claimed: &mut bool`, not path consumption and not a short-circuit past parents.
 
-## Open: how a transition reaches the owning level
+```rust
+pub struct PathMut<N, P, F> {
+    /* projection N, parent P */
+    on_into_parent: F, // FnOnce(Validity<'_, N>) -> Vec<Effect>
+}
 
-The unresolved mechanism. A layer transition replaces `root.layer`, a field the deepest matcher does not own. Under the settled after-order the reshape has to be applied at the owning level BEFORE that level runs its posts. Candidate shapes:
+fn no_post<N>(_: Validity<'_, N>) -> Vec<Effect> {
+    Vec::new()
+}
 
-- pre carries the reshape. The deep matcher's `pre` carries the target (a new layer, or a `FnOnce(&mut Owner)`) up as its `T`; the owning level's `post` applies it, then its guard posts run against the reshaped field. This folds the transition into the pre/post machine and drops the exclusive winner entirely. It needs a deepest-wins rule when two pres along one path both carry a reshape for the same field.
-- a scheduler on the root. The descent records the reshape in a field the root owns; the ascent drains it at the owning level. This is the ambient-state shape the repo resists, and it is unjustified until a case needs a reshape that no single carried `T` can express.
+impl<N, P, F> PathMut<N, P, F>
+where
+    F: FnOnce(Validity<'_, N>) -> Vec<Effect>,
+{
+    /// Apply any reshape scheduled for this child field, classify Validity, run the post once,
+    /// push its effects, return the parent. Consuming self is the once-ness.
+    pub fn into_parent(self, handled: bool, sink: &mut Vec<Effect>) -> P {
+        let v = self.read_child(handled); // apply scheduled reshape, then classify
+        Extend::extend(sink, (self.on_into_parent)(v));
+        self.parent
+    }
+}
 
-Whichever wins, the reshape is applied at the owning level on the ascent, before that level's posts run. A post sees the field after the reshape (`Valid` or `Invalidated`); it does not climb past a pending one.
+pub trait Dispatch<M: Bindings>: Place {
+    fn dispatch<'a>(
+        path: Self::Path<'a>,
+        event: &M::Event,
+        effs: &mut Vec<M::Effect>,
+        claimed: &mut bool,
+    ) -> Self::Path<'a>
+    where
+        Self: 'a;
+}
 
-## Open: other
+pub fn dispatch<'a, M, N>(path: N::Path<'a>, event: &M::Event) -> Option<Vec<M::Effect>>
+where
+    M: Bindings,
+    N: Dispatch<M> + 'a,
+{
+    let mut effs = Vec::new();
+    let mut claimed = false;
+    let _path = <N as Dispatch<M>>::dispatch(path, event, &mut effs, &mut claimed);
+    if claimed || !effs.is_empty() {
+        Some(effs)
+    } else {
+        None
+    }
+}
+```
 
-- `handled` is a bool. Precise change detection (track `get_mut`) and level-granular invalidation ("reshaped up to depth N") are deferred until a case needs them.
-- Multiple children under one node: an enum (one active child) works with a single `Validity`; a product (several live children) needs one `Validity` per field and a join in `into_parent`.
-- The single-owner claim: reaching a field mutably consumes the path, which consumes once, so at most one writer per field per dispatch. An additive second writer of a sibling field (`A { overlay, layer }`, one post writing `overlay` beside a transition writing `layer`) is allowed because the fields are disjoint; two writers of the SAME field is what single-owner forbids. Confirm this holds once the transition mechanism is chosen.
-- Syntax: `#[pre_post]` plus `#[pre]`/`#[post]`, timing names vs intent names.
+`from_fn` is crate-private. Handlers return effects; only framework code holds `&mut Vec<Effect>`.
+
+## Generated `Inner`
+
+```rust
+impl Dispatch<M> for Inner {
+    fn dispatch<'a>(
+        mut path: <Inner as Place>::Path<'a>,
+        event: &M::Event,
+        effs: &mut Vec<M::Effect>,
+        claimed: &mut bool,
+    ) -> <Inner as Place>::Path<'a>
+    where
+        Self: 'a,
+    {
+        if !*claimed {
+            if let Some(ev) = <&AEvent as TryFrom<_>>::try_from(event).ok() {
+                if a.is_matching(ev) {
+                    *claimed = true;
+                    Extend::extend(
+                        effs,
+                        Into::<Vec<M::Effect>>::into(inner_handler(
+                            ev,
+                            ::bind::Node {
+                                parent: &mut path,
+                                data: (),
+                            },
+                        )),
+                    );
+                }
+            }
+        }
+        path
+    }
+}
+```
+
+## Generated `Outer`
+
+```rust
+impl Dispatch<M> for Outer {
+    fn dispatch<'a>(
+        mut path: <Outer as Place>::Path<'a>,
+        event: &M::Event,
+        effs: &mut Vec<M::Effect>,
+        claimed: &mut bool,
+    ) -> <Outer as Place>::Path<'a>
+    where
+        Self: 'a,
+    {
+        // ----- down: each pre_post independently -----
+        let opt_0 = match <&FooEvent as TryFrom<_>>::try_from(event).ok() {
+            Some(ev) if Foo.is_matching(ev) => {
+                let (t, now) = pre_foo(
+                    ev,
+                    ::bind::Node {
+                        parent: &mut path,
+                        data: (),
+                    },
+                );
+                Extend::extend(effs, now);
+                Some(t)
+            }
+            _ => None,
+        };
+        let opt_1 = match <&BarEvent as TryFrom<_>>::try_from(event).ok() {
+            Some(ev) if Bar.is_matching(ev) => {
+                let (t, now) = pre_bar(
+                    ev,
+                    ::bind::Node {
+                        parent: &mut path,
+                        data: (),
+                    },
+                );
+                Extend::extend(effs, now);
+                Some(t)
+            }
+            _ => None,
+        };
+
+        // ----- descend: one on_into_parent captures every opt_i -----
+        let inner_path = ::laserbeam::PathMut::from_fn(
+            path,
+            |p| &mut p.get_mut().inner,
+            |p| &p.get().inner,
+            move |v| {
+                let mut local = ::std::vec::Vec::new();
+                match v {
+                    Validity::Valid(mut valid) => {
+                        if let Some(t) = opt_0 {
+                            Extend::extend(
+                                &mut local,
+                                post_foo(
+                                    t,
+                                    Validity::Valid(Valid {
+                                        node: &mut *valid.node,
+                                        handled: valid.handled,
+                                    }),
+                                ),
+                            );
+                        }
+                        if let Some(t) = opt_1 {
+                            Extend::extend(
+                                &mut local,
+                                post_bar(
+                                    t,
+                                    Validity::Valid(Valid {
+                                        node: &mut *valid.node,
+                                        handled: valid.handled,
+                                    }),
+                                ),
+                            );
+                        }
+                    }
+                    Validity::Invalidated => {
+                        if let Some(t) = opt_0 {
+                            Extend::extend(&mut local, post_foo(t, Validity::Invalidated));
+                        }
+                        if let Some(t) = opt_1 {
+                            Extend::extend(&mut local, post_bar(t, Validity::Invalidated));
+                        }
+                    }
+                }
+                local
+            },
+        );
+
+        // ----- child -----
+        let inner_path = <Inner as ::bind::Dispatch<M>>::dispatch(inner_path, event, effs, claimed);
+
+        // ----- up: posts, then this level's exclusive -----
+        let mut path = inner_path.into_parent(*claimed, effs);
+
+        if !*claimed {
+            if let Some(ev) = <&AEvent as TryFrom<_>>::try_from(event).ok() {
+                if a.is_matching(ev) {
+                    *claimed = true;
+                    Extend::extend(
+                        effs,
+                        Into::<Vec<M::Effect>>::into(outer_handler(
+                            ev,
+                            ::bind::Node {
+                                parent: &mut path,
+                                data: (),
+                            },
+                        )),
+                    );
+                }
+            }
+        }
+        path
+    }
+}
+```
+
+## Order of the walk
+
+```text
+enter Outer
+  pre_foo?  pre_bar?                  // push now-effects, bind opt_i
+  build inner_path                    // posts closed over opt_i
+  enter Inner
+    exclusive a => inner_handler?     // may set claimed, push effects
+  leave Inner
+  inner_path.into_parent(claimed)
+    apply reshape of .inner if any
+    Validity { handled: claimed }
+    post_foo?  post_bar?              // iff opt_i was Some
+  exclusive a => outer_handler?       // only if !claimed
+leave Outer
+```
+
+### Event matches `a` only
+
+```text
+pre_foo skip, pre_bar skip
+inner_handler runs, claimed = true
+into_parent: Valid { handled: true }, post_foo skip, post_bar skip
+outer_handler skip
+```
+
+Batch: `inner_handler` only. Outer posts still ran (no-op).
+
+### Event matches Foo only
+
+```text
+pre_foo runs, opt_0 = Some(t)
+inner exclusive skip
+into_parent: Valid { handled: false }, post_foo(t, Valid), post_bar skip
+outer exclusive skip
+```
+
+Batch: `pre_foo` now-effects, then `post_foo`.
+
+### Event matches Foo and `a`
+
+```text
+pre_foo runs
+inner_handler runs, claimed = true
+into_parent: Valid { handled: true }, post_foo(t, Valid { handled: true })
+outer_handler skip
+```
+
+Batch: `pre_foo` now-effects, `inner_handler`, `post_foo`.
+
+### Reshape of `.inner` scheduled by the deep exclusive
+
+```text
+inner_handler claims and schedules reshape of Outer.inner
+into_parent: apply reshape, Validity::Invalidated
+post_foo(t, Invalidated) if Foo matched
+```
+
+Posts always run when their pre matched. They decide what `Invalidated` means.
+
+## Rules
+
+1. Several `pre_post`s on one node → several `opt_i`, one `on_into_parent` closure.
+2. `pre` matched ⇒ `post` ran exactly once (`FnOnce` on the path, one ascent).
+3. Posts run only inside `into_parent`. Claim does not skip them.
+4. Deepest exclusive wins via `claimed`.
+5. Exclusive and pre take `Node<&mut P, D>`. Path stays with the framework.
+6. Reshape of a field is applied in that field's `into_parent` before `Validity` is built.
+
+## Prefactor (no pre/post)
+
+Behavior-identical exclusive dispatch:
+
+- `Bindings::Effect` replaces `Output`
+- `dispatch` threads `effs` and `claimed`
+- exclusives take `Node<&mut P, D>`, set `claimed`, push effects
+- `into_parent(self, _handled, _sink)` is a no-op project-up
+- top-level returns `Some(effs)` when `claimed || !effs.is_empty()`, else `None`
+- `V: Into<Vec<Effect>>`; expression handlers already work (`crates/bind/tests/expr_handler.rs`)
+
+## Open
+
+- How a deep exclusive schedules a reshape of an ancestor field (carrier on the descent; apply in the owner's `into_parent`). Until then, exclusives only mutate through the borrowed path they are given.
+- Product nodes: one `Validity` per live child field, join before parent exclusives.
