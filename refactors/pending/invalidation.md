@@ -109,12 +109,19 @@ No reshape on the descent. Whether pre may also return now-effects is open; gene
 
 ### Execute on the way up (all scheduled posts run)
 
-Leaf to root. The ascent threads one **`&mut Context`**. There is no parallel claim bit beside it — claim lives on the context and is mutated in place.
+Leaf to root. The ascent threads one **`&mut Context`** — same object the whole way up. No parallel claim flag. Posts get that `&mut Context`.
+
+One context, two different field lifetimes:
+
+- **`claim`** is ascent-global and monotone. Starts `None` at the leaf. An exclusive deeper that successfully `claim()`s leaves `Some(Claimed)` for every shallower post. It is not reset when you move up a level.
+- **`validity`** is per level / per field. At each `into_parent`, the framework classifies *this* child field after reshape and `set_validity` **overwrites** the previous level's value. Shallower posts never need "was my grandchild valid" from this field — they get their own field's answer when their `into_parent` runs. So validity is not accumulated history; it is the answer for the field whose posts are about to run.
+
+There is no descent pass for context. Descent only schedules `opt_N` with an immutable path. Claim and validity are ascent facts.
 
 1. Apply any reshape scheduled for this level's child field.
-2. `ctx.set_validity(...)` for that field (Valid / Invalidated).
+2. `ctx.set_validity(...)` for **that** field (overwrites prior validity).
 3. For each scheduled post, call it with owned path and `&mut ctx`; take path back from the return.
-4. Exclusive posts call `ctx.claim()` to try-take the event.
+4. Exclusive posts call `ctx.claim()` to try-take the event (monotone on the same `ctx`).
 
 A scheduled post always runs (is called). What it does with `ctx.claim()` / `ctx.validity()` is its business.
 
@@ -159,25 +166,25 @@ Access is flat on `Context`. Fields private. Ascent holds `&mut Context` so `cla
 
 `claim` is not a getter. It claims. Logging / plain posts never call it. Only exclusive (`#[bind]`) does.
 
-### How claim moves
+### How the fields move
 
 ```text
-framework holds:  ctx: Context   (one value for the whole ascent)
+framework holds:  one ctx for the whole ascent
 
-at each level:
-  ctx.set_validity(Valid | Invalidated)
+DESCENT: no ctx mutation — only schedule opt_N
 
-each plain post:
-  (effects, path) = post(..., &mut ctx)   // may read validity; must not call claim()
-
-each exclusive (#[bind]):
-  match ctx.claim() {
-    None => skip body              // already taken
-    Some(Claimed) => h(..., &mut ctx)  // we just took it
-  }
+ASCENT leaf → root:
+  at each level's into_parent:
+    reshape this field if scheduled
+    ctx.set_validity(Valid | Invalidated)   // OVERWRITE for this field only
+    plain posts:  (effs, path) = post(..., &mut ctx)   // must not claim()
+    exclusive:    match ctx.claim() { None => skip; Some(_) => h(...) }
+                  // claim() mutates ctx; stays Some for levels above
 ```
 
-Posts return `(Vec<Effect>, P)` — path threading only. Validity and claim live on `Context` and are mutated there.
+`claim` survives every level. `validity` is replaced every level. Same `Context` pointer either way — different update rules.
+
+Posts return `(Vec<Effect>, P)` — path threading only.
 
 ### Defaults
 
