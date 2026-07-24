@@ -15,7 +15,7 @@ The design stands on one platform fact, verified in a scratch spike: a posted ap
 
 ## The wake handle
 
-Posting needs `NSApp`, which is a process-global singleton reachable only on the main thread through `MainThreadMarker`. The handle captures it once, on the main thread, and is `Send` so the worker threads can poke. See `docs/platform-apis.md` for holding an OS resource this way.
+Posting needs `NSApp`, which is a process-global singleton reachable only on the main thread through `MainThreadMarker`. The handle captures it once, on the main thread, and is `Send` so the worker threads can wake the loop. See `docs/platform-apis.md` for holding an OS resource this way.
 
 `crates/freddie_main_loop/src/lib.rs`:
 
@@ -41,7 +41,7 @@ impl AppHandle {
     }
 
     /// Post an application-defined event, which `nextEventMatchingMask` dequeues and returns.
-    fn poke(&self) {
+    fn post_wake_event(&self) {
         // SAFETY: `self.0` is the process `NSApp`, valid for the process; `postEvent:atStart:` is
         // thread-safe; the event is a fresh application-defined event carrying `WAKE_SUBTYPE`.
         #[expect(unsafe_code)]
@@ -75,7 +75,7 @@ impl AppHandle {
 /// one to each thread that sends on a channel `on_wake` drains.
 #[derive(Clone)]
 pub struct MainWaker {
-    app: AppHandle,
+    app_handle: AppHandle,
 }
 
 impl MainWaker {
@@ -83,20 +83,20 @@ impl MainWaker {
     ///
     /// Send on the channel first, then call this: the send has to be visible when `on_wake` drains.
     pub fn wake(&self) {
-        self.app.poke();
+        self.app_handle.post_wake_event();
     }
 
     /// A channel whose sender wakes the loop on every send. The receiver is a plain
     /// `std::sync::mpsc::Receiver`, drained in `on_wake` on the main thread.
     #[must_use]
     pub fn channel<T>(&self) -> (WakingSender<T>, Receiver<T>) {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (sender, receiver) = std::sync::mpsc::channel();
         (
             WakingSender {
-                tx,
+                sender,
                 waker: self.clone(),
             },
-            rx,
+            receiver,
         )
     }
 }
@@ -105,7 +105,7 @@ impl MainWaker {
 /// `Send` and `Clone`. A consumer holds one of these instead of a bare `Sender`, so it cannot send
 /// without waking; that is enforced here rather than left to each send site to remember.
 pub struct WakingSender<T> {
-    tx: Sender<T>,
+    sender: Sender<T>,
     waker: MainWaker,
 }
 
@@ -115,7 +115,7 @@ pub struct WakingSender<T> {
 impl<T> Clone for WakingSender<T> {
     fn clone(&self) -> Self {
         Self {
-            tx: self.tx.clone(),
+            sender: self.sender.clone(),
             waker: self.waker.clone(),
         }
     }
@@ -128,7 +128,7 @@ impl<T> WakingSender<T> {
     ///
     /// If the receiver has been dropped, the same as [`std::sync::mpsc::Sender::send`].
     pub fn send(&self, value: T) -> Result<(), std::sync::mpsc::SendError<T>> {
-        self.tx.send(value)?;
+        self.sender.send(value)?;
         self.waker.wake();
         Ok(())
     }
@@ -158,13 +158,13 @@ after:
 ```rust
 pub fn main_loop(mtm: MainThreadMarker) -> (MainLoop, Stopper, MainWaker) {
     let waker = MainWaker {
-        app: AppHandle::new(&NSApplication::sharedApplication(mtm)),
+        app_handle: AppHandle::new(&NSApplication::sharedApplication(mtm)),
     };
-    let (signal, stop) = std::sync::mpsc::channel();
+    let (stop_signal, stop_receiver) = std::sync::mpsc::channel();
     (
-        MainLoop { stop },
+        MainLoop { stop_receiver },
         Stopper {
-            signal,
+            stop_signal,
             waker: waker.clone(),
         },
         waker,
@@ -192,7 +192,7 @@ after:
 
 ```rust
 pub struct Stopper {
-    signal: Sender<()>,
+    stop_signal: Sender<()>,
     // A `Stopper` is a `MainWaker` plus the exit signal: dropping it wakes the loop and tells it to
     // stop, where a bare wake tells it to keep going.
     waker: MainWaker,
@@ -203,7 +203,7 @@ impl Drop for Stopper {
         // Signal first, then wake, the same ordering as any waking send: the loop must see the stop
         // when the posted event breaks its wait. A post that lands before the loop blocks is not
         // lost, so there is no SLICE backstop and none is needed.
-        let _ = self.signal.send(());
+        let _ = self.stop_signal.send(());
         self.waker.wake();
     }
 }
@@ -235,7 +235,7 @@ impl Drop for Stopper {
 after:
 
 ```rust
-        while matches!(self.stop.try_recv(), Err(TryRecvError::Empty)) {
+        while matches!(self.stop_receiver.try_recv(), Err(TryRecvError::Empty)) {
             autoreleasepool(|_| {
                 // Block until something happens: a real window-server event, or a posted wake. No
                 // deadline, so an idle loop sleeps at no cost.
@@ -272,13 +272,13 @@ fn is_wake_event(event: &NSEvent) -> bool {
 }
 ```
 
-The `SLICE` constant and its doc comment are deleted, along with `use core_foundation::...::CFRunLoop` and the `core-foundation` dependency if nothing else uses it.
+The `SLICE` constant and its doc comment are deleted, along with `use core_foundation::...::CFRunLoop` and the `core-foundation` dependency if nothing else uses it. `MainLoop`'s stop-channel field (from Change 1) is renamed `stop` → `stop_receiver`, to pair with `Stopper`'s `stop_signal`; `run` reads `self.stop_receiver`.
 
 ## The tests change
 
 The off-main tests exist because `main_loop` touched no `NSApp`. It does now, so they change:
 
-- `dropping_the_stopper_signals_stop` tested the stop by dropping a `Stopper` off-main. The channel half of the stop is what it asserts, so it moves to constructing the `Sender`/`Receiver` directly and checking a send lands, without a `MainWaker`. The poke half is a main-thread `NSApp` call, covered by the spike, not by an off-main unit test.
+- `dropping_the_stopper_signals_stop` tested the stop by dropping a `Stopper` off-main. The channel half of the stop is what it asserts, so it moves to constructing the `Sender`/`Receiver` directly and checking a send lands, without a `MainWaker`. The wake half (the `NSApp` post) is a main-thread call, covered by the spike, not by an off-main unit test.
 - `the_stopper_is_send` stands: `MainWaker` is `Send` (its `AppHandle` is), so `Stopper` stays `Send`.
 - `run_off_the_main_thread_panics` and `the_test_thread_is_not_main` are unchanged.
 
@@ -305,4 +305,4 @@ after:
 
 ## What this buys
 
-An idle daemon does nothing: the main thread sleeps in `nextEventMatchingMask` until a real event or a poke, with no periodic wakeups. A title change, an overlay show, or a stop reaches main the instant it is sent, through one mechanism. `SLICE` and the poll it drove are gone.
+An idle daemon does nothing: the main thread sleeps in `nextEventMatchingMask` until a real event or a wake, with no periodic wakeups. A title change, an overlay show, or a stop reaches main the instant it is sent, through one mechanism. `SLICE` and the poll it drove are gone.
