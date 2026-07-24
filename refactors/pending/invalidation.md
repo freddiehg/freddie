@@ -2,7 +2,7 @@
 
 Not done. Standalone.
 
-Descent schedules which pre/posts/binds will run. That set is final. Ascent runs every scheduled post leaf to root; mutation is free; each post is handed a `Validity` that says whether its child field still exists and whether an exclusive already claimed this event. `#[bind]` is a post that reads that claim bit — not a separate channel.
+Descent schedules which pre/posts/binds will run. That set is final. Ascent runs every scheduled post leaf to root; mutation is free; each post is handed a `Context` — structure of the child field plus whether an exclusive already claimed this event (a small grab bag, not a pure "validity" flag). `#[bind]` is a post that reads the claim bit on that context.
 
 ## Paths: shared down, owned up
 
@@ -45,11 +45,11 @@ fn pre_foo(ev: &FooEvent, node: Node<&OuterPath, ()>) -> u32 {
 }
 
 // post: owned path in, path out; first arg is pre_foo's return (u32);
-// Validity carries structure + whether an exclusive already claimed.
+// Context carries structure + whether an exclusive already claimed.
 fn post_foo(
     hits_before: u32,
     node: Node<OuterPath, ()>,
-    v: Validity,
+    v: Context,
 ) -> (Vec<M::Effect>, OuterPath) {
     match v.structure {
         Structure::Valid => {
@@ -68,13 +68,13 @@ fn post_foo(
 fn outer_handler(
     ev: &KeyEvent,
     node: Node<OuterPath, ()>,
-    v: Validity,
+    v: Context,
 ) -> (Vec<M::Effect>, OuterPath) { ... }
 
 fn inner_handler(
     ev: &KeyEvent,
     node: Node<InnerPath, ()>,
-    v: Validity,
+    v: Context,
 ) -> (Vec<M::Effect>, InnerPath) { ... }
 
 // sugar: act only when the child survived (no pre carriage)
@@ -112,8 +112,8 @@ No reshape on the descent. Whether pre may also return now-effects is open; gene
 Leaf to root. The ascent threads one monotone `claimed: bool` (false at the leaf, set true after an exclusive post runs). At each level the framework holds an owned path again.
 
 1. Apply any reshape scheduled for this level's child field.
-2. Build `Validity { structure, claimed }` — structure from the field, `claimed` from the ascent bit.
-3. For each scheduled post, call it with that `Validity` and the owned path; take path (and optional claim) back from the return.
+2. Build `Context { structure, claimed }` — structure from the field, `claimed` from the ascent bit.
+3. For each scheduled post, call it with that `Context` and the owned path; take path (and optional claim) back from the return.
 4. If the post was exclusive and reported a claim, set `claimed = true` for everything shallower.
 
 A scheduled post always runs (is called). What it does with `v.claimed` is its business. Structure `Invalidated` is how it learns it lost the child.
@@ -128,14 +128,14 @@ enum Structure {
 }
 
 #[derive(Clone, Copy)]
-struct Validity {
+struct Context {
     structure: Structure,
     /// An exclusive post deeper in the tree already took this event.
     claimed: bool,
 }
 ```
 
-`claimed` on `Validity` is a snapshot at the moment this post runs. It is not "any pre/post below matched" — only exclusive posts raise it. A logging `AnyKey` pre/post never sets it.
+`claimed` on `Context` is a snapshot at the moment this post runs. It is not "any pre/post below matched" — only exclusive posts raise it. A logging `AnyKey` pre/post never sets it.
 
 ### How `claimed` moves
 
@@ -143,7 +143,7 @@ struct Validity {
 framework holds:  claimed: bool   (monotone, starts false)
 
 each post call:
-  v = Validity { structure, claimed }     // snapshot into Validity
+  v = Context { structure, claimed }     // snapshot into Context
   out = post(..., v)
   path = out.path
   if out.claim { claimed = true }         // only exclusive sugar sets claim: true
@@ -173,7 +173,7 @@ Several pairs on one node: several independent `opt_i` (each its own concrete pa
 
 ### `#[bind]` is a post with no pre
 
-There is no third handler kind and no secret `!*claimed` outside `Validity`.
+There is no third handler kind and no secret `!*claimed` outside `Context`.
 
 ```rust
 #[bind(KeyA => outer_handler)]
@@ -186,13 +186,13 @@ There is no third handler kind and no secret `!*claimed` outside `Validity`.
 fn outer_handler(
     ev: &KeyEvent,
     node: Node<OuterPath, ()>,
-    v: Validity,
+    v: Context,
 ) -> (Vec<M::Effect>, OuterPath);
 
 // thin sugar — the only place that reads v.claimed for deepest-wins:
 fn exclusive<E, P>(
-    h: impl FnOnce(&E, Node<P, ()>, Validity) -> (Vec<Effect>, P),
-) -> impl FnOnce(&E, Node<P, ()>, Validity) -> PostOut<P> {
+    h: impl FnOnce(&E, Node<P, ()>, Context) -> (Vec<Effect>, P),
+) -> impl FnOnce(&E, Node<P, ()>, Context) -> PostOut<P> {
     move |ev, node, v| {
         if v.claimed {
             PostOut {
@@ -215,7 +215,7 @@ fn exclusive<E, P>(
 Framework when running any scheduled post:
 
 ```rust
-let v = Validity {
+let v = Context {
     structure, // Valid | Invalidated for this field
     claimed,   // ascent bit so far
 };
@@ -235,7 +235,7 @@ A plain `#[post]` is wrapped to `PostOut { claim: false, ... }`. A `#[bind]` use
 fn only_if_valid<P, N>(
     project: impl Fn(&mut P) -> &mut N,
     f: impl FnOnce(&mut N) -> Vec<Effect>,
-) -> impl FnOnce(Node<P, ()>, Validity) -> PostOut<P> {
+) -> impl FnOnce(Node<P, ()>, Context) -> PostOut<P> {
     move |mut node, v| {
         let effects = match v.structure {
             Structure::Valid => f(project(&mut node.parent)),
@@ -266,7 +266,7 @@ pub enum Structure {
 }
 
 #[derive(Clone, Copy)]
-pub struct Validity {
+pub struct Context {
     pub structure: Structure,
     pub claimed: bool,
 }
@@ -279,7 +279,7 @@ pub struct PostOut<P> {
 
 pub struct PathMut<N, P, F> {
     // owned parent P + projections to N (as today)
-    // F also receives claimed so it can build Validity for each post
+    // F also receives claimed so it can build Context for each post
     on_into_parent: F, // FnOnce(P, Structure, bool /*claimed*/) -> PostOut<P>
 }
 
@@ -334,7 +334,7 @@ where
 }
 ```
 
-Handlers return effects via `PostOut`; only framework code holds the batch sink. `from_fn` is crate-private. The ascent's `claimed` bit is the same value snapshotted into every `Validity`; posts never see a bare `&mut bool`.
+Handlers return effects via `PostOut`; only framework code holds the batch sink. `from_fn` is crate-private. The ascent's `claimed` bit is the same value snapshotted into every `Context`; posts never see a bare `&mut bool`.
 
 ## Generated code
 
@@ -345,9 +345,9 @@ fn run_post<P>(
     claimed: &mut bool,
     structure: Structure,
     path: P,
-    body: impl FnOnce(Node<P, ()>, Validity) -> PostOut<P>,
+    body: impl FnOnce(Node<P, ()>, Context) -> PostOut<P>,
 ) -> (P, Vec<Effect>) {
-    let v = Validity {
+    let v = Context {
         structure,
         claimed: *claimed,
     };
@@ -460,7 +460,7 @@ impl Dispatch<M> for Outer {
         let inner_path =
             <Inner as ::bind::Dispatch<M>>::dispatch(inner_path, event, effs, claimed);
 
-        // ----- ascent: reshape + pre_post posts (Validity built inside run_post) -----
+        // ----- ascent: reshape + pre_post posts (Context built inside run_post) -----
         let mut path = inner_path.into_parent(effs, claimed);
 
         // ----- bind: exclusive post, same run_post path -----
@@ -478,7 +478,7 @@ impl Dispatch<M> for Outer {
 }
 ```
 
-Every post goes through `run_post`. That is where `Validity` is built (`structure` + current `claimed`) and where `out.claim` updates the ascent bit. `exclusive` only reads `v.claimed` and sets `PostOut.claim`; it does not touch a parallel bool.
+Every post goes through `run_post`. That is where `Context` is built (`structure` + current `claimed`) and where `out.claim` updates the ascent bit. `exclusive` only reads `v.claimed` and sets `PostOut.claim`; it does not touch a parallel bool.
 
 ### `#[pre]` / `#[post]` alone
 
@@ -514,15 +514,15 @@ DESCENT
 
 ASCENT  claimed starts false
   Inner bind scheduled:
-    v = Validity { structure: Valid, claimed: false }
+    v = Context { structure: Valid, claimed: false }
     exclusive(inner_handler) sees !v.claimed, runs body, PostOut.claim = true
     claimed = true
   Outer into_parent:
     structure = Valid | Invalidated after reshape
-    post_foo gets Validity { structure, claimed: true }   // sees the claim
+    post_foo gets Context { structure, claimed: true }   // sees the claim
     post_bar same
   Outer bind scheduled:
-    v = Validity { structure, claimed: true }
+    v = Context { structure, claimed: true }
     exclusive(outer_handler) sees v.claimed, skips body, claim: false
 ```
 
@@ -538,7 +538,7 @@ Outer bind sees v.claimed, skips
 ```text
 opt_foo = Some(hits_before)
 Inner: no bind
-Outer post_foo(hits_before, path, Validity { Valid, claimed: false })
+Outer post_foo(hits_before, path, Context { structure: Valid, claimed: false })
 Outer bind not scheduled
 ```
 
@@ -546,7 +546,7 @@ Outer bind not scheduled
 
 ```text
 Inner exclusive may reshape, claim true
-Outer post_foo still runs — Validity { structure, claimed: true }
+Outer post_foo still runs — Context { structure, claimed: true }
 Outer exclusive skips
 ```
 
@@ -581,7 +581,7 @@ After:
 
 - `type Effect`
 - `dispatch` threads `effs` and `claimed`, always returns `Path`
-- exclusive is `#[post(exclusive(h))]`; claim flows through `Validity` / `PostOut`
+- exclusive is `#[post(exclusive(h))]`; claim flows through `Context` / `PostOut`
 - `into_parent(self, sink, claimed)` exists; no post yet in the prefactor
 - top-level `Some` when `claimed || !effs.is_empty()`
 - `V: Into<Vec<Effect>>`; expression handlers already work
@@ -593,8 +593,8 @@ Mercury binds that today `ascend_mut` + `set_layer` wait on the reshape carrier 
 1. Descent schedules; that set is final.
 2. Ascent runs every scheduled post; mutation does not cancel them.
 3. Pre: shared path. Post: owned path in/out via `PostOut`.
-4. `Validity { structure, claimed }` is what every post receives. No parallel bool in the handler API.
-5. Ascent holds a monotone `claimed` bit; each post sees a snapshot of it inside `Validity`; exclusive sugar sets `PostOut.claim` when it runs the body; framework ORs that into the bit.
+4. `Context { structure, claimed }` is what every post receives. No parallel bool in the handler API.
+5. Ascent holds a monotone `claimed` bit; each post sees a snapshot of it inside `Context`; exclusive sugar sets `PostOut.claim` when it runs the body; framework ORs that into the bit.
 6. Logging never sets `claim`. Only `exclusive(...)` does.
 7. no pre → `()`. no post → `drop`.
 8. `#[bind]` = `#[post(exclusive(handler))]` — thin sugar over `v.claimed` / `PostOut.claim`.
@@ -616,6 +616,6 @@ Mercury binds that today `ascend_mut` + `set_layer` wait on the reshape carrier 
 - Whether `pre` may also push now-effects on the way down.
 - How a deep bind schedules a reshape of a field it does not own (carrier applied in owner's `into_parent`). Until then, binds that `ascend_mut` + `set_layer` and path return do not compose cleanly.
 - Sugar so user posts can write `-> Vec<Effect>` while the derive still threads path.
-- Product nodes: one `Validity` per live child field.
-- Fallbacks that must not run if something claimed the event (e.g. root `AnyKey` passthrough). Closer to `claimed` than to `Validity`. Deferred.
-- Third Validity state: deferred.
+- Product nodes: one Context (structure bit) per live child field.
+- Fallbacks that must not run if something claimed the event (e.g. root `AnyKey` passthrough). Closer to `claimed` than to `Context`. Deferred.
+- Third structure state: deferred.
