@@ -127,9 +127,16 @@ pub struct DeviceInfo {
     pub built_in: bool,
 }
 
-/// Registry lookup for a `SourceId`. `None` if nothing matches (device gone since the press).
-/// Called only on a cache miss inside `intercept_with_source`, then fed to categorize.
-pub fn resolve(id: SourceId) -> Option<DeviceInfo> {
+/// Why `resolve` failed for a known `SourceId`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ResolveFailure {
+    /// `IOServiceGetMatchingService` returned no service (device unplugged since the press, etc.).
+    NoMatchingService,
+}
+
+/// Registry lookup for a `SourceId`. `Err((id, reason))` keeps the id so categorize can log or
+/// key off it; `DeviceInfo` is only on success.
+pub fn resolve(id: SourceId) -> Result<DeviceInfo, (SourceId, ResolveFailure)> {
     // SAFETY: IORegistryEntryIDMatching returns +1 dict; IOServiceGetMatchingService consumes
     // it and returns +1 service, or IO_OBJECT_NULL when nothing matches.
     #[expect(unsafe_code)]
@@ -137,7 +144,7 @@ pub fn resolve(id: SourceId) -> Option<DeviceInfo> {
         IOServiceGetMatchingService(kIOMasterPortDefault, IORegistryEntryIDMatching(id.0))
     };
     if service == IO_OBJECT_NULL {
-        return None;
+        return Err((id, ResolveFailure::NoMatchingService));
     }
     let info = DeviceInfo {
         vendor_id: prop_u32(service, "VendorID").unwrap_or(0) as u16,
@@ -150,7 +157,7 @@ pub fn resolve(id: SourceId) -> Option<DeviceInfo> {
     unsafe {
         IOObjectRelease(service);
     }
-    Some(info)
+    Ok(info)
 }
 
 /// Walk `entry` and its parents on the service plane until `key` is present with the expected
@@ -270,9 +277,9 @@ pub fn intercept(
 /// Same tap. `categorize` turns a source outcome into a consumer value `T`, once per
 /// distinct source. `on_key` sees only `T`.
 ///
-/// Categorize argument: `Option<Result<DeviceInfo, ()>>`
+/// Categorize argument: `Option<Result<DeviceInfo, (SourceId, ResolveFailure)>>`
 /// - `None` — no SourceId (synthetic / injected; no HID origin)
-/// - `Some(Err(()))` — had a SourceId, registry resolve failed (device gone)
+/// - `Some(Err((id, failure)))` — had a SourceId, resolve failed (id + why)
 /// - `Some(Ok(info))` — resolved
 pub fn intercept_with_source<T, C, F>(
     mut categorize: C,
@@ -280,7 +287,7 @@ pub fn intercept_with_source<T, C, F>(
 ) -> Result<(Interceptor, Emitter), CaptureError>
 where
     T: Clone + Send + 'static,
-    C: FnMut(Option<Result<DeviceInfo, ()>>) -> T + Send + 'static,
+    C: FnMut(Option<Result<DeviceInfo, (SourceId, ResolveFailure)>>) -> T + Send + 'static,
     F: Fn((KeyEvent, T)) -> Option<KeyEvent> + Send + 'static;
 ```
 
@@ -313,7 +320,7 @@ pub fn intercept_with_source<T, C, F>(
 ) -> Result<(Interceptor, Emitter), CaptureError>
 where
     T: Clone + Send + 'static,
-    C: FnMut(Option<Result<DeviceInfo, ()>>) -> T + Send + 'static,
+    C: FnMut(Option<Result<DeviceInfo, (SourceId, ResolveFailure)>>) -> T + Send + 'static,
     F: Fn((KeyEvent, T)) -> Option<KeyEvent> + Send + 'static,
 {
     // Cached categorize results only. DeviceInfo is not retained.
@@ -329,8 +336,8 @@ where
             Some(id) => by_source
                 .entry(id)
                 .or_insert_with(|| {
-                    // Some(Ok) resolved; Some(Err(())) id present but registry miss.
-                    categorize(Some(resolve(id).ok_or(())))
+                    // Some(Ok) resolved; Some(Err((id, failure))) keeps the id and why.
+                    categorize(Some(resolve(id)))
                 })
                 .clone(),
         };
@@ -349,15 +356,15 @@ fn run_tap(
 }
 ```
 
-`categorize` argument is `Option<Result<DeviceInfo, ()>>` — three outcomes, no conflation:
+`categorize` argument is `Option<Result<DeviceInfo, (SourceId, ResolveFailure)>>` — three outcomes, no conflation:
 
 | value | meaning |
 |-------|---------|
 | `None` | no `SourceId` (synthetic / injected; no HID origin) |
-| `Some(Err(()))` | had a `SourceId`, `resolve` failed (device gone) |
+| `Some(Err((id, failure)))` | had a `SourceId`, resolve failed; id + `ResolveFailure` (e.g. `NoMatchingService`) |
 | `Some(Ok(info))` | full resolve, including `product: String` |
 
-Figaro can map `None` → `Injected` and `Some(Err(()))` → `Other` (or a dedicated variant). The product string never enters the model unless categorize puts it in `T`.
+Figaro can map `None` → `Injected` and `Some(Err(_))` → `Other` (or a dedicated variant), and can log the id/failure. The product string never enters the model unless categorize puts it in `T`.
 
 The cache is a plain `HashMap` local to the tap-thread closure. It is not `Arc`/`Mutex` and is not shared across threads. Only `T` is stored; `DeviceInfo` is dropped after categorize returns.
 
@@ -369,8 +376,9 @@ The cache is a plain `HashMap` local to the tap-thread closure. It is not `Arc`/
 // crates/freddie_keyboard/src/lib.rs
 pub use freddie_keys::{Key, KeyEvent, PressType};
 #[cfg(target_os = "macos")]
-pub use freddie_hid_device::DeviceInfo;
-// SourceId / source_of / resolve stay in freddie_hid_device for demos/tests.
+pub use freddie_hid_device::{DeviceInfo, ResolveFailure, SourceId};
+// SourceId / ResolveFailure / source_of / resolve stay in freddie_hid_device for demos/tests.
+// DeviceInfo and ResolveFailure are re-exported so categorize signatures type-check.
 
 // sys/mod.rs
 pub use macos::{Emitter, Interceptor, intercept, intercept_with_source};
@@ -392,7 +400,7 @@ This doc ends at `(KeyEvent, T)` on the callback, with figaro supplying `T = Dev
 intercept_with_source(
     |src| match src {
         None => DeviceClass::Injected,
-        Some(Err(())) => DeviceClass::Other, // had an id, resolve failed
+        Some(Err((_id, _failure))) => DeviceClass::Other, // had an id, resolve failed
         Some(Ok(d)) if d.built_in => DeviceClass::Laptop,
         Some(Ok(d)) if d.vendor_id == 0x29ea && d.product_id == 0x0360 => DeviceClass::Desktop,
         Some(Ok(_)) => DeviceClass::Other,
@@ -407,7 +415,7 @@ intercept_with_source(
 ## Cost, stated plainly
 
 - No remapping inside secure input (password fields): the CGEventTap is bypassed there. That is the one thing the HID route would still buy; out of scope here (`hid-backend.md`).
-- The two device symbols are private. Missing HID origin is `categorize(None)`; a dead registry id is `categorize(Some(Err(())))`. Neither fails the remapper.
+- The two device symbols are private. Missing HID origin is `categorize(None)`; a dead registry id is `categorize(Some(Err((id, failure))))`. Neither fails the remapper.
 - First key from a newly seen device does a registry walk and one categorize on the tap thread. That is once per attachment per process; later keys are a map lookup and a `T::clone`. Prefer a cheap `T` (`Copy` or a small enum).
 
 ## Tests
