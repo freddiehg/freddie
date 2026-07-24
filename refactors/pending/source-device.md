@@ -1,6 +1,8 @@
 # source-device attribution on the CGEventTap
 
-The model learns which physical keyboard each key came from, so a binding can depend on the device (only remap the Kinesis, leave the built-in alone, and so on). This is done on the existing CGEventTap backend, with no seize, no virtual device, no root, and no Karabiner: the source device is read directly off each `CGEvent`. figaro uses the device-aware entry point; mercury keeps plain `intercept` and never sees a device.
+One half of device-conditioned input. This doc is the freddie half: each key gets an `Option<DeviceInfo>` off the CGEventTap. The figaro half is `figaro/refactors/pending/device-conditioned-keymaps.md` (classify into `DeviceClass`, pair events, layer gate, `On`).
+
+No seize, no virtual device, no root, no Karabiner: the source device is read directly off each `CGEvent`. figaro calls `intercept_with_source`; mercury keeps plain `intercept` and never sees a device.
 
 Verified on real hardware: with no seizing remapper running, a listen tap resolves `Kinesis Adv360` and `Apple Internal Keyboard / Trackpad` as distinct devices straight from the events. The technique ships in LinearMouse (notarized, no entitlement, hardened runtime).
 
@@ -342,21 +344,9 @@ freddie_hid_device = { path = "../freddie_hid_device", version = "0.0.1" }
 
 No feature gate. mercury depends on `freddie_keyboard` as today and keeps calling `intercept`.
 
-## What figaro does with it
+## Hand-off to figaro
 
-figaro calls `intercept_with_source` and receives `(KeyEvent, Option<DeviceInfo>)` per key. At its boundary it classifies pure `DeviceInfo` into its own `DeviceClass` and dispatches `(KeyEvent, DeviceClass)`. It never calls `resolve` and never sees a `SourceId`. Full design: `figaro/refactors/pending/device-conditioned-keymaps.md`.
-
-```rust
-// figaro boundary (summary; detail in the figaro doc)
-fn classify(device: Option<&DeviceInfo>) -> DeviceClass {
-    match device {
-        None => DeviceClass::Injected,
-        Some(d) if d.built_in => DeviceClass::Laptop,
-        Some(d) if d.vendor_id == 0x29ea && d.product_id == 0x0360 => DeviceClass::Desktop,
-        Some(_) => DeviceClass::Other,
-    }
-}
-```
+This doc ends at `(KeyEvent, Option<DeviceInfo>)` on the callback. Classification, model pairs, and keymap gates are `device-conditioned-keymaps.md`.
 
 ## Cost, stated plainly
 
@@ -376,4 +366,4 @@ Each step is independently shippable.
 
 1. `freddie_hid_device` leaf: `SourceId`, `source_of`, `resolve`, `DeviceInfo`, `prop_*` as above. Workspace member. Demo binary (or `examples/`) that installs a listen-only tap, prints `resolve(source_of(e))` per key, and is the end-to-end proof of the leaf. No `freddie_keyboard` change.
 2. `freddie_keyboard`: extract `run_tap`, add `intercept_with_source` with the tap-thread cache, re-export `DeviceInfo`. `intercept` becomes the thin wrapper that ignores the event. mercury binary still compiles and behaves as today (still calls `intercept`).
-3. figaro consumes via `device-conditioned-keymaps.md` (other repo; after richer keys).
+3. Stop. Figaro work is the other doc (`device-conditioned-keymaps.md`), after richer keys.
