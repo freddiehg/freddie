@@ -24,7 +24,6 @@ To thread ownership through several posts at one level, each post returns the pa
 #[node(parent = RootPath)]
 #[binds(M)]
 #[pre_post(Foo => (pre_foo, post_foo), Bar => (pre_bar, post_bar))]
-#[pre(Baz => track)]                 // → (track, noop_post)
 #[post(Qux => guard)]                // → (noop_pre, guard)
 #[bind(KeyA => outer_handler)]       // post + exclusive (ctx.claim()); has event
 struct Outer {
@@ -71,16 +70,8 @@ fn guard(
     (vec![], node.parent)
 }
 
-// well-known; macro drops these in for #[pre] / #[post] alone
+// well-known; macro drops this in for #[post] (and bind) when there is no pre
 fn noop_pre<E, P, D>(_ev: &E, _node: Node<&P, D>) {}
-
-fn noop_post<T, P>(
-    _pre: T,
-    node: Node<P, ()>,
-    _ctx: &mut Context,
-) -> (Vec<Effect>, P) {
-    (Vec::new(), node.parent)
-}
 
 // bind body: event + node + ctx. Gating is run_exclusive at the call site.
 fn outer_handler(
@@ -110,17 +101,18 @@ Expression positions work as today (`#handler(…)` splice). Pinned by `crates/b
 
 ### Schedule on the way down (final)
 
-Every pre/post attr is a pre_post pair. The macro fills a missing half with a well-known function:
+Every pre/post attr is a pre_post pair. The macro fills a missing pre with `noop_pre`:
 
 - `#[pre_post(trig => (pre, post))]` → `(pre, post)`
-- `#[pre(trig => pre)]` → `(pre, noop_post)`
 - `#[post(trig => post)]` → `(noop_pre, post)`
+- `#[bind(trig => h)]` → `(noop_pre, exclusive(h))`
+
+There is no `#[pre]` alone. A pre whose return is only dropped on the ascent does nothing useful (pre is read-only and may not yet emit now-effects). When a pre exists, a user post consumes its return — that is `#[pre_post]`.
 
 For each pair on the node, if the trigger matches: call the pre with `Node<&P, D>`, store `opt_N = Some(pre_return)`. Miss → `None`. Ascent never re-checks triggers.
 
 - `noop_pre` returns `()` — schedule token that the user post does **not** receive (generate calls the user body as `(node, ctx)` only).
-- `noop_post` is a real post: takes the pre return, drops it, returns path and empty effects.
-- `#[bind]`: same schedule shape as `#[post]` (`noop_pre` + exclusive body); body still gets the dispatch event.
+- `#[bind]`: same schedule shape as `#[post]`; body still gets the dispatch event.
 
 `N` is the attribute index on the node (`opt_0`, `opt_1`, …). Never names from triggers or handlers.
 
@@ -235,29 +227,20 @@ Posts return `(Vec<Effect>, P)` only.
 
 ### Defaults
 
-All attrs desugar to a pre_post pair. Missing half is a well-known function the macro drops in:
+All attrs desugar to a pre_post pair. Missing pre is well-known `noop_pre` the macro drops in:
 
 ```rust
 // in bind — not generated, not per-node
 fn noop_pre<E, P, D>(_ev: &E, _node: Node<&P, D>) {}
-
-fn noop_post<T, P>(
-    _pre: T,
-    node: Node<P, ()>,
-    _ctx: &mut Context,
-) -> (Vec<Effect>, P) {
-    (Vec::new(), node.parent)
-}
 ```
 
 | attr | expands to | descent | ascent |
 |---|---|---|---|
 | `#[pre_post(t => (pre, post))]` | `(pre, post)` | `opt = Some(pre(…))` | `post(t, node, ctx)` |
-| `#[pre(t => pre)]` | `(pre, noop_post)` | `opt = Some(pre(…))` | `noop_post(t, node, ctx)` |
 | `#[post(t => post)]` | `(noop_pre, post)` | `opt = Some(noop_pre(…))` i.e. `Some(())` | `post(node, ctx)` — **not** `post((), node, ctx)` |
 | `#[bind(t => h)]` | `(noop_pre, exclusive(h))` | same as post | `run_exclusive` + `h(ev, node, ctx)` |
 
-`noop_post` is who drops a pre return. User posts never take a dummy `()` to drop. `noop_pre`'s `()` is only the schedule `Some`.
+No `#[pre]` alone / `noop_post`. User posts never take a dummy `()` to drop. `noop_pre`'s `()` is only the schedule `Some`.
 
 Several attrs on one node: `opt_0`, `opt_1`, … (indexed; each pair has its own concrete pre-return type), one `on_into_parent` closure.
 
@@ -297,12 +280,6 @@ Call sites by expand shape:
 // #[pre_post] — thread real pre return
 if let Some(t0) = opt_0 {
     let (path, effects) = run_post(path, ctx, |node, ctx| post_foo(t0, node, ctx));
-    Extend::extend(effs, effects);
-}
-
-// #[pre] — macro filled noop_post
-if let Some(t) = opt_N {
-    let (path, effects) = run_post(path, ctx, |node, ctx| noop_post(t, node, ctx));
     Extend::extend(effs, effects);
 }
 
@@ -387,21 +364,13 @@ pub struct PathMut<N, P, F> {
     on_into_parent: F, // FnOnce(P, &mut Context) -> (P, Vec<Effect>)
 }
 
-// empty on_into_parent when this level has no scheduled posts (not the pre_post half)
+// empty on_into_parent when this level has no scheduled posts
 fn empty_on_into_parent<P>(parent: P, _ctx: &mut Context) -> (P, Vec<Effect>) {
     (parent, Vec::new())
 }
 
-// pre_post halves — well-known; macro drops in for #[pre] / #[post] alone
+// missing pre half — well-known; macro drops in for #[post] / #[bind]
 fn noop_pre<E, P, D>(_ev: &E, _node: Node<&P, D>) {}
-
-fn noop_post<T, P>(
-    _pre: T,
-    node: Node<P, ()>,
-    _ctx: &mut Context,
-) -> (Vec<Effect>, P) {
-    (Vec::new(), node.parent)
-}
 
 impl<N, P, F> PathMut<N, P, F>
 where
@@ -456,14 +425,6 @@ Handlers return `(Vec<Effect>, P)`. One `Context` for the ascent. Generate only 
 
 ```rust
 fn noop_pre<E, P, D>(_ev: &E, _node: Node<&P, D>) {}
-
-fn noop_post<T, P>(
-    _pre: T,
-    node: Node<P, ()>,
-    _ctx: &mut Context,
-) -> (Vec<Effect>, P) {
-    (Vec::new(), node.parent)
-}
 
 fn run_post<P>(
     path: P,
@@ -629,14 +590,9 @@ impl Dispatch<M> for Outer {
 }
 ```
 
-### `#[pre]` / `#[post]` alone
+### `#[post]` alone
 
-Same indexed opts. Macro always emits a pre_post pair:
-
-- `#[pre(t => pre)]` → pre is user, post is `noop_post`
-- `#[post(t => post)]` → pre is `noop_pre`, post is user `(node, ctx)` (not given `()`)
-
-Never `claim()` on these.
+Same indexed opts. Expands to `(noop_pre, post)`. User body is `(node, ctx)` (not given `()`). Never `claim()`.
 
 ## Walk
 
@@ -692,7 +648,7 @@ fn rearm(child: &mut AndReturnHome) -> Vec<MercuryEffect> {
 
 ## Prefactors (ordered, each shippable alone)
 
-Behavior-identical until a step says otherwise. No `#[pre]` / `#[post]` until feature steps. No completion token. No unused parameters "for later."
+Behavior-identical until a step says otherwise. No `#[post]` / `#[pre_post]` until feature steps. No completion token. No unused parameters "for later."
 
 ### P0 — `Bindings::Effect` + threaded batch (keep `Break`)
 
@@ -723,7 +679,7 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 1. `#[post]`
 2. `invalidate` / `step_up` / derived `validity()` (reshape may still be empty)
 3. `exclusive` sugar naming settled (`exclusive` preferred over `if_unclaimed`)
-4. `#[pre]` / `#[pre_post]`
+4. `#[pre_post]`
 5. mercury rearm; drop handle discriminant rearm
 6. reshape carrier (open) — including rule for `d` in `invalidate(d)`
 7. generic `C` — `context-as-generic.md`
@@ -744,11 +700,12 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 5. `claim(&mut self) -> Option<Claimed>` try-takes. Not a getter. Not a parallel flag.
 6. Invalidation is `invalidation_depth`: `invalidate(d)` / `step_up`; `validity()` derived. Not a binary flag overwritten per field.
 7. Logging never calls `claim()`. Only exclusive does.
-8. Every pre/post attr is a pre_post pair. Missing half is well-known `noop_pre` or `noop_post` (macro drops them in).
-9. `noop_post` drops the pre return. User posts never take a dummy `()` to drop; `#[post]` bodies are `(node, ctx)`.
-10. `#[bind]` = `(noop_pre, exclusive(h))` + event in the body.
-11. Generate stays thin: schedule + call helpers. Bookkeeping is not expanded per node.
-12. `empty_on_into_parent` is the empty `PathMut` `F` (no posts at that level). Distinct from `noop_post` (pre_post half).
+8. Every pre/post attr is a pre_post pair. Missing pre is well-known `noop_pre` (macro drops it in).
+9. No `#[pre]` alone. Pre without a user post has no job until (if ever) pre may emit now-effects.
+10. User posts never take a dummy `()` to drop; `#[post]` bodies are `(node, ctx)`.
+11. `#[bind]` = `(noop_pre, exclusive(h))` + event in the body.
+12. Generate stays thin: schedule + call helpers. Bookkeeping is not expanded per node.
+13. `empty_on_into_parent` is the empty `PathMut` `F` (no posts at that level).
 
 ## Tests
 
@@ -758,14 +715,13 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 - path threaded through two posts at one level
 - pre return value consumed once
 - pre miss: no post
-- `#[pre]` alone: expands to `(pre, noop_post)`
 - `#[post]` alone: expands to `(noop_pre, post)`; body is `(node, ctx)`
 - `only_if_valid` / expression post
 - depth: `invalidate(3)` → three levels Invalidated then Valid above (after step_ups)
 
 ## Open
 
-- Whether `pre` may also push now-effects on the way down.
+- Whether `pre` may also push now-effects on the way down — if yes, that is the first time `#[pre]` alone / a `noop_post` half would earn a place.
 - Reshape carrier: how a deep bind schedules a field replace at the owner; path return after today's `ascend_mut`+`set_layer`.
 - Exact rule for `d` in `invalidate(d)` (hops leaf→owner vs 1 at apply site, max with concurrent kills).
 - Sugar so user posts can write `-> Vec<Effect>` while the derive still threads path.
