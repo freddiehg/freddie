@@ -45,7 +45,7 @@ fn pre_foo(ev: &FooEvent, node: Node<&OuterPath, ()>) -> u32 {
 }
 
 // post: owned path in, path out; first arg is pre_foo's return (u32);
-// Context carries structure + whether an exclusive has already taken the event.
+// Context carries field validity + whether an exclusive has already taken the event.
 fn post_foo(
     hits_before: u32,
     node: Node<OuterPath, ()>,
@@ -482,7 +482,7 @@ impl Dispatch<M> for Outer {
             ::core::option::Option::None
         };
 
-        // into_parent passes &mut Context (structure already set for this field).
+        // into_parent passes &mut Context (validity already set for this field).
         let inner_path = ::laserbeam::PathMut::from_fn(
             path,
             |p| &mut p.get_mut().inner,
@@ -584,7 +584,7 @@ fn rearm(node: &mut AndReturnHome) -> Vec<MercuryEffect> {
 }
 ```
 
-`structure: Valid`: rearm. `Invalidated`: skip; `Drop` of the guard cancels the timer. Does not care about `claim`.
+`validity: Valid`: rearm. `Invalidated`: skip; `Drop` of the guard cancels the timer. Does not care about `claim`.
 
 ## Prefactors (ordered, each shippable alone)
 
