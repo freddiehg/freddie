@@ -57,9 +57,11 @@ use tracing::{debug, error, info, warn};
 /// loop, so main sits in one and mercury runs in [`serve`] elsewhere. See
 /// `refactors/past/main-thread.md`.
 ///
-/// Dropping the worker's `Stopper` stops main's loop, so a normal return, a
-/// failed keyboard grab, and a panic all exit. Declaration order below matters:
-/// the runtime drops before the `Stopper`.
+/// Dropping the worker's `Stopper` stops main's loop, so a normal return and a
+/// failed keyboard grab exit through it. A panic does not: it aborts the process
+/// from the panic hook (see `freddie_cli`'s `log_panics`), which a `Stopper` on the
+/// worker could not do for a panic on the main thread. Declaration order below
+/// matters: the runtime drops before the `Stopper`.
 pub(crate) fn run(port: u16) {
     // NSApp as an accessory (menu-bar) app, before the status item is created and
     // before the loop pumps its events.

@@ -150,14 +150,23 @@ pub(crate) fn init(instance: &Instance, terminal: Terminal) {
     log_panics();
 }
 
-/// Send panics through `tracing` instead of straight to stderr.
+/// Log every panic, then abort the process.
 ///
 /// The default hook prints and nothing else, which for a detached daemon means the one
 /// record of why it died goes to a terminal nobody is attached to. Routed through
 /// `error!`, it reaches the log file like everything else, and a client verb still shows
 /// it because `error!` is what goes to a client's stderr.
 ///
-/// The backtrace follows `RUST_BACKTRACE`, the way the default hook's does.
+/// Then it aborts. A panic is a bug, and freddie's work is split across a main thread and a worker
+/// that unwinding cannot both reach: a panic on the worker happens to tear everything down, but one
+/// on the main thread would leave the worker holding the keyboard, and a panic unwinding through an
+/// `AppKit` or `AXObserver` C frame is undefined behavior. Aborting from the hook, before any unwind,
+/// ends the process wherever the panic fired. The record is already on disk: the file layer writes
+/// each record straight through, so `error!` above has reached the OS file before `abort` runs.
+///
+/// Only the daemon and the client verbs install this, through `init`; the tests do not, so
+/// `catch_unwind` still works there. The backtrace follows `RUST_BACKTRACE`, the way the default
+/// hook's does.
 fn log_panics() {
     std::panic::set_hook(Box::new(|info| {
         let message = info
@@ -171,6 +180,7 @@ fn log_panics() {
             .map_or_else(|| "unknown".to_owned(), ToString::to_string);
         let backtrace = std::backtrace::Backtrace::capture();
         tracing::error!(%location, %backtrace, "panic: {message}");
+        std::process::abort();
     }));
 }
 
