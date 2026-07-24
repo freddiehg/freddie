@@ -59,7 +59,7 @@ Dispatch narrows the event to `Self::Event` with a `TryFrom` before it asks `is_
 
 Keys are the interesting case, because several triggers read the same event and differ in how much of it they look at. `Key::KeyR` matches that key on either press with any modifiers held. `Key::KeyR.down()` matches the direction too. `Key::KeyL.down().with(ModifierFlags::COMMAND)` matches the modifiers exactly, which is why Chrome binds `l`, `shift-l` and `cmd-l` as three separate chords rather than one key.
 
-Where the trigger and the event are the same thing, `self_trigger!` writes the impl:
+Where the trigger and the event are the same thing and matching is by equality (`PartialEq`), `self_trigger!` writes the impl:
 
 ```rust
 pub struct Quit;
@@ -67,7 +67,7 @@ pub struct Quit;
 bind::self_trigger!(Quit);
 ```
 
-`Quit` carries nothing and means one thing, so there is no matching left to do.
+`Quit` is a unit struct, so equality is always true. Tag enums use the same macro and discriminate variants.
 
 ## The subscription
 

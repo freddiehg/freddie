@@ -229,15 +229,19 @@ impl<T: EventTrigger> EventTrigger for Option<T> {
     }
 }
 
-/// Implements [`EventTrigger`] for a payload-less trigger that is its own event and always
-/// matches, for a bare signal that carries nothing and has nothing to discriminate.
+/// Implements [`EventTrigger`] for a type that is its own event and matches by [`PartialEq`].
+///
+/// For unit signals (`Quit`) equality is always true (one value). For tag enums
+/// (`DeviceClass`) variants discriminate so a filter only matches its own class.
+///
+/// `$t` must implement [`PartialEq`].
 #[macro_export]
 macro_rules! self_trigger {
     ($t:ty) => {
         impl $crate::EventTrigger for $t {
             type Event = Self;
-            fn is_matching(&self, _event: &Self) -> bool {
-                true
+            fn is_matching(&self, event: &Self) -> bool {
+                self == event
             }
         }
     };
