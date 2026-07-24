@@ -25,7 +25,7 @@ To thread ownership through several posts at one level, each post returns the pa
 #[binds(M)]
 #[pre_post(Foo => (pre_foo, post_foo), Bar => (pre_bar, post_bar))]
 #[pre(Baz => track)]                 // → (track, no_post)
-#[post(Qux => guard)]                // → (no_pre, guard)
+#[post(Qux => guard)]                // → (noop_pre, guard)
 #[bind(KeyA => outer_handler)]       // post + exclusive (ctx.claim()); has event
 struct Outer {
     #[resolve_into]
@@ -61,8 +61,8 @@ fn post_foo(
     }
 }
 
-// #[post] alone: macro fills pre with no_pre. User post is (node, ctx) —
-// not ((), node, ctx). Generate does not feed no_pre's () into the body.
+// #[post] alone: macro fills pre with noop_pre. User post is (node, ctx) —
+// not ((), node, ctx). Generate does not feed noop_pre's () into the body.
 fn guard(
     node: Node<OuterPath, ()>,
     ctx: &mut Context,
@@ -72,7 +72,7 @@ fn guard(
 }
 
 // well-known; macro drops these in for #[pre] / #[post] alone
-fn no_pre<E, P, D>(_ev: &E, _node: Node<&P, D>) {}
+fn noop_pre<E, P, D>(_ev: &E, _node: Node<&P, D>) {}
 
 fn no_post<T, P>(
     _pre: T,
@@ -114,13 +114,13 @@ Every pre/post attr is a pre_post pair. The macro fills a missing half with a we
 
 - `#[pre_post(trig => (pre, post))]` → `(pre, post)`
 - `#[pre(trig => pre)]` → `(pre, no_post)`
-- `#[post(trig => post)]` → `(no_pre, post)`
+- `#[post(trig => post)]` → `(noop_pre, post)`
 
 For each pair on the node, if the trigger matches: call the pre with `Node<&P, D>`, store `opt_N = Some(pre_return)`. Miss → `None`. Ascent never re-checks triggers.
 
-- `no_pre` returns `()` — schedule token that the user post does **not** receive (generate calls the user body as `(node, ctx)` only).
+- `noop_pre` returns `()` — schedule token that the user post does **not** receive (generate calls the user body as `(node, ctx)` only).
 - `no_post` is a real post: takes the pre return, drops it, returns path and empty effects.
-- `#[bind]`: same schedule shape as `#[post]` (`no_pre` + exclusive body); body still gets the dispatch event.
+- `#[bind]`: same schedule shape as `#[post]` (`noop_pre` + exclusive body); body still gets the dispatch event.
 
 `N` is the attribute index on the node (`opt_0`, `opt_1`, …). Never names from triggers or handlers.
 
@@ -239,7 +239,7 @@ All attrs desugar to a pre_post pair. Missing half is a well-known function the 
 
 ```rust
 // in bind — not generated, not per-node
-fn no_pre<E, P, D>(_ev: &E, _node: Node<&P, D>) {}
+fn noop_pre<E, P, D>(_ev: &E, _node: Node<&P, D>) {}
 
 fn no_post<T, P>(
     _pre: T,
@@ -254,10 +254,10 @@ fn no_post<T, P>(
 |---|---|---|---|
 | `#[pre_post(t => (pre, post))]` | `(pre, post)` | `opt = Some(pre(…))` | `post(t, node, ctx)` |
 | `#[pre(t => pre)]` | `(pre, no_post)` | `opt = Some(pre(…))` | `no_post(t, node, ctx)` |
-| `#[post(t => post)]` | `(no_pre, post)` | `opt = Some(no_pre(…))` i.e. `Some(())` | `post(node, ctx)` — **not** `post((), node, ctx)` |
-| `#[bind(t => h)]` | `(no_pre, exclusive(h))` | same as post | `run_exclusive` + `h(ev, node, ctx)` |
+| `#[post(t => post)]` | `(noop_pre, post)` | `opt = Some(noop_pre(…))` i.e. `Some(())` | `post(node, ctx)` — **not** `post((), node, ctx)` |
+| `#[bind(t => h)]` | `(noop_pre, exclusive(h))` | same as post | `run_exclusive` + `h(ev, node, ctx)` |
 
-`no_post` is who drops a pre return. User posts never take a dummy `()` to drop. `no_pre`'s `()` is only the schedule `Some`.
+`no_post` is who drops a pre return. User posts never take a dummy `()` to drop. `noop_pre`'s `()` is only the schedule `Some`.
 
 Several attrs on one node: `opt_0`, `opt_1`, … (indexed; each pair has its own concrete pre-return type), one `on_into_parent` closure.
 
@@ -306,7 +306,7 @@ if let Some(t) = opt_N {
     Extend::extend(effs, effects);
 }
 
-// #[post] — macro filled no_pre; user body does not take ()
+// #[post] — macro filled noop_pre; user body does not take ()
 if let Some(()) = opt_N {
     let (path, effects) = run_post(path, ctx, |node, ctx| guard(node, ctx));
     Extend::extend(effs, effects);
@@ -393,7 +393,7 @@ fn empty_on_into_parent<P>(parent: P, _ctx: &mut Context) -> (P, Vec<Effect>) {
 }
 
 // pre_post halves — well-known; macro drops in for #[pre] / #[post] alone
-fn no_pre<E, P, D>(_ev: &E, _node: Node<&P, D>) {}
+fn noop_pre<E, P, D>(_ev: &E, _node: Node<&P, D>) {}
 
 fn no_post<T, P>(
     _pre: T,
@@ -455,7 +455,7 @@ Handlers return `(Vec<Effect>, P)`. One `Context` for the ascent. Generate only 
 ### Helpers (in bind, not generated)
 
 ```rust
-fn no_pre<E, P, D>(_ev: &E, _node: Node<&P, D>) {}
+fn noop_pre<E, P, D>(_ev: &E, _node: Node<&P, D>) {}
 
 fn no_post<T, P>(
     _pre: T,
@@ -634,7 +634,7 @@ impl Dispatch<M> for Outer {
 Same indexed opts. Macro always emits a pre_post pair:
 
 - `#[pre(t => pre)]` → pre is user, post is `no_post`
-- `#[post(t => post)]` → pre is `no_pre`, post is user `(node, ctx)` (not given `()`)
+- `#[post(t => post)]` → pre is `noop_pre`, post is user `(node, ctx)` (not given `()`)
 
 Never `claim()` on these.
 
@@ -744,9 +744,9 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 5. `claim(&mut self) -> Option<Claimed>` try-takes. Not a getter. Not a parallel flag.
 6. Invalidation is `invalidation_depth`: `invalidate(d)` / `step_up`; `validity()` derived. Not a binary flag overwritten per field.
 7. Logging never calls `claim()`. Only exclusive does.
-8. Every pre/post attr is a pre_post pair. Missing half is well-known `no_pre` or `no_post` (macro drops them in).
+8. Every pre/post attr is a pre_post pair. Missing half is well-known `noop_pre` or `no_post` (macro drops them in).
 9. `no_post` drops the pre return. User posts never take a dummy `()` to drop; `#[post]` bodies are `(node, ctx)`.
-10. `#[bind]` = `(no_pre, exclusive(h))` + event in the body.
+10. `#[bind]` = `(noop_pre, exclusive(h))` + event in the body.
 11. Generate stays thin: schedule + call helpers. Bookkeeping is not expanded per node.
 12. `empty_on_into_parent` is the empty `PathMut` `F` (no posts at that level). Distinct from `no_post` (pre_post half).
 
@@ -759,7 +759,7 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 - pre return value consumed once
 - pre miss: no post
 - `#[pre]` alone: expands to `(pre, no_post)`
-- `#[post]` alone: expands to `(no_pre, post)`; body is `(node, ctx)`
+- `#[post]` alone: expands to `(noop_pre, post)`; body is `(node, ctx)`
 - `only_if_valid` / expression post
 - depth: `invalidate(3)` → three levels Invalidated then Valid above (after step_ups)
 
