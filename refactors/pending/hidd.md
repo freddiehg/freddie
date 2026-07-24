@@ -86,7 +86,19 @@ on each Downlink::Emit { key, press } from the session:
     Output.keyboard.set_state(Output.held.as_slice())
 ```
 
-When a client is connected the daemon does not passthrough; the session owns all output. On client disconnect the daemon reverts to passthrough and clears any half-held emitted state. This is the safety property: a figaro that crashes or was never started leaves a working keyboard, not a seized-dead one.
+When a client is connected the daemon does not passthrough; the session owns all output. On client disconnect the daemon reverts to passthrough and clears any half-held emitted state, so a figaro that crashes or was never started leaves a working keyboard, not a seized-dead one.
+
+## Never brick the keyboard
+
+The daemon holds an exclusive seize on the physical keyboard, so a bug that keeps the seize while dropping keys is a dead keyboard. Layered guarantees keep that from happening:
+
+- Only keyboards are seized. The pointer is never touched, so a mouse or trackpad is always live, and the session agent's menu bar carries a clickable Quit. There is always a pointer-driven way to kill the daemon that needs no keyboard.
+- Process death releases the seize. macOS ties the device open to the process (`hid-seize.md`), so any exit — clean stop, panic, `SIGKILL`, force-quit, or the watchdog below — drops the seize and the keyboard returns to native. Killing the daemon always restores the keyboard.
+- Never seize without a live output. On startup the daemon connects to Karabiner's virtual device and waits for `virtual_hid_keyboard_ready` before it seizes; if the output is unavailable it does not seize, and logs. A missing or wedged Karabiner daemon leaves a native keyboard, never a dead one. If the output drops mid-run, the daemon releases the seize at once and reverts to native until it is back.
+- A stalled emit releases rather than holds. Writes to the virtual device and to the session are bounded; if either would block past a short deadline, the daemon releases the seize rather than sit on a device it cannot drain. A wedged session is dropped and the daemon reverts to passthrough; a wedged virtual device releases the seize.
+- A watchdog turns a hang into a release. A separate thread force-exits the daemon if the seize→emit pipeline makes no progress within a bound; process exit then restores the keyboard by the second guarantee. It is a deadline the pipeline resets, never a poll.
+
+Startup order follows from the third guarantee: connect the output and wait for ready, take the single-instance lock, bind the session socket, then `seize(accept, ..)`. Shutdown and every degrade path release the seize before closing the output. The daemon passes `accept = |_| true` (it must seize the built-in to remap it), and an optional `--spare <vendor:product>` excludes a named keyboard so a designated device stays a guaranteed-live input if one is wanted.
 
 ## The daemon's own socket
 
@@ -129,7 +141,7 @@ It requires `sudo`; run without root it exits with that instruction rather than 
 
 ## Input Monitoring
 
-The seize returns `SeizeError::Denied` until the daemon binary is granted Input Monitoring, and a root daemon at the login window cannot raise the TCC prompt itself. The grant is driven from the session side: the session agent, which has an Aqua session, calls `IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)` to raise the prompt, and the daemon binary is what appears in System Settings > Privacy & Security > Input Monitoring. Until it is granted, the daemon logs the exact pane to open and stays in passthrough by not seizing (so the keyboard still works, unremapped). The session-side `IOHIDRequestAccess` call is unsafe FFI and lives in `freddie_hid_sys` behind a safe `request_input_monitoring()`.
+The seize returns `SeizeError::Denied` until the daemon binary is granted Input Monitoring, and a root daemon at the login window cannot raise the TCC prompt itself. The grant is driven from the session side: the session agent, which has an Aqua session, calls `IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)` to raise the prompt, and the daemon binary is what appears in System Settings > Privacy & Security > Input Monitoring. Until it is granted, the daemon does not seize and logs the exact pane to open, so the keyboard works natively and unremapped. The session-side `IOHIDRequestAccess` call is unsafe FFI and lives in `freddie_hid_sys` behind a safe `request_input_monitoring()`.
 
 A dev binary under `target/` gets its Input Monitoring grant keyed to its path and loses it whenever the identity changes; `cargo install` to a stable path and re-grant, the same caveat mercury's agent prints for `target/`.
 
@@ -140,5 +152,6 @@ A dev binary under `target/` gets its Input Monitoring grant keyed to its path a
 - The output loop toggles `held` on `Emit` and posts a state whose bytes match the expected report (leaning on `freddie_virtual_hid`'s `report_bytes`).
 - Passthrough: with no client, an input key becomes an output post of the same key; with a client, it becomes an `Uplink::Input` and no post.
 - Peer-uid: a connection whose `getpeereid` differs from the target is dropped before any frame is read.
+- Never-seize-without-output: against a fake output that never reports ready, the seize is never started; against one that drops after ready, the seize is released. The seize is behind a trait the test fakes, so this is a unit test, not a manual one.
 
 End to end (seize a key, see it typed through the virtual device with no session client) is the manual demo that proves the daemon before the session backend exists.

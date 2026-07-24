@@ -63,10 +63,20 @@ pub struct DeviceId(u64);
 ## The public API
 
 ```rust
-/// An active seize of every matching keyboard. While it is alive, their keys do not reach
+/// An active seize of the accepted keyboards. While it is alive, their keys do not reach
 /// the system and arrive at the callback instead. Dropping it releases every device and
 /// stops the run loop.
 pub struct Keyboards { /* run-loop thread, manager, callback box */ }
+
+/// A matched keyboard, offered to `accept` before it is seized. Enough to leave a device
+/// alone: the built-in keyboard, or one by identity.
+pub struct DeviceInfo {
+    pub vendor_id: u16,
+    pub product_id: u16,
+    pub product: String,
+    /// The `kIOHIDBuiltInKey` property: the machine's own keyboard rather than an attached one.
+    pub built_in: bool,
+}
 
 /// Why the seize could not start.
 pub enum SeizeError {
@@ -78,18 +88,22 @@ pub enum SeizeError {
     IoKit(i32),   // the IOReturn
 }
 
-/// Seize all keyboards (Generic Desktop / Keyboard) and call `on_input` for each key.
+/// Seize the keyboards `accept` returns true for and call `on_input` for each of their keys.
+/// A matched keyboard `accept` declines is left open to the system, working normally.
 ///
-/// `on_input` runs on the seize thread's run loop, so it must not block: send on a channel
-/// and return, the way the daemon does. It is `Fn`, `Send`, `'static`.
+/// `accept` decides per device at match time; the daemon passes `|_| true`, and a demo passes
+/// `|d| !d.built_in` so the machine's own keyboard is never taken. `on_input` runs on the seize
+/// thread's run loop, so it must not block: send on a channel and return. Both are `Send`,
+/// `'static`.
 ///
 /// Requires root and Input Monitoring. See the crate docs.
 pub fn seize(
+    accept: impl Fn(&DeviceInfo) -> bool + Send + 'static,
     on_input: impl Fn(HidInput) + Send + 'static,
 ) -> Result<Keyboards, SeizeError>;
 ```
 
-The shape mirrors `freddie_keyboard::intercept`: a callback in, a drop-to-release handle out, a dedicated run-loop thread inside. `Keyboards::drop` stops the `CFRunLoop` and joins under a bounded timeout, the way `TapThread` does in `sys/macos.rs`, so one wedged callback cannot make the daemon unkillable.
+`accept` is the first line of not bricking the machine: a caller that never seizes the only keyboard cannot lock itself out. `Keyboards::drop` stops the `CFRunLoop` and joins under a bounded timeout, the way `TapThread` does in `sys/macos.rs`, so one wedged callback cannot make the daemon unkillable.
 
 ## Inside `sys` (the unsafe)
 
@@ -109,7 +123,7 @@ let matching = cfdict! {
 IOHIDManagerSetDeviceMatching(manager, matching.as_concrete_TypeRef());
 ```
 
-3. Register the value callback and (for device ids and hotplug) the matching/removal callbacks:
+3. Register the value callback and the matching/removal callbacks (the matching callback is where `accept` and the per-device seize happen, so it covers hotplug for free):
 
 ```rust
 IOHIDManagerRegisterInputValueCallback(manager, value_trampoline, context);
@@ -117,20 +131,31 @@ IOHIDManagerRegisterDeviceMatchingCallback(manager, matched_trampoline, context)
 IOHIDManagerRegisterDeviceRemovalCallback(manager, removed_trampoline, context);
 ```
 
-4. Schedule on this thread's run loop, then open with the seize option, then run the loop:
+4. Schedule the manager on this thread's run loop and open it for enumeration only (no seize), then run the loop:
 
 ```rust
 IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
-let rv = IOHIDManagerOpen(manager, kIOHIDOptionsTypeSeizeDevice); // 0x01
+let rv = IOHIDManagerOpen(manager, kIOHIDOptionsTypeNone);
 if rv != kIOReturnSuccess { /* map to SeizeError, Denied on the privilege codes */ }
 CFRunLoopRun();
 ```
 
-`kIOHIDOptionsTypeSeizeDevice` is `0x01`. Scheduling propagates to devices matched later, so hotplugged keyboards are seized without re-opening the manager.
+The seize is per device, not the whole manager, so `accept` can spare a keyboard. The matching callback reads the device's `DeviceInfo`, calls `accept`, and only for an accepted device opens it exclusively:
+
+```rust
+// in the matching trampoline, for each matched IOHIDDeviceRef:
+if (ctx.accept)(&device_info(device)) {
+    let rv = IOHIDDeviceOpen(device, kIOHIDOptionsTypeSeizeDevice); // 0x01
+    // a device that fails to seize is logged and left native, not fatal
+}
+// a declined device is never opened, so it keeps reaching the system
+```
+
+`kIOHIDOptionsTypeSeizeDevice` is `0x01`. Because the matching callback fires for devices matched later too, a hotplugged keyboard runs through `accept` and is seized (or spared) the same way, without re-opening the manager. `IOHIDManagerOpen(.., kIOHIDOptionsTypeNone)` is what a plain `IOHIDManagerClose` on drop then balances; the per-device opens are closed by the same manager close.
 
 ### The trampoline and the context
 
-The callback is a C function pointer with a `void* context`. The context is a `Box`ed struct holding the safe `on_input` closure and a `DeviceId` map; it is created before `CFRunLoopRun`, passed as `*mut c_void`, and reclaimed when the manager is torn down. The trampoline does the minimum unsafe work and hands off to safe code immediately:
+The callback is a C function pointer with a `void* context`. The context is a `Box`ed struct holding the safe `on_input` and `accept` closures and a `DeviceId` map; it is created before `CFRunLoopRun`, passed as `*mut c_void`, and reclaimed when the manager is torn down. The trampoline does the minimum unsafe work and hands off to safe code immediately:
 
 ```rust
 extern "C" fn value_trampoline(
@@ -157,6 +182,8 @@ extern "C" fn value_trampoline(
 
 `Keyboards` holds the `CFRunLoop` and the thread. Drop stops the loop (`CFRunLoopStop` is thread-safe), the run-loop thread returns from `CFRunLoopRun`, `IOHIDManagerClose(manager, kIOHIDOptionsTypeSeizeDevice)` releases every device, and the `Context` box is dropped. Bounded join, as in `sys/macos.rs`.
 
+Drop is not the only release. macOS ties the exclusive open to the process, so any exit — a panic that unwinds past `Keyboards`, an abort, `SIGKILL`, a force-quit — makes the OS drop the seize and the keyboard returns to native. Killing the process always restores the keyboard, whatever state the code was in.
+
 ## Permissions, surfaced not solved
 
 `seize` returns `SeizeError::Denied` when the open fails for want of root or Input Monitoring. This crate does not prompt or request; it reports. `freddie_hidd` decides what to do (log where to grant it). Driving the TCC prompt (`IOHIDRequestAccess`/`IOHIDCheckAccess`) needs a user session and belongs to the session side, covered in `hidd.md`.
@@ -167,4 +194,4 @@ extern "C" fn value_trampoline(
 - The `DeviceId` map assigns stable ids per `sender` pointer and a fresh id after a removal+rematch.
 - The usage constants used by `classify` match `io-kit-sys`' `usage_tables` (a compile-time cross-check, not hand-copied numbers).
 
-The seize itself is a manual root demo: run it, confirm keys stop reaching the foreground app and appear in the log, drop it, confirm the keyboard returns to normal.
+The seize itself is a manual root demo, and it is built not to brick the machine: it seizes only attached keyboards (`|d| !d.built_in`) and auto-releases after a timeout. Plug in a second keyboard, run the demo, and confirm that keyboard's keys stop reaching the foreground app and appear in the log while the built-in keeps working — so the built-in's terminal can always stop it, and killing the process would release it regardless. Drop it (or let the timeout fire) and confirm the attached keyboard returns to normal.

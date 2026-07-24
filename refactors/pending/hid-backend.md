@@ -71,7 +71,7 @@ The first change is minimal and interface-first: stand up `freddie_keyboard_hid`
 
 1. `freddie_keyboard_hid` and `freddie_hid_wire` (`hid-session-backend.md`), plus the `freddie_keys` serde prefactor. The grab crate: `grab(on_key: Fn(KeyEvent))` connects to the daemon socket, `Emitter` sends over it. No unsafe. It compiles and figaro can depend on it, with the emitter's modifier-reconciliation unit-tested; it does nothing end to end until the daemon lands in step 4. This is the small, self-contained first step.
 2. `freddie_virtual_hid` (`hid-virtual-device-client.md`). Demo: a test binary types a string through the virtual device. Needs the Karabiner driver installed and its daemon running; needs no seize.
-3. `freddie_hid_sys` (`hid-seize.md`). Demo: a root test binary seizes the keyboard and logs every key, and the keys stop reaching the system while it runs.
+3. `freddie_hid_sys` (`hid-seize.md`). Demo: a root test binary seizes an attached keyboard (never the built-in) and logs its keys while the built-in keeps working, and auto-releases on a timer; killing it releases the seize regardless. `hid-seize.md` covers why a seize can never brick the machine.
 4. `freddie_hidd` (`hidd.md`), combining 2 and 3, plus the session socket, the LaunchDaemon plists, and the install verb. Demo: with no session client attached, the daemon echoes (posts what it reads) to prove the input-to-output loop end to end; then `freddie_keyboard_hid` from step 1 drives it and a remap shows up in a password field, which CGEventTap cannot do.
 
 ## Scope
