@@ -548,7 +548,7 @@ Plain posts go through `run_post`; binds go through `run_exclusive`. Both build 
 
 ### `#[pre]` / `#[post]` alone
 
-Same indexed opts. A bare `#[pre]` is `opt_i = Some(pre_return)` and the ascent arm is `drop(t_i)`. A bare `#[post]` is `opt_i = Some(())` and `run_post` with `claim: None`.
+Same indexed opts. A bare `#[pre]` is `opt_i = Some(pre_return)` and the ascent arm is `drop(t_i)`. A bare `#[post]` is `opt_i = Some(())` and `run_post` (does not write claim).
 
 ## Walk
 
@@ -563,15 +563,14 @@ DESCENT
 ASCENT  claim starts None
   Inner bind scheduled:
     ctx = Context { structure: Structure::Valid, claim: None }
-    exclusive(inner_handler) sees None, runs body, claim = Some(Claimed)
-    claim = Some(Claimed)
+    run_exclusive sees None, runs body, claim = Some(Claimed)
   Outer into_parent:
     structure = Valid | Invalidated after reshape
     if opt_0: post_foo gets Context { structure, claim: Some(Claimed) }
     if opt_1: post_bar same
   Outer bind (opt_2):
     ctx = Context { structure, claim: Some(Claimed) }
-    exclusive(outer_handler) sees Some(Claimed), skips body
+    run_exclusive sees Some(Claimed), skips body
 ```
 
 ### `KeyA` only

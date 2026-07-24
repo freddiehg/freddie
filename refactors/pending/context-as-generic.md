@@ -33,7 +33,7 @@ pub trait Dispatch<M: Bindings, C = ()>: Place {
 }
 
 // Post signature:
-//   fn post(t: T, node: Node<P, ()>, ctx: C) -> PostOut<P>
+//   fn post(t: T, node: Node<P, ()>, ctx: C) -> (Vec<Effect>, P)
 ```
 
 `C` is chosen by the app (or by a layer of the stack), not by `bind`. `bind` only requires whatever bounds posts need to run (`Copy`, or a small trait). No `bool` flags in the framework API.
