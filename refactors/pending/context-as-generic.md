@@ -5,9 +5,12 @@ Not done. Stub. Companion to `invalidation.md`.
 `invalidation.md` currently fixes post context as a concrete bag:
 
 ```rust
+enum Structure { Valid, Invalidated }
+enum Claim { Open, Taken }
+
 struct Context {
-    structure: Structure, // Valid | Invalidated
-    claimed: bool,
+    structure: Structure,
+    claim: Claim,
 }
 ```
 
@@ -30,26 +33,29 @@ pub trait Dispatch<M: Bindings, C = ()>: Place {
 
 // Post signature:
 //   fn post(t: T, node: Node<P, ()>, ctx: C) -> PostOut<P>
-// or by value snapshot if C: Copy
-//   fn post(t: T, node: Node<P, ()>, ctx: C) -> PostOut<P>
 ```
 
-`C` is chosen by the app (or by a layer of the stack), not by `bind`. `bind` only requires whatever bounds posts need to run (`Copy`, or a small trait).
+`C` is chosen by the app (or by a layer of the stack), not by `bind`. `bind` only requires whatever bounds posts need to run (`Copy`, or a small trait). No `bool` flags in the framework API.
 
 ## What mercury would supply
 
 ```rust
 // mercury-specific — not in bind
 #[derive(Clone, Copy)]
+pub enum Structure { Valid, Invalidated }
+
+#[derive(Clone, Copy)]
+pub enum Claim { Open, Taken }
+
+#[derive(Clone, Copy)]
 pub struct MercuryContext {
     structure: Structure,
-    claimed: bool,
+    claim: Claim,
 }
 
 impl MercuryContext {
     pub fn structure(self) -> Structure { self.structure }
-    pub fn claimed(self) -> bool { self.claimed }
-    pub fn valid(self) -> bool { matches!(self.structure, Structure::Valid) }
+    pub fn claim(self) -> Claim { self.claim }
 }
 ```
 
@@ -57,7 +63,7 @@ impl MercuryContext {
 
 ## Why generic
 
-- `structure` and `claimed` are independent; cohabiting one named type is accidental.
+- `structure` and `claim` are independent; cohabiting one named type is accidental.
 - Fallbacks, logging, or other ascent facts may need different carriers in different apps.
 - `bind` stays ignorant of mercury policy; freddie crates do not smuggle app semantics into the path machinery.
 - Default `C = ()` keeps a tree that needs no ascent facts trivial.
@@ -66,7 +72,7 @@ impl MercuryContext {
 
 - Snapshot (`C: Copy`) vs `&C` / `&mut C` for posts that update context mid-ascent.
 - Whether `structure` (field survival) is still computed by laserbeam/`into_parent` and *injected into* `C` via a trait (`C::with_structure(Structure)`), so the framework owns invalidation but not claim.
-- How `PostOut.claim` becomes a method on `C` or a separate channel when claim is app-defined.
+- How exclusive claim becomes a method on `C` or a separate channel when claim is app-defined (`C: Claimable` with `Claim` enum, not a bool).
 - Interaction with the prefactor (threaded batch only, `C = ()`).
 
 No implementation plan here. When `invalidation.md` is implemented, either keep the concrete bag as a first cut or land `C` first if the bag already feels wrong at the type boundary.
