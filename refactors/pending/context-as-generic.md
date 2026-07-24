@@ -5,11 +5,11 @@ Not done. Stub. Companion to `invalidation.md`.
 `invalidation.md` currently fixes post context as a concrete bag:
 
 ```rust
-enum Structure { Valid, Invalidated }
+enum Validity { Valid, Invalidated }
 struct Claimed;
 
 struct Context {
-    structure: Structure,
+    validity: Validity,
     claim: Option<Claimed>,
 }
 // ctx.claim() -> Option<Claimed>
@@ -36,27 +36,27 @@ pub trait Dispatch<M: Bindings, C = ()>: Place {
 //   fn post(t: T, node: Node<P, ()>, ctx: &mut C) -> (Vec<Effect>, P)
 ```
 
-`C` is chosen by the app (or by a layer of the stack), not by `bind`. Posts mutate `C` in place (claim, structure, whatever the app puts there). No parallel flags beside `C`.
+`C` is chosen by the app (or by a layer of the stack), not by `bind`. Posts mutate `C` in place (claim, validity, whatever the app puts there). No parallel flags beside `C`.
 
 ## What mercury would supply
 
 ```rust
 // mercury-specific — not in bind
 #[derive(Clone, Copy)]
-pub enum Structure { Valid, Invalidated }
+pub enum Validity { Valid, Invalidated }
 
 #[derive(Clone, Copy)]
 pub struct Claimed;
 
 #[derive(Clone, Copy)]
 pub struct MercuryContext {
-    structure: Structure,
+    validity: Validity,
     claim: Option<Claimed>,
 }
 
 impl MercuryContext {
-    pub fn structure(&self) -> Structure { self.structure }
-    pub fn set_structure(&mut self, s: Structure) { self.structure = s; }
+    pub fn validity(&self) -> Validity { self.validity }
+    pub fn set_validity(&mut self, s: Validity) { self.validity = s; }
 
     /// Try to take exclusive ownership. `Some(Claimed)` if open (now taken); `None` if already taken.
     pub fn claim(&mut self) -> Option<Claimed> {
@@ -75,14 +75,14 @@ impl MercuryContext {
 
 ## Why generic
 
-- `structure` and `claim` are independent; cohabiting one named type is accidental.
+- `validity` and `claim` are independent; cohabiting one named type is accidental.
 - Fallbacks, logging, or other ascent facts may need different carriers in different apps.
 - `bind` stays ignorant of mercury policy; freddie crates do not smuggle app semantics into the path machinery.
 - Default `C = ()` keeps a tree that needs no ascent facts trivial.
 
 ## Open
 
-- Whether `structure` (field survival) is still computed by laserbeam/`into_parent` and written into `C` via a trait (`C::set_structure`), so the framework owns invalidation timing but not claim policy.
+- Whether `validity` (field survival) is still computed by laserbeam/`into_parent` and written into `C` via a trait (`C::set_validity`), so the framework owns field-validity timing but not claim policy.
 - How exclusive try-take (`claim(&mut self) -> Option<Claimed>`) becomes a method on app-defined `C`.
 - Interaction with the prefactor (threaded batch only, `C = ()`).
 

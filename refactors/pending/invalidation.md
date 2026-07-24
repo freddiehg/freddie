@@ -2,7 +2,7 @@
 
 Not done. Standalone.
 
-Descent schedules which pre/posts/binds will run. That set is final. Ascent runs every scheduled post leaf to root; mutation is free; each post is handed a `Context` — structure of the child field plus whether an exclusive already claim this event (a small grab bag, not a pure "validity" flag). `#[bind]` is a post that reads the claim bit on that context.
+Descent schedules which pre/posts/binds will run. That set is final. Ascent runs every scheduled post leaf to root; mutation is free; each post is handed a `Context` — validity of the child field plus whether an exclusive already claim this event (a small grab bag, not a pure "validity" flag). `#[bind]` is a post that reads the claim bit on that context.
 
 ## Paths: shared down, owned up
 
@@ -51,13 +51,13 @@ fn post_foo(
     node: Node<OuterPath, ()>,
     ctx: &mut Context,
 ) -> (Vec<M::Effect>, OuterPath) {
-    match ctx.structure() {
-        Structure::Valid => {
+    match ctx.validity() {
+        Validity::Valid => {
             // node.parent.get_mut().inner is still Inner
             let _ = (hits_before, ctx.claim());
             (vec![], node.parent)
         }
-        Structure::Invalidated => (vec![], node.parent),
+        Validity::Invalidated => (vec![], node.parent),
     }
 }
 
@@ -112,15 +112,15 @@ No reshape on the descent. Whether pre may also return now-effects is open; gene
 Leaf to root. The ascent threads one **`&mut Context`**. There is no parallel claim bit beside it — claim lives on the context and is mutated in place.
 
 1. Apply any reshape scheduled for this level's child field.
-2. `ctx.set_structure(...)` for that field (Valid / Invalidated).
+2. `ctx.set_validity(...)` for that field (Valid / Invalidated).
 3. For each scheduled post, call it with owned path and `&mut ctx`; take path back from the return.
 4. Exclusive posts call `ctx.claim()` to try-take the event.
 
-A scheduled post always runs (is called). What it does with `ctx.claim()` / `ctx.structure()` is its business.
+A scheduled post always runs (is called). What it does with `ctx.claim()` / `ctx.validity()` is its business.
 
 ```rust
 #[derive(Clone, Copy)]
-enum Structure {
+enum Validity {
     /// Child field is still the scheduled type. Projections through the path are sound.
     Valid,
     /// Child field was replaced.
@@ -132,13 +132,13 @@ enum Structure {
 struct Claimed;
 
 struct Context {
-    structure: Structure,
+    validity: Validity,
     claim: Option<Claimed>,
 }
 
 impl Context {
-    fn structure(&self) -> Structure { self.structure }
-    fn set_structure(&mut self, s: Structure) { self.structure = s; }
+    fn validity(&self) -> Validity { self.validity }
+    fn set_validity(&mut self, s: Validity) { self.validity = s; }
 
     /// Try to take exclusive ownership of this event.
     /// `Some(Claimed)` if it was open (and it is now taken).
@@ -155,7 +155,7 @@ impl Context {
 }
 ```
 
-Access is flat on `Context`. Fields private. Ascent holds `&mut Context` so `claim` and `set_structure` can mutate.
+Access is flat on `Context`. Fields private. Ascent holds `&mut Context` so `claim` and `set_validity` can mutate.
 
 `claim` is not a getter. It claims. Logging / plain posts never call it. Only exclusive (`#[bind]`) does.
 
@@ -165,10 +165,10 @@ Access is flat on `Context`. Fields private. Ascent holds `&mut Context` so `cla
 framework holds:  ctx: Context   (one value for the whole ascent)
 
 at each level:
-  ctx.set_structure(Valid | Invalidated)
+  ctx.set_validity(Valid | Invalidated)
 
 each plain post:
-  (effects, path) = post(..., &mut ctx)   // may read structure; must not call claim()
+  (effects, path) = post(..., &mut ctx)   // may read validity; must not call claim()
 
 each exclusive (#[bind]):
   match ctx.claim() {
@@ -177,7 +177,7 @@ each exclusive (#[bind]):
   }
 ```
 
-Posts return `(Vec<Effect>, P)` — path threading only. Structure and claim live on `Context` and are mutated there.
+Posts return `(Vec<Effect>, P)` — path threading only. Validity and claim live on `Context` and are mutated there.
 
 ### Defaults
 
@@ -199,7 +199,7 @@ There is no third handler kind and no claim channel outside `Context`. Mutate th
 ```
 
 ```rust
-// user body — &mut Context (may read structure; must not claim unless it is exclusive):
+// user body — &mut Context (may read validity; must not claim unless it is exclusive):
 fn outer_handler(
     ev: &KeyEvent,
     node: Node<OuterPath, ()>,
@@ -240,9 +240,9 @@ fn only_if_valid<P, N>(
     f: impl FnOnce(&mut N) -> Vec<Effect>,
 ) -> impl FnOnce(Node<P, ()>, &mut Context) -> (Vec<Effect>, P) {
     move |mut node, ctx| {
-        let effects = match ctx.structure() {
-            Structure::Valid => f(project(&mut node.parent)),
-            Structure::Invalidated => Vec::new(),
+        let effects = match ctx.validity() {
+            Validity::Valid => f(project(&mut node.parent)),
+            Validity::Invalidated => Vec::new(),
         };
         (effects, node.parent)
     }
@@ -259,7 +259,7 @@ pub trait Bindings {
 }
 
 #[derive(Clone, Copy)]
-pub enum Structure {
+pub enum Validity {
     Valid,
     Invalidated,
 }
@@ -268,13 +268,13 @@ pub enum Structure {
 pub struct Claimed;
 
 pub struct Context {
-    structure: Structure,
+    validity: Validity,
     claim: Option<Claimed>,
 }
 
 impl Context {
-    pub fn structure(&self) -> Structure { self.structure }
-    pub fn set_structure(&mut self, s: Structure) { self.structure = s; }
+    pub fn validity(&self) -> Validity { self.validity }
+    pub fn set_validity(&mut self, s: Validity) { self.validity = s; }
 
     /// Try to take exclusive ownership of this event.
     /// `Some(Claimed)` if it was open (now taken). `None` if already taken.
@@ -302,9 +302,9 @@ impl<N, P, F> PathMut<N, P, F>
 where
     F: FnOnce(P, &mut Context) -> (P, Vec<Effect>),
 {
-    /// Apply reshape, set structure on ctx, run posts, return parent.
+    /// Apply reshape, set validity on ctx, run posts, return parent.
     pub fn into_parent(self, sink: &mut Vec<Effect>, ctx: &mut Context) -> P {
-        ctx.set_structure(self.classify_after_reshape());
+        ctx.set_validity(self.classify_after_reshape());
         let (parent, post_effs) = (self.on_into_parent)(self.parent, ctx);
         Extend::extend(sink, post_effs);
         parent
@@ -329,7 +329,7 @@ where
 {
     let mut effs = Vec::new();
     let mut ctx = Context {
-        structure: Structure::Valid,
+        validity: Validity::Valid,
         claim: None,
     };
     let _path = <N as Dispatch<M>>::dispatch(path, event, &mut effs, &mut ctx);
@@ -399,7 +399,7 @@ impl Dispatch<M> for Inner {
 
         if let ::core::option::Option::Some(()) = opt_0 {
             let ev = /* &KeyEvent from event */;
-            ctx.set_structure(Structure::Valid); // leaf
+            ctx.set_validity(Validity::Valid); // leaf
             let (path, out_effs) = run_exclusive(
                 path,
                 ctx,
@@ -507,7 +507,7 @@ impl Dispatch<M> for Outer {
         let inner_path =
             <Inner as ::bind::Dispatch<M>>::dispatch(inner_path, event, effs, ctx);
 
-        // ----- ascent: reshape + set_structure + pre_post posts -----
+        // ----- ascent: reshape + set_validity + pre_post posts -----
         let mut path = inner_path.into_parent(effs, ctx);
 
         // ----- bind opt_2: exclusive post -----
@@ -536,12 +536,12 @@ DESCENT
   opt_0? opt_1? opt_2?
   move path into inner_path
 
-ASCENT  one &mut ctx (structure Valid, claim None)
+ASCENT  one &mut ctx (validity Valid, claim None)
   Inner bind:
-    ctx.set_structure(Valid)
+    ctx.set_validity(Valid)
     run_exclusive: ctx.claim() → Some → body; None → skip
   Outer into_parent:
-    ctx.set_structure(Valid|Invalidated)
+    ctx.set_validity(Valid|Invalidated)
     post_foo / post_bar get &mut ctx (claim already Some)
   Outer bind:
     run_exclusive: ctx.claim() → None → skip
@@ -630,7 +630,7 @@ All current sites pass `no_post` (returns parent + empty effects). Behavior-iden
 
 ### P3 — full ascent + one `&mut Context` (still no user posts)
 
-Drop `Break`. Every level returns its path. Thread `ctx: &mut Context` (starts structure Valid, claim None).
+Drop `Break`. Every level returns its path. Thread `ctx: &mut Context` (starts validity Valid, claim None).
 
 - child always returns path
 - exclusive calls `ctx.claim()`: `Some` → run body; `None` → already taken, skip
@@ -644,7 +644,7 @@ Generate rephrases `#[bind]` through `run_exclusive` / `exclusive` (`ctx.claim()
 ### Feature steps (after P0–P4)
 
 1. `#[post(trig => body)]` — schedule `opt_N = Some(())`; run on ascent with owned path + `&mut Context`.
-2. `Structure` Valid/Invalidated — `ctx.set_structure` in `into_parent` after reshape.
+2. `Validity` Valid/Invalidated — `ctx.set_validity` in `into_parent` after reshape.
 3. `exclusive` + `#[bind]` as sugar — `ctx.claim()` at the call site.
 4. `#[pre]` / `#[pre_post]` — carriage; immutable path on descent.
 5. mercury rearm as post; drop `handle` discriminant rearm; timed-layer wrapper when ready.
@@ -663,11 +663,11 @@ Generate rephrases `#[bind]` through `run_exclusive` / `exclusive` (`ctx.claim()
 2. Ascent runs every scheduled post; mutation does not cancel them.
 3. Pre: shared path. Post: owned path in/out as `(Vec<Effect>, P)`.
 4. Ascent threads one `&mut Context`. Posts take `&mut Context`. No parallel claim flag.
-5. `ctx.claim(&mut self) -> Option<Claimed>` (try-take), `ctx.structure()`, `set_structure` (fields private).
+5. `ctx.claim(&mut self) -> Option<Claimed>` (try-take), `ctx.validity()`, `set_validity` (fields private).
 6. Logging never calls `claim()`. Only exclusive (`#[bind]`) does.
 7. no pre → `()`. no post → `drop`.
 8. `#[bind]` = `#[post]` + `run_exclusive` (`ctx.claim()` try-take).
-9. Reshape of a field applied in that field's `into_parent` before posts at that level (`set_structure` first).
+9. Reshape of a field applied in that field's `into_parent` before posts at that level (`set_validity` first).
 
 ## Tests
 
@@ -685,6 +685,6 @@ Generate rephrases `#[bind]` through `run_exclusive` / `exclusive` (`ctx.claim()
 - Whether `pre` may also push now-effects on the way down.
 - How a deep bind schedules a reshape of a field it does not own (carrier applied in owner's `into_parent`). Until then, binds that `ascend_mut` + `set_layer` and path return do not compose cleanly.
 - Sugar so user posts can write `-> Vec<Effect>` while the derive still threads path.
-- Product nodes: one Context (structure bit) per live child field.
+- Product nodes: one Context (validity bit) per live child field.
 - Fallbacks that must not run if claim is `Some` (e.g. root `AnyKey` passthrough). Closer to `Option<Claimed>` than to structure on `Context`. Deferred.
-- Third structure state: deferred.
+- Third validity state: deferred.
