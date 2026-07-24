@@ -396,7 +396,9 @@ function AreYouReady() {
     <section>
       <div className="container">
         <div className="kicker">It’s time</div>
-        <h2 className={styles.centeredHeading}>Are you ready, Freddie?</h2>
+        <h2 className={styles.centeredHeading}>
+          Are&nbsp;you&nbsp;ready, Freddie?
+        </h2>
         <div className={styles.ctaContainer}>
           <Link
             className="button button--primary button--lg"
