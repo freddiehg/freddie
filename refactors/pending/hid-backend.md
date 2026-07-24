@@ -2,11 +2,11 @@
 
 A new crate, `freddie_keyboard_hid`, grabs the physical keyboard by seizing it at the IOKit HID level and emits through Karabiner's virtual HID device. mercury keeps depending on `freddie_keyboard` (CGEventTap); figaro depends on `freddie_keyboard_hid`. `freddie_keyboard` is not touched and not removed.
 
-The two crates are not held to one interface. mercury and figaro are each hand-written programs, not two consumers of a pluggable backend, so each backend's surface is honest to what that backend is. They share the `freddie_keys` vocabulary and an `Emitter` that means the same thing on both, and they read alike where they genuinely are alike. Where they are not, they differ: the HID `intercept` observer takes `Fn(KeyEvent)` with no return, because there is no tap chain to return a key into, while CGEventTap's takes `Fn(KeyEvent) -> Option<KeyEvent>` because its tap really can pass, replace, or drop by return. Forcing HID to carry a return it ignores would be a lie in the signature.
+The two crates are not held to one interface. mercury and figaro are each hand-written programs, not two consumers of a pluggable backend, so each backend's surface is honest to what that backend is. They share the `freddie_keys` vocabulary and an `Emitter` that means the same thing on both, and they read alike where they genuinely are alike. Where they are not, they differ, down to the names: HID's `grab(on_key: Fn(KeyEvent))` observes with no return, because there is no tap chain to return a key into, while `freddie_keyboard::intercept` takes `Fn(KeyEvent) -> Option<KeyEvent>` because its tap really can pass, replace, or drop by return. Sharing the `intercept`/`Interceptor` names would imply a swap that is not there; HID grabs, it does not intercept a tap.
 
 This doc is the map. The concrete work lives in four others:
 
-- `hid-session-backend.md` — `freddie_keyboard_hid`, the new crate with the interface: `intercept`/`Interceptor`/`Emitter` implemented over the daemon socket. No unsafe. It defines `freddie_hid_wire`, the session↔daemon protocol. This is the first, minimal change.
+- `hid-session-backend.md` — `freddie_keyboard_hid`, the new crate with the grab: `grab`/`Grab`/`Emitter` over the daemon socket. No unsafe. It defines `freddie_hid_wire`, the session↔daemon protocol. This is the first, minimal change.
 - `hid-virtual-device-client.md` — `freddie_virtual_hid`, the pure-Rust client to Karabiner's virtual-HID daemon (output). No unsafe, no C++.
 - `hid-seize.md` — `freddie_hid_sys`, the leaf crate that seizes and reads the physical keyboard (input). The only place unsafe lives.
 - `hidd.md` — `freddie_hidd`, the root LaunchDaemon that wires seize to virtual device and serves the session socket. Karabiner's own `Karabiner-VirtualHIDDevice-Daemon` is not auto-launched once Karabiner-Elements is gone, so the install carries a LaunchDaemon plist that keeps it running.
@@ -38,11 +38,11 @@ By dependency. mercury stays on `freddie_keyboard`; figaro names the new crate:
 freddie_keyboard_hid = { path = "../freddie/crates/freddie_keyboard_hid" }
 ```
 
-Both crates re-export `Key`/`KeyEvent`/`PressType`/`ModifierFlags` from `freddie_keys` and expose an `Emitter`, a `CaptureError`, and an `EmitError` that mean the same thing, so figaro's emit path and vocabulary read like mercury's. What differs is the grab: `freddie_keyboard_hid::intercept` observes with `Fn(KeyEvent)`, no return.
+Both crates re-export `Key`/`KeyEvent`/`PressType`/`ModifierFlags` from `freddie_keys` and expose an `Emitter` and an `EmitError` that mean the same thing, so figaro's emit path and vocabulary read like mercury's. The grab differs in name and signature: `freddie_keyboard_hid::grab` where `freddie_keyboard` has `intercept`, `Grab` where it has `Interceptor`, `GrabError` where it has `CaptureError`.
 
 ## Observe-plus-emit
 
-The HID grab is observe-plus-emit and nothing else. `intercept(on_key)` calls `on_key` with each physical key and the session drives all output through the `Emitter`; there is no return value, because there is no chain to return a key into. This is what figaro is written against, and it is honest about the one path HID has.
+The HID grab is observe-plus-emit and nothing else. `grab(on_key)` calls `on_key` with each physical key and the session drives all output through the `Emitter`; there is no return value, because there is no chain to return a key into. This is what figaro is written against, and it is honest about the one path HID has.
 
 `Key::Raw(u16)` stays the one non-portable value (per `freddie-keyboard-cross-platform.md`): on CGEventTap it is a `CGKeyCode`, on HID it is a Keyboard/Keypad usage id. A key named on one backend can be `Raw` on the other; that is the existing accepted cost of an abstract `Key`.
 
@@ -59,7 +59,7 @@ These are settled; the component docs assume them.
 
 ## New crates
 
-- `freddie_keyboard_hid` — safe Rust, the interface crate: `intercept`/`Interceptor`/`Emitter` over the daemon socket. What figaro depends on.
+- `freddie_keyboard_hid` — safe Rust, the grab crate: `grab`/`Grab`/`Emitter` over the daemon socket. What figaro depends on.
 - `freddie_hid_wire` — safe Rust, the session↔daemon frame types over `freddie_keys`. Shared by `freddie_keyboard_hid` and `freddie_hidd`.
 - `freddie_virtual_hid` — safe Rust, the Karabiner daemon client.
 - `freddie_hid_sys` — leaf, opts out of `forbid(unsafe_code)`, wraps `io-kit-sys`. Seize and read.
@@ -69,7 +69,7 @@ These are settled; the component docs assume them.
 
 The first change is minimal and interface-first: stand up `freddie_keyboard_hid` with the interface. The heavy pieces follow and make it live.
 
-1. `freddie_keyboard_hid` and `freddie_hid_wire` (`hid-session-backend.md`), plus the `freddie_keys` serde prefactor. The grab crate: `intercept(on_key: Fn(KeyEvent))` connects to the daemon socket, `Emitter` sends over it. No unsafe. It compiles and figaro can depend on it, with the emitter's modifier-reconciliation unit-tested; it does nothing end to end until the daemon lands in step 4. This is the small, self-contained first step.
+1. `freddie_keyboard_hid` and `freddie_hid_wire` (`hid-session-backend.md`), plus the `freddie_keys` serde prefactor. The grab crate: `grab(on_key: Fn(KeyEvent))` connects to the daemon socket, `Emitter` sends over it. No unsafe. It compiles and figaro can depend on it, with the emitter's modifier-reconciliation unit-tested; it does nothing end to end until the daemon lands in step 4. This is the small, self-contained first step.
 2. `freddie_virtual_hid` (`hid-virtual-device-client.md`). Demo: a test binary types a string through the virtual device. Needs the Karabiner driver installed and its daemon running; needs no seize.
 3. `freddie_hid_sys` (`hid-seize.md`). Demo: a root test binary seizes the keyboard and logs every key, and the keys stop reaching the system while it runs.
 4. `freddie_hidd` (`hidd.md`), combining 2 and 3, plus the session socket, the LaunchDaemon plists, and the install verb. Demo: with no session client attached, the daemon echoes (posts what it reads) to prove the input-to-output loop end to end; then `freddie_keyboard_hid` from step 1 drives it and a remap shows up in a password field, which CGEventTap cannot do.

@@ -1,6 +1,6 @@
 # freddie_keyboard_hid: the grab crate
 
-The new crate figaro depends on. It grabs the keyboard through `freddie_hidd`'s socket: `intercept`'s reader turns each `Uplink::Input` into an `on_key` call, and the `Emitter` turns `emit`/`tap` into `Downlink::Emit`s. This is the first, minimal change. It compiles and figaro can depend on it with the emitter logic unit-tested; it does nothing end to end until `freddie_hidd` exists (`hidd.md`).
+The new crate figaro depends on. It grabs the keyboard through `freddie_hidd`'s socket: `grab`'s reader turns each `Uplink::Input` into an `on_key` call, and the `Emitter` turns `emit`/`tap` into `Downlink::Emit`s. This is the first, minimal change. It compiles and figaro can depend on it with the emitter logic unit-tested; it does nothing end to end until `freddie_hidd` exists (`hidd.md`).
 
 The grab is observe-plus-emit: `on_key` is `Fn(KeyEvent)` with no return, because HID has no chain to return a key into. This is not `freddie_keyboard`'s `intercept` signature (its tap can pass, replace, or drop by return), and it is not forced to be. figaro is written against this crate, mercury against `freddie_keyboard`; they share the `freddie_keys` vocabulary and an `Emitter` that means the same thing, and diverge where the backends genuinely differ. figaro is otherwise the mercury shape: its model, event loop, effect loop, `freddie_app_nav`, and menu bar are untouched.
 
@@ -31,7 +31,7 @@ Under `forbid(unsafe_code)`: it is a socket client. It re-exports the vocabulary
 pub use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 
 /// The keyboard could not be grabbed. On HID this means `freddie_hidd` is unreachable.
-pub struct CaptureError;   // same shape as freddie_keyboard::CaptureError
+pub struct GrabError;
 
 /// A key could not be emitted.
 pub enum EmitError { Unmappable(Key), Post }
@@ -75,7 +75,7 @@ const MAX_FRAME_BYTES: usize = 64 * 1024;
 
 Prefactor within this change: `freddie_keys::{Key, PressType, ModifierFlags, KeyEvent}` derive `Serialize`/`Deserialize`. They are plain data; the derives are additive and serve both the wire and, later, structured logging.
 
-## intercept
+## grab
 
 ```rust
 /// Grab the keyboard through `freddie_hidd`. `on_key` runs on the reader thread for each
@@ -83,43 +83,43 @@ Prefactor within this change: `freddie_keys::{Key, PressType, ModifierFlags, Key
 ///
 /// # Errors
 ///
-/// [`CaptureError`] if the daemon socket cannot be reached: `freddie_hidd` is not running,
+/// [`GrabError`] if the daemon socket cannot be reached: `freddie_hidd` is not running,
 /// or this user is not the one it was installed for.
-pub fn intercept(
+pub fn grab(
     on_key: impl Fn(KeyEvent) + Send + 'static,
-) -> Result<(Interceptor, Emitter), CaptureError> {
-    let sock = UnixStream::connect(daemon_socket_path()).map_err(|_| CaptureError)?;
-    let writer = sock.try_clone().map_err(|_| CaptureError)?;
+) -> Result<(Grab, Emitter), GrabError> {
+    let sock = UnixStream::connect(daemon_socket_path()).map_err(|_| GrabError)?;
+    let writer = sock.try_clone().map_err(|_| GrabError)?;
 
     let reader = std::thread::spawn(move || {
         let mut sock = sock;
         loop {
             match freddie_hid_wire::read_msg::<Uplink>(&mut sock) {
                 Ok(Uplink::Input(event)) => on_key(event),
-                Err(_) => break, // daemon closed the socket; the interceptor is done
+                Err(_) => break, // daemon closed the socket; the grab is done
             }
         }
     });
 
-    let interceptor = Interceptor { _reader: ReaderThread::new(reader) };
+    let grab = Grab { _reader: ReaderThread::new(reader) };
     let emitter = Emitter { writer: Arc::new(Mutex::new(EmitState::new(writer))) };
-    Ok((interceptor, emitter))
+    Ok((grab, emitter))
 }
 ```
 
-`on_key` takes no return: HID has no chain to return a key into, so a key the model passes is one it re-emits through the `Emitter`. This is the honest shape, not `freddie_keyboard`'s returning `intercept` with the return ignored.
+`on_key` takes no return: HID has no chain to return a key into, so a key the model passes is one it re-emits through the `Emitter`. This is the honest shape, not a copy of `freddie_keyboard::intercept` with the return ignored.
 
-## Interceptor
+## Grab
 
 ```rust
 /// An active grab over the HID daemon. Dropping it closes the socket, which ends the reader
 /// thread and tells the daemon to revert to passthrough.
-pub struct Interceptor {
+pub struct Grab {
     _reader: ReaderThread,
 }
 ```
 
-`ReaderThread` shuts the socket down on drop (`UnixStream::shutdown`) so the blocking `read_msg` returns and the thread joins under a bounded timeout, the shape `TapThread` uses in `sys/macos.rs`. The daemon sees the disconnect and resumes passing keys through, so dropping the interceptor leaves a live keyboard.
+`ReaderThread` shuts the socket down on drop (`UnixStream::shutdown`) so the blocking `read_msg` returns and the thread joins under a bounded timeout, the shape `TapThread` uses in `sys/macos.rs`. The daemon sees the disconnect and resumes passing keys through, so dropping the grab leaves a live keyboard.
 
 ## Emitter
 
@@ -207,7 +207,7 @@ Two limits stated so they are not surprises:
 
 ## Errors
 
-`CaptureError` and `EmitError` are this crate's own, defined above to match `freddie_keyboard`'s. `CaptureError` from `intercept` means the daemon is unreachable; `EmitError::Post` from a send means the socket died mid-run (the daemon exited), which the effect loop logs exactly as it logs a CGEventTap post failure.
+`GrabError` and `EmitError` are this crate's own. `GrabError` from `grab` means the daemon is unreachable; `EmitError::Post` from a send means the socket died mid-run (the daemon exited), which the effect loop logs exactly as it logs a CGEventTap post failure.
 
 ## Tests
 
