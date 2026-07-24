@@ -45,66 +45,15 @@ pub enum ReturnHomeLayers {
 Mercury ─▶ Layer ─▶ AndReturnHome ─▶ ReturnHomeLayers ─▶ NavLayer | ResizeLayer | AppLayer | SiteLayer
 ```
 
-`AndReturnHome` is a concrete node the existing derive handles — no generics, no macro changes. It binds the firing once; the four leaves lose their timer field and firing entirely; and `rearm_timeout` collapses to one arm. The shared exit keys (`escape`, `o`, `t`) stay on the leaves for now; lifting them onto the wrapper is a follow-up, as is grouping `Home`/`Typing`.
+`AndReturnHome` is a concrete node the existing derive handles — no generics. It binds the firing once and resets the timer with a co-fire bind; the four leaves lose their timer field and firing entirely; and `handle` sheds its rearm block. The one thing it needs that mercury does not have yet is co-fire dispatch itself (the Prerequisite). The shared exit keys (`escape`, `o`, `t`) stay on the leaves for now; lifting them onto the wrapper is a follow-up, as is grouping `Home`/`Typing`.
 
-## Change 1: name the rearm policy (prefactor)
+## Prerequisite
 
-The rearm-on-activity lives inline in `Mercury::handle`, comparing the layer discriminant before and after dispatch. Extract it into a named `Mercury::rearm_after` and a `Layer::activity_token`, so the policy sits on the model instead of in the driver, and so Change 2 refines one method rather than the dispatch loop. Behavior is identical; this ships on the current layers.
+The rearm-on-activity is a co-fire bind on the wrapper, so co-fire dispatch (`co-firing-binds.md`) has to land first. That is why this is sequenced after it. The payoff: `handle` sheds the rearm entirely — no before/after discriminant check, no `rearm_after`, no `Layer::rearm_timeout` — because the co-fire does the resetting.
 
-`crates/mercury/src/state/mod.rs`, `handle` before:
+## The change
 
-```rust
-pub fn handle(&mut self, event: &MercuryEvent) -> Option<Vec<MercuryEffect>> {
-    let before = std::mem::discriminant(&self.layer);
-    let mut effects = bind::dispatch::<MercuryStruct, Self>(self, event)?;
-    if matches!(event, MercuryEvent::Key(_))
-        && std::mem::discriminant(&self.layer) == before
-        && let Some(reset) = self.layer.rearm_timeout()
-    {
-        effects.push(reset);
-    }
-    Some(effects)
-}
-```
-
-after:
-
-```rust
-pub fn handle(&mut self, event: &MercuryEvent) -> Option<Vec<MercuryEffect>> {
-    let before = self.layer.activity_token();
-    let mut effects = bind::dispatch::<MercuryStruct, Self>(self, event)?;
-    effects.extend(self.rearm_after(event, before));
-    Some(effects)
-}
-
-/// Reset the active layer's return-home timer when `event` was a keypress that kept you in the same
-/// layer. A transition already armed a fresh timer and changes `activity_token`, so this never
-/// fires on one. The one place the rearm-on-activity policy lives.
-#[must_use]
-fn rearm_after(&mut self, event: &MercuryEvent, before: ActivityToken) -> Option<MercuryEffect> {
-    (matches!(event, MercuryEvent::Key(_)) && self.layer.activity_token() == before)
-        .then(|| self.layer.rearm_timeout())
-        .flatten()
-}
-```
-
-Add `activity_token` to `impl Layer`. On the current flat enum every variant is distinct, so the token is just the discriminant; Change 2 gives it the nested arm.
-
-```rust
-/// A value equal across a keypress exactly when the same layer is still active. `rearm_after`
-/// rearms only when it is unchanged.
-fn activity_token(&self) -> ActivityToken {
-    std::mem::discriminant(self)
-}
-```
-
-```rust
-type ActivityToken = std::mem::Discriminant<Layer>;
-```
-
-## Change 2: the wrapper
-
-The consequential change, atomic: the tree restructure, the leaf reparenting, the constructors, the handlers, `activity_token`, and the test assertions move together, because the old flat `Layer` variants disappear. Behavior is unchanged.
+Atomic: the tree restructure, the leaf reparenting, the constructors, the handlers, `handle`, and the test assertions move together, because the old flat `Layer` variants disappear. Behavior is unchanged but for the extra work the co-fire rearm does on the keys that leave (a fresh timer that self-cancels; see `co-firing-binds.md`).
 
 ### The new module
 
@@ -116,21 +65,23 @@ use freddie::TimerGuard;
 
 #[allow(clippy::wildcard_imports)]
 use crate::handlers::*;
-use crate::{MercuryEffect, MercuryStruct};
+use crate::{AnyKey, MercuryEffect, MercuryStruct};
 
 use super::{AppLayer, LayerPath, NavLayer, ResizeLayer, SiteLayer, arm_return_home};
 
 /// The layers that return home after [`RETURN_TO_HOME_TIMEOUT`](super::RETURN_TO_HOME_TIMEOUT) of
-/// idle, wrapped in the one timer they share. `AndReturnHome` owns the guard and the firing; its
-/// [`layers`](Self::layers) is which such layer is active. Home and typing are not here: home is the
-/// destination the timer returns to, and typing is passthrough, so neither carries a timer.
+/// idle, wrapped in the one timer they share. `AndReturnHome` owns the guard, the firing that goes
+/// home, and the co-fire that resets the timer on any key reaching it; its [`layers`](Self::layers)
+/// is which such layer is active. Home and typing are not here: home is the destination the timer
+/// returns to, and typing is passthrough, so neither carries a timer.
 #[derive(Bind, Debug)]
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
-#[bind(
-    // Only this timer: a firing from a layer already left matches nothing.
-    |path| path.get().guard.trigger() => to_home,
-)]
+// The firing goes home (exclusive, post-descend); a key reaching the wrapper resets the timer
+// (co-fire, pre-descend). Only this node's own timer: a firing from a layer already left matches
+// nothing.
+#[bind(|path| path.get().guard.trigger() => to_home)]
+#[cofire_bind(AnyKey => rearm)]
 pub struct AndReturnHome {
     #[resolve_into]
     layers: ReturnHomeLayers,
@@ -263,35 +214,37 @@ pub fn overlay_content(&self, foreground: &Foreground) -> &'static str {
 }
 ```
 
-`Layer::is_passthrough` is unchanged: `matches!(self, Self::Typing(_))`.
+`Layer::is_passthrough` is unchanged: `matches!(self, Self::Typing(_))`. `Layer::rearm_timeout` is deleted — the co-fire rearm on `AndReturnHome` replaces it.
 
-`Layer::rearm_timeout`, before (the four-arm reach-in); after, one arm:
+`Mercury::handle` sheds the rearm block it grew for the earlier bug fix and goes back to a bare dispatch, because the co-fire does the resetting. Before:
 
 ```rust
-fn rearm_timeout(&mut self) -> Option<MercuryEffect> {
-    match self {
-        Self::ReturnHome(w) => Some(w.rearm()),
-        Self::Home(_) | Self::Typing(_) => None,
+pub fn handle(&mut self, event: &MercuryEvent) -> Option<Vec<MercuryEffect>> {
+    let before = std::mem::discriminant(&self.layer);
+    let mut effects = bind::dispatch::<MercuryStruct, Self>(self, event)?;
+    if matches!(event, MercuryEvent::Key(_))
+        && std::mem::discriminant(&self.layer) == before
+        && let Some(reset) = self.layer.rearm_timeout()
+    {
+        effects.push(reset);
     }
+    Some(effects)
 }
 ```
 
-`Layer::activity_token` (from Change 1) gains the nested arm, and `ActivityToken` gains the second discriminant, so a move between two return-home layers (in-app `n` into nav) reads as a change and does not double-arm the fresh timer that transition already set:
+after (the top-level `bind::dispatch` signature is unchanged by co-fire dispatch; it builds the accumulator and returns it, per `co-firing-binds.md`):
 
 ```rust
-type ActivityToken = (
-    std::mem::Discriminant<Layer>,
-    Option<std::mem::Discriminant<ReturnHomeLayers>>,
-);
+pub fn handle(&mut self, event: &MercuryEvent) -> Option<Vec<MercuryEffect>> {
+    bind::dispatch::<MercuryStruct, Self>(self, event)
+}
+```
 
-fn activity_token(&self) -> ActivityToken {
-    (
-        std::mem::discriminant(self),
-        match self {
-            Self::ReturnHome(w) => Some(std::mem::discriminant(w.layers())),
-            _ => None,
-        },
-    )
+The co-fire handler the bind names lives with the other handlers; it takes the co-fire `Node<&mut P, ()>` shape (`co-firing-binds.md`) and calls the wrapper's `rearm`:
+
+```rust
+pub(crate) fn rearm<'a>(_ev: &KeyEvent, node: Node<&mut AndReturnHomePath<'a>, ()>) -> MercuryEffect {
+    node.parent.get_mut().rearm()
 }
 ```
 
@@ -440,4 +393,4 @@ Two changes this doc deliberately leaves out, each its own later doc:
 
 ## Note
 
-This needs no derive or dispatch work: `AndReturnHome` is a concrete named node with a `#[resolve_into]` field, which the existing derive handles. The positional-`#[resolve_into]` capability (`positional-resolve-into.md`, landed) is not exercised by this shape — a two-field wrapper is a named struct, not a tuple. And the rearm stays a root step (`rearm_after`), not a bind, for the reasons in `co-firing-binds.md`.
+`AndReturnHome` is a concrete named node with a `#[resolve_into]` field, which the existing derive handles — no generics, no new node machinery. Its one dependency is co-fire dispatch (`co-firing-binds.md`), for the `#[cofire_bind]` rearm; that is the Prerequisite and the reason for the sequencing. The positional-`#[resolve_into]` capability (`positional-resolve-into.md`, landed) is not exercised by this shape — a two-field wrapper is a named struct, not a tuple.
