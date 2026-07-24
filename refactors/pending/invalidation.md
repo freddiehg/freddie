@@ -240,7 +240,7 @@ fn noop_pre<E, P, D>(_ev: &E, _node: Node<&P, D>) {}
 | `#[post(t => post)]` | `(noop_pre, post)` | `opt = Some(noop_pre(…))` i.e. `Some(())` | `post(node, ctx)` — **not** `post((), node, ctx)` |
 | `#[bind(t => h)]` | `(noop_pre, exclusive(h))` | same as post | `run_exclusive` + `h(ev, node, ctx)` |
 
-No `#[pre]` alone / `noop_post`. User posts never take a dummy `()` to drop. `noop_pre`'s `()` is only the schedule `Some`.
+No `#[pre]` alone. User posts never take a dummy `()` to drop. `noop_pre`'s `()` is only the schedule `Some`.
 
 Several attrs on one node: `opt_0`, `opt_1`, … (indexed; each pair has its own concrete pre-return type), one `on_into_parent` closure.
 
@@ -701,7 +701,7 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 6. Invalidation is `invalidation_depth`: `invalidate(d)` / `step_up`; `validity()` derived. Not a binary flag overwritten per field.
 7. Logging never calls `claim()`. Only exclusive does.
 8. Every pre/post attr is a pre_post pair. Missing pre is well-known `noop_pre` (macro drops it in).
-9. No `#[pre]` alone. Pre without a user post has no job until (if ever) pre may emit now-effects.
+9. No `#[pre]` alone. A pre exists only as the first half of `#[pre_post]`.
 10. User posts never take a dummy `()` to drop; `#[post]` bodies are `(node, ctx)`.
 11. `#[bind]` = `(noop_pre, exclusive(h))` + event in the body.
 12. Generate stays thin: schedule + call helpers. Bookkeeping is not expanded per node.
@@ -721,7 +721,7 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 
 ## Open
 
-- Whether `pre` may also push now-effects on the way down — if yes, that is the first time `#[pre]` alone / a `noop_post` half would earn a place.
+- Whether `pre` may also push now-effects on the way down.
 - Reshape carrier: how a deep bind schedules a field replace at the owner; path return after today's `ascend_mut`+`set_layer`.
 - Exact rule for `d` in `invalidate(d)` (hops leaf→owner vs 1 at apply site, max with concurrent kills).
 - Sugar so user posts can write `-> Vec<Effect>` while the derive still threads path.
