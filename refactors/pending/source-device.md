@@ -473,18 +473,19 @@ Handlers for `OnDevice` receive `&DeviceKeyed<KeyEvent, D>`; bare keys still rec
 
 ```rust
 // categorize returns DeviceClass (= D)
-enum MercuryEvent {
-    Key(DeviceKeyed<KeyEvent, DeviceClass>),
+// figaro names the event (not MercuryEvent::Key):
+enum FigaroEvent {
+    KeyAndDevice(DeviceKeyed<KeyEvent, DeviceClass>),
     Foreground(...),
 }
 
 // TryFrom projects .key for bare Key/KeyPress; full DeviceKeyed for OnDevice
-// MercuryTrigger gains OnDevice(OnDevice<KeyPress, DeviceClass>) etc. From impls
+// FigaroTrigger gains OnDevice(OnDevice<KeyPress, DeviceClass>) etc. From impls
 
 intercept_with_source(
     categorize, // -> DeviceClass
     move |(key, device)| {
-        let _ = event_tx.send(MercuryEvent::Key(DeviceKeyed { key, device }));
+        let _ = event_tx.send(FigaroEvent::KeyAndDevice(DeviceKeyed { key, device }));
         None
     },
 );
@@ -494,7 +495,7 @@ Full figaro bind policy (which keys are desktop-only, tiling, …) stays in `dev
 
 ## Hand-off to figaro
 
-This doc ends at: `(KeyEvent, T)` from the tap, plus `DeviceKeyed` / `OnDevice` / `on_device` in `freddie_keys`. Figaro supplies `T = DeviceClass` and wires the model — `device-conditioned-keymaps.md`.
+This doc ends at: `(KeyEvent, T)` from the tap, plus `DeviceKeyed` / `OnDevice` / `on_device` in `freddie_keys`. Figaro supplies `T = DeviceClass` and wires the model as `FigaroEvent::KeyAndDevice` — `device-conditioned-keymaps.md`.
 
 ```rust
 // figaro (summary)
@@ -507,7 +508,7 @@ intercept_with_source(
         Some(Ok(_)) => DeviceClass::Other,
     },
     |(key, device)| {
-        let _ = event_tx.send(MercuryEvent::Key(DeviceKeyed { key, device }));
+        let _ = event_tx.send(FigaroEvent::KeyAndDevice(DeviceKeyed { key, device }));
         None
     },
 );
