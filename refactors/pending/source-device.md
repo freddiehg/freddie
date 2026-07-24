@@ -115,11 +115,14 @@ pub fn source_of(event: &CGEvent) -> Option<SourceId> {
 
 /// Resolved identity of a source. Fields come off the service the id names, or the nearest
 /// ancestor that carries them (some live on the parent `IOHIDDevice`).
-#[derive(Clone, Debug)]
+///
+/// `product` is interned (`&'static str`): `Copy`, free to hand across the channel, and safe to
+/// keep on a cached `DeviceInfo` for the process lifetime. See `intern_product`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct DeviceInfo {
     pub vendor_id: u16,
     pub product_id: u16,
-    pub product: String,
+    pub product: &'static str,
     pub built_in: bool,
 }
 
@@ -138,7 +141,7 @@ pub fn resolve(id: SourceId) -> Option<DeviceInfo> {
     let info = DeviceInfo {
         vendor_id: prop_u32(service, "VendorID").unwrap_or(0) as u16,
         product_id: prop_u32(service, "ProductID").unwrap_or(0) as u16,
-        product: prop_string(service, "Product").unwrap_or_default(),
+        product: intern_product(prop_string(service, "Product").unwrap_or_default()),
         built_in: prop_bool(service, "Built-In").unwrap_or(false),
     };
     // SAFETY: release the +1 service.
@@ -147,6 +150,18 @@ pub fn resolve(id: SourceId) -> Option<DeviceInfo> {
         IOObjectRelease(service);
     }
     Some(info)
+}
+
+/// Process-lifetime intern of a product name. Product strings are a closed set per machine
+/// (a handful of keyboards); leaking one copy per distinct name (or per resolve without a
+/// content-keyed pool) is the cost of `&'static str` without a shared mutable intern table.
+/// Empty input is `""` (no leak). Not `Arc`/`Mutex`/`static` mut: a pure leak of an owned
+/// `String` that will never be freed.
+fn intern_product(s: String) -> &'static str {
+    if s.is_empty() {
+        return "";
+    }
+    Box::leak(s.into_boxed_str())
 }
 
 /// Walk `entry` and its parents on the service plane until `key` is present with the expected
@@ -296,11 +311,11 @@ pub fn intercept_with_source(
     let mut cache: HashMap<SourceId, DeviceInfo> = HashMap::new();
     run_tap(move |input, event| {
         let device = source_of(event).and_then(|id| {
-            if let Some(cached) = cache.get(&id) {
-                return Some(cached.clone());
+            if let Some(&cached) = cache.get(&id) {
+                return Some(cached); // Copy
             }
-            let info = resolve(id)?;
-            cache.insert(id, info.clone());
+            let info = resolve(id)?; // interns product once per SourceId (cache miss)
+            cache.insert(id, info);
             Some(info)
         });
         on_key((input, device))
@@ -319,9 +334,9 @@ fn run_tap(
 }
 ```
 
-The cache is a plain `HashMap` local to the tap-thread closure. It is not `Arc`/`Mutex` and is not shared across threads: only the tap thread mutates it.
+The cache is a plain `HashMap` local to the tap-thread closure. It is not `Arc`/`Mutex` and is not shared across threads: only the tap thread mutates it. `DeviceInfo` is `Copy` (`product: &'static str`), so a cache hit is a load, not a `String` clone, and the value is free to send to the worker.
 
-`intercept` never calls `source_of` or `resolve`. `intercept_with_source` does one registry walk on first sight of a `SourceId` and a map hit thereafter.
+`intercept` never calls `source_of` or `resolve`. `intercept_with_source` does one registry walk (and at most one product intern) on first sight of a `SourceId` and a map hit thereafter.
 
 ### Re-exports and deps
 
