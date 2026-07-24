@@ -265,7 +265,7 @@ fn with_prop<T>(
 
 `KeyEvent` and `freddie_keys` do not change. `freddie_keyboard` exposes two entry points over one internal tap. Only code that holds the `CGEvent` can read the source, so resolve and categorize live here.
 
-Per key, the hot path is: `source_of` → cache lookup by `SourceId` → hand `T` to `on_key`. On a miss: `resolve` → `categorize(Some(Ok/Err(...)))` → store `T` → hand `T` to `on_key`. No source id: `categorize(None)` once. Categorize may be expensive; it runs once per `SourceId` and once for the no-source case.
+Per key, the hot path is: `source_of` → cache lookup by `SourceId` → hand `T` to `on_key`. On a miss: `resolve` → `categorize(Some(Ok/Err(...)))` → store `T` → hand `T` to `on_key`. No source id: `categorize(None)` at the match arm (no cache; synthetic has no id to key). Categorize may be expensive only on the per-`SourceId` miss path.
 
 ```rust
 // freddie_keyboard, macOS. mercury uses intercept; figaro uses intercept_with_source.
