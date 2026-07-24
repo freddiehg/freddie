@@ -15,7 +15,7 @@ IOHIDEventRef CGEventCopyIOHIDEvent(CGEventRef);   // CoreGraphics, private; NUL
 uint64_t      IOHIDEventGetSenderID(IOHIDEventRef); // IOKit SPI; the registry entry id of the source HID service
 ```
 
-`senderID` is an IOKit registry entry id. `IORegistryEntryIDMatching(senderID)` → `IOServiceGetMatchingService` → walk parents to the `IOHIDDevice` → read `VendorID`, `ProductID`, `Product`, `Built-In`.
+`senderID` is an IOKit registry entry id. `IORegistryEntryIDMatching(senderID)` → `IOServiceGetMatchingService` → walk parents to the `IOHIDDevice` → read `VendorID`, `ProductID`, `Built-In`.
 
 Injected and software-synthesized events (untagged posts from other apps) have no HID backing: `CGEventCopyIOHIDEvent` returns `NULL` or the sender id is `0`. A real-hardware key always carries a source; a synthetic one never does. Own emits are tagged by the interceptor and never reach the callback, so the consumer does not classify them.
 
@@ -70,7 +70,7 @@ use std::os::raw::c_char;
 use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
 use core_foundation::boolean::{CFBoolean, CFBooleanGetTypeID, CFBooleanGetValue};
 use core_foundation::number::{CFNumber, CFNumberGetTypeID, CFNumberRef};
-use core_foundation::string::{CFString, CFStringGetTypeID, CFStringRef};
+use core_foundation::string::CFString;
 use core_graphics::event::CGEvent;
 use io_kit_sys::ret::KERN_SUCCESS;
 use io_kit_sys::types::{io_object_t, io_registry_entry_t, IO_OBJECT_NULL};
@@ -116,13 +116,12 @@ pub fn source_of(event: &CGEvent) -> Option<SourceId> {
 /// Resolved identity of a source. Fields come off the service the id names, or the nearest
 /// ancestor that carries them (some live on the parent `IOHIDDevice`).
 ///
-/// `product` is interned (`&'static str`): `Copy`, free to hand across the channel, and safe to
-/// keep on a cached `DeviceInfo` for the process lifetime. See `intern_product`.
+/// No product name string: consumers match on `vendor_id`/`product_id` and `built_in`.
+/// That keeps `DeviceInfo` `Copy` with no interning and no allocation on the hot path.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct DeviceInfo {
     pub vendor_id: u16,
     pub product_id: u16,
-    pub product: &'static str,
     pub built_in: bool,
 }
 
@@ -141,7 +140,6 @@ pub fn resolve(id: SourceId) -> Option<DeviceInfo> {
     let info = DeviceInfo {
         vendor_id: prop_u32(service, "VendorID").unwrap_or(0) as u16,
         product_id: prop_u32(service, "ProductID").unwrap_or(0) as u16,
-        product: intern_product(prop_string(service, "Product").unwrap_or_default()),
         built_in: prop_bool(service, "Built-In").unwrap_or(false),
     };
     // SAFETY: release the +1 service.
@@ -152,20 +150,8 @@ pub fn resolve(id: SourceId) -> Option<DeviceInfo> {
     Some(info)
 }
 
-/// Process-lifetime intern of a product name. Product strings are a closed set per machine
-/// (a handful of keyboards); leaking one copy per distinct name (or per resolve without a
-/// content-keyed pool) is the cost of `&'static str` without a shared mutable intern table.
-/// Empty input is `""` (no leak). Not `Arc`/`Mutex`/`static` mut: a pure leak of an owned
-/// `String` that will never be freed.
-fn intern_product(s: String) -> &'static str {
-    if s.is_empty() {
-        return "";
-    }
-    Box::leak(s.into_boxed_str())
-}
-
 /// Walk `entry` and its parents on the service plane until `key` is present with the expected
-/// CF type. `Built-In` is CFBoolean; `VendorID`/`ProductID` are CFNumber; `Product` is CFString.
+/// CF type. `Built-In` is CFBoolean; `VendorID`/`ProductID` are CFNumber.
 fn prop_bool(entry: io_registry_entry_t, key: &str) -> Option<bool> {
     with_prop(entry, key, CFBooleanGetTypeID(), |raw| {
         // SAFETY: type id matched CFBoolean.
@@ -181,16 +167,6 @@ fn prop_u32(entry: io_registry_entry_t, key: &str) -> Option<u32> {
             CFNumber::wrap_under_get_rule(raw as CFNumberRef)
         };
         n.to_i64().and_then(|v| u32::try_from(v).ok())
-    })
-}
-
-fn prop_string(entry: io_registry_entry_t, key: &str) -> Option<String> {
-    with_prop(entry, key, CFStringGetTypeID(), |raw| {
-        let s = unsafe {
-            // SAFETY: type id matched CFString; wrap without taking ownership of the Get ref.
-            CFString::wrap_under_get_rule(raw as CFStringRef)
-        };
-        Some(s.to_string())
     })
 }
 
@@ -314,7 +290,7 @@ pub fn intercept_with_source(
             if let Some(&cached) = cache.get(&id) {
                 return Some(cached); // Copy
             }
-            let info = resolve(id)?; // interns product once per SourceId (cache miss)
+            let info = resolve(id)?; // once per SourceId
             cache.insert(id, info);
             Some(info)
         });
@@ -334,9 +310,9 @@ fn run_tap(
 }
 ```
 
-The cache is a plain `HashMap` local to the tap-thread closure. It is not `Arc`/`Mutex` and is not shared across threads: only the tap thread mutates it. `DeviceInfo` is `Copy` (`product: &'static str`), so a cache hit is a load, not a `String` clone, and the value is free to send to the worker.
+The cache is a plain `HashMap` local to the tap-thread closure. It is not `Arc`/`Mutex` and is not shared across threads: only the tap thread mutates it. `DeviceInfo` is `Copy` (ids + bool only), so a cache hit is a load and the value is free to send to the worker.
 
-`intercept` never calls `source_of` or `resolve`. `intercept_with_source` does one registry walk (and at most one product intern) on first sight of a `SourceId` and a map hit thereafter.
+`intercept` never calls `source_of` or `resolve`. `intercept_with_source` does one registry walk on first sight of a `SourceId` and a map hit thereafter.
 
 ### Re-exports and deps
 
@@ -371,8 +347,8 @@ This doc ends at `(KeyEvent, Option<DeviceInfo>)` on the callback. Classificatio
 
 ## Tests
 
-- `prop_bool` / `prop_u32` / `prop_string` read the right CF types and walk to a parent when the entry itself lacks the key (built-in keyboard's `Built-In` lives up the plane). Real test against a known attached service when running on macOS with a keyboard.
-- `source_of` returns `None` for a synthetic event (`CGEvent::new_keyboard_event`, no HID origin). Hardware `Some` is a manual check: type on two keyboards, see two `DeviceInfo` product names.
+- `prop_bool` / `prop_u32` read the right CF types and walk to a parent when the entry itself lacks the key (built-in keyboard's `Built-In` lives up the plane). Real test against a known attached service when running on macOS with a keyboard.
+- `source_of` returns `None` for a synthetic event (`CGEvent::new_keyboard_event`, no HID origin). Hardware `Some` is a manual check: type on two keyboards, see two distinct `DeviceInfo` id pairs.
 - Resolve cache: second key with the same `SourceId` does not call `resolve` again (exercise via a small demo binary that logs, or a test seam if one is introduced).
 
 ## Order of changes
