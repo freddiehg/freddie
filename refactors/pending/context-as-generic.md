@@ -56,9 +56,18 @@ pub struct MercuryContext {
 
 impl MercuryContext {
     pub fn structure(&self) -> Structure { self.structure }
-    pub fn claim(&mut self) -> Option<Claimed> { self.claim }
     pub fn set_structure(&mut self, s: Structure) { self.structure = s; }
-    pub fn set_claim(&mut self, c: Claimed) { self.claim = Some(c); }
+
+    /// Try to take exclusive ownership. `Some(Claimed)` if open (now taken); `None` if already taken.
+    pub fn claim(&mut self) -> Option<Claimed> {
+        match self.claim {
+            Some(_) => None,
+            None => {
+                self.claim = Some(Claimed);
+                Some(Claimed)
+            }
+        }
+    }
 }
 ```
 
@@ -74,7 +83,7 @@ impl MercuryContext {
 ## Open
 
 - Whether `structure` (field survival) is still computed by laserbeam/`into_parent` and written into `C` via a trait (`C::set_structure`), so the framework owns invalidation timing but not claim policy.
-- How exclusive claim becomes a method on `C` when claim is app-defined (`C: Claimable`).
+- How exclusive try-take (`claim(&mut self) -> Option<Claimed>`) becomes a method on app-defined `C`.
 - Interaction with the prefactor (threaded batch only, `C = ()`).
 
 No implementation plan here. When `invalidation.md` is implemented, either keep the concrete bag as a first cut or land `C` first if the bag already feels wrong at the type boundary.
