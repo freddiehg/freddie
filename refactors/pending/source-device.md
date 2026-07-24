@@ -388,6 +388,8 @@ No feature gate. mercury depends on `freddie_keyboard` as today and keeps callin
 
 The tap hands the consumer a key plus a device tag `T` (from categorize). Binding that pair lives in `freddie_keys`, next to `KeyPress::with`, not in figaro and not as a free tuple.
 
+One device per bind. Two devices for the same handler = two bind lines (or a bare key if every device should match). No multi-device slice, no `AsDeviceSlice`.
+
 ### Types
 
 ```rust
@@ -404,10 +406,10 @@ pub struct DeviceKeyed<E, D> {
     pub device: D,
 }
 
-/// Restricts an inner key trigger to one or more device tags.
+/// Restricts an inner key trigger to exactly one device tag.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct OnDevice<T, D> {
-    pub devices: &'static [D],
+    pub device: D,
     pub inner: T,
 }
 
@@ -419,15 +421,20 @@ where
     type Event = DeviceKeyed<T::Event, D>;
 
     fn is_matching(&self, event: &Self::Event) -> bool {
-        self.devices.iter().any(|d| d == &event.device)
-            && self.inner.is_matching(&event.key)
+        self.device == event.device && self.inner.is_matching(&event.key)
+    }
+}
+
+impl<T, D> OnDevice<T, D> {
+    pub const fn new(device: D, inner: T) -> Self {
+        Self { device, inner }
     }
 }
 ```
 
 `D` must be `PartialEq` for matching. For `MercuryTrigger` / accumulate it also needs `Eq + Hash + Copy` (or `Clone`) like every other trigger. No other trait: the consumer owns what a device *is*.
 
-### Constructors (key-side, primary sugar)
+### Constructor (key-side)
 
 Same chaining style as `Key::down().with(flags)`:
 
@@ -435,103 +442,13 @@ Same chaining style as `Key::down().with(flags)`:
 impl KeyPress {
     /// Match only when the event's device is `device`.
     #[must_use]
-    pub const fn on_device<D>(self, device: D) -> OnDevice<Self, D>
-    where
-        D: /* need as_slice for const one-element — see below */,
-    { ... }
-
-    /// Match when the event's device is any of `devices`.
-    #[must_use]
-    pub const fn on_devices<D>(self, devices: &'static [D]) -> OnDevice<Self, D> {
-        OnDevice { devices, inner: self }
+    pub const fn on_device<D>(self, device: D) -> OnDevice<Self, D> {
+        OnDevice { device, inner: self }
     }
 }
 
-// Same methods on Key and KeyChord (or a small extension trait implemented for all three).
+// Same method on Key and KeyChord (or a small extension trait for all three).
 ```
-
-Single-device `on_device` needs a `&'static [D]` of length 1. Two ways:
-
-```rust
-// Preferred when D is Copy and the consumer can offer static slices:
-//   Key::Escape.down().on_devices(&[DeviceClass::Desktop])
-// or DeviceClass provides as_slice():
-impl DeviceClass {
-    pub const fn as_slice(self) -> &'static [Self] { /* match -> &[Self::Desktop] etc. */ }
-}
-// then in freddie_keys, on_device only if we pass the slice from outside:
-
-impl KeyPress {
-    pub const fn on_device<D>(self, devices: &'static [D]) -> OnDevice<Self, D> {
-        // name is singular but takes a slice of one — awkward
-    }
-}
-```
-
-Cleaner API split:
-
-```rust
-impl KeyPress {
-    /// One or more devices. The general constructor.
-    pub const fn on_devices<D>(self, devices: &'static [D]) -> OnDevice<Self, D> {
-        OnDevice { devices, inner: self }
-    }
-}
-
-// Consumer (figaro) adds the singular sugar where D is known:
-impl DeviceClass {
-    pub const fn as_slice(self) -> &'static [Self] { ... }
-}
-impl KeyPress {
-    // cannot special-case DeviceClass in freddie_keys
-}
-// figaro extension or free fn:
-//   key.on_devices(DeviceClass::Desktop.as_slice())
-// or figaro trait:
-trait OnDeviceExt: Sized {
-    fn on_device<D: DeviceSlice>(self, d: D) -> OnDevice<Self, D::Item>;
-}
-```
-
-Simplest design that stays fully in freddie_keys without knowing `DeviceClass`:
-
-```rust
-impl KeyPress {
-    pub const fn on_devices<D>(self, devices: &'static [D]) -> OnDevice<Self, D> {
-        OnDevice { devices, inner: self }
-    }
-}
-impl Key {
-    pub const fn on_devices<D>(self, devices: &'static [D]) -> OnDevice<Self, D> { ... }
-}
-impl KeyChord {
-    pub const fn on_devices<D>(self, devices: &'static [D]) -> OnDevice<Self, D> { ... }
-}
-
-// Underlying constructor:
-impl<T, D> OnDevice<T, D> {
-    pub const fn new(devices: &'static [D], inner: T) -> Self {
-        Self { devices, inner }
-    }
-}
-```
-
-Singular `on_device(d)` requires either a trait in freddie_keys:
-
-```rust
-/// A device tag that can form a one-element static slice for `on_device`.
-pub trait AsDeviceSlice: Sized + 'static {
-    fn as_slice(self) -> &'static [Self];
-}
-
-impl KeyPress {
-    pub const fn on_device<D: AsDeviceSlice>(self, device: D) -> OnDevice<Self, D> {
-        OnDevice { devices: device.as_slice(), inner: self }
-    }
-}
-```
-
-Figaro implements `AsDeviceSlice` for `DeviceClass`. That is the trait `D` must impl for the singular method; for `on_devices` only `PartialEq` (and trigger hash bounds) are required.
 
 ### Bind lines
 
@@ -542,8 +459,9 @@ Key::KeyN.down() => to_nav
 // one device
 Key::Escape.down().on_device(DeviceClass::Desktop) => foo
 
-// several devices
-Key::KeyH.down().on_devices(&[DeviceClass::Desktop, DeviceClass::Laptop]) => tile_left
+// same handler on two devices: two lines
+Key::KeyH.down().on_device(DeviceClass::Desktop) => tile_left
+Key::KeyH.down().on_device(DeviceClass::Laptop) => tile_left
 ```
 
 Handlers for `OnDevice` receive `&DeviceKeyed<KeyEvent, D>`; bare keys still receive `&KeyEvent`.
@@ -552,8 +470,6 @@ Handlers for `OnDevice` receive `&DeviceKeyed<KeyEvent, D>`; bare keys still rec
 
 ```rust
 // categorize returns DeviceClass (= D)
-// channel / model:
-type DeviceKey = DeviceKeyed<KeyEvent, DeviceClass>; // or newtype
 enum MercuryEvent {
     Key(DeviceKeyed<KeyEvent, DeviceClass>),
     Foreground(...),
@@ -575,7 +491,7 @@ Full figaro bind policy (which keys are desktop-only, tiling, …) stays in `dev
 
 ## Hand-off to figaro
 
-This doc ends at: `(KeyEvent, T)` from the tap, plus `DeviceKeyed` / `OnDevice` / `on_device(s)` in `freddie_keys`. Figaro supplies `T = DeviceClass`, implements `AsDeviceSlice`, and wires the model — `device-conditioned-keymaps.md`.
+This doc ends at: `(KeyEvent, T)` from the tap, plus `DeviceKeyed` / `OnDevice` / `on_device` in `freddie_keys`. Figaro supplies `T = DeviceClass` and wires the model — `device-conditioned-keymaps.md`.
 
 ```rust
 // figaro (summary)
