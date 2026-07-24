@@ -323,20 +323,15 @@ where
     C: FnMut(Option<Result<DeviceInfo, (SourceId, ResolveFailure)>>) -> T + Send + 'static,
     F: Fn((KeyEvent, T)) -> Option<KeyEvent> + Send + 'static,
 {
-    // Cached categorize results only. DeviceInfo is not retained.
+    // Cached categorize results only (per SourceId). DeviceInfo is not retained.
     let mut by_source: HashMap<SourceId, T> = HashMap::new();
-    // No HID origin is always the same outcome: categorize once at install, clone per key.
-    let no_source = categorize(None);
 
     run_tap(move |input, event| {
         let class = match source_of(event) {
-            None => no_source.clone(),
+            None => categorize(None),
             Some(id) => by_source
                 .entry(id)
-                .or_insert_with(|| {
-                    // Some(Ok) resolved; Some(Err((id, failure))) keeps the id and why.
-                    categorize(Some(resolve(id)))
-                })
+                .or_insert_with(|| categorize(Some(resolve(id))))
                 .clone(),
         };
         on_key((input, class))
