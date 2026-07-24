@@ -16,7 +16,7 @@ Two attributes on a node, told apart by name. A node may carry both; `also_bind`
 
 ```rust
 #[bind(Key::Escape.down() => to_home)]        // exclusive: fires iff nothing deeper did
-#[also_bind(AnyKey => rearm)]               // also-bind: fires alongside whatever did
+#[also_bind(AnyKey => stay)]               // also-bind: fires alongside whatever did
 ```
 
 Order among the attributes never matters: two exclusive binds cannot share a trigger on the active path (the check forbids it), and the two kinds run in fixed phases (below), so declaration order changes nothing.
@@ -92,7 +92,7 @@ fn to_home<'a, E, P: AscendMut<MercuryPath<'a>>>(ev: &E, node: Node<P, ()>) -> V
 
 // also-bind handler: `parent` is `&mut` the path, so it can `get_mut` its own node and `ascend` to
 // READ the root, but not `ascend_mut` to mutate it, nor `into_parent` to consume it; `data` stays
-fn rearm<'a>(ev: &KeyEvent, node: Node<&mut AndReturnHomePath<'a>, ()>) -> Vec<Effect>;
+fn stay<'a>(ev: &KeyEvent, node: Node<&mut AndReturnHomePath<'a>, ()>) -> Vec<Effect>;
 ```
 
 Keeping the `Node`, rather than passing a bare `&mut path`, holds the handler shape uniform and carries the derived `data` an also-bind on a derived level would want; `parent: &mut P` in place of `parent: P` is the whole of the difference.
@@ -109,17 +109,17 @@ So an also-bind handler appears terminal but is not. In the trigger set it looks
 
 The real cost, then, is that contradiction moves from statically impossible to runtime-only and unenumerable. Under exclusive dispatch two effects cannot contradict, because there is only ever one. Under also-bind they can, and whether they do depends on state that cannot be reasoned about ahead of time. An also-bind is sound only when its effect is provably independent of everything else on the path, and independence is not checkable in general — so an also-bind returns you to hand-verifying each one, which is the discipline the check existed to delete.
 
-## The rearm is the first user
+## The stay is the first user
 
 `AndReturnHome` carries one bind of each kind:
 
 - exclusive `|p| p.get().guard.trigger() => to_home` — the firing, on a `TimerFired` event, reaching the root through `go_home`. Post-descend, as today.
-- also-bind `AnyKey => rearm` — resets the timer on every key that reaches the wrapper. Pre-descend, node-local: it mutates `self.guard` and emits the reschedule, nothing more.
+- also-bind `AnyKey => stay` — resets the timer on every key that reaches the wrapper. Pre-descend, node-local: it mutates `self.guard` and emits the reschedule, nothing more.
 
 The also-bind is a sound one under the rule above, because its only interaction with the rest of the path is benign. On a key that stays, it resets the clock, which is the whole point. On a key that leaves or transitions, it fires anyway — it cannot know why the ascent is happening — and arms a fresh timer that the leaving handler then drops, so the schedule self-cancels. That is the extra work: a wasted arm on the keys that leave. It is a discarded effect, not a contradiction, and it is the price of putting the reset where the timer lives rather than reconstructing the before/after check at the root.
 
-So `handle` loses the rearm entirely: no `rearm_after`, no `activity_token`, no `Layer::rearm_timeout`. `handle` is just `dispatch`, and the also-bind does the resetting. See `timed-layer-wrapper.md`.
+So `handle` loses the timer reset entirely — no before/after check, no root-side logic. `handle` is just `dispatch`, and the also-bind does the resetting. See `timed-layer-wrapper.md`.
 
 ## Status
 
-Scheduled — the prerequisite for the return-home wrapper. The work: rework `bind`'s `Dispatch` contract from short-circuit to full-path accumulator; add the `#[also_bind]` attribute, its pre-descend phase, and its `Node<&mut P, Data>` handler shape; and teach the check to hold also-bind triggers exempt from the collision rule. The cost is that rework plus the impossibility of contradiction: an also-bind is sound only when its effect is provably independent, which is not checkable, so each one is hand-verified. The wrapper's rearm is the first, and its independence is the benign self-cancel above.
+Scheduled — the prerequisite for the return-home wrapper. The work: rework `bind`'s `Dispatch` contract from short-circuit to full-path accumulator; add the `#[also_bind]` attribute, its pre-descend phase, and its `Node<&mut P, Data>` handler shape; and teach the check to hold also-bind triggers exempt from the collision rule. The cost is that rework plus the impossibility of contradiction: an also-bind is sound only when its effect is provably independent, which is not checkable, so each one is hand-verified. The wrapper's stay is the first, and its independence is the benign self-cancel above.

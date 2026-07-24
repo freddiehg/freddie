@@ -45,15 +45,15 @@ pub enum ReturnHomeLayers {
 Mercury ─▶ Layer ─▶ AndReturnHome ─▶ ReturnHomeLayers ─▶ NavLayer | ResizeLayer | AppLayer | SiteLayer
 ```
 
-`AndReturnHome` is a concrete node the existing derive handles — no generics. It binds the firing once and resets the timer with an also-bind; the four leaves lose their timer field and firing entirely; and `handle` sheds its rearm block. The one thing it needs that mercury does not have yet is also-bind dispatch itself (the Prerequisite). The shared exit keys (`escape`, `o`, `t`) stay on the leaves for now; lifting them onto the wrapper is a follow-up, as is grouping `Home`/`Typing`.
+`AndReturnHome` is a concrete node the existing derive handles — no generics. It binds the firing once and resets the timer with an also-bind; the four leaves lose their timer field and firing entirely; and `handle` sheds its timer-reset block. The one thing it needs that mercury does not have yet is also-bind dispatch itself (the Prerequisite). The shared exit keys (`escape`, `o`, `t`) stay on the leaves for now; lifting them onto the wrapper is a follow-up, as is grouping `Home`/`Typing`.
 
 ## Prerequisite
 
-The rearm-on-activity is an also-bind on the wrapper, so also-bind dispatch (`also-binds.md`) has to land first. That is why this is sequenced after it. The payoff: `handle` sheds the rearm entirely — no before/after discriminant check, no `rearm_after`, no `Layer::rearm_timeout` — because the also-bind does the resetting.
+The reset-on-activity is an also-bind on the wrapper, so also-bind dispatch (`also-binds.md`) has to land first. That is why this is sequenced after it. The payoff: `handle` sheds the timer reset entirely — no before/after discriminant check, no `Layer::rearm_timeout` — because the also-bind does the resetting.
 
 ## The change
 
-Atomic: the tree restructure, the leaf reparenting, the constructors, the handlers, `handle`, and the test assertions move together, because the old flat `Layer` variants disappear. Behavior is unchanged but for the extra work the also-bind rearm does on the keys that leave (a fresh timer that self-cancels; see `also-binds.md`).
+Atomic: the tree restructure, the leaf reparenting, the constructors, the handlers, `handle`, and the test assertions move together, because the old flat `Layer` variants disappear. Behavior is unchanged but for the extra work the also-bind `stay` does on the keys that leave (a fresh timer that self-cancels; see `also-binds.md`).
 
 ### The new module
 
@@ -81,7 +81,7 @@ use super::{AppLayer, LayerPath, NavLayer, ResizeLayer, SiteLayer, arm_return_ho
 // (also-bind, pre-descend). Only this node's own timer: a firing from a layer already left matches
 // nothing.
 #[bind(|path| path.get().guard.trigger() => to_home)]
-#[also_bind(AnyKey => rearm)]
+#[also_bind(AnyKey => stay)]
 pub struct AndReturnHome {
     #[resolve_into]
     layers: ReturnHomeLayers,
@@ -108,7 +108,7 @@ impl AndReturnHome {
     /// Reset the return-home timer on in-layer activity: drop the old guard (cancelling it) and arm
     /// a fresh one, returning the effect that schedules it.
     #[must_use]
-    pub(crate) fn rearm(&mut self) -> MercuryEffect {
+    pub(crate) fn stay(&mut self) -> MercuryEffect {
         let (guard, timer) = arm_return_home();
         self.guard = guard;
         timer
@@ -214,9 +214,9 @@ pub fn overlay_content(&self, foreground: &Foreground) -> &'static str {
 }
 ```
 
-`Layer::is_passthrough` is unchanged: `matches!(self, Self::Typing(_))`. `Layer::rearm_timeout` is deleted — the also-bind rearm on `AndReturnHome` replaces it.
+`Layer::is_passthrough` is unchanged: `matches!(self, Self::Typing(_))`. `Layer::rearm_timeout` is deleted — the also-bind `stay` on `AndReturnHome` replaces it.
 
-`Mercury::handle` sheds the rearm block it grew for the earlier bug fix and goes back to a bare dispatch, because the also-bind does the resetting. Before:
+`Mercury::handle` sheds the timer-reset block it grew for the earlier bug fix and goes back to a bare dispatch, because the also-bind does the resetting. Before:
 
 ```rust
 pub fn handle(&mut self, event: &MercuryEvent) -> Option<Vec<MercuryEffect>> {
@@ -240,11 +240,11 @@ pub fn handle(&mut self, event: &MercuryEvent) -> Option<Vec<MercuryEffect>> {
 }
 ```
 
-The also-bind handler the bind names lives with the other handlers; it takes the also-bind `Node<&mut P, ()>` shape (`also-binds.md`) and calls the wrapper's `rearm`:
+The also-bind handler the bind names lives with the other handlers; it takes the also-bind `Node<&mut P, ()>` shape (`also-binds.md`) and calls the wrapper's `stay`:
 
 ```rust
-pub(crate) fn rearm<'a>(_ev: &KeyEvent, node: Node<&mut AndReturnHomePath<'a>, ()>) -> MercuryEffect {
-    node.parent.get_mut().rearm()
+pub(crate) fn stay<'a>(_ev: &KeyEvent, node: Node<&mut AndReturnHomePath<'a>, ()>) -> MercuryEffect {
+    node.parent.get_mut().stay()
 }
 ```
 
@@ -393,4 +393,4 @@ Two changes this doc deliberately leaves out, each its own later doc:
 
 ## Note
 
-`AndReturnHome` is a concrete named node with a `#[resolve_into]` field, which the existing derive handles — no generics, no new node machinery. Its one dependency is also-bind dispatch (`also-binds.md`), for the `#[also_bind]` rearm; that is the Prerequisite and the reason for the sequencing. The positional-`#[resolve_into]` capability (`positional-resolve-into.md`, landed) is not exercised by this shape — a two-field wrapper is a named struct, not a tuple.
+`AndReturnHome` is a concrete named node with a `#[resolve_into]` field, which the existing derive handles — no generics, no new node machinery. Its one dependency is also-bind dispatch (`also-binds.md`), for the `#[also_bind]` stay; that is the Prerequisite and the reason for the sequencing. The positional-`#[resolve_into]` capability (`positional-resolve-into.md`, landed) is not exercised by this shape — a two-field wrapper is a named struct, not a tuple.
