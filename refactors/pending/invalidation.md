@@ -233,8 +233,6 @@ ASCENT leaf → root:
 Example: exclusive two levels below the owner does `into_parent().into_parent()` → `depth.max(2)`.
 
 ```text
-// after the kill, still at the leaf for sibling posts? or already returned path at owner —
-// remaining framework ascent from the first hop still inside the zone:
 level +1 posts: depth 2 → Invalidated; step_up → 1
 level +2 owner: depth 1 → Invalidated; step_up → 0
 above:          depth 0 → Valid
