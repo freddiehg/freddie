@@ -31,7 +31,7 @@ struct Foo { #[resolve_into] bar: Bar }
 Both handlers are `fn` items the user writes. What rides the path is a closure `on_into_parent` that captured the node's `opt_i`s and calls the posts — a monomorphized `FnOnce`, generic over its own type `F`, no `Box`, no `Rc`, no `dyn`.
 
 - `pre`: `fn(&Event, Node<&mut P, D>) -> (T, Vec<Effect>)`. Runs on the descent if the trigger matches. Node borrowed (`&mut P`), so it can `get_mut` its own node and `ascend` to READ the root, but not consume. It returns `(T, effects)`: `T` is threaded to the post, the effects are pushed as the descent enters the node (the `A_pre`, `B_pre` of the order).
-- `post`: `fn(T, Node<&mut P, D>, Nested) -> Vec<Effect>`. Runs on the way up when `pre` ran, taking `pre`'s return `T` and the SAME `&mut Path` access the pre had — `get_mut` its node, `ascend` to read the root. Returns effects. It runs on the live path: on the fire side `complete` runs it BEFORE the winner's `set_layer`, so the node it reaches is still valid.
+- `post`: `fn(T, &mut Node<&mut P, D>, Nested) -> Vec<Effect>`. Runs on the way up when `pre` ran, taking `pre`'s return `T` and `&mut Node` — the same `get_mut`/`ascend` access the pre had, by `&mut` so a node's several posts can each take it (auto-reborrow). Returns effects. It runs on the live path: on the fire side `complete` runs it BEFORE the winner's `set_layer`, so the node it reaches is still valid.
 
 `pre`'s return survives the descent as an `Option<T>`: `Some(t)` when the trigger matched, `None` when it did not. The match is decided at the descent, up front — the `Option` records it — so `into_parent` runs `post` on the `Some` and skips the `None`, and nothing re-checks a trigger on the way up. `post` sees `T`, never the `Option`; the `Option` is only how the value is carried. `T` is inferred from `pre`'s return, never written (there is no name for it).
 
@@ -45,6 +45,7 @@ The two standalone forms are this same machine, not special cases:
 `Nested` is the one outcome exposed — whether the SUBTREE below this node won — as an enum. The node's own exclusive bind is not part of it: the post runs as the sweep passes up through the node, before the node's own bind is tried.
 
 ```rust
+#[derive(Clone, Copy)]   // passed to each of a node's posts, so `Copy`
 enum Nested {
     /// A handler won in the subtree below this node (the sweep is being driven up by `complete`).
     Handled,
@@ -186,13 +187,17 @@ impl Dispatch<M> for Foo {
         };
 
         // descend. The post rides the child path as `on_into_parent`, a CLOSURE that captures
-        // `opt_0` and calls `stay`. A second `#[pre_post]` binds `opt_1` above and the SAME closure
-        // runs it too — one closure per node, not a stack of levels.
+        // `opt_0` and extends a batch. A second `#[pre_post]` binds `opt_1` above and the SAME
+        // closure extends for it too — one closure per node, not a stack of levels.
         let bar_path = ::laserbeam::PathMut::from_fn(
             path, |p| &mut p.get_mut().bar, |p| &p.get().bar,
-            move |node, nested| match opt_0 {
-                ::core::option::Option::Some(t) => stay(t, node, nested),
-                ::core::option::Option::None => ::std::vec::Vec::new(),
+            move |mut node, nested| {
+                let mut effs = ::std::vec::Vec::new();
+                if let ::core::option::Option::Some(t) = opt_0 {
+                    ::core::iter::Extend::extend(&mut effs, stay(t, &mut node, nested));
+                }
+                // a 2nd #[pre_post]: if let Some(t) = opt_1 { effs.extend(post1(t, &mut node, nested)); }
+                effs
             },
         ).into();
 
