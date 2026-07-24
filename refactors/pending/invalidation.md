@@ -527,7 +527,7 @@ impl Dispatch<M> for Outer {
             ::core::option::Option::None
         };
 
-        // into_parent passes &mut Context (validity already set for this field).
+        // into_parent passes &mut Context (depth already reflects kills so far).
         let inner_path = ::laserbeam::PathMut::from_fn(
             path,
             |p| &mut p.get_mut().inner,
