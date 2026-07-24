@@ -268,6 +268,12 @@ The ordering is forced, not chosen: running an also-bind after the child would s
 
 All also-binds thus run on the way DOWN, root-to-leaf, before each descent. The exclusive `Break` still short-circuits the unwind, and nothing is lost: by the time the winner fires, every ancestor's also-bind has already run. So this is a pre-descend phase plus a threaded accumulator, not a dispatch-model rewrite; the `?`-based descent and `Break` short-circuit are preserved.
 
+## Also-binds compose; they do not prevent ancestors
+
+A tempting alternative is to let an also-bind stop ancestors from firing, to "capture" the event at a level. The design rejects it, because preventing others is what an exclusive bind already does (it `Break`s and short-circuits the walk), and it would kill composition. An also-bind is the opposite: every also-bind on the active path fires. Each runs pre-descend, so an ancestor's has already fired before any descendant gets a turn, and nothing downstream — an also-bind or an exclusive winner — can prevent it.
+
+That makes also-binds compose, and it means they must commute. Two wrappers stacked on the path — `AndReturnHome`'s `stay` and, say, an overlay wrapper's `close` — both fire on one key, and the result cannot depend on their order. This is the independence requirement below, stated for two also-binds instead of one: each mutates only its own node and emits effects independent of the other's, so the root-to-leaf accumulation order is deterministic but immaterial. An also-bind whose effect depended on whether another had run is exactly the non-independent, uncheckable case the model forbids.
+
 ## Why "also" costs the impossibility of contradiction
 
 Exclusive dispatch buys that exactly one handler is the sole authority for an event: one set of effects from one author, so nothing can contradict it. An also-bind breaks that — its effects and the subtree's both apply — and whether they contradict is a semantic question about the state, not a trigger collision, so the check cannot see it, and states are not enumerable. An also-bind is sound only when its effect is provably independent of everything else on the path, and independence is not checkable in general, so each one is hand-verified. That is why the check merely exempts also-bind triggers rather than trying to validate them.
