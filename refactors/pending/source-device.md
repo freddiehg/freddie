@@ -258,7 +258,7 @@ fn with_prop<T>(
 
 `KeyEvent` and `freddie_keys` do not change. `freddie_keyboard` exposes two entry points over one internal tap. Only code that holds the `CGEvent` can read the source, so resolve and categorize live here.
 
-Per key, the hot path is: `source_of` → cache lookup by `SourceId` → hand `T` to `on_key`. On a miss: `resolve` (registry walk, may allocate a product `String`) → `categorize(Option<DeviceInfo>)` → store `T` → hand `T` to `on_key`. Categorize may be expensive; it runs once per `SourceId` (and once for the synthetic/no-source case).
+Per key, the hot path is: `source_of` → cache lookup by `SourceId` → hand `T` to `on_key`. On a miss: `resolve` → `categorize(Some(Ok/Err(...)))` → store `T` → hand `T` to `on_key`. No source id: `categorize(None)` once. Categorize may be expensive; it runs once per `SourceId` and once for the no-source case.
 
 ```rust
 // freddie_keyboard, macOS. mercury uses intercept; figaro uses intercept_with_source.
@@ -267,15 +267,20 @@ pub fn intercept(
     on_key: impl Fn(KeyEvent) -> Option<KeyEvent> + Send + 'static,
 ) -> Result<(Interceptor, Emitter), CaptureError>;
 
-/// Same tap. `categorize` turns a resolved device (or `None` for synthetic / unresolvable)
-/// into a consumer value `T`, once per distinct source. `on_key` sees only `T`.
+/// Same tap. `categorize` turns a source outcome into a consumer value `T`, once per
+/// distinct source. `on_key` sees only `T`.
+///
+/// Categorize argument: `Option<Result<DeviceInfo, ()>>`
+/// - `None` — no SourceId (synthetic / injected; no HID origin)
+/// - `Some(Err(()))` — had a SourceId, registry resolve failed (device gone)
+/// - `Some(Ok(info))` — resolved
 pub fn intercept_with_source<T, C, F>(
     mut categorize: C,
     on_key: F,
 ) -> Result<(Interceptor, Emitter), CaptureError>
 where
     T: Clone + Send + 'static,
-    C: FnMut(Option<DeviceInfo>) -> T + Send + 'static,
+    C: FnMut(Option<Result<DeviceInfo, ()>>) -> T + Send + 'static,
     F: Fn((KeyEvent, T)) -> Option<KeyEvent> + Send + 'static;
 ```
 
@@ -308,12 +313,12 @@ pub fn intercept_with_source<T, C, F>(
 ) -> Result<(Interceptor, Emitter), CaptureError>
 where
     T: Clone + Send + 'static,
-    C: FnMut(Option<DeviceInfo>) -> T + Send + 'static,
+    C: FnMut(Option<Result<DeviceInfo, ()>>) -> T + Send + 'static,
     F: Fn((KeyEvent, T)) -> Option<KeyEvent> + Send + 'static,
 {
     // Cached categorize results only. DeviceInfo is not retained.
     let mut by_source: HashMap<SourceId, T> = HashMap::new();
-    // Synthetic / no HID origin: one categorize(None), reused for every such key.
+    // No HID origin: one categorize(None), reused for every such key.
     let mut no_source: Option<T> = None;
 
     run_tap(move |input, event| {
@@ -323,7 +328,10 @@ where
                 .clone(),
             Some(id) => by_source
                 .entry(id)
-                .or_insert_with(|| categorize(resolve(id)))
+                .or_insert_with(|| {
+                    // Some(Ok) resolved; Some(Err(())) id present but registry miss.
+                    categorize(Some(resolve(id).ok_or(())))
+                })
                 .clone(),
         };
         on_key((input, class))
@@ -341,12 +349,15 @@ fn run_tap(
 }
 ```
 
-`categorize` arguments:
+`categorize` argument is `Option<Result<DeviceInfo, ()>>` — three outcomes, no conflation:
 
-- `None` — no `SourceId` (synthetic / injected from another app), or `resolve` failed (id gone). Figaro maps both to its policy (e.g. `Injected` vs `Other` only if it can tell them apart; with a single `Option` they share `None`, so figaro treats `None` as non-hardware / unusable for desktop layers — typically `Injected` or `Other` by choice; prefer treating `None` as "no device class worth remapping," i.e. figaro's `Injected`).
-- `Some(DeviceInfo)` — full resolve, including `product: String`. Figaro may match vendor/product ids and ignore the name, or log the name; the string never enters the model.
+| value | meaning |
+|-------|---------|
+| `None` | no `SourceId` (synthetic / injected; no HID origin) |
+| `Some(Err(()))` | had a `SourceId`, `resolve` failed (device gone) |
+| `Some(Ok(info))` | full resolve, including `product: String` |
 
-If synthetic and failed-resolve must be distinct later, change the categorize argument to an enum (`Synthetic` / `Gone` / `Device(DeviceInfo)`). One `Option` is enough for figaro today.
+Figaro can map `None` → `Injected` and `Some(Err(()))` → `Other` (or a dedicated variant). The product string never enters the model unless categorize puts it in `T`.
 
 The cache is a plain `HashMap` local to the tap-thread closure. It is not `Arc`/`Mutex` and is not shared across threads. Only `T` is stored; `DeviceInfo` is dropped after categorize returns.
 
@@ -379,11 +390,12 @@ This doc ends at `(KeyEvent, T)` on the callback, with figaro supplying `T = Dev
 ```rust
 // figaro (summary)
 intercept_with_source(
-    |info| match info {
+    |src| match src {
         None => DeviceClass::Injected,
-        Some(d) if d.built_in => DeviceClass::Laptop,
-        Some(d) if d.vendor_id == 0x29ea && d.product_id == 0x0360 => DeviceClass::Desktop,
-        Some(_) => DeviceClass::Other,
+        Some(Err(())) => DeviceClass::Other, // had an id, resolve failed
+        Some(Ok(d)) if d.built_in => DeviceClass::Laptop,
+        Some(Ok(d)) if d.vendor_id == 0x29ea && d.product_id == 0x0360 => DeviceClass::Desktop,
+        Some(Ok(_)) => DeviceClass::Other,
     },
     |(key, class)| {
         let _ = raw_tx.send((key, class));
@@ -395,7 +407,7 @@ intercept_with_source(
 ## Cost, stated plainly
 
 - No remapping inside secure input (password fields): the CGEventTap is bypassed there. That is the one thing the HID route would still buy; out of scope here (`hid-backend.md`).
-- The two device symbols are private. Missing HID origin degrades to `categorize(None)` rather than failing the remapper.
+- The two device symbols are private. Missing HID origin is `categorize(None)`; a dead registry id is `categorize(Some(Err(())))`. Neither fails the remapper.
 - First key from a newly seen device does a registry walk and one categorize on the tap thread. That is once per attachment per process; later keys are a map lookup and a `T::clone`. Prefer a cheap `T` (`Copy` or a small enum).
 
 ## Tests
