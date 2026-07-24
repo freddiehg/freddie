@@ -6,12 +6,13 @@ Not done. Stub. Companion to `invalidation.md`.
 
 ```rust
 enum Structure { Valid, Invalidated }
-enum Claim { Open, Taken }
+struct Claimed;
 
 struct Context {
     structure: Structure,
-    claim: Claim,
+    claim: Option<Claimed>,
 }
+// ctx.claim() -> Option<Claimed>
 ```
 
 That is odd: two unrelated facts glued under one name because the ascent happens to need both today. The next field (fallback policy, depth of reshape, …) would make the bag worse. This doc is the alternative: **context is a type parameter of the dispatch machine**, not a single struct in `bind`.
@@ -45,17 +46,17 @@ pub trait Dispatch<M: Bindings, C = ()>: Place {
 pub enum Structure { Valid, Invalidated }
 
 #[derive(Clone, Copy)]
-pub enum Claim { Open, Taken }
+pub struct Claimed;
 
 #[derive(Clone, Copy)]
 pub struct MercuryContext {
     structure: Structure,
-    claim: Claim,
+    claim: Option<Claimed>,
 }
 
 impl MercuryContext {
     pub fn structure(self) -> Structure { self.structure }
-    pub fn claim(self) -> Claim { self.claim }
+    pub fn claim(self) -> Option<Claimed> { self.claim }
 }
 ```
 
@@ -72,7 +73,7 @@ impl MercuryContext {
 
 - Snapshot (`C: Copy`) vs `&C` / `&mut C` for posts that update context mid-ascent.
 - Whether `structure` (field survival) is still computed by laserbeam/`into_parent` and *injected into* `C` via a trait (`C::with_structure(Structure)`), so the framework owns invalidation but not claim.
-- How exclusive claim becomes a method on `C` or a separate channel when claim is app-defined (`C: Claimable` with `Claim` enum, not a bool).
+- How exclusive claim becomes a method on `C` when claim is app-defined (`C: Claimable` with `Option<Claimed>`, not a bool).
 - Interaction with the prefactor (threaded batch only, `C = ()`).
 
 No implementation plan here. When `invalidation.md` is implemented, either keep the concrete bag as a first cut or land `C` first if the bag already feels wrong at the type boundary.
