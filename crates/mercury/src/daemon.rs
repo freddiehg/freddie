@@ -38,6 +38,7 @@
 //! On macOS this needs Accessibility (and Input Monitoring). `cargo run -p mercury`
 
 use std::ops::ControlFlow;
+use std::time::Instant;
 
 use freddie::{AlwaysEqual, TimerEffect};
 use freddie_keyboard::Emitter;
@@ -303,8 +304,10 @@ fn dispatch_event(
     effect_tx: &UnboundedSender<MercuryEffect>,
 ) {
     // Unhandled is fine: the tap delivers every key, not only those the current layer binds.
+    let start = Instant::now();
     let effects = state.handle(event).unwrap_or_default();
-    info!(event = ?event, effects = ?effects, state = ?state, "dispatch");
+    let duration_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
+    info!(event = ?event, effects = ?effects, duration_us, state = ?state, "dispatch");
     for effect in effects {
         let _ = effect_tx.send(effect);
     }
