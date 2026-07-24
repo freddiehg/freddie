@@ -434,7 +434,7 @@ where
     }
 }
 
-impl<T, D> OnDevice<T, D> {
+impl<T, D: MatchDevice> OnDevice<T, D> {
     pub const fn new(device: D, inner: T) -> Self {
         Self { device, inner }
     }
@@ -463,7 +463,7 @@ Not per-type methods on `Key` / `KeyPress` / `KeyChord` only. A trait on all `Ev
 /// Attach a device filter to any key-side trigger.
 pub trait WithDevice: Sized {
     #[must_use]
-    fn on_device<D>(self, device: D) -> OnDevice<Self, D> {
+    fn on_device<D: MatchDevice>(self, device: D) -> OnDevice<Self, D> {
         OnDevice {
             device,
             inner: self,
