@@ -24,6 +24,15 @@ This section is extremely important. A frequent source of frustration is deviati
 - When a doc is not being actively worked on, it may become stale. That is okay. It should be updated to not be stale when we start working on it in the future. In other words, if we are working on `A`, and `B` depends on `A`, we do not need to keep `B` up to date unless it's part of the discussion.
 - If a refactor is too large and should be broken up into smaller steps (e.g. "Chrome extension that informs mercury of changes" -> "Mercury receives events on a port" + "Chrome extension that sends events"), let the user know, and do so. The files should be "conceptually different".
 
+## Implementing a refactor doc
+
+Starting an implementation is not a commitment to finish it no matter what the code turns out to say. The doc was written so that no important decisions are left to the implementer, so when you hit something the doc did not anticipate, the decision is still the user's to make, not yours to improvise.
+
+- Stop and ask as soon as the doc stops matching the code. A step that assumed a type, a call site, or an ownership arrangement that is not there is a defect in the doc, and the fix goes into the doc first.
+- The signal to stop is complexity, above all. If a step that read as small turns out to pull in a redesign, a new shared-state primitive, a new trait, or a change to a crate the doc never mentioned, that is exactly the case to raise rather than absorb quietly. Say what exploded and what the options are, and let the user pick.
+- `git stash` the half-finished work while we settle it, if that leaves a cleaner tree to discuss against. Say what you stashed and what state it is in, so nothing is lost while the doc is being corrected.
+- Do not paper over the gap by choosing the easy version, leaving a TODO, or narrowing the step so it fits. Those hide the decision instead of surfacing it.
+
 ## Shared state and interior mutability
 
 `Arc`, `Rc`, `Mutex`, `RwLock`, `Cell`, `RefCell`, `OnceCell`/`OnceLock`, `lazy_static`, `thread_local!`, and atomics are almost always the wrong reach in freddie. The model is a pure function of state and event running on one thread; the state lives in one place, and a handler that wants a value already holds it. So when a design proposes any of these, three things happen every time:
