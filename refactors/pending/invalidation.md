@@ -63,7 +63,7 @@ fn post_foo(
 // pre_bar / post_bar likewise — whatever pre_bar returns is what post_bar receives.
 // Often that is () because the pair only needs timing, not carriage.
 
-// bind: one function; owned path; exclusive via claimed
+// bind: a post with no pre, plus claimed gate (deepest-wins)
 fn outer_handler(
     ev: &KeyEvent,
     node: Node<OuterPath, ()>,
@@ -95,7 +95,7 @@ For each pre/post/bind on the node, if the trigger matches:
 
 - `#[pre_post]` / `#[pre]`: call pre with `Node<&P, D>`, store `opt_i = Some(pre_return)`
 - `#[post]`: store `opt_i = Some(())`
-- `#[bind]`: store `opt_i = Some(ev)`
+- `#[bind]`: store `opt_i = Some(())` (same as `#[post]`; event stays the dispatch `&Event`)
 
 If the trigger misses, `opt_i = None`. Ascent never re-checks triggers and never changes which opts are `Some`.
 
@@ -138,33 +138,41 @@ A logging `#[pre_post(AnyKey => …)]` schedules and runs; it does not set `clai
 
 - `#[pre_post(trig => (pre, post))]` — user pre returns a value, user post receives it
 - `#[pre(trig => pre)]` — user pre returns a value, post is `drop` of that value
-- `#[post(trig => post)]` — pre is trigger → `()`, user post receives `()`
-- `#[bind(trig => handler)]` — pre is trigger → stash event, post is exclusive body
+- `#[post(trig => post)]` — pre is only the trigger check → `()`, user post receives `()`
+- `#[bind(trig => handler)]` — **exactly a `#[post]`**: no real pre, trigger check → `()`, body on the way up. The only addition is the exclusive gate on `claimed` (deepest-wins).
 
 Several pairs on one node: several independent `opt_i` (each its own concrete payload type), one `on_into_parent` closure.
 
-### `#[bind]` is one function
+### `#[bind]` is a post with no pre
+
+There is no third handler kind. `#[bind]` is sugar for a post that also claims the event:
 
 ```rust
-// user:
-fn handler(
-    ev: &E,
-    node: Node<P, ()>,
-    v: Validity,
-) -> (impl Into<Vec<Effect>>, P);
+#[bind(KeyA => outer_handler)]
+// is
+#[post(KeyA => exclusive(outer_handler))]
+```
 
-// framework (path owned at this level; posts already ran):
-if let Some(ev) = opt {
+```rust
+// user writes one function (same shape as any post that needs the event):
+fn outer_handler(
+    ev: &KeyEvent,
+    node: Node<OuterPath, ()>,
+    v: Validity,
+) -> (Vec<M::Effect>, OuterPath);
+
+// framework post half — event is still the dispatch &Event (no need to stash it as carriage):
+//   opt = Some(()) if KeyA matched on the way down
+if opt.is_some() {
     if !*claimed {
         *claimed = true;
-        let (out, path) = handler(ev, Node { parent: path, data: () }, v);
+        let (out, path) = outer_handler(ev, Node { parent: path, data: () }, v);
         Extend::extend(effs, out.into());
-        // path continues to the caller
     }
 }
 ```
 
-Deepest-wins is only among binds. pre_post posts at the same level all still run (before the bind).
+A plain `#[post]` always runs when scheduled. A `#[bind]` runs when scheduled **and** `!claimed`, then sets `claimed`. pre_post posts at the same level are not exclusive: they all still run (before the bind at that level).
 
 ### `only_if_valid`
 
@@ -344,12 +352,13 @@ impl Dispatch<M> for Outer {
             ::core::option::Option::None
         };
 
+        // bind = post with no pre: Option<()> only
         let opt_a = if let ::core::option::Option::Some(ev) =
             ::core::convert::TryFrom::try_from(event).ok()
         {
             let trigger = KeyA;
             if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                ::core::option::Option::Some(ev)
+                ::core::option::Option::Some(())
             } else {
                 ::core::option::Option::None
             }
@@ -399,11 +408,13 @@ impl Dispatch<M> for Outer {
         // ----- ascent: reshape + pre_post posts -----
         let mut path = inner_path.into_parent(effs);
 
-        // ----- bind last at this level -----
-        if let ::core::option::Option::Some(ev) = opt_a {
+        // ----- bind last at this level: post with () + claimed gate -----
+        // opt_a is Option<()>; event is still `event` (narrowed again or held from descent match)
+        if opt_a.is_some() {
             if !*claimed {
                 *claimed = true;
                 let v = path.validity_of_inner();
+                let ev = /* &KeyEvent from event, same TryFrom as the trigger check */;
                 let (out, p) = outer_handler(
                     ev,
                     ::bind::Node {
@@ -538,7 +549,7 @@ Mercury binds that today `ascend_mut` + `set_layer` wait on the reshape carrier 
 4. `Validity = Valid | Invalidated` only (tag).
 5. `claimed` is bind-only; logging never sets it.
 6. no pre → `()`. no post → `drop`.
-7. `#[bind]` = one function = schedule down + exclusive body up (after pre_post posts at that level).
+7. `#[bind]` = `#[post]` + `claimed` gate (no real pre; after pre_post posts at that level).
 8. Reshape of a field applied in that field's `into_parent` before posts at that level.
 
 ## Tests
