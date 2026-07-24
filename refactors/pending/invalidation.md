@@ -23,57 +23,62 @@ To thread ownership through several posts at one level, each post returns the pa
 #[derive(Bind)]
 #[node(parent = RootPath)]
 #[binds(M)]
-#[pre_post(Foo => (pre_foo, post_foo), Bar => (pre_bar, post_bar))]
-#[post(Qux => guard)]                // → (noop_pre, guard)
-#[bind(KeyA => outer_handler)]       // post + exclusive (ctx.claim()); has event
+#[pre_post(AnyKey => (snap_child_id, after_child))]
+#[post(AnyKey => only_if_valid(|p| &mut p.get_mut().return_home, rearm))]
+#[bind(KeyA => outer_handler)]
 struct Outer {
     #[resolve_into]
     inner: Inner,
+    return_home: AndReturnHome,
 }
 
 #[derive(Bind)]
 #[node(parent = OuterPath)]
 #[binds(M)]
 #[bind(KeyA => inner_handler)]
-struct Inner;
+struct Inner {
+    id: ChildId,
+}
 ```
 
 ```rust
-// pre: shared path. Return type is ordinary and concrete (here u32).
-fn pre_foo(ev: &FooEvent, node: Node<&OuterPath, ()>) -> u32 {
-    node.parent.get().hits
+// pre: shared path, read-only. Snapshot what the ascent may destroy.
+fn snap_child_id(ev: &KeyEvent, node: Node<&OuterPath, ()>) -> ChildId {
+    node.parent.get().inner.id
 }
 
-// pre_post post: pre return is a real argument (only when there was a pre).
-// Must not call ctx.claim() — that try-takes. Read validity() only unless exclusive.
-fn post_foo(
-    hits_before: u32,
+// post: owned path; first arg is pre's return. Must not call ctx.claim().
+// Pre carriage exists so Invalidated still has the id after the child field is gone.
+fn after_child(
+    id: ChildId,
     node: Node<OuterPath, ()>,
     ctx: &mut Context,
 ) -> (Vec<M::Effect>, OuterPath) {
     match ctx.validity() {
         Validity::Valid => {
-            let _ = hits_before;
+            // child field still Inner; id should match live value
+            let _ = (id, node.parent.get().inner.id);
             (vec![], node.parent)
         }
-        Validity::Invalidated => (vec![], node.parent),
+        Validity::Invalidated => {
+            // field no longer Inner; only the pre snapshot remains
+            (vec![log_destroyed(id)], node.parent)
+        }
     }
 }
 
-// #[post] alone: macro fills pre with noop_pre. User post is (node, ctx) —
-// not ((), node, ctx). Generate does not feed noop_pre's () into the body.
-fn guard(
-    node: Node<OuterPath, ()>,
-    ctx: &mut Context,
-) -> (Vec<M::Effect>, OuterPath) {
-    let _ = ctx.validity();
-    (vec![], node.parent)
+// #[post] alone: (noop_pre, body). User post is (node, ctx) — not ((), node, ctx).
+// sugar: project + act only when validity is Valid
+fn rearm(child: &mut AndReturnHome) -> Vec<MercuryEffect> {
+    let (guard, schedule) = arm_return_home();
+    child.guard = guard;
+    vec![schedule]
 }
 
-// well-known; macro drops this in for #[post] (and bind) when there is no pre
+// well-known; macro drops this in for #[post] / #[bind] when there is no pre
 fn noop_pre<E, P, D>(_ev: &E, _node: Node<&P, D>) {}
 
-// bind body: event + node + ctx. Gating is run_exclusive at the call site.
+// bind: event + node + ctx. Gating is run_exclusive at the call site.
 fn outer_handler(
     ev: &KeyEvent,
     node: Node<OuterPath, ()>,
@@ -85,14 +90,6 @@ fn inner_handler(
     node: Node<InnerPath, ()>,
     ctx: &mut Context,
 ) -> (Vec<M::Effect>, InnerPath) { ... }
-
-// sugar: act only when validity is Valid
-fn rearm(child: &mut AndReturnHome) -> Vec<MercuryEffect> {
-    let (guard, schedule) = arm_return_home();
-    child.guard = guard;
-    vec![schedule]
-}
-// #[post(AnyKey => only_if_valid(|p| &mut p.get_mut().return_home, rearm))]
 ```
 
 Expression positions work as today (`#handler(…)` splice). Pinned by `crates/bind/tests/expr_handler.rs`.
@@ -278,19 +275,21 @@ Call sites by expand shape:
 
 ```rust
 // #[pre_post] — thread real pre return
-if let Some(t0) = opt_0 {
-    let (path, effects) = run_post(path, ctx, |node, ctx| post_foo(t0, node, ctx));
+if let Some(id) = opt_0 {
+    let (path, effects) = run_post(path, ctx, |node, ctx| after_child(id, node, ctx));
     Extend::extend(effs, effects);
 }
 
 // #[post] — macro filled noop_pre; user body does not take ()
-if let Some(()) = opt_N {
-    let (path, effects) = run_post(path, ctx, |node, ctx| guard(node, ctx));
+if let Some(()) = opt_1 {
+    let (path, effects) = run_post(path, ctx, |node, ctx| {
+        only_if_valid(|p| &mut p.get_mut().return_home, rearm)(node, ctx)
+    });
     Extend::extend(effs, effects);
 }
 ```
 
-Sibling pre_posts never call `claim()`. Order at a level: pre_post posts first, then bind.
+Sibling posts never call `claim()`. Order at a level: pre_post / post attrs first (index order), then bind.
 
 ### `only_if_valid`
 
@@ -487,7 +486,7 @@ impl Dispatch<M> for Inner {
 }
 ```
 
-### Outer (two pre_posts + one bind)
+### Outer (pre_post + post + bind)
 
 ```rust
 impl Dispatch<M> for Outer {
@@ -501,12 +500,13 @@ impl Dispatch<M> for Outer {
         Self: 'a,
     {
         // ----- descent: schedule (opt_0, opt_1, opt_2 by attribute index) -----
+        // opt_0: #[pre_post(AnyKey => (snap_child_id, after_child))]
         let opt_0 = if let ::core::option::Option::Some(ev) =
             ::core::convert::TryFrom::try_from(event).ok()
         {
-            let trigger = Foo;
+            let trigger = AnyKey;
             if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                ::core::option::Option::Some(pre_foo(
+                ::core::option::Option::Some(snap_child_id(
                     ev,
                     ::bind::Node {
                         parent: &path,
@@ -520,12 +520,13 @@ impl Dispatch<M> for Outer {
             ::core::option::Option::None
         };
 
+        // opt_1: #[post(AnyKey => only_if_valid(..., rearm))] via noop_pre
         let opt_1 = if let ::core::option::Option::Some(ev) =
             ::core::convert::TryFrom::try_from(event).ok()
         {
-            let trigger = Bar;
+            let trigger = AnyKey;
             if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                ::core::option::Option::Some(pre_bar(
+                ::core::option::Option::Some(noop_pre(
                     ev,
                     ::bind::Node {
                         parent: &path,
@@ -539,12 +540,19 @@ impl Dispatch<M> for Outer {
             ::core::option::Option::None
         };
 
+        // opt_2: #[bind(KeyA => outer_handler)] via noop_pre
         let opt_2 = if let ::core::option::Option::Some(ev) =
             ::core::convert::TryFrom::try_from(event).ok()
         {
             let trigger = KeyA;
             if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                ::core::option::Option::Some(())
+                ::core::option::Option::Some(noop_pre(
+                    ev,
+                    ::bind::Node {
+                        parent: &path,
+                        data: (),
+                    },
+                ))
             } else {
                 ::core::option::Option::None
             }
@@ -559,13 +567,15 @@ impl Dispatch<M> for Outer {
             move |parent, ctx| {
                 let mut local = ::std::vec::Vec::new();
                 let mut path = parent;
-                if let ::core::option::Option::Some(t0) = opt_0 {
-                    let (p, e) = run_post(path, ctx, |node, ctx| post_foo(t0, node, ctx));
+                if let ::core::option::Option::Some(id) = opt_0 {
+                    let (p, e) = run_post(path, ctx, |node, ctx| after_child(id, node, ctx));
                     path = p;
                     ::core::iter::Extend::extend(&mut local, e);
                 }
-                if let ::core::option::Option::Some(t1) = opt_1 {
-                    let (p, e) = run_post(path, ctx, |node, ctx| post_bar(t1, node, ctx));
+                if let ::core::option::Option::Some(()) = opt_1 {
+                    let (p, e) = run_post(path, ctx, |node, ctx| {
+                        only_if_valid(|p| &mut p.get_mut().return_home, rearm)(node, ctx)
+                    });
                     path = p;
                     ::core::iter::Extend::extend(&mut local, e);
                 }
@@ -607,42 +617,28 @@ ASCENT  one &mut ctx (depth 0, claim None)
   Outer bind: run_exclusive via claim()
 ```
 
-### `KeyA` only
+### `KeyA` (matches AnyKey pre_post, AnyKey post, KeyA bind)
 
 ```text
-Inner claim() succeeds; Outer claim() fails and skips
+DESCENT: snap_child_id; schedule rearm post; schedule outer bind
+Inner claim() succeeds; may invalidate(d) and kill Inner
+ASCENT Outer into_parent:
+  after_child(id): Invalidated → log_destroyed(id) from pre snapshot
+  only_if_valid rearm: skipped (Invalidated); Drop cancels old guard
+Outer exclusive: claim already taken → skip
 ```
 
-### `Foo` only
+### `KeyB` (AnyKey only; no bind)
 
 ```text
-post_foo runs; never claim(); depth still 0 → Valid
-```
-
-### `Foo` and `KeyA`
-
-```text
-Inner exclusive may invalidate(d) and claim()
-Outer post_foo still runs (reads validity/claim state; does not claim())
-Outer exclusive skips
-```
-
-### Logging `AnyKey` pre_post
-
-```text
-runs; never claim()
+after_child: Valid → child still live
+rearm: Valid → new guard + schedule
+never claim()
 ```
 
 ## Rearm
 
-```rust
-#[post(AnyKey => only_if_valid(|p| &mut p.get_mut().return_home, rearm))]
-fn rearm(child: &mut AndReturnHome) -> Vec<MercuryEffect> {
-    let (guard, schedule) = arm_return_home();
-    child.guard = guard;
-    vec![schedule]
-}
-```
+`#[post(AnyKey => only_if_valid(|p| &mut p.get_mut().return_home, rearm))]` — see DX above.
 
 `validity() == Valid`: rearm. `Invalidated` (depth > 0): skip; `Drop` of the guard cancels. Does not call `claim()`.
 
