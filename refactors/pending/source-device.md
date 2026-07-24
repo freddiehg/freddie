@@ -384,22 +384,211 @@ freddie_hid_device = { path = "../freddie_hid_device", version = "0.0.1" }
 
 No feature gate. mercury depends on `freddie_keyboard` as today and keeps calling `intercept`.
 
+## Device-scoped key triggers (`freddie_keys`)
+
+The tap hands the consumer a key plus a device tag `T` (from categorize). Binding that pair lives in `freddie_keys`, next to `KeyPress::with`, not in figaro and not as a free tuple.
+
+### Types
+
+```rust
+// crates/freddie_keys/src/lib.rs  (additive)
+
+/// A key event tagged with the consumer's device identity `D`.
+///
+/// `D` is whatever `intercept_with_source`'s categorize returns (figaro: `DeviceClass`).
+/// The model event carries this (or a newtype of it); bare `Key` / `KeyPress` still
+/// match only the key half via a projecting `TryFrom` in the app.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DeviceKeyed<E, D> {
+    pub key: E,
+    pub device: D,
+}
+
+/// Restricts an inner key trigger to one or more device tags.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct OnDevice<T, D> {
+    pub devices: &'static [D],
+    pub inner: T,
+}
+
+impl<T, D> EventTrigger for OnDevice<T, D>
+where
+    T: EventTrigger,
+    D: PartialEq,
+{
+    type Event = DeviceKeyed<T::Event, D>;
+
+    fn is_matching(&self, event: &Self::Event) -> bool {
+        self.devices.iter().any(|d| d == &event.device)
+            && self.inner.is_matching(&event.key)
+    }
+}
+```
+
+`D` must be `PartialEq` for matching. For `MercuryTrigger` / accumulate it also needs `Eq + Hash + Copy` (or `Clone`) like every other trigger. No other trait: the consumer owns what a device *is*.
+
+### Constructors (key-side, primary sugar)
+
+Same chaining style as `Key::down().with(flags)`:
+
+```rust
+impl KeyPress {
+    /// Match only when the event's device is `device`.
+    #[must_use]
+    pub const fn on_device<D>(self, device: D) -> OnDevice<Self, D>
+    where
+        D: /* need as_slice for const one-element — see below */,
+    { ... }
+
+    /// Match when the event's device is any of `devices`.
+    #[must_use]
+    pub const fn on_devices<D>(self, devices: &'static [D]) -> OnDevice<Self, D> {
+        OnDevice { devices, inner: self }
+    }
+}
+
+// Same methods on Key and KeyChord (or a small extension trait implemented for all three).
+```
+
+Single-device `on_device` needs a `&'static [D]` of length 1. Two ways:
+
+```rust
+// Preferred when D is Copy and the consumer can offer static slices:
+//   Key::Escape.down().on_devices(&[DeviceClass::Desktop])
+// or DeviceClass provides as_slice():
+impl DeviceClass {
+    pub const fn as_slice(self) -> &'static [Self] { /* match -> &[Self::Desktop] etc. */ }
+}
+// then in freddie_keys, on_device only if we pass the slice from outside:
+
+impl KeyPress {
+    pub const fn on_device<D>(self, devices: &'static [D]) -> OnDevice<Self, D> {
+        // name is singular but takes a slice of one — awkward
+    }
+}
+```
+
+Cleaner API split:
+
+```rust
+impl KeyPress {
+    /// One or more devices. The general constructor.
+    pub const fn on_devices<D>(self, devices: &'static [D]) -> OnDevice<Self, D> {
+        OnDevice { devices, inner: self }
+    }
+}
+
+// Consumer (figaro) adds the singular sugar where D is known:
+impl DeviceClass {
+    pub const fn as_slice(self) -> &'static [Self] { ... }
+}
+impl KeyPress {
+    // cannot special-case DeviceClass in freddie_keys
+}
+// figaro extension or free fn:
+//   key.on_devices(DeviceClass::Desktop.as_slice())
+// or figaro trait:
+trait OnDeviceExt: Sized {
+    fn on_device<D: DeviceSlice>(self, d: D) -> OnDevice<Self, D::Item>;
+}
+```
+
+Simplest design that stays fully in freddie_keys without knowing `DeviceClass`:
+
+```rust
+impl KeyPress {
+    pub const fn on_devices<D>(self, devices: &'static [D]) -> OnDevice<Self, D> {
+        OnDevice { devices, inner: self }
+    }
+}
+impl Key {
+    pub const fn on_devices<D>(self, devices: &'static [D]) -> OnDevice<Self, D> { ... }
+}
+impl KeyChord {
+    pub const fn on_devices<D>(self, devices: &'static [D]) -> OnDevice<Self, D> { ... }
+}
+
+// Underlying constructor:
+impl<T, D> OnDevice<T, D> {
+    pub const fn new(devices: &'static [D], inner: T) -> Self {
+        Self { devices, inner }
+    }
+}
+```
+
+Singular `on_device(d)` requires either a trait in freddie_keys:
+
+```rust
+/// A device tag that can form a one-element static slice for `on_device`.
+pub trait AsDeviceSlice: Sized + 'static {
+    fn as_slice(self) -> &'static [Self];
+}
+
+impl KeyPress {
+    pub const fn on_device<D: AsDeviceSlice>(self, device: D) -> OnDevice<Self, D> {
+        OnDevice { devices: device.as_slice(), inner: self }
+    }
+}
+```
+
+Figaro implements `AsDeviceSlice` for `DeviceClass`. That is the trait `D` must impl for the singular method; for `on_devices` only `PartialEq` (and trigger hash bounds) are required.
+
+### Bind lines
+
+```rust
+// any device (bare key trigger; Event = KeyEvent via projecting TryFrom)
+Key::KeyN.down() => to_nav
+
+// one device
+Key::Escape.down().on_device(DeviceClass::Desktop) => foo
+
+// several devices
+Key::KeyH.down().on_devices(&[DeviceClass::Desktop, DeviceClass::Laptop]) => tile_left
+```
+
+Handlers for `OnDevice` receive `&DeviceKeyed<KeyEvent, D>`; bare keys still receive `&KeyEvent`.
+
+### App wiring (figaro summary)
+
+```rust
+// categorize returns DeviceClass (= D)
+// channel / model:
+type DeviceKey = DeviceKeyed<KeyEvent, DeviceClass>; // or newtype
+enum MercuryEvent {
+    Key(DeviceKeyed<KeyEvent, DeviceClass>),
+    Foreground(...),
+}
+
+// TryFrom projects .key for bare Key/KeyPress; full DeviceKeyed for OnDevice
+// MercuryTrigger gains OnDevice(OnDevice<KeyPress, DeviceClass>) etc. From impls
+
+intercept_with_source(
+    categorize, // -> DeviceClass
+    move |(key, device)| {
+        let _ = event_tx.send(MercuryEvent::Key(DeviceKeyed { key, device }));
+        None
+    },
+);
+```
+
+Full figaro bind policy (which keys are desktop-only, tiling, …) stays in `device-conditioned-keymaps.md`. This doc owns the generic combinator and the tap.
+
 ## Hand-off to figaro
 
-This doc ends at `(KeyEvent, T)` on the callback, with figaro supplying `T = DeviceClass` via categorize. Model events and keymap gates are `device-conditioned-keymaps.md`.
+This doc ends at: `(KeyEvent, T)` from the tap, plus `DeviceKeyed` / `OnDevice` / `on_device(s)` in `freddie_keys`. Figaro supplies `T = DeviceClass`, implements `AsDeviceSlice`, and wires the model — `device-conditioned-keymaps.md`.
 
 ```rust
 // figaro (summary)
 intercept_with_source(
     |src| match src {
         None => DeviceClass::Injected,
-        Some(Err((_id, _failure))) => DeviceClass::Other, // had an id, resolve failed
+        Some(Err((_id, _failure))) => DeviceClass::Other,
         Some(Ok(d)) if d.built_in => DeviceClass::Laptop,
         Some(Ok(d)) if d.vendor_id == 0x29ea && d.product_id == 0x0360 => DeviceClass::Desktop,
         Some(Ok(_)) => DeviceClass::Other,
     },
-    |(key, class)| {
-        let _ = raw_tx.send((key, class));
+    |(key, device)| {
+        let _ = event_tx.send(MercuryEvent::Key(DeviceKeyed { key, device }));
         None
     },
 );
@@ -422,5 +611,6 @@ intercept_with_source(
 Each step is independently shippable.
 
 1. `freddie_hid_device` leaf: `SourceId`, `source_of`, `resolve`, `DeviceInfo`, `prop_*` as above. Workspace member. Demo: listen tap, print `resolve(source_of(e))` per key. No `freddie_keyboard` change.
-2. `freddie_keyboard`: extract `run_tap`, add generic `intercept_with_source` with categorize + `HashMap<SourceId, T>`. `intercept` stays the thin wrapper. mercury still calls `intercept`.
-3. Stop. Figaro work is the other doc (`device-conditioned-keymaps.md`).
+2. `freddie_keys`: `DeviceKeyed`, `OnDevice`, `AsDeviceSlice`, `on_device` / `on_devices` on `Key` / `KeyPress` / `KeyChord`. Unit tests for `is_matching` (no macOS). mercury unaffected (does not use them).
+3. `freddie_keyboard`: extract `run_tap`, add generic `intercept_with_source` with categorize + `HashMap<SourceId, T>`. `intercept` stays the thin wrapper. mercury still calls `intercept`.
+4. Stop. Figaro work is the other doc (`device-conditioned-keymaps.md`): `DeviceClass: AsDeviceSlice`, model `DeviceKeyed`, dual `TryFrom`, daemon wire-up, device-scoped binds.
