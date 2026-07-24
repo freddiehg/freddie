@@ -11,7 +11,7 @@ The loop should be event-driven: asleep at no cost when nothing is happening, an
 
 ## The wake mechanism is confirmed
 
-The design stands on one platform fact, verified in a scratch spike: a posted application-defined `NSEvent`, from a thread other than main, makes a main-thread `nextEventMatchingMask_untilDate_inMode_dequeue` return promptly. The spike parked the main thread on a 5-second deadline and, from a worker, posted an app-defined event with subtype `1` three times at 500ms spacing; `nextEventMatchingMask` returned at 503ms, 503ms, and 501ms — each posted event, not the deadline — carrying `NSEventType::ApplicationDefined` and `subtype` `Some(NSEventSubtype(1))`. `postEvent:atStart:` is callable off the main thread through objc2 (it takes `&self`, no `MainThreadMarker`), constructing the event off-main works, and the objc2 method names below compile as written. So `nextEventMatchingMask(distantFuture)` blocks until a real event or a posted wake, each posted wake breaks it, and a wake is told apart from a real event by its type and subtype — which is all the design needs.
+The design stands on one platform fact, verified in a scratch spike: a posted application-defined `NSEvent`, from a thread other than main, makes a main-thread `nextEventMatchingMask_untilDate_inMode_dequeue` return promptly. The spike parked the main thread on a 5-second deadline and, from a worker, posted an app-defined event with subtype `1` three times at 500ms spacing; `nextEventMatchingMask` returned at 503ms, 503ms, and 501ms — each posted event, not the deadline — carrying `NSEventType::ApplicationDefined` and `subtype` `NSEventSubtype(1)`. `postEvent:atStart:` is callable off the main thread through objc2 (it takes `&self`, no `MainThreadMarker`), constructing the event off-main works, and the objc2 method names below compile as written. So `nextEventMatchingMask(distantFuture)` blocks until a real event or a posted wake, each posted wake breaks it, and a wake is told apart from a real event by its type and subtype — which is all the design needs.
 
 ## The wake handle
 
@@ -137,7 +137,7 @@ impl<T> WakingSender<T> {
 
 ## Construction, `Stopper`, and the loop
 
-The wake handle needs `NSApp`, so `main_loop` is built on the main thread and hands out the handle. It takes a `MainThreadMarker` and returns the waker beside the loop and the stopper.
+The wake handle needs `NSApp`, so `main_loop` is built on the main thread and hands out the handle. It gets the main-thread marker internally, the way `init_menu_bar_app` does, and returns the waker beside the loop and the stopper.
 
 `main_loop`, before:
 
@@ -156,7 +156,8 @@ pub fn main_loop() -> (MainLoop, Stopper) {
 after:
 
 ```rust
-pub fn main_loop(mtm: MainThreadMarker) -> (MainLoop, Stopper, MainWaker) {
+pub fn main_loop() -> (MainLoop, Stopper, MainWaker) {
+    let mtm = MainThreadMarker::new().expect("main_loop must be called on the main thread");
     let waker = MainWaker {
         app_handle: AppHandle::new(&NSApplication::sharedApplication(mtm)),
     };
@@ -266,9 +267,9 @@ and the predicate, beside `is_main_thread`:
 ```rust
 /// Whether this is one of the events posted only to wake the loop.
 fn is_wake_event(event: &NSEvent) -> bool {
-    // The spike confirmed `subtype()` returns `Option<NSEventSubtype>`, a newtype over the `i16`.
+    // `subtype()` returns `NSEventSubtype`, a newtype over the `i16` the event was posted with.
     event.r#type() == NSEventType::ApplicationDefined
-        && event.subtype() == Some(NSEventSubtype(WAKE_SUBTYPE))
+        && event.subtype() == NSEventSubtype(WAKE_SUBTYPE)
 }
 ```
 
@@ -295,13 +296,12 @@ The off-main tests exist because `main_loop` touched no `NSApp`. It does now, so
 after:
 
 ```rust
-    let mtm = MainThreadMarker::new().expect("daemon::run is on the main thread");
-    let (main_loop, stopper, waker) = freddie_main_loop::main_loop(mtm);
+    let (main_loop, stopper, waker) = freddie_main_loop::main_loop();
     // ...
     let (title_tx, title_rx) = waker.channel::<&'static str>();
 ```
 
-`title_tx` is now a `WakingSender<&'static str>`; its `send` has the same signature as `mpsc::Sender::send`, so the effect loop's send sites and the `title_rx.try_iter()` drain in `on_wake` are unchanged. `init_menu_bar_app` still runs first, so `NSApp` exists when `main_loop(mtm)` builds the handle. The overlay change takes the same `waker`.
+`title_tx` is now a `WakingSender<&'static str>`; its `send` has the same signature as `mpsc::Sender::send`, so the effect loop's send sites (threaded through `serve` and `run_effect_loop`) and the `title_rx.try_iter()` drain in `on_wake` are unchanged. `init_menu_bar_app` still runs first, so `NSApp` exists when `main_loop` builds the handle. The overlay change takes the same `waker`.
 
 ## What this buys
 
