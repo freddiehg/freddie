@@ -1,11 +1,11 @@
-# Context as a generic
+# Ascent context as a generic
 
 Not done. Stub. Companion to `invalidation.md`.
 
-`invalidation.md` currently fixes post context as a concrete bag:
+`invalidation.md` currently fixes post context as a concrete `AscentContext` bag:
 
 ```rust
-// invalidation_depth: u32               — lives on Context; step_up each into_parent; invalidate(d) raises it
+// invalidation_depth: u32               — lives on AscentContext; step_up each into_parent; invalidate(d) raises it
 // claim: Option<Claimed>   — claim() try-take
 // validity(&self) -> Validity  — getter over invalidation_depth == 0 (not stored)
 ```
@@ -39,12 +39,12 @@ pub trait Dispatch<M: Bindings, C = ()>: Place {
 // mercury-specific — not in bind
 pub struct Claimed;
 
-pub struct MercuryContext {
+pub struct MercuryAscentContext {
     invalidation_depth: u32,
     claim: Option<Claimed>,
 }
 
-impl MercuryContext {
+impl MercuryAscentContext {
     pub fn invalidation_depth(&self) -> u32 { self.invalidation_depth }
     /// Getter over invalidation_depth. Not a stored field.
     pub fn validity(&self) -> Validity { /* invalidation_depth == 0 → Valid else Invalidated */ }
@@ -54,7 +54,7 @@ impl MercuryContext {
 }
 ```
 
-`exclusive` and rearm's `only_if_valid` bound on `MercuryContext` (or on traits it implements), not on a universal `bind::Context`.
+`exclusive` and rearm's `only_if_valid` bound on `MercuryAscentContext` (or on traits it implements), not on a universal `bind::AscentContext`.
 
 ## Why generic
 

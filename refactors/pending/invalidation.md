@@ -2,7 +2,7 @@
 
 Not done. Standalone.
 
-Descent schedules which pre/posts/binds will run. That set is final. Ascent runs every scheduled post leaf to root; mutation is free. **Context is constructed at the leaf turnaround** (not during descent) and one `&mut Context` is threaded up the ascent and mutated in place. **Context holds `invalidation_depth`** (remaining `into_parent` hops still inside a destroyed region) and **claim** (exclusive try-take). Posts read validity through the getter **`validity()`** — not a stored field; pure view of `invalidation_depth == 0`. `#[bind]` is a post with no pre, gated by `ctx.claim()`.
+Descent schedules which pre/posts/binds will run. That set is final. Ascent runs every scheduled post leaf to root; mutation is free. **AscentContext is constructed at the leaf turnaround** (not during descent) and one `&mut AscentContext` is threaded up the ascent and mutated in place. **AscentContext holds `invalidation_depth`** (remaining `into_parent` hops still inside a destroyed region) and **claim** (exclusive try-take). Posts read validity through the getter **`validity()`** — not a stored field; pure view of `invalidation_depth == 0`. `#[bind]` is a post with no pre, gated by `ctx.claim()`.
 
 **Generate stays thin.** The derive only schedules `opt_N` and calls helpers (`run_post`, `run_exclusive`, `into_parent`). Invalidation-depth math, claim try-take, and sink extension live in ordinary functions in `bind` / laserbeam — not hand-rolled in every expanded `Dispatch` impl.
 
@@ -52,7 +52,7 @@ fn snap_child_id(ev: &KeyEvent, node: Node<&OuterPath, ()>) -> ChildId {
 fn after_child(
     id: ChildId,
     node: Node<OuterPath, ()>,
-    ctx: &mut Context,
+    ctx: &mut AscentContext,
 ) -> (Vec<M::Effect>, OuterPath) {
     match ctx.validity() {
         Validity::Valid => {
@@ -82,13 +82,13 @@ fn noop_pre<E, P, D>(_ev: &E, _node: Node<&P, D>) {}
 fn outer_handler(
     ev: &KeyEvent,
     node: Node<OuterPath, ()>,
-    ctx: &mut Context,
+    ctx: &mut AscentContext,
 ) -> (Vec<M::Effect>, OuterPath) { ... }
 
 fn inner_handler(
     ev: &KeyEvent,
     node: Node<InnerPath, ()>,
-    ctx: &mut Context,
+    ctx: &mut AscentContext,
 ) -> (Vec<M::Effect>, InnerPath) { ... }
 ```
 
@@ -121,18 +121,18 @@ No reshape on the descent. Whether pre may also return now-effects is open; gene
 
 ### Execute on the way up (all scheduled posts run)
 
-Leaf to root. **Context is constructed when the ascent begins** (leaf turnaround: no further child to enter). It does not exist during descent. One object is then threaded up and mutated in place.
+Leaf to root. **AscentContext is constructed when the ascent begins** (leaf turnaround: no further child to enter). It does not exist during descent. One object is then threaded up and mutated in place.
 
-`Context` is a small bag with two fields (same pointer for the whole ascent):
+`AscentContext` is a small bag with two fields (same pointer for the whole ascent):
 
 | field | rule |
 |---|---|
-| `invalidation_depth: u32` | Remaining hops inside a destroyed region. Lives **on Context**. A kill that climbs N `into_parent`s does `invalidation_depth = invalidation_depth.max(N)`; each later framework `into_parent` on the ascent calls `step_up` (decrement). `0` means valid. |
+| `invalidation_depth: u32` | Remaining hops inside a destroyed region. Lives **on AscentContext**. A kill that climbs N `into_parent`s does `invalidation_depth = invalidation_depth.max(N)`; each later framework `into_parent` on the ascent calls `step_up` (decrement). `0` means valid. |
 | `claim: Option<Claimed>` | Ascent-global, monotone. `claim()` try-takes. Once taken, every shallower exclusive fails. |
 
 There is no stored `Validity` flag and no per-level context. The binary read is a getter: `fn validity(&self) -> Validity` over `invalidation_depth == 0`. Binary `set_validity(Valid|Invalidated)` per level is wrong: not every level is invalidated, and a flag does not track how far destruction reaches.
 
-Descent has no Context — it is not constructed yet. Only the ascent has one, and mutates it.
+Descent has no AscentContext — it is not constructed yet. Only the ascent has one, and mutates it.
 
 ### `d` is the into_parent chain length
 
@@ -143,7 +143,7 @@ A post or exclusive that destroys a spine does so by recovering ancestors with s
 let path = path.into_parent(/* … */); // hop 1
 let path = path.into_parent(/* … */); // hop 2
 // …
-// equivalent effect on Context:
+// equivalent effect on AscentContext:
 ctx.invalidation_depth = ctx.invalidation_depth.max(2); // invalidate(2)
 ```
 
@@ -168,13 +168,13 @@ enum Validity {
 #[derive(Clone, Copy)]
 struct Claimed;
 
-struct Context {
+struct AscentContext {
     /// Remaining into_parent hops still inside the destroyed region. 0 = valid.
     invalidation_depth: u32,
     claim: Option<Claimed>,
 }
 
-impl Context {
+impl AscentContext {
     fn invalidation_depth(&self) -> u32 {
         self.invalidation_depth
     }
@@ -217,10 +217,10 @@ impl Context {
 ### How the fields move
 
 ```text
-DESCENT: schedule opt_N only — no Context (not yet constructed)
+DESCENT: schedule opt_N only — no AscentContext (not yet constructed)
 
 ASCENT begins at leaf:
-  construct Context { invalidation_depth: 0, claim: None }
+  construct AscentContext { invalidation_depth: 0, claim: None }
   exclusive kills spine with N× into_parent → invalidation_depth = invalidation_depth.max(N)
   at each level leaf → root:
     reshape if any (same hop rule if applied here)
@@ -239,7 +239,7 @@ above:          invalidation_depth 0 → Valid
 
 Three-hop climb (`into_parent`×3) → `invalidation_depth.max(3)`, same pattern for three levels then Valid above.
 
-`claim` never decrements. Invalidation depth only moves via `invalidate` (`max` with hop count) / `step_up`, and the counter lives on Context for the whole ascent.
+`claim` never decrements. Invalidation depth only moves via `invalidate` (`max` with hop count) / `step_up`, and the counter lives on AscentContext for the whole ascent.
 
 Posts return `(Vec<Effect>, P)` only.
 
@@ -275,15 +275,15 @@ Several attrs on one node: `opt_0`, `opt_1`, … (indexed; each pair has its own
 fn outer_handler(
     ev: &KeyEvent,
     node: Node<OuterPath, ()>,
-    ctx: &mut Context,
+    ctx: &mut AscentContext,
 ) -> (Vec<M::Effect>, OuterPath);
 
 // Prefer naming: exclusive (role). if_unclaimed is the gate only and does not
 // by itself say that a successful take mutates — claim() does that.
 fn run_exclusive<P>(
     path: P,
-    ctx: &mut Context,
-    body: impl FnOnce(Node<P, ()>, &mut Context) -> (Vec<Effect>, P),
+    ctx: &mut AscentContext,
+    body: impl FnOnce(Node<P, ()>, &mut AscentContext) -> (Vec<Effect>, P),
 ) -> (P, Vec<Effect>) {
     match ctx.claim() {
         None => (path, Vec::new()), // already taken
@@ -318,7 +318,7 @@ Sibling posts never call `claim()`. Order at a level: pre_post / post attrs firs
 fn only_if_valid<P, N>(
     project: impl Fn(&mut P) -> &mut N,
     f: impl FnOnce(&mut N) -> Vec<Effect>,
-) -> impl FnOnce(Node<P, ()>, &mut Context) -> (Vec<Effect>, P) {
+) -> impl FnOnce(Node<P, ()>, &mut AscentContext) -> (Vec<Effect>, P) {
     move |mut node, ctx| {
         let effects = match ctx.validity() {
             Validity::Valid => f(project(&mut node.parent)),
@@ -346,12 +346,12 @@ pub enum Validity {
 
 pub struct Claimed;
 
-pub struct Context {
+pub struct AscentContext {
     invalidation_depth: u32,
     claim: Option<Claimed>,
 }
 
-impl Context {
+impl AscentContext {
     pub fn invalidation_depth(&self) -> u32 {
         self.invalidation_depth
     }
@@ -386,11 +386,11 @@ impl Context {
 }
 
 pub struct PathMut<N, P, F> {
-    on_into_parent: F, // FnOnce(P, &mut Context) -> (P, Vec<Effect>)
+    on_into_parent: F, // FnOnce(P, &mut AscentContext) -> (P, Vec<Effect>)
 }
 
 // empty on_into_parent when this level has no scheduled posts
-fn empty_on_into_parent<P>(parent: P, _ctx: &mut Context) -> (P, Vec<Effect>) {
+fn empty_on_into_parent<P>(parent: P, _ctx: &mut AscentContext) -> (P, Vec<Effect>) {
     (parent, Vec::new())
 }
 
@@ -399,10 +399,10 @@ fn noop_pre<E, P, D>(_ev: &E, _node: Node<&P, D>) {}
 
 impl<N, P, F> PathMut<N, P, F>
 where
-    F: FnOnce(P, &mut Context) -> (P, Vec<Effect>),
+    F: FnOnce(P, &mut AscentContext) -> (P, Vec<Effect>),
 {
     /// Reshape may invalidate(d); run posts; step_up; return parent.
-    pub fn into_parent(self, sink: &mut Vec<Effect>, ctx: &mut Context) -> P {
+    pub fn into_parent(self, sink: &mut Vec<Effect>, ctx: &mut AscentContext) -> P {
         // if reshape applied here: ctx.invalidate(depth_for_this_kill)
         let (parent, post_effs) = (self.on_into_parent)(self.parent, ctx);
         Extend::extend(sink, post_effs);
@@ -412,13 +412,13 @@ where
 }
 
 pub trait Dispatch<M: Bindings>: Place {
-    /// Descent has no Context. Leaf constructs it at turnaround; return it with the path
+    /// Descent has no AscentContext. Leaf constructs it at turnaround; return it with the path
     /// so each parent can continue the ascent with the same object.
     fn dispatch<'a>(
         path: Self::Path<'a>,
         event: &M::Event,
         effs: &mut Vec<M::Effect>,
-    ) -> (Self::Path<'a>, Context)
+    ) -> (Self::Path<'a>, AscentContext)
     where
         Self: 'a;
 }
@@ -429,7 +429,7 @@ where
     N: Dispatch<M> + 'a,
 {
     let mut effs = Vec::new();
-    // Context is constructed inside N::dispatch at the leaf turnaround, not here.
+    // AscentContext is constructed inside N::dispatch at the leaf turnaround, not here.
     let (_path, ctx) = <N as Dispatch<M>>::dispatch(path, event, &mut effs);
     // Do not call claim() again (try-take). Framework observes stored claim field.
     if /* ctx.claim field is Some */ || !effs.is_empty() {
@@ -440,7 +440,7 @@ where
 }
 ```
 
-Handlers return `(Vec<Effect>, P)`. One `Context` for the ascent, built at the leaf. Generate only calls helpers — no hand-rolled invalidation_depth or claim logic in expanded node impls.
+Handlers return `(Vec<Effect>, P)`. One `AscentContext` for the ascent, built at the leaf. Generate only calls helpers — no hand-rolled invalidation_depth or claim logic in expanded node impls.
 
 ## Generated code
 
@@ -451,16 +451,16 @@ fn noop_pre<E, P, D>(_ev: &E, _node: Node<&P, D>) {}
 
 fn run_post<P>(
     path: P,
-    ctx: &mut Context,
-    body: impl FnOnce(Node<P, ()>, &mut Context) -> (Vec<Effect>, P),
+    ctx: &mut AscentContext,
+    body: impl FnOnce(Node<P, ()>, &mut AscentContext) -> (Vec<Effect>, P),
 ) -> (P, Vec<Effect>) {
     body(Node { parent: path, data: () }, ctx)
 }
 
 fn run_exclusive<P>(
     path: P,
-    ctx: &mut Context,
-    body: impl FnOnce(Node<P, ()>, &mut Context) -> (Vec<Effect>, P),
+    ctx: &mut AscentContext,
+    body: impl FnOnce(Node<P, ()>, &mut AscentContext) -> (Vec<Effect>, P),
 ) -> (P, Vec<Effect>) {
     match ctx.claim() {
         None => (path, Vec::new()), // already taken
@@ -477,11 +477,11 @@ impl Dispatch<M> for Inner {
         path: <Inner as Place>::Path<'a>,
         event: &M::Event,
         effs: &mut Vec<M::Effect>,
-    ) -> (<Inner as Place>::Path<'a>, Context)
+    ) -> (<Inner as Place>::Path<'a>, AscentContext)
     where
         Self: 'a,
     {
-        // ----- descent: schedule only; no Context -----
+        // ----- descent: schedule only; no AscentContext -----
         // index 0: #[bind(KeyA => inner_handler)]
         let opt_0 = if let ::core::option::Option::Some(ev) =
             ::core::convert::TryFrom::try_from(event).ok()
@@ -502,8 +502,8 @@ impl Dispatch<M> for Inner {
             ::core::option::Option::None
         };
 
-        // ----- ascent begins: construct Context -----
-        let mut ctx = Context {
+        // ----- ascent begins: construct AscentContext -----
+        let mut ctx = AscentContext {
             invalidation_depth: 0,
             claim: None,
         };
@@ -530,11 +530,11 @@ impl Dispatch<M> for Outer {
         mut path: <Outer as Place>::Path<'a>,
         event: &M::Event,
         effs: &mut Vec<M::Effect>,
-    ) -> (<Outer as Place>::Path<'a>, Context)
+    ) -> (<Outer as Place>::Path<'a>, AscentContext)
     where
         Self: 'a,
     {
-        // ----- descent: schedule only; no Context -----
+        // ----- descent: schedule only; no AscentContext -----
         // opt_0: #[pre_post(AnyKey => (snap_child_id, after_child))]
         let opt_0 = if let ::core::option::Option::Some(ev) =
             ::core::convert::TryFrom::try_from(event).ok()
@@ -618,7 +618,7 @@ impl Dispatch<M> for Outer {
             },
         );
 
-        // child dispatch: leaf constructs Context; returned for our ascent
+        // child dispatch: leaf constructs AscentContext; returned for our ascent
         let (inner_path, mut ctx) =
             <Inner as ::bind::Dispatch<M>>::dispatch(inner_path, event, effs);
 
@@ -643,11 +643,11 @@ Same indexed opts. Expands to `(noop_pre, post)`. User body is `(node, ctx)` (no
 ## Walk
 
 ```text
-DESCENT  (no Context)
+DESCENT  (no AscentContext)
   opt_0? opt_1? opt_2?
   move path into child
 
-ASCENT  leaf constructs Context { invalidation_depth: 0, claim: None }
+ASCENT  leaf constructs AscentContext { invalidation_depth: 0, claim: None }
   Inner bind: may invalidate(d); run_exclusive via claim()
   Outer into_parent: posts see validity() from invalidation_depth; step_up
   Outer bind: run_exclusive via claim()
@@ -698,9 +698,9 @@ Do not add an unused sink before posts exist. Same change: `F` on `PathMut`, `in
 
 Crate-private / sealed. With P1 or immediately after.
 
-### P3 — full ascent + one `&mut Context` (no user posts yet)
+### P3 — full ascent + one `&mut AscentContext` (no user posts yet)
 
-Drop `Break`. Always return path. Leaf constructs `Context` at turnaround (`invalidation_depth` 0, claim None); return `(path, ctx)` so parents continue the ascent. Exclusive via `ctx.claim()` try-take. Mercury `ascend_mut`+`set_layer` waits on reshape carrier — no `complete` token. Bind tests first if mercury blocks.
+Drop `Break`. Always return path. Leaf constructs `AscentContext` at turnaround (`invalidation_depth` 0, claim None); return `(path, ctx)` so parents continue the ascent. Exclusive via `ctx.claim()` try-take. Mercury `ascend_mut`+`set_layer` waits on reshape carrier — no `complete` token. Bind tests first if mercury blocks.
 
 ### P4 — `#[bind]` through `run_exclusive` only
 
@@ -728,9 +728,9 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 1. Descent schedules; that set is final. Generate: `opt_0`, `opt_1`, … only.
 2. Ascent runs every scheduled post; mutation does not cancel them.
 3. Pre: shared path. Post: owned path, return `(Vec<Effect>, P)`.
-4. Context is constructed at the leaf turnaround; none during descent. One object for the ascent; posts take `&mut Context`.
+4. AscentContext is constructed at the leaf turnaround; none during descent. One object for the ascent; posts take `&mut AscentContext`.
 5. `claim(&mut self) -> Option<Claimed>` try-takes. Not a getter. Not a parallel flag.
-6. Context holds `invalidation_depth: u32`. A kill's N× `into_parent` does `invalidation_depth = invalidation_depth.max(N)`. Framework ascent `step_up` decrements. Getter `validity(&self) -> Validity` is `invalidation_depth == 0`.
+6. AscentContext holds `invalidation_depth: u32`. A kill's N× `into_parent` does `invalidation_depth = invalidation_depth.max(N)`. Framework ascent `step_up` decrements. Getter `validity(&self) -> Validity` is `invalidation_depth == 0`.
 7. Logging never calls `claim()`. Only exclusive does.
 8. Every pre/post attr is a pre_post pair. Missing pre is well-known `noop_pre` (macro drops it in).
 9. No `#[pre]` alone. A pre exists only as the first half of `#[pre_post]`.
