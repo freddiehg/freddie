@@ -127,19 +127,36 @@ Leaf to root. One **`&mut Context`** for the whole ascent — same object, mutat
 
 | field | rule |
 |---|---|
-| `depth: u32` | Remaining hops inside a destroyed region. Lives **on Context**. `invalidate(d)` raises it (max with current); each `into_parent` calls `step_up` (decrement). `0` means valid. |
+| `depth: u32` | Remaining hops inside a destroyed region. Lives **on Context**. A kill that climbs N `into_parent`s does `depth = depth.max(N)`; each later framework `into_parent` on the ascent calls `step_up` (decrement). `0` means valid. |
 | `claim: Option<Claimed>` | Ascent-global, monotone. `claim()` try-takes. Once taken, every shallower exclusive fails. |
 
 There is no stored `Validity` flag and no per-level context. The binary read is a getter: `fn validity(&self) -> Validity` over `depth == 0`. Binary `set_validity(Valid|Invalidated)` per level is wrong: not every level is invalidated, and a flag does not track how far destruction reaches.
 
 Descent does not touch Context. Only the ascent mutates it.
 
-At each level:
+### `d` is the into_parent chain length
 
-1. Apply reshape if scheduled; may `invalidate(d)` (depth rule open).
+A post or exclusive that destroys a spine does so by recovering ancestors with successive `into_parent` calls (today's `ascend_mut` + `set_layer` shape). **`d` is how many hops that chain took.**
+
+```rust
+// handler climbs two levels to replace a field at the owner
+let path = path.into_parent(/* … */); // hop 1
+let path = path.into_parent(/* … */); // hop 2
+// …
+// equivalent effect on Context:
+ctx.depth = ctx.depth.max(2); // invalidate(2)
+```
+
+`into_parent().into_parent()` → `depth.max(2)`. One hop → `depth.max(1)`. Concurrent kills: still `max` (a deeper kill is not shrunk by a shallower one).
+
+`invalidate(d)` is that assignment. Whether the hop count is applied inside each kill-side `into_parent` or once at the end of the chain is an implementation detail; the observable rule is `depth = depth.max(N)` for an N-hop climb.
+
+At each level of the **framework** ascent (after the handler returns):
+
+1. Apply reshape if scheduled for this level (may already have raised depth via the hop rule above).
 2. Run scheduled posts (`&mut ctx`); they see **current** `ctx.depth` / `validity()`.
 3. Exclusive: `match ctx.claim() { None => skip; Some(Claimed) => body }` — try-take, not a separate getter + set.
-4. `step_up` when leaving the level (`into_parent`).
+4. `step_up` when leaving the level (framework `into_parent` after this level's posts).
 
 ```rust
 #[derive(Clone, Copy)]
@@ -205,24 +222,27 @@ ctx: depth = 0, claim = None
 DESCENT: schedule opt_N only — Context untouched
 
 ASCENT leaf → root:
-  exclusive may invalidate(d) when it kills a spine of height d
+  exclusive kills spine with N× into_parent → depth = depth.max(N)
   at each level:
-    reshape if any; may invalidate(…)
+    reshape if any (same hop rule if applied here)
     posts: read ctx.depth / validity()
     exclusive: match ctx.claim() { None => skip; Some(_) => h(...) }
     step_up: depth = depth.saturating_sub(1)
 ```
 
-Example: exclusive three hops below the reshape owner calls `invalidate(3)`.
+Example: exclusive two levels below the owner does `into_parent().into_parent()` → `depth.max(2)`.
 
 ```text
-level +1 posts: depth 3 → Invalidated; step_up → 2
-level +2 posts: depth 2 → Invalidated; step_up → 1
-level +3 owner: depth 1 → Invalidated; step_up → 0
+// after the kill, still at the leaf for sibling posts? or already returned path at owner —
+// remaining framework ascent from the first hop still inside the zone:
+level +1 posts: depth 2 → Invalidated; step_up → 1
+level +2 owner: depth 1 → Invalidated; step_up → 0
 above:          depth 0 → Valid
 ```
 
-`claim` never decrements. Depth only moves via `invalidate` / `step_up`, and the counter lives on Context the whole time.
+Three-hop climb (`into_parent`×3) → `depth.max(3)`, same pattern for three levels then Valid above.
+
+`claim` never decrements. Depth only moves via `invalidate` (`max` with hop count) / `step_up`, and the counter lives on Context the whole time.
 
 Posts return `(Vec<Effect>, P)` only.
 
@@ -686,7 +706,7 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 3. `exclusive` sugar naming settled (`exclusive` preferred over `if_unclaimed`)
 4. `#[pre_post]`
 5. mercury rearm; drop handle discriminant rearm
-6. reshape carrier (open) — including rule for `d` in `invalidate(d)`
+6. reshape carrier (open) — hop count `d` is chain length of `into_parent`s
 7. generic `C` — `context-as-generic.md`
 
 ### Not prefactors
@@ -703,7 +723,7 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 3. Pre: shared path. Post: owned path, return `(Vec<Effect>, P)`.
 4. One `&mut Context` for the ascent. Posts take `&mut Context`.
 5. `claim(&mut self) -> Option<Claimed>` try-takes. Not a getter. Not a parallel flag.
-6. Context holds `depth: u32`. `invalidate(d)` / `step_up` move it. Getter `validity(&self) -> Validity` is `depth == 0`. Not a stored Validity flag.
+6. Context holds `depth: u32`. A kill's N× `into_parent` does `depth = depth.max(N)`. Framework ascent `step_up` decrements. Getter `validity(&self) -> Validity` is `depth == 0`.
 7. Logging never calls `claim()`. Only exclusive does.
 8. Every pre/post attr is a pre_post pair. Missing pre is well-known `noop_pre` (macro drops it in).
 9. No `#[pre]` alone. A pre exists only as the first half of `#[pre_post]`.
@@ -722,13 +742,13 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 - pre miss: no post
 - `#[post]` alone: expands to `(noop_pre, post)`; body is `(node, ctx)`
 - `only_if_valid` / expression post
-- depth: `invalidate(3)` → three levels Invalidated then Valid above (after step_ups)
+- depth: N× `into_parent` kill → `depth.max(N)`; N levels Invalidated then Valid above (after step_ups)
+- `into_parent().into_parent()` → `depth.max(2)`
 
 ## Open
 
 - Whether `pre` may also push now-effects on the way down.
-- Reshape carrier: how a deep bind schedules a field replace at the owner; path return after today's `ascend_mut`+`set_layer`.
-- Exact rule for `d` in `invalidate(d)` (hops leaf→owner vs 1 at apply site, max with concurrent kills).
+- Reshape carrier: how a deep bind schedules a field replace at the owner; path return after today's `ascend_mut`+`set_layer` (hop count for `d` is settled: N = chain length).
 - Sugar so user posts can write `-> Vec<Effect>` while the derive still threads path.
 - Product nodes / multiple live children.
 - Fallbacks that must not run if exclusive already took (`claim` already Some) — deferred; do not overload validity depth.
