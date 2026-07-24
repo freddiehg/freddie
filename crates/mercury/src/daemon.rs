@@ -67,7 +67,7 @@ pub(crate) fn run(port: u16) {
     // before the loop pumps its events.
     freddie_main_loop::init_menu_bar_app();
 
-    let (main_loop, stopper) = freddie_main_loop::main_loop();
+    let (main_loop, stopper, waker) = freddie_main_loop::main_loop();
 
     // The event channel is created here, not in `run`: the menu bar's Quit handler
     // runs on THIS (main) thread and needs a sender, while the event loop on the
@@ -75,9 +75,11 @@ pub(crate) fn run(port: u16) {
     let (event_tx, event_rx) = unbounded_channel::<MercuryEvent>();
 
     // Titles for the status item. The effect loop, on the worker, sends; the main thread applies
-    // them on its next wake, because an NSStatusItem is main-thread-only. A std channel rather
-    // than tokio's: the receiving end is the main thread, which is not in the runtime.
-    let (title_tx, title_rx) = std::sync::mpsc::channel::<&'static str>();
+    // them on its next wake, because an NSStatusItem is main-thread-only. A waking channel off the
+    // main loop's waker, so a title change wakes main at once rather than at the next event; a std
+    // channel under it rather than tokio's, since the receiving end is the main thread, not in the
+    // runtime.
+    let (title_tx, title_rx) = waker.channel::<&'static str>();
 
     // The status item, on the main thread now that NSApp exists. A Quit click
     // enqueues the same kind of event any source does; the model turns it into
@@ -201,7 +203,7 @@ async fn serve(
     boot: Boot,
     event_tx: UnboundedSender<MercuryEvent>,
     event_rx: UnboundedReceiver<MercuryEvent>,
-    title_tx: std::sync::mpsc::Sender<&'static str>,
+    title_tx: freddie_main_loop::WakingSender<&'static str>,
     port: u16,
 ) {
     let (effect_tx, effect_rx) = unbounded_channel::<MercuryEffect>();
@@ -317,7 +319,7 @@ async fn run_effect_loop(
     mut effect_rx: UnboundedReceiver<MercuryEffect>,
     emitter: Emitter,
     event_tx: UnboundedSender<MercuryEvent>,
-    title_tx: std::sync::mpsc::Sender<&'static str>,
+    title_tx: freddie_main_loop::WakingSender<&'static str>,
     windows: Option<WindowSink>,
     overlay: OverlaySink,
 ) {
@@ -347,7 +349,7 @@ fn perform_effect(
     effect: MercuryEffect,
     emitter: &Emitter,
     event_tx: &UnboundedSender<MercuryEvent>,
-    title_tx: &std::sync::mpsc::Sender<&'static str>,
+    title_tx: &freddie_main_loop::WakingSender<&'static str>,
     windows: Option<&WindowSink>,
     overlay: OverlaySink,
 ) -> ControlFlow<()> {
