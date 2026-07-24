@@ -109,47 +109,62 @@ No reshape on the descent. Whether pre may also return now-effects is open; gene
 
 ### Execute on the way up (all scheduled posts run)
 
-Leaf to root. The ascent threads one **`&mut Context`** — same object the whole way up. No parallel claim flag. Posts get that `&mut Context`.
+Leaf to root. The ascent threads one **`&mut Context`** — same object the whole way up. Posts get that `&mut Context`.
 
-One context, two different field lifetimes:
+Two facts on the context, both mutated in place, different rules:
 
-- **`claim`** is ascent-global and monotone. Starts `None` at the leaf. An exclusive deeper that successfully `claim()`s leaves `Some(Claimed)` for every shallower post. It is not reset when you move up a level.
-- **`validity`** is per level / per field. At each `into_parent`, the framework classifies *this* child field after reshape and `set_validity` **overwrites** the previous level's value. Shallower posts never need "was my grandchild valid" from this field — they get their own field's answer when their `into_parent` runs. So validity is not accumulated history; it is the answer for the field whose posts are about to run.
+- **`claim`** — monotone try-take. Starts `None`. Exclusive calls `claim()`; once taken, stays taken for every level above. Not a getter.
+- **invalidation depth** — an integer, not a binary Valid/Invalidated flag rewritten per field. When something is destroyed, the context records **how many `into_parent` hops** of the ascent are still inside the destroyed region. Each `into_parent` **decrements** that count as you walk up. Posts read a derived `validity()`: depth `0` → Valid, depth `> 0` → Invalidated.
 
-There is no descent pass for context. Descent only schedules `opt_N` with an immutable path. Claim and validity are ascent facts.
+Calling `set_validity(Invalidated)` on every level is wrong: not every level is invalidated, and overwriting a flag does not track *how far* the destruction reaches. The integer does.
 
-1. Apply any reshape scheduled for this level's child field.
-2. `ctx.set_validity(...)` for **that** field (overwrites prior validity).
-3. For each scheduled post, call it with owned path and `&mut ctx`; take path back from the return.
-4. Exclusive posts call `ctx.claim()` to try-take the event (monotone on the same `ctx`).
+There is no descent pass for context. Descent only schedules `opt_N`.
 
-A scheduled post always runs (is called). What it does with `ctx.claim()` / `ctx.validity()` is its business.
+1. Apply any reshape scheduled for this level's child field; if that reshape (or the exclusive) invalidates a spine of height `d`, raise the depth (e.g. `invalidate(d)` — max with current, exact rule open).
+2. Run scheduled posts with owned path and `&mut ctx` (they see `validity()` from **current** depth).
+3. `into_parent` finishes the level: **decrement** invalidation depth by one for the next level up.
+4. Exclusive calls `ctx.claim()` to try-take (independent of depth).
 
 ```rust
 #[derive(Clone, Copy)]
 enum Validity {
-    /// Child field is still the scheduled type. Projections through the path are sound.
     Valid,
-    /// Child field was replaced.
     Invalidated,
 }
 
-/// ZST marker: an exclusive has taken this event.
 #[derive(Clone, Copy)]
 struct Claimed;
 
 struct Context {
-    validity: Validity,
+    /// Remaining ascent hops still inside the invalidated zone. 0 = valid.
+    invalidation_depth: u32,
     claim: Option<Claimed>,
 }
 
 impl Context {
-    fn validity(&self) -> Validity { self.validity }
-    fn set_validity(&mut self, s: Validity) { self.validity = s; }
+    /// Derived from the depth counter — not an independently stored flag.
+    fn validity(&self) -> Validity {
+        if self.invalidation_depth == 0 {
+            Validity::Valid
+        } else {
+            Validity::Invalidated
+        }
+    }
+
+    /// Register that the next `depth` into_parent hops (this level and above
+    /// for `depth` steps) are inside a destroyed region. Typically max'd with
+    /// the current depth so a deeper kill is not shrunk by a shallower one.
+    fn invalidate(&mut self, depth: u32) {
+        self.invalidation_depth = self.invalidation_depth.max(depth);
+    }
+
+    /// One hop up the ascent. Called from into_parent after this level's posts.
+    fn step_up(&mut self) {
+        self.invalidation_depth = self.invalidation_depth.saturating_sub(1);
+    }
 
     /// Try to take exclusive ownership of this event.
-    /// `Some(Claimed)` if it was open (and it is now taken).
-    /// `None` if it was already taken.
+    /// `Some(Claimed)` if it was open (now taken). `None` if already taken.
     fn claim(&mut self) -> Option<Claimed> {
         match self.claim {
             Some(_) => None,
@@ -162,27 +177,36 @@ impl Context {
 }
 ```
 
-Access is flat on `Context`. Fields private. Ascent holds `&mut Context` so `claim` and `set_validity` can mutate.
-
-`claim` is not a getter. It claims. Logging / plain posts never call it. Only exclusive (`#[bind]`) does.
+Generate stays thin: `into_parent` calls `invalidate` when a reshape applies (with a depth from the reshape site) and always `step_up` when leaving the level. Posts only call `validity()` / `claim()`.
 
 ### How the fields move
 
 ```text
 framework holds:  one ctx for the whole ascent
+  invalidation_depth: 0
+  claim: None
 
 DESCENT: no ctx mutation — only schedule opt_N
 
 ASCENT leaf → root:
-  at each level's into_parent:
-    reshape this field if scheduled
-    ctx.set_validity(Valid | Invalidated)   // OVERWRITE for this field only
-    plain posts:  (effs, path) = post(..., &mut ctx)   // must not claim()
-    exclusive:    match ctx.claim() { None => skip; Some(_) => h(...) }
-                  // claim() mutates ctx; stays Some for levels above
+  exclusive may invalidate(d) when it schedules/kills a spine of height d
+  at each level:
+    apply reshape if any; may invalidate(…) if the kill is applied here
+    posts see validity() from current depth   // Invalidated iff depth > 0
+    exclusive: match ctx.claim() { … }
+    into_parent / step_up: depth = depth.saturating_sub(1)
 ```
 
-`claim` survives every level. `validity` is replaced every level. Same `Context` pointer either way — different update rules.
+Example: exclusive at depth 3 from the reshape owner calls `invalidate(3)`.
+
+```text
+level (leaf+1) posts: depth 3 → Invalidated; step_up → 2
+level +2 posts:       depth 2 → Invalidated; step_up → 1
+level +3 (owner):     depth 1 → Invalidated; step_up → 0
+above:                depth 0 → Valid
+```
+
+`claim` never decrements. Depth only moves via `invalidate` / `step_up`.
 
 Posts return `(Vec<Effect>, P)` — path threading only.
 
@@ -275,13 +299,27 @@ pub enum Validity {
 pub struct Claimed;
 
 pub struct Context {
-    validity: Validity,
+    /// Remaining into_parent hops still inside the destroyed region. 0 = valid.
+    invalidation_depth: u32,
     claim: Option<Claimed>,
 }
 
 impl Context {
-    pub fn validity(&self) -> Validity { self.validity }
-    pub fn set_validity(&mut self, s: Validity) { self.validity = s; }
+    pub fn validity(&self) -> Validity {
+        if self.invalidation_depth == 0 {
+            Validity::Valid
+        } else {
+            Validity::Invalidated
+        }
+    }
+
+    pub fn invalidate(&mut self, depth: u32) {
+        self.invalidation_depth = self.invalidation_depth.max(depth);
+    }
+
+    pub fn step_up(&mut self) {
+        self.invalidation_depth = self.invalidation_depth.saturating_sub(1);
+    }
 
     /// Try to take exclusive ownership of this event.
     /// `Some(Claimed)` if it was open (now taken). `None` if already taken.
@@ -309,11 +347,12 @@ impl<N, P, F> PathMut<N, P, F>
 where
     F: FnOnce(P, &mut Context) -> (P, Vec<Effect>),
 {
-    /// Apply reshape, set validity on ctx, run posts, return parent.
+    /// Apply reshape (may ctx.invalidate(d)), run posts, step_up, return parent.
     pub fn into_parent(self, sink: &mut Vec<Effect>, ctx: &mut Context) -> P {
-        ctx.set_validity(self.classify_after_reshape());
+        // if reshape applied here: ctx.invalidate(depth_for_this_kill)
         let (parent, post_effs) = (self.on_into_parent)(self.parent, ctx);
         Extend::extend(sink, post_effs);
+        ctx.step_up();
         parent
     }
 }
@@ -336,12 +375,11 @@ where
 {
     let mut effs = Vec::new();
     let mut ctx = Context {
-        validity: Validity::Valid,
+        invalidation_depth: 0,
         claim: None,
     };
     let _path = <N as Dispatch<M>>::dispatch(path, event, &mut effs, &mut ctx);
-    // Do not call claim() again — that try-takes. After the walk the field is Some if exclusive took.
-    // Framework (same module) observes the stored option; public API only exposes claim() try-take.
+    // Do not call claim() again — that try-takes. Framework observes stored claim.
     if /* claim field is Some */ || !effs.is_empty() {
         Some(effs)
     } else {
@@ -350,7 +388,7 @@ where
 }
 ```
 
-Handlers return `(Vec<Effect>, P)`; only framework code holds the batch sink. `from_fn` is crate-private. One `Context` is mutated for the whole ascent.
+Handlers return `(Vec<Effect>, P)`; only framework code holds the batch sink. `from_fn` is crate-private. One `Context` is mutated for the whole ascent. Generate does not hand-roll depth math — only `invalidate` / `step_up` / `claim` / `validity`.
 
 ## Generated code
 
@@ -406,7 +444,7 @@ impl Dispatch<M> for Inner {
 
         if let ::core::option::Option::Some(()) = opt_0 {
             let ev = /* &KeyEvent from event */;
-            ctx.set_validity(Validity::Valid); // leaf
+            // leaf: depth already 0 unless exclusive invalidate()'d
             let (path, out_effs) = run_exclusive(
                 path,
                 ctx,
@@ -514,7 +552,7 @@ impl Dispatch<M> for Outer {
         let inner_path =
             <Inner as ::bind::Dispatch<M>>::dispatch(inner_path, event, effs, ctx);
 
-        // ----- ascent: reshape + set_validity + pre_post posts -----
+        // ----- ascent: reshape / invalidate / posts / step_up inside into_parent -----
         let mut path = inner_path.into_parent(effs, ctx);
 
         // ----- bind opt_2: exclusive post -----
@@ -543,15 +581,14 @@ DESCENT
   opt_0? opt_1? opt_2?
   move path into inner_path
 
-ASCENT  one &mut ctx (validity Valid, claim None)
+ASCENT  one &mut ctx (depth 0, claim None)
   Inner bind:
-    ctx.set_validity(Valid)
-    run_exclusive: ctx.claim() → Some → body; None → skip
+    may invalidate(d); run_exclusive via claim()
   Outer into_parent:
-    ctx.set_validity(Valid|Invalidated)
-    post_foo / post_bar get &mut ctx (claim already Some)
+    posts see validity() from current depth
+    step_up decrements depth
   Outer bind:
-    run_exclusive: ctx.claim() → None → skip
+    run_exclusive via claim()
 ```
 
 ### `KeyA` only
@@ -651,8 +688,8 @@ Generate rephrases `#[bind]` through `run_exclusive` / `exclusive` (`ctx.claim()
 ### Feature steps (after P0–P4)
 
 1. `#[post(trig => body)]` — schedule `opt_N = Some(())`; run on ascent with owned path + `&mut Context`.
-2. `Validity` Valid/Invalidated — `ctx.set_validity` in `into_parent` after reshape.
-3. `exclusive` + `#[bind]` as sugar — `ctx.claim()` at the call site.
+2. invalidation depth — `invalidate(d)` / `step_up` in `into_parent`; `validity()` derived.
+3. `exclusive` + `#[bind]` as sugar — `ctx.claim()` try-take at the call site.
 4. `#[pre]` / `#[pre_post]` — carriage; immutable path on descent.
 5. mercury rearm as post; drop `handle` discriminant rearm; timed-layer wrapper when ready.
 6. reshape carrier (open) — deep bind schedules field replace at owner.
@@ -670,11 +707,11 @@ Generate rephrases `#[bind]` through `run_exclusive` / `exclusive` (`ctx.claim()
 2. Ascent runs every scheduled post; mutation does not cancel them.
 3. Pre: shared path. Post: owned path in/out as `(Vec<Effect>, P)`.
 4. Ascent threads one `&mut Context`. Posts take `&mut Context`. No parallel claim flag.
-5. `ctx.claim(&mut self) -> Option<Claimed>` (try-take), `ctx.validity()`, `set_validity` (fields private).
+5. `ctx.claim(&mut self) -> Option<Claimed>` (try-take). `validity()` derived from `invalidation_depth`.
 6. Logging never calls `claim()`. Only exclusive (`#[bind]`) does.
 7. no pre → `()`. no post → `drop`.
 8. `#[bind]` = `#[post]` + `run_exclusive` (`ctx.claim()` try-take).
-9. Reshape of a field applied in that field's `into_parent` before posts at that level (`set_validity` first).
+9. Invalidation is a depth counter: `invalidate(d)` raises it, each `into_parent` `step_up`s; not a binary flag per field.
 
 ## Tests
 
@@ -694,4 +731,4 @@ Generate rephrases `#[bind]` through `run_exclusive` / `exclusive` (`ctx.claim()
 - Sugar so user posts can write `-> Vec<Effect>` while the derive still threads path.
 - Product nodes: one Context (validity bit) per live child field.
 - Fallbacks that must not run if claim is `Some` (e.g. root `AnyKey` passthrough). Closer to `Option<Claimed>` than to structure on `Context`. Deferred.
-- Third validity state: deferred.
+- Exact rule for `d` in `invalidate(d)` when reshape is scheduled vs applied (hops from leaf to owner, fixed 1 at apply site, …).
