@@ -177,7 +177,7 @@ Plain posts always return `claim: false`. `exclusive(h)` returns `claim: true` o
 - `#[post(trig => post)]` — pre is only the trigger check → `()`, user post receives `()`
 - `#[bind(trig => handler)]` — a `#[post]` whose body is `exclusive(handler)`
 
-Several pairs on one node: several independent `opt_i` (each its own concrete payload type), one `on_into_parent` closure.
+Several pairs on one node: several independent `opt_i` (each its own concrete payload type), one `on_into_parent` closure. The derive names them by index (`opt_0`, `opt_1`, …), not by trigger or handler name — two attributes must not invent clashing identifiers.
 
 ### `#[bind]` is a post with no pre
 
@@ -393,10 +393,10 @@ impl Dispatch<M> for Inner {
     where
         Self: 'a,
     {
-        // schedule: Option<()> if KeyA matches (same as any #[post])
-        let opt_a = /* trigger check → Some(()) or None */;
+        // schedule: Option<()> if KeyA matches (same as any #[post]); index 0 on this node
+        let opt_0 = /* trigger check → Some(()) or None */;
 
-        if let ::core::option::Option::Some(()) = opt_a {
+        if let ::core::option::Option::Some(()) = opt_0 {
             let ev = /* &KeyEvent from event */;
             // exclusive(inner_handler) is the post body
             let (path, out_effs) = run_post(
@@ -426,12 +426,15 @@ impl Dispatch<M> for Outer {
     where
         Self: 'a,
     {
-        // ----- descent: schedule -----
-        let opt_foo = /* Foo match → Some(pre_foo(...)) */;
-        let opt_bar = /* Bar match → Some(pre_bar(...)) */;
-        let opt_a = /* KeyA match → Some(()) */;
+        // ----- descent: schedule (indexed opts — no names from triggers/handlers) -----
+        // 0: pre_post Foo => (pre_foo, post_foo)  → Option<u32>
+        // 1: pre_post Bar => (pre_bar, post_bar)  → Option<…>
+        // 2: bind KeyA => outer_handler           → Option<()>
+        let opt_0 = /* Foo match → Some(pre_foo(...)) */;
+        let opt_1 = /* Bar match → Some(pre_bar(...)) */;
+        let opt_2 = /* KeyA match → Some(()) */;
 
-        // into_parent will pass (structure, claimed) into this closure.
+        // into_parent passes (structure, claimed) into this closure.
         let inner_path = ::laserbeam::PathMut::from_fn(
             path,
             |p| &mut p.get_mut().inner,
@@ -440,9 +443,10 @@ impl Dispatch<M> for Outer {
                 let mut claimed = claimed_now;
                 let mut local = ::std::vec::Vec::new();
                 let mut path = parent;
-                if let ::core::option::Option::Some(t) = opt_foo {
-                    let (p, e) = run_post(&mut claimed, structure, path, |node, v| {
-                        let (effects, path) = post_foo(t, node, v);
+                // each opt is its own type; each if-let has its own binding name
+                if let ::core::option::Option::Some(t0) = opt_0 {
+                    let (p, e) = run_post(&mut claimed, structure, path, |node, ctx| {
+                        let (effects, path) = post_foo(t0, node, ctx);
                         PostOut {
                             effects,
                             path,
@@ -452,9 +456,9 @@ impl Dispatch<M> for Outer {
                     path = p;
                     ::core::iter::Extend::extend(&mut local, e);
                 }
-                if let ::core::option::Option::Some(t) = opt_bar {
-                    let (p, e) = run_post(&mut claimed, structure, path, |node, v| {
-                        let (effects, path) = post_bar(t, node, v);
+                if let ::core::option::Option::Some(t1) = opt_1 {
+                    let (p, e) = run_post(&mut claimed, structure, path, |node, ctx| {
+                        let (effects, path) = post_bar(t1, node, ctx);
                         PostOut {
                             effects,
                             path,
@@ -467,7 +471,7 @@ impl Dispatch<M> for Outer {
                 PostOut {
                     effects: local,
                     path,
-                    claim: claimed, // may have been raised by an exclusive among these posts
+                    claim: claimed,
                 }
             },
         );
@@ -478,12 +482,12 @@ impl Dispatch<M> for Outer {
         // ----- ascent: reshape + pre_post posts (Context built inside run_post) -----
         let mut path = inner_path.into_parent(effs, claimed);
 
-        // ----- bind: exclusive post, same run_post path -----
-        if opt_a.is_some() {
-            let structure = path.structure_of_inner(); // Valid | Invalidated after reshape
+        // ----- bind opt_2: exclusive post, same run_post path -----
+        if opt_2.is_some() {
+            let structure = path.structure_of_inner();
             let ev = /* &KeyEvent */;
-            let (p, e) = run_post(claimed, structure, path, |node, v| {
-                exclusive(outer_handler)(ev, node, v)
+            let (p, e) = run_post(claimed, structure, path, |node, ctx| {
+                exclusive(outer_handler)(ev, node, ctx)
             });
             path = p;
             ::core::iter::Extend::extend(effs, e);
@@ -497,34 +501,16 @@ Every post goes through `run_post`. That is where `Context` is built (`structure
 
 ### `#[pre]` / `#[post]` alone
 
-```rust
-// #[pre(Baz => track)]
-if let Some(t) = opt_baz {
-    drop(t);
-}
-
-// #[post(Qux => guard)] — plain post, claim: false
-if let Some(()) = opt_qux {
-    let (p, e) = run_post(claimed, structure, path, |node, v| {
-        let (effects, path) = guard((), node, v);
-        PostOut {
-            effects,
-            path,
-            claim: false,
-        }
-    });
-    path = p;
-    // extend local/effs with e
-}
-```
+Same indexed opts. A bare `#[pre]` is `opt_i = Some(pre_return)` and the ascent arm is `drop(t_i)`. A bare `#[post]` is `opt_i = Some(())` and `run_post` with `claim: false`.
 
 ## Walk
 
 ```text
 DESCENT
   Outer owns path
-  pre_foo? pre_bar? with &path → opt_*
-  opt_a? (bind scheduled as Option<()>)
+  opt_0? = pre_foo return   (Foo pre_post)
+  opt_1? = pre_bar return   (Bar pre_post)
+  opt_2? = ()               (KeyA bind)
   move path into inner_path
 
 ASCENT  claimed starts false
@@ -534,9 +520,9 @@ ASCENT  claimed starts false
     claimed = true
   Outer into_parent:
     structure = Valid | Invalidated after reshape
-    post_foo gets Context { structure, claimed: true }   // ctx.claimed() == true
-    post_bar same
-  Outer bind scheduled:
+    if opt_0: post_foo gets Context { structure, claimed: true }
+    if opt_1: post_bar same
+  Outer bind (opt_2):
     ctx = Context { structure, claimed: true }
     exclusive(outer_handler) sees ctx.claimed(), skips body, claim: false
 ```
@@ -545,24 +531,24 @@ ASCENT  claimed starts false
 
 ```text
 Inner exclusive runs, claim true
-Outer bind sees ctx.claimed(), skips
+Outer opt_2 exclusive sees ctx.claimed(), skips
 ```
 
 ### `Foo` only
 
 ```text
-opt_foo = Some(hits_before)
+opt_0 = Some(hits_before)
 Inner: no bind
 Outer post_foo(hits_before, path, ctx) with !ctx.claimed() && ctx.valid()
-Outer bind not scheduled
+opt_2 not scheduled
 ```
 
 ### `Foo` and `KeyA`
 
 ```text
 Inner exclusive may reshape, claim true
-Outer post_foo still runs — ctx.claimed() == true
-Outer exclusive skips
+Outer post_foo (opt_0) still runs — ctx.claimed() == true
+Outer exclusive (opt_2) skips
 ```
 
 ### Logging `AnyKey` pre_post also present
