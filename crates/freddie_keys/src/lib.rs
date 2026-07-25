@@ -288,6 +288,220 @@ impl Key {
                 | Self::ShiftRight
         )
     }
+
+    /// Whether this is a letter key (`KeyA`..=`KeyZ`).
+    #[must_use]
+    pub const fn is_letter(self) -> bool {
+        matches!(
+            self,
+            Self::KeyA
+                | Self::KeyB
+                | Self::KeyC
+                | Self::KeyD
+                | Self::KeyE
+                | Self::KeyF
+                | Self::KeyG
+                | Self::KeyH
+                | Self::KeyI
+                | Self::KeyJ
+                | Self::KeyK
+                | Self::KeyL
+                | Self::KeyM
+                | Self::KeyN
+                | Self::KeyO
+                | Self::KeyP
+                | Self::KeyQ
+                | Self::KeyR
+                | Self::KeyS
+                | Self::KeyT
+                | Self::KeyU
+                | Self::KeyV
+                | Self::KeyW
+                | Self::KeyX
+                | Self::KeyY
+                | Self::KeyZ
+        )
+    }
+
+    /// Whether this is a main number-row key (`Num0`..=`Num9`).
+    #[must_use]
+    pub const fn is_number_row(self) -> bool {
+        matches!(
+            self,
+            Self::Num0
+                | Self::Num1
+                | Self::Num2
+                | Self::Num3
+                | Self::Num4
+                | Self::Num5
+                | Self::Num6
+                | Self::Num7
+                | Self::Num8
+                | Self::Num9
+        )
+    }
+
+    /// Whether this is a function key (`F1`..=`F24`).
+    #[must_use]
+    pub const fn is_function(self) -> bool {
+        matches!(
+            self,
+            Self::F1
+                | Self::F2
+                | Self::F3
+                | Self::F4
+                | Self::F5
+                | Self::F6
+                | Self::F7
+                | Self::F8
+                | Self::F9
+                | Self::F10
+                | Self::F11
+                | Self::F12
+                | Self::F13
+                | Self::F14
+                | Self::F15
+                | Self::F16
+                | Self::F17
+                | Self::F18
+                | Self::F19
+                | Self::F20
+                | Self::F21
+                | Self::F22
+                | Self::F23
+                | Self::F24
+        )
+    }
+
+    /// Whether this is an arrow key.
+    #[must_use]
+    pub const fn is_arrow(self) -> bool {
+        matches!(
+            self,
+            Self::UpArrow | Self::DownArrow | Self::LeftArrow | Self::RightArrow
+        )
+    }
+
+    /// Whether this is a navigation key: home, end, page up/down, insert.
+    #[must_use]
+    pub const fn is_navigation(self) -> bool {
+        matches!(
+            self,
+            Self::Home | Self::End | Self::PageUp | Self::PageDown | Self::Insert
+        )
+    }
+}
+
+/// A set of physical keys treated as one bind target.
+///
+/// Use like [`Key`]: `KeyGroup::Number.down().bare()`, `KeyGroup::Letter.up().with(SHIFT)`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum KeyGroup {
+    /// Every key.
+    Any,
+    /// Letter keys: `KeyA`..=`KeyZ`.
+    Letter,
+    /// The main number row: `Num0`..=`Num9`.
+    Number,
+    /// Function keys: `F1`..=`F24`.
+    Function,
+    /// Modifier keys tracked as held: control, command, alt, shift (left and right).
+    Modifier,
+    /// Arrow keys.
+    Arrow,
+    /// Home, end, page up/down, insert.
+    Navigation,
+}
+
+impl KeyGroup {
+    /// Whether `key` is in this group.
+    #[must_use]
+    pub const fn contains(self, key: Key) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Letter => key.is_letter(),
+            Self::Number => key.is_number_row(),
+            Self::Function => key.is_function(),
+            Self::Modifier => key.is_modifier(),
+            Self::Arrow => key.is_arrow(),
+            Self::Navigation => key.is_navigation(),
+        }
+    }
+
+    /// A trigger matching this group's keys going down.
+    #[must_use]
+    pub const fn down(self) -> KeyGroupPress {
+        KeyGroupPress {
+            group: self,
+            press: PressType::Down,
+        }
+    }
+
+    /// A trigger matching this group's keys coming up.
+    #[must_use]
+    pub const fn up(self) -> KeyGroupPress {
+        KeyGroupPress {
+            group: self,
+            press: PressType::Up,
+        }
+    }
+}
+
+impl EventTrigger for KeyGroup {
+    type Event = KeyEvent;
+
+    fn is_matching(&self, event: &KeyEvent) -> bool {
+        self.contains(event.key)
+    }
+}
+
+/// A key from a [`KeyGroup`] going one direction, from [`KeyGroup::down`] or [`KeyGroup::up`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct KeyGroupPress {
+    pub group: KeyGroup,
+    pub press: PressType,
+}
+
+impl EventTrigger for KeyGroupPress {
+    type Event = KeyEvent;
+
+    fn is_matching(&self, event: &KeyEvent) -> bool {
+        self.group.contains(event.key) && event.press == self.press
+    }
+}
+
+impl KeyGroupPress {
+    /// Match only when exactly `flags` are held.
+    #[must_use]
+    pub const fn with(self, flags: ModifierFlags) -> KeyGroupChord {
+        KeyGroupChord {
+            group: self.group,
+            press: self.press,
+            flags,
+        }
+    }
+
+    /// Match only when no modifier is held.
+    #[must_use]
+    pub const fn bare(self) -> KeyGroupChord {
+        self.with(ModifierFlags::empty())
+    }
+}
+
+/// A key from a [`KeyGroup`] going one direction with exactly these modifiers held.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct KeyGroupChord {
+    pub group: KeyGroup,
+    pub press: PressType,
+    pub flags: ModifierFlags,
+}
+
+impl EventTrigger for KeyGroupChord {
+    type Event = KeyEvent;
+
+    fn is_matching(&self, event: &KeyEvent) -> bool {
+        self.group.contains(event.key) && event.press == self.press && event.flags == self.flags
+    }
 }
 
 /// A trigger matching a key going one direction, from [`Key::down`] or [`Key::up`].
@@ -403,7 +617,7 @@ impl<T: EventTrigger> WithDevice for T {}
 
 #[cfg(test)]
 mod tests {
-    use super::{Key, KeyEvent, ModifierFlags, PressType};
+    use super::{Key, KeyEvent, KeyGroup, ModifierFlags, PressType};
     use bind::EventTrigger;
 
     #[test]
@@ -415,6 +629,56 @@ mod tests {
         };
         assert!(Key::KeyR.is_matching(&event));
         assert!(!Key::KeyS.is_matching(&event));
+    }
+
+    #[test]
+    fn key_group_categories_partition_keys() {
+        assert!(KeyGroup::Letter.contains(Key::KeyA));
+        assert!(!KeyGroup::Letter.contains(Key::Num1));
+        assert!(KeyGroup::Number.contains(Key::Num0));
+        assert!(!KeyGroup::Number.contains(Key::KeyA));
+        assert!(KeyGroup::Function.contains(Key::F19));
+        assert!(!KeyGroup::Function.contains(Key::Escape));
+        assert!(KeyGroup::Modifier.contains(Key::ShiftLeft));
+        assert!(!KeyGroup::Modifier.contains(Key::CapsLock));
+        assert!(KeyGroup::Arrow.contains(Key::LeftArrow));
+        assert!(KeyGroup::Navigation.contains(Key::Home));
+        assert!(KeyGroup::Any.contains(Key::Raw(0)));
+    }
+
+    #[test]
+    fn key_group_number_matches_the_number_row_only() {
+        let one = KeyEvent {
+            key: Key::Num1,
+            press: PressType::Down,
+            flags: ModifierFlags::empty(),
+        };
+        let a = KeyEvent {
+            key: Key::KeyA,
+            press: PressType::Down,
+            flags: ModifierFlags::empty(),
+        };
+        assert!(KeyGroup::Number.is_matching(&one));
+        assert!(!KeyGroup::Number.is_matching(&a));
+        assert!(KeyGroup::Any.is_matching(&a));
+        assert!(KeyGroup::Number.down().bare().is_matching(&one));
+        assert!(
+            !KeyGroup::Number
+                .down()
+                .with(ModifierFlags::SHIFT)
+                .is_matching(&one)
+        );
+        let shifted = KeyEvent {
+            key: Key::Num5,
+            press: PressType::Down,
+            flags: ModifierFlags::SHIFT,
+        };
+        assert!(
+            KeyGroup::Number
+                .down()
+                .with(ModifierFlags::SHIFT)
+                .is_matching(&shifted)
+        );
     }
 
     #[test]
