@@ -9,7 +9,7 @@ Shareable, pure keyboard remaps for freddie consumers. No effects, no timers, no
   - `left_shift_open_paren()` — left shift → `(` / Shift
   - `right_shift_close_paren()` — right shift → `)` / Shift
   - `AloneOrModifier::new(hold, alone, alone_flags, modifier, flag)` for other dual-roles
-- `invert_shift` — bare ↔ shift-only on a `KeyEvent` (number-row invert, `\` ↔ `|`, …)
+- `invert_shift` — toggle the SHIFT bit on a `KeyEvent` (number-row invert, `\` ↔ `|`, …)
 
 ## What belongs here
 
