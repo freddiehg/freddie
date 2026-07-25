@@ -136,7 +136,7 @@ where
 
 ## Landed baseline (no further change)
 
-`bind/src/lib.rs` already holds `Claim`, the final `Dispatch` and `Descend` signatures, and the final free `dispatch`:
+`bind/src/lib.rs` already holds `Claim`, the final `Dispatch` and `Descend` signatures, and the final free `dispatch`. (One rename rides change 1: `Descend::dispatch` becomes `DispatchIntoParent::dispatch_into_parent`, trait matching method as in `Complete::complete`, ending the three-way overload of "dispatch" and naming the output the way `into_parent` does.)
 
 ```rust
 /// One exclusive bind handler per dispatch: the first to `try_take` wins.
@@ -472,7 +472,7 @@ After (the root/non-root split lives in laserbeam's two `to_maybe_invalidated` i
 .to_maybe_invalidated()
 ```
 
-`descend_impl`, before:
+`Descend::dispatch` renames to `DispatchIntoParent::dispatch_into_parent`; every implementor and call site is macro-emitted, so the rename is confined to bind and the emissions below. `descend_impl`, before:
 
 ```rust
 match <#name as ::bind::Dispatch<#marker>>::dispatch(self, event, effs, claim) {
@@ -572,7 +572,7 @@ All three attribute kinds feed one scheduled list in source order; the differenc
 
 ### Change 5 — derived levels
 
-Derived-level binds migrate to the scheduled shape over `AscendState<Self::Parent>`, and posts across derived-child edges get a story; `Descend`'s `Here` collapse currently hides child-alive from the caller.
+Derived-level binds migrate to the scheduled shape over `AscendState<Self::Parent>`, and posts across derived-child edges get a story; `DispatchIntoParent`'s `Here` collapse currently hides child-alive from the caller.
 
 ## Walks
 
@@ -625,7 +625,7 @@ Posts run whether or not anything claimed: they are scheduled by their trigger, 
 
 Prefactors first, each independently shippable. The macro deltas per change are in "bind_macro (before / after)".
 
-### 1 — macro emits `Completed`: signature, linear body, `descend_impl`/`derived_node_impl`; laserbeam `From<&mut R> for Completed<&mut R>`
+### 1 — macro emits `Completed`: signature, linear body, `descend_impl`/`derived_node_impl`; `Descend::dispatch` → `DispatchIntoParent::dispatch_into_parent`; laserbeam `From<&mut R> for Completed<&mut R>`
 
 ### 2 — opts before descent, source order
 
