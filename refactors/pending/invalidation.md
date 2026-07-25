@@ -134,7 +134,7 @@ struct TimerGuard {
 #[binds(M)]
 #[bind(KeyEsc => flash)]                                               // opt_2
 #[post(AnyKey => rearm)]                                               // opt_1
-#[pre_post(AnyKey, pre = snap_return_home, post = cancel_return_home)] // opt_0
+#[pre_post(AnyKey => (snap_return_home, cancel_return_home))]         // opt_0
 struct A {
     #[resolve_into]
     b: B,
