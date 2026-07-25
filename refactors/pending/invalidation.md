@@ -1089,26 +1089,119 @@ Posts run whether or not anything claimed: they are scheduled by their trigger, 
 
 ## Tests
 
-Unit tests on the laserbeam items land with change 1; the rest land with the change that makes them expressible (the full A/B walks: change 6).
+Unit tests on the laserbeam items landed with change 1; `HasPlace` units are `derived-levels.md` change 1. The rest land with the change that makes them expressible, organized so every emission path of the derive has a driving test in the bind crate:
 
-- KeyH / any-key walks on the A/B expansion, asserting the exact effect
-  sequences above
-- a three-level tree: `Invalidated` forwards through `state.complete()` unchanged
-- claim trap door: KeyEsc bound at A fires only when B did not claim
-- posts run without a claim, and on both branches of `MaybeInvalidated`
-- pre snap reads pre-descent state even when the descent mutates it
-- a leaving item flips the state to `Invalidated` for later items; the fold
-  after a staying item re-derives `NotInvalidated`
-- multi-parent: `t` fires under each route and the fold re-establishes
+- place bodies — root, leaf, struct child, boxed child, enum child at the root
+  (`Media`) and below it (`Layer`): the existing `dispatch.rs` suite, which
+  keeps its exact assertions across change 5
+- closure and `Option` triggers reading state: the existing `Armed` tests,
+  kept exact across change 5
+- the route fold: `t` fires under each route and the fold re-establishes
   `NotInvalidated`; `home` (`title_home`) leaves through each route and the
-  fold forwards `Invalidated` (change 5)
-- the `Completed<TitlePath>` shape pin (change 4)
-- derived: the four `derived.rs` dispatch tests and its accumulate test keep
-  their exact assertions across the migration; the derived-leave walk (`q`:
-  `app_home` leaves, Shell's `log_leave` post sees `Invalidated`, asserting
-  `(vec![9, 7], true)`) (change 5)
+  fold forwards `Invalidated`; `a` still fires on a `t`-miss (change 5)
+- the derived place edge and struct derived levels at both depths: the four
+  `derived.rs` dispatch tests and its accumulate test, exact assertions kept
+  (change 5)
+- the derived-leave walk: `q` (`app_home`) leaves from the derived level and
+  Shell's `log_leave` post sees `Invalidated`, asserting `(vec![9, 7], true)`
+  (change 5)
+- the derived enum level (`derived_enum_node_impl`, until now driven only by
+  mercury's build): the `Modes` tree below, added to `derived.rs`; `m` runs
+  the live variant's handler and marks the log (`(vec![1], true)`, log `"on"`
+  or `"off"` by mode), and no mode dispatches nothing (`(vec![], false)`)
+  (change 5)
 - trybuild: `#[resolve_into]` on a `#[derived_node]` struct fails with the
   rejection message (change 5)
+- the `Completed<TitlePath>` shape pin (change 4, landed)
+- `#[post]` / `#[pre_post]` scheduled blocks beyond `log_leave`: the full A/B
+  walks asserting the exact effect sequences above; a three-level tree where
+  `Invalidated` forwards through `state.complete()` unchanged; the claim trap
+  door (KeyEsc at A fires only when B did not claim); posts running without a
+  claim on both `MaybeInvalidated` branches; a pre snap reading pre-descent
+  state even when the descent mutates it; a leaving item flipping the state to
+  `Invalidated` for later items, with the fold after a staying item re-deriving
+  `NotInvalidated` (change 6)
+
+The `Modes` tree, pinning the enum emission — two variants bind the same key, so the assertion is which variant's handler ran:
+
+```rust
+#[derive(Bind)]
+#[node(root)]
+#[binds(Demo)]
+pub struct Modes {
+    pub mode: Option<bool>,
+    #[resolve_into]
+    pub shell: ModeShell,
+}
+
+#[derive(Bind)]
+#[node(parent = ModesPath)]
+#[binds(Demo)]
+#[derived_child(mode_data)]
+pub struct ModeShell {
+    pub log: String,
+}
+
+#[derive(Bind)]
+#[derived_node(parent = ModeShellPath)]
+#[binds(Demo)]
+pub enum ModeData {
+    On(OnMode),
+    Off(OffMode),
+}
+
+#[derive(Bind)]
+#[derived_node(parent = ModeShellPath)]
+#[binds(Demo)]
+#[bind(Keyboard("m") => on_mode_on)]
+pub struct OnMode;
+
+#[derive(Bind)]
+#[derived_node(parent = ModeShellPath)]
+#[binds(Demo)]
+#[bind(Keyboard("m") => on_mode_off)]
+pub struct OffMode;
+
+pub type ModesPath<'a> = &'a mut Modes;
+pub type ModeShellPath<'a> = PathMut<ModeShell, ModesPath<'a>>;
+
+fn mode_data(path: &ModeShellPath) -> Option<ModeData> {
+    let on = path.parent().mode?;
+    Some(if on {
+        ModeData::On(OnMode)
+    } else {
+        ModeData::Off(OffMode)
+    })
+}
+
+fn on_mode_on<'x>(
+    ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, ModeShellPath<'x>>,
+) -> (Vec<usize>, Completed<ModeShellPath<'x>>) {
+    match st.state {
+        MaybeInvalidated::NotInvalidated(mut shell) => {
+            shell.get_mut().log.push_str("on");
+            (vec![ev.key.len()], shell.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![ev.key.len()], c),
+    }
+}
+
+fn on_mode_off<'x>(
+    ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, ModeShellPath<'x>>,
+) -> (Vec<usize>, Completed<ModeShellPath<'x>>) {
+    match st.state {
+        MaybeInvalidated::NotInvalidated(mut shell) => {
+            shell.get_mut().log.push_str("off");
+            (vec![ev.key.len()], shell.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![ev.key.len()], c),
+    }
+}
+```
 
 ## Ordered changes
 
