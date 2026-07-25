@@ -282,3 +282,47 @@ fn a_present_option_trigger_matches_its_key() {
         (vec![1], true)
     );
 }
+
+// A leave OUT of a route-parented node: `title_home` walks off `Title`, matching the route enum
+// by hand to wrap one `Up` level. The parent-side fold then has to match the same variant back
+// out of the Up enum, which is the arm the staying tests never reach; a fold that recovered the
+// wrong route would hit its `unreachable!()` here rather than pass.
+#[test]
+fn a_route_parented_leave_folds_back_through_its_own_route() {
+    let mut media = Media::Album(Album {
+        title: Title { hits: 0 },
+    });
+    assert_eq!(
+        bind::dispatch::<Demo, Media, _>(&mut media, &key("home")),
+        (vec![], true)
+    );
+    let Media::Album(a) = &media else {
+        unreachable!()
+    };
+    assert_eq!(a.title.hits, 0, "the leave touched nothing on the way out");
+
+    let mut media = Media::Song(Song {
+        title: Title { hits: 0 },
+    });
+    assert_eq!(
+        bind::dispatch::<Demo, Media, _>(&mut media, &key("home")),
+        (vec![], true)
+    );
+    let Media::Song(s) = &media else {
+        unreachable!()
+    };
+    assert_eq!(s.title.hits, 0);
+}
+
+// The ancestor's own bind is skipped once the leave claimed, so `a` does not fire on the way past.
+#[test]
+fn a_route_ancestor_does_not_fire_behind_a_leave() {
+    let mut media = Media::Album(Album {
+        title: Title { hits: 0 },
+    });
+    // `a` would answer 1; the empty effects say the claim stopped it.
+    assert_eq!(
+        bind::dispatch::<Demo, Media, _>(&mut media, &key("home")),
+        (vec![], true)
+    );
+}

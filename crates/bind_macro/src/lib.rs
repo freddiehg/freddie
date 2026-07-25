@@ -1,26 +1,37 @@
 //! Derive macro for `bind`: implements `EventHandler<M>` (accumulate) and
 //! `Dispatch<M>` (dispatch).
 //!
-//! `#[derive(Bind)]` reads `#[binds(Marker)]` for the marker and the
-//! `#[bind(trigger => handler, ..)]` pairs. `accumulate` inserts the node's
-//! triggers and recurses into its `#[resolve_into]` fields and active enum
-//! variant. `dispatch` tries the active child first (leafward, so a child's
-//! binding beats an ancestor's), then the node's own binds, building each node's
-//! laserbeam `Path` through the shared `derive_support::Edge`.
+//! `#[derive(Bind)]` reads `#[binds(Marker)]` for the marker and the node's scheduled items,
+//! `#[bind]` / `#[post]` / `#[pre_post]`, in source order. `accumulate` inserts the node's
+//! triggers and recurses into its `#[resolve_into]` fields and active enum variant.
+//!
+//! `dispatch` is one linear body at every node: snap each item's trigger and pre, descend into
+//! the active child, fold what the child completed to into this node's state, run every
+//! scheduled item over that state, and complete. The child path is built through the shared
+//! `derive_support::Edge`, so descent matches `resolve`'s.
 
 use derive_support::{
-    Edge, Via, find_resolve_into, is_root, node_parent, parent_route, single_field_ty, unbox,
+    Edge, Route, Via, find_resolve_into, is_root, node_parent, parent_route, single_field_ty, unbox,
 };
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::{Data, DeriveInput, Expr, Ident, Path, Token, Type, parse_macro_input};
+use syn::{Data, DeriveInput, Expr, Fields, Ident, Path, Token, Type, parse_macro_input};
 
 #[proc_macro_derive(
     Bind,
-    attributes(binds, bind, resolve_into, derived_child, derived_node, node)
+    attributes(
+        binds,
+        bind,
+        post,
+        pre_post,
+        resolve_into,
+        derived_child,
+        derived_node,
+        node
+    )
 )]
 pub fn derive_bind(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -38,24 +49,22 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     }
     let name = &input.ident;
     let marker = marker_of(input)?;
-    let binds = binds(&input.attrs)?;
+    let items = scheduled(&input.attrs)?;
 
     // A DERIVED level is not a place in the tree. It has no `Resolve`, so it can have neither
     // `Dispatch` nor `EventHandler`, both of which take `Self::Path`. It implements
-    // `DispatchIntoParent` on its `Node` instead.
+    // `DispatchIntoPlace` on its `Node` instead, ascending at the place beneath it.
     if let Some(parent) = derived_node_parent(&input.attrs)? {
-        return derived_node_impl(input, name, &parent, &marker, &binds);
+        return derived_node_impl(input, name, &parent, &marker, &items);
     }
 
     let place = place_impl(input, name)?;
-    let accumulate = accumulate_impl(input, name, &marker, &binds)?;
-    let dispatch = dispatch_impl(input, name, &marker, &binds)?;
-    let dispatch_into_parent = dispatch_into_parent_impl(input, name, &marker);
+    let accumulate = accumulate_impl(input, name, &marker, &items)?;
+    let dispatch = dispatch_impl(input, name, &marker, &items)?;
     Ok(quote! {
         #place
         #accumulate
         #dispatch
-        #dispatch_into_parent
     })
 }
 
@@ -140,15 +149,18 @@ fn derived_child_fn(attrs: &[syn::Attribute]) -> syn::Result<Option<Path>> {
 
 /// The enum case of [`derived_node_impl`]: one dispatch/accumulate arm per variant, each
 /// rebuilding the node with the variant's `Data` and the shared parent.
+///
+/// Every arm ascends at the same place, so every arm returns the same `Completed` and the
+/// match is total with nothing to fold between them.
 fn derived_enum_node_impl(
     input: &DeriveInput,
     name: &Ident,
     parent: &Path,
     marker: &Path,
-    binds: &[Binding],
+    items: &[Scheduled],
     e: &syn::DataEnum,
 ) -> syn::Result<TokenStream2> {
-    if !binds.is_empty() {
+    if !items.is_empty() {
         return Err(syn::Error::new(
             input.span(),
             "an enum of derived levels binds nothing itself; put the binds on its variants",
@@ -159,8 +171,9 @@ fn derived_enum_node_impl(
     for v in &e.variants {
         let vi = &v.ident;
         single_field_ty(&v.fields)?; // one Data per variant
+        reject_resolve_into(&v.fields)?;
         dispatch_arms.push(quote! {
-            #name::#vi(data) => ::bind::DispatchIntoParent::<#marker>::dispatch_into_parent(
+            #name::#vi(data) => ::bind::DispatchIntoPlace::<#marker>::dispatch_into_place(
                 ::bind::Node { parent, data },
                 event,
                 effs,
@@ -176,13 +189,15 @@ fn derived_enum_node_impl(
     }
     Ok(quote! {
         #[automatically_derived]
-        impl<'a> ::bind::DispatchIntoParent<#marker> for ::bind::Node<#parent<'a>, #name> {
-            fn dispatch_into_parent<'c>(
+        impl<'a> ::bind::DispatchIntoPlace<#marker> for ::bind::Node<#parent<'a>, #name> {
+            fn dispatch_into_place(
                 self,
                 event: &<#marker as ::bind::Bindings>::Event,
                 effs: &mut <#marker as ::bind::Bindings>::Output,
-                claim: &mut ::bind::Claim<'c>,
-            ) -> ::core::option::Option<<Self as ::bind::HasParent>::Parent> {
+                claim: &mut ::bind::Claim<'_>,
+            ) -> ::laserbeam::Completed<
+                <::bind::Node<#parent<'a>, #name> as ::bind::HasPlace>::Place,
+            > {
                 let ::bind::Node { parent, data } = self;
                 match data { #(#dispatch_arms)* }
             }
@@ -209,60 +224,55 @@ fn derived_enum_node_impl(
     })
 }
 
-/// Emits `DispatchIntoParent` (and the check's half) for a DERIVED level: its own child, then
-/// its own binds, then hand the parent back.
+/// Emits `DispatchIntoPlace` (and the check's half) for a DERIVED level: the same linear body a
+/// place emits, over `node` instead of `path`, ascending at the place beneath it.
 ///
-/// It never names its own node type. `Node<#parent<'a>, Self>` is built from the attribute and
-/// from the struct the derive sits on.
+/// It never names its own node type, and it cannot name its place either: a level whose parent
+/// is another derived level knows only that parent's `Node` alias. Both are spelled through the
+/// `HasPlace` projection, which resolves because `#parent` is concrete at the impl.
 fn derived_node_impl(
     input: &DeriveInput,
     name: &Ident,
     parent: &Path,
     marker: &Path,
-    binds: &[Binding],
+    items: &[Scheduled],
 ) -> syn::Result<TokenStream2> {
     // Several possible levels: the DATA is an enum. There is no separate mechanism. The derive
     // destructures per variant and rebuilds the node, so each variant's handler gets its own
     // `Data` and the parent is shared by construction.
     if let Data::Enum(e) = &input.data {
-        return derived_enum_node_impl(input, name, parent, marker, binds, e);
+        return derived_enum_node_impl(input, name, parent, marker, items, e);
+    }
+    if let Data::Struct(s) = &input.data {
+        reject_resolve_into(&s.fields)?;
     }
 
-    let descend = derived_dispatch_descent(input, marker)?;
+    let node = quote!(node);
+    let state = derived_state(input, marker, &node)?;
     let acc_descend = derived_accumulate_descent(input, marker)?;
-    let checks = binds.iter().map(|b| {
-        let trigger = trigger_expr(&b.trigger, &quote!(node));
-        let handler = &b.handler;
-        quote! {
-            if let ::core::option::Option::Some(ev) =
-                ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
-            {
-                let trigger = #trigger;
-                if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                    if let ::core::option::Option::Some(()) = claim.try_take() {
-                        *effs = ::core::iter::Iterator::collect(
-                            ::core::iter::IntoIterator::into_iter(#handler(ev, node)),
-                        );
-                        return ::core::option::Option::None;
-                    }
-                }
-            }
-        }
-    });
-    let triggers = claimed_triggers(binds);
+    let opts = items.iter().enumerate().map(|(i, it)| opt(i, it, &node));
+    let blocks = items
+        .iter()
+        .enumerate()
+        .map(|(i, it)| scheduled_block(i, it));
+    let binding = state_binding(items);
+    let triggers = claimed_triggers(items);
     Ok(quote! {
         #[automatically_derived]
-        impl<'a> ::bind::DispatchIntoParent<#marker> for ::bind::Node<#parent<'a>, #name> {
-            fn dispatch_into_parent<'c>(
+        impl<'a> ::bind::DispatchIntoPlace<#marker> for ::bind::Node<#parent<'a>, #name> {
+            fn dispatch_into_place(
                 self,
                 event: &<#marker as ::bind::Bindings>::Event,
                 effs: &mut <#marker as ::bind::Bindings>::Output,
-                claim: &mut ::bind::Claim<'c>,
-            ) -> ::core::option::Option<<Self as ::bind::HasParent>::Parent> {
+                claim: &mut ::bind::Claim<'_>,
+            ) -> ::laserbeam::Completed<
+                <::bind::Node<#parent<'a>, #name> as ::bind::HasPlace>::Place,
+            > {
                 let node = self;
-                #descend
-                #(#checks)*
-                ::core::option::Option::Some(::bind::HasParent::into_parent(node))
+                #(#opts)*
+                let #binding = #state;
+                #(#blocks)*
+                ::laserbeam::MaybeInvalidated::complete(state)
             }
         }
 
@@ -289,30 +299,61 @@ fn derived_node_impl(
     })
 }
 
-/// The `#[derived_child]` descent, for dispatch. Emitted on a PLACE and on a DERIVED level
+/// The `#[derived_child]` edge's state, for dispatch. Emitted on a PLACE and on a DERIVED level
 /// alike, because both reach a child the same way once they hold it.
 ///
-/// `f` is `fn(&Parent) -> Option<Data>`: a shared reference, so the parent is never moved and
-/// never has to be handed back. The derive builds the node, and names no type it cannot see:
-/// `data`'s type comes from `f`'s return, and inference resolves `DispatchIntoParent` from the
-/// `Node`.
-fn derived_child_descent(f: &Path, marker: &Path, place: &TokenStream2) -> TokenStream2 {
+/// `f` is `fn(&Parent) -> Option<Data>`: a shared reference, so what it reads decides whether
+/// the level exists at all, before anything is moved. With a level, the descent consumes the
+/// parent and the place comes back inside the child's leave; without one, the parent is still
+/// here and flattens to that same place, which is the identity for a place.
+///
+/// The derive names no type it cannot see: `data`'s type comes from `f`'s return, and inference
+/// resolves `DispatchIntoPlace` from the `Node`.
+fn derived_child_state(f: &Path, marker: &Path, place: &TokenStream2) -> TokenStream2 {
     quote! {
-        let #place = match #f(&#place) {
-            ::core::option::Option::Some(data) => {
-                match ::bind::DispatchIntoParent::<#marker>::dispatch_into_parent(
+        match #f(&#place) {
+            ::core::option::Option::Some(data) => ::laserbeam::Completed::to_maybe_invalidated(
+                ::bind::DispatchIntoPlace::<#marker>::dispatch_into_place(
                     ::bind::Node { parent: #place, data },
                     event,
                     effs,
                     claim,
-                ) {
-                    ::core::option::Option::None => return ::core::option::Option::None,
-                    ::core::option::Option::Some(p) => p,
-                }
-            }
-            ::core::option::Option::None => #place,
-        };
+                ),
+            ),
+            ::core::option::Option::None => ::laserbeam::MaybeInvalidated::NotInvalidated(
+                ::bind::HasPlace::into_place(#place),
+            ),
+        }
     }
+}
+
+/// A derived level's own `#state`: the edge above when it has a `#[derived_child]`, and the
+/// node flattened to its place when it has nothing below it.
+fn derived_state(
+    input: &DeriveInput,
+    marker: &Path,
+    node: &TokenStream2,
+) -> syn::Result<TokenStream2> {
+    Ok(derived_child_fn(&input.attrs)?.map_or_else(
+        || quote!(::laserbeam::MaybeInvalidated::NotInvalidated(::bind::HasPlace::into_place(#node))),
+        |f| derived_child_state(&f, marker, node),
+    ))
+}
+
+/// A derived level cannot hang a place child: its `data` is rebuilt every dispatch and dies with
+/// it, so a place below it would have to fold through a `Node`, which is not a path.
+fn reject_resolve_into(fields: &Fields) -> syn::Result<()> {
+    for f in fields {
+        if let Some(attr) = f.attrs.iter().find(|a| a.path().is_ident("resolve_into")) {
+            return Err(syn::Error::new(
+                attr.span(),
+                "a derived level cannot have a `#[resolve_into]` child: its `data` dies with the \
+                 dispatch. Persist the state in the tree at a real place the derived level reads, \
+                 or hang a fresh level with `#[derived_child]`.",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The same descent, for the check.
@@ -330,53 +371,11 @@ fn derived_child_accumulate(f: &Path, marker: &Path, place: &TokenStream2) -> To
     }
 }
 
-fn derived_dispatch_descent(input: &DeriveInput, marker: &Path) -> syn::Result<TokenStream2> {
-    Ok(derived_child_fn(&input.attrs)?.map_or_else(
-        || quote!(),
-        |f| derived_child_descent(&f, marker, &quote!(node)),
-    ))
-}
-
 fn derived_accumulate_descent(input: &DeriveInput, marker: &Path) -> syn::Result<TokenStream2> {
     Ok(derived_child_fn(&input.attrs)?.map_or_else(
         || quote!(),
         |f| derived_child_accumulate(&f, marker, &quote!(node)),
     ))
-}
-
-/// Emits `impl DispatchIntoParent<M>` for a PLACE: delegate to its own `Dispatch`, then hand
-/// the parent back.
-///
-/// Per node, and not a blanket `impl<N, P> DispatchIntoParent<M> for PathMut<N, P>`:
-/// `Dispatch` carries `Self: 'a`, and the HRTB needed to state the blanket is E0311. Here the
-/// lifetime is named, so `Self: 'a` holds.
-///
-/// The root has no parent to hand back, so it gets none.
-fn dispatch_into_parent_impl(input: &DeriveInput, name: &Ident, marker: &Path) -> TokenStream2 {
-    if is_root(&input.attrs) {
-        return quote!();
-    }
-    quote! {
-        #[automatically_derived]
-        impl<'a> ::bind::DispatchIntoParent<#marker> for <#name as ::bind::Place>::Path<'a>
-        where
-            #name: 'a,
-        {
-            fn dispatch_into_parent<'c>(
-                self,
-                event: &<#marker as ::bind::Bindings>::Event,
-                effs: &mut <#marker as ::bind::Bindings>::Output,
-                claim: &mut ::bind::Claim<'c>,
-            ) -> ::core::option::Option<<Self as ::bind::HasParent>::Parent> {
-                match <#name as ::bind::Dispatch<#marker>>::dispatch(self, event, effs, claim) {
-                    ::core::option::Option::None => ::core::option::Option::None,
-                    ::core::option::Option::Some(path) => {
-                        ::core::option::Option::Some(::bind::HasParent::into_parent(path))
-                    }
-                }
-            }
-        }
-    }
 }
 
 /// Emits `impl EventHandler<M>`: insert this node's triggers, then recurse.
@@ -388,7 +387,7 @@ fn accumulate_impl(
     input: &DeriveInput,
     name: &Ident,
     marker: &Path,
-    binds: &[Binding],
+    items: &[Scheduled],
 ) -> syn::Result<TokenStream2> {
     let root = is_root(&input.attrs);
     let (recurse, children, needs_mut) = accumulate_body(input, name, marker, root)?;
@@ -402,7 +401,7 @@ fn accumulate_impl(
     } else {
         quote!(path)
     };
-    let triggers = claimed_triggers(binds);
+    let triggers = claimed_triggers(items);
     Ok(quote! {
         ::bind::check_only! {
         #[automatically_derived]
@@ -508,92 +507,83 @@ fn accumulate_body(
     }
 }
 
-/// Emits `impl Dispatch<M>`: try the active child first, then this node's binds.
+/// Emits `impl Dispatch<M>`: descend into the active child, then run this node's scheduled
+/// items over what the descent left of its path.
 fn dispatch_impl(
     input: &DeriveInput,
     name: &Ident,
     marker: &Path,
-    binds: &[Binding],
+    items: &[Scheduled],
 ) -> syn::Result<TokenStream2> {
     let root = is_root(&input.attrs);
-    let (recurse, children, needs_mut) = dispatch_body(input, name, marker, root)?;
+    let path = quote!(path);
+    let (state, children) = dispatch_state(input, name, marker, root, &path)?;
     let where_clause = if children.is_empty() {
         quote!()
     } else {
         quote!(where #(#children: ::bind::Dispatch<#marker>,)*)
     };
-    let binding = if needs_mut {
-        quote!(mut path)
-    } else {
-        quote!(path)
-    };
-    let opts = binds
+    let opts = items.iter().enumerate().map(|(i, it)| opt(i, it, &path));
+    let blocks = items
         .iter()
         .enumerate()
-        .map(|(i, b)| opt(i, b, &quote!(path)));
-    // Each scheduled item consumes the opt its trigger produced. The handler's return is
-    // iterated and collected, so a handler returns any iterable of effects and each bind's call
-    // site is typed on its own. A handler that already returns `M::Output` collects back into
-    // it, which std does in place for a `Vec`.
-    let checks = binds.iter().enumerate().map(|(i, b)| {
-        let opt = opt_ident(i);
-        let handler = &b.handler;
-        quote! {
-            if let ::core::option::Option::Some((ev, _snap)) = #opt {
-                if let ::core::option::Option::Some(()) = claim.try_take() {
-                    *effs = ::core::iter::Iterator::collect(
-                        ::core::iter::IntoIterator::into_iter(
-                            #handler(ev, ::bind::Node { parent: path, data: () }),
-                        ),
-                    );
-                    return ::core::option::Option::None;
-                }
-            }
-        }
-    });
+        .map(|(i, it)| scheduled_block(i, it));
+    let binding = state_binding(items);
     Ok(quote! {
         #[automatically_derived]
         impl ::bind::Dispatch<#marker> for #name #where_clause {
             fn dispatch<'a, 'c>(
-                #binding: <Self as ::bind::Place>::Path<'a>,
+                path: <Self as ::bind::Place>::Path<'a>,
                 event: &<#marker as ::bind::Bindings>::Event,
                 effs: &mut <#marker as ::bind::Bindings>::Output,
                 claim: &mut ::bind::Claim<'c>,
-            ) -> ::core::option::Option<<Self as ::bind::Place>::Path<'a>>
+            ) -> ::laserbeam::Completed<<Self as ::bind::Place>::Path<'a>>
             where
                 Self: 'a,
+                <Self as ::bind::Place>::Path<'a>: ::laserbeam::HasStop,
             {
                 #(#opts)*
-                #recurse
-                #(#checks)*
-                ::core::option::Option::Some(path)
+                let #binding = #state;
+                #(#blocks)*
+                ::laserbeam::MaybeInvalidated::complete(state)
             }
         }
     })
 }
 
-/// The dispatch recursion into the active child, the child types to bound, and
-/// whether the path binding needs `mut` (any node that descends reassigns it).
-fn dispatch_body(
+/// The state binding: `mut` only when a scheduled item will rebind it, so a node with nothing
+/// scheduled does not carry a needless `mut`.
+fn state_binding(items: &[Scheduled]) -> TokenStream2 {
+    if items.is_empty() {
+        quote!(state)
+    } else {
+        quote!(mut state)
+    }
+}
+
+/// This node's state after the descent, and the child types to bound.
+///
+/// A leaf's path is untouched, so it starts standing. Everything else descends and folds what
+/// the child completed to: the fold is the child's `Stop`, read at the parent.
+fn dispatch_state(
     input: &DeriveInput,
     name: &Ident,
     marker: &Path,
     root: bool,
-) -> syn::Result<(TokenStream2, Vec<Type>, bool)> {
+    place: &TokenStream2,
+) -> syn::Result<(TokenStream2, Vec<Type>)> {
     // `#[derived_child(f)]`: the child is not a field, so `f` produces its data and the derive
     // builds the node. Nothing here names the child's type, and nothing can: the derive has
     // only `f`'s name.
     if let Some(f) = derived_child_fn(&input.attrs)? {
-        return Ok((
-            derived_child_descent(&f, marker, &quote!(path)),
-            Vec::new(),
-            false,
-        ));
+        return Ok((derived_child_state(&f, marker, place), Vec::new()));
     }
     match &input.data {
         Data::Struct(s) => match find_resolve_into(&s.fields)? {
-            // A leaf descends into nothing; its path is never reassigned.
-            None => Ok((quote!(), Vec::new(), false)),
+            None => Ok((
+                quote!(::laserbeam::MaybeInvalidated::NotInvalidated(#place)),
+                Vec::new(),
+            )),
             Some((field, child_ty, route)) => {
                 let (child, boxed) = unbox(&child_ty);
                 let edge = Edge {
@@ -603,22 +593,10 @@ fn dispatch_body(
                     boxed,
                     via: Via::Field(&field),
                 };
-                let child_path = edge.child_path(&quote!(path));
-                let recover = edge.recover_parent(&quote!(child));
-                let recurse = quote! {
-                    match <#child as ::bind::Dispatch<#marker>>::dispatch(
-                        #child_path,
-                        event,
-                        effs,
-                        claim,
-                    ) {
-                        ::core::option::Option::None => return ::core::option::Option::None,
-                        ::core::option::Option::Some(child) => {
-                            path = #recover;
-                        }
-                    }
-                };
-                Ok((recurse, vec![child.clone()], true))
+                Ok((
+                    child_state(&edge, child, marker, place),
+                    vec![child.clone()],
+                ))
             }
         },
         Data::Enum(e) => {
@@ -637,37 +615,56 @@ fn dispatch_body(
                     boxed,
                     via: Via::Variant(vi),
                 };
-                let child_path = edge.child_path(&quote!(path));
-                let recover = edge.recover_parent(&quote!(child));
-                arms.push(quote! {
-                    Self::#vi(_) => {
-                        match <#child as ::bind::Dispatch<#marker>>::dispatch(
-                            #child_path,
-                            event,
-                            effs,
-                            claim,
-                        ) {
-                            ::core::option::Option::None => return ::core::option::Option::None,
-                            ::core::option::Option::Some(child) => {
-                                path = #recover;
-                            }
-                        }
-                    }
-                });
+                let state = child_state(&edge, child, marker, place);
+                arms.push(quote!(Self::#vi(_) => { #state }));
             }
-            // The root enum matches `&mut Self` directly; a non-root enum reaches
-            // its variant through the path's `get_mut`.
+            // The root enum matches `&mut Self` directly; a non-root enum reaches its variant
+            // through the path. A SHARED read: the arms bind nothing, the discriminant is all
+            // this asks for, and the arm then consumes the path to build the child's.
             let scrutinee = if root {
-                quote!(path)
+                quote!(#place)
             } else {
-                quote!(path.get_mut())
+                quote!(#place.get())
             };
-            Ok((quote!(match #scrutinee { #(#arms)* }), children, true))
+            Ok((quote!(match #scrutinee { #(#arms)* }), children))
         }
         Data::Union(_) => Err(syn::Error::new(
             input.span(),
             "bind does not support unions",
         )),
+    }
+}
+
+/// One place edge's state: dispatch the child, unwrap its leave, and read it at this node.
+///
+/// A single-parent edge reads it through laserbeam's `Stop` conversions, whose two impls are
+/// the root and non-root cases. A route edge cannot: its `Up` payload is the consumer's enum,
+/// so the fold matches out the variant this descent constructed. The `unreachable!()`s assert
+/// what the multi-parent projections already assert, that only the live route is ever built.
+fn child_state(edge: &Edge<'_>, child: &Type, marker: &Path, place: &TokenStream2) -> TokenStream2 {
+    let child_path = edge.child_path(place);
+    let leave = quote! {
+        ::laserbeam::Completed::into_inner(
+            <#child as ::bind::Dispatch<#marker>>::dispatch(#child_path, event, effs, claim),
+        )
+    };
+    let Some(Route { parent: route, up }) = edge.route else {
+        return quote!(#leave.to_maybe_invalidated());
+    };
+    let parent = edge.parent;
+    quote! {
+        match #leave {
+            ::laserbeam::Stop::Here(child) => {
+                let #route::#parent(recovered) = ::bind::HasParent::into_parent(child) else {
+                    ::core::unreachable!()
+                };
+                ::laserbeam::MaybeInvalidated::NotInvalidated(recovered)
+            }
+            ::laserbeam::Stop::Up(above) => {
+                let #up::#parent(completed) = above else { ::core::unreachable!() };
+                ::laserbeam::MaybeInvalidated::Invalidated(completed)
+            }
+        }
     }
 }
 
@@ -709,15 +706,18 @@ fn trigger_expr(trigger: &Expr, state: &TokenStream2) -> TokenStream2 {
 
 /// The triggers THE CHECK collects: the ones a node CLAIMS.
 ///
+/// Only a `#[bind]` claims, so only a `#[bind]`'s trigger is a claim to collide over. A post is
+/// scheduled by its trigger and runs beside whatever claimed, which is not a clobber.
+///
 /// A closure trigger is skipped. Its value is read from state at dispatch, so it is not a static
 /// claim, and two nodes whose state holds nothing would produce the same value and read as a
 /// clobber while neither could fire at all. It is also what lets a trigger be an `Option`:
 /// `insert_or_error` takes a value, `None` has none to give, and the conversion is never reached.
-fn claimed_triggers(binds: &[Binding]) -> impl Iterator<Item = &Expr> {
-    binds
+fn claimed_triggers(items: &[Scheduled]) -> impl Iterator<Item = &Expr> {
+    items
         .iter()
-        .filter(|b| !matches!(b.trigger, Expr::Closure(_)))
-        .map(|b| &b.trigger)
+        .filter(|it| it.claims && !matches!(it.trigger, Expr::Closure(_)))
+        .map(|it| &it.trigger)
 }
 
 /// The local a scheduled item's opt lands in, numbered in source order across the node's
@@ -733,10 +733,10 @@ fn opt_ident(i: usize) -> Ident {
 /// The pre is called rather than inlined even when it is the synthesized `|_, _| ()`, so one
 /// emitted shape serves every kind of scheduled item and the `Snap` a handler receives is
 /// whatever the pre returned.
-fn opt(i: usize, b: &Binding, state: &TokenStream2) -> TokenStream2 {
+fn opt(i: usize, item: &Scheduled, state: &TokenStream2) -> TokenStream2 {
     let ident = opt_ident(i);
-    let trigger = trigger_expr(&b.trigger, state);
-    let pre = &b.pre;
+    let trigger = trigger_expr(&item.trigger, state);
+    let pre = &item.pre;
     quote! {
         let #ident = match ::core::convert::TryFrom::try_from(event) {
             ::core::result::Result::Ok(ev) => {
@@ -752,43 +752,129 @@ fn opt(i: usize, b: &Binding, state: &TokenStream2) -> TokenStream2 {
     }
 }
 
-/// The pre a `#[bind]` gets: it takes nothing off the state, so the `Snap` its handler is
-/// handed is `()`.
+/// One scheduled item's block, the same for every kind: call it with what its opt snapped and
+/// the state as it stands, take its effects, and re-derive the state from the leave it returned.
+///
+/// Nothing here branches on the claim or on the state. The item was scheduled by its trigger and
+/// runs; what each state branch means is its own business.
+fn scheduled_block(i: usize, item: &Scheduled) -> TokenStream2 {
+    let ident = opt_ident(i);
+    let rhs = item.rhs();
+    quote! {
+        if let ::core::option::Option::Some((ev, snap)) = #ident {
+            let (e, completed) = (#rhs)(
+                ev,
+                snap,
+                ::bind::AscendState::new(state, ::bind::Claim::reborrow(claim)),
+            );
+            ::core::iter::Extend::extend(effs, e);
+            state = ::laserbeam::Completed::to_maybe_invalidated(completed);
+        }
+    }
+}
+
+/// The pre a `#[bind]` or a `#[post]` gets: it takes nothing off the state, so the `Snap` its
+/// handler is handed is `()`.
 fn unit_pre() -> Expr {
     syn::parse_quote!(|_, _| ())
 }
 
-/// One `trigger => handler` pair. `accumulate` uses the trigger; `dispatch` uses
-/// both.
-struct Binding {
+/// One item on a node's schedule: what fires it, what it snaps before the descent, what runs on
+/// the way up, and whether it claims.
+///
+/// The three attribute kinds differ only here, at parse time. Past this point one list drives
+/// one emitted shape.
+struct Scheduled {
     trigger: Expr,
     /// What runs before the descent and produces the handler's `Snap`.
     pre: Expr,
     handler: Expr,
+    /// `#[bind]`, and nothing else: only a bind takes the claim.
+    claims: bool,
 }
 
-impl syn::parse::Parse for Binding {
+impl Scheduled {
+    /// What dispatch calls. A bind goes through the claim gate; a post is called as written.
+    /// Either way the macro looks inside no rhs.
+    fn rhs(&self) -> TokenStream2 {
+        let handler = &self.handler;
+        if self.claims {
+            quote!(::bind::exclusive(#handler))
+        } else {
+            quote!(#handler)
+        }
+    }
+}
+
+/// One `trigger => handler` pair, the form `#[bind]` and `#[post]` share.
+struct Pair {
+    trigger: Expr,
+    handler: Expr,
+}
+
+impl syn::parse::Parse for Pair {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let trigger = input.parse()?;
         input.parse::<Token![=>]>()?;
         let handler = input.parse()?;
-        Ok(Self {
-            trigger,
-            pre: unit_pre(),
-            handler,
-        })
+        Ok(Self { trigger, handler })
     }
 }
 
-/// Every `trigger => handler` pair across the node's `#[bind(..)]` attributes.
-fn binds(attrs: &[syn::Attribute]) -> syn::Result<Vec<Binding>> {
+/// One `trigger => (pre, post)` pair from `#[pre_post(..)]`.
+struct PrePost {
+    trigger: Expr,
+    pre: Expr,
+    post: Expr,
+}
+
+impl syn::parse::Parse for PrePost {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let trigger = input.parse()?;
+        input.parse::<Token![=>]>()?;
+        let content;
+        syn::parenthesized!(content in input);
+        let pre = content.parse()?;
+        content.parse::<Token![,]>()?;
+        let post = content.parse()?;
+        Ok(Self { trigger, pre, post })
+    }
+}
+
+/// Every scheduled item across the node's `#[bind]`, `#[post]`, and `#[pre_post]` attributes,
+/// in source order: the attributes are walked once, in the order they were written, and each
+/// contributes its comma-separated pairs in the order they appear inside it.
+///
+/// The order is what a node's schedule means, since each item sees the state the item before it
+/// left. A post keyed on what the descent did is written above the binds for exactly that
+/// reason.
+fn scheduled(attrs: &[syn::Attribute]) -> syn::Result<Vec<Scheduled>> {
     let mut out = Vec::new();
     for attr in attrs {
-        if attr.path().is_ident("bind") {
-            let parsed =
-                attr.parse_args_with(Punctuated::<Binding, Token![,]>::parse_terminated)?;
-            out.extend(parsed);
-        }
+        let claims = if attr.path().is_ident("bind") {
+            true
+        } else if attr.path().is_ident("post") {
+            false
+        } else {
+            if attr.path().is_ident("pre_post") {
+                let parsed =
+                    attr.parse_args_with(Punctuated::<PrePost, Token![,]>::parse_terminated)?;
+                out.extend(parsed.into_iter().map(|p| Scheduled {
+                    trigger: p.trigger,
+                    pre: p.pre,
+                    handler: p.post,
+                    claims: false,
+                }));
+            }
+            continue;
+        };
+        let parsed = attr.parse_args_with(Punctuated::<Pair, Token![,]>::parse_terminated)?;
+        out.extend(parsed.into_iter().map(|p| Scheduled {
+            trigger: p.trigger,
+            pre: unit_pre(),
+            handler: p.handler,
+            claims,
+        }));
     }
     Ok(out)
 }

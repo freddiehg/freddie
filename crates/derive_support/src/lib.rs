@@ -8,9 +8,20 @@ use quote::quote;
 use syn::spanned::Spanned;
 use syn::{Fields, Ident, Index, Member, Path, Type};
 
+/// The two enums a multi-parent edge is told, since the derive can build neither.
+///
+/// `parent` is the route the descent wraps this node into; `up` is its `Above::Up` half, which
+/// the ascent's fold matches to recover which route a leave took. They are declared together
+/// because a route enum without its Up half has no `Above` impl, and the child's path is then
+/// not a type a leave can complete from.
+pub struct Route {
+    pub parent: Path,
+    pub up: Path,
+}
+
 /// The `#[resolve_into]` field of a struct: its name, child type, and, when the
-/// child has multiple parents, the route-enum variant to wrap this node into.
-pub type ResolveInto = (Member, Type, Option<Path>);
+/// child has multiple parents, the route it hangs on.
+pub type ResolveInto = (Member, Type, Option<Route>);
 
 /// Finds the single `#[resolve_into]` field of a struct, if any.
 ///
@@ -38,28 +49,44 @@ pub fn find_resolve_into(fields: &Fields) -> syn::Result<Option<ResolveInto>> {
     Ok(found)
 }
 
-/// The route enum named by `#[resolve_into(parent = Enum)]`, if present. A bare
+/// The route named by `#[resolve_into(parent = Enum, up = UpEnum)]`, if present. A bare
 /// `#[resolve_into]` (or no attribute) is a single-parent child.
 ///
 /// # Errors
 ///
-/// Errors if the attribute list contains anything other than `parent = ..`.
-pub fn parent_route(attrs: &[syn::Attribute]) -> syn::Result<Option<Path>> {
+/// Errors if the attribute list contains anything other than `parent = ..` and `up = ..`, or
+/// if one of the two is given without the other.
+pub fn parent_route(attrs: &[syn::Attribute]) -> syn::Result<Option<Route>> {
     let Some(attr) = attrs.iter().find(|a| a.path().is_ident("resolve_into")) else {
         return Ok(None);
     };
     let mut parent = None;
+    let mut up = None;
     if matches!(attr.meta, syn::Meta::List(_)) {
         attr.parse_nested_meta(|m| {
             if m.path.is_ident("parent") {
                 parent = Some(m.value()?.parse()?);
                 Ok(())
+            } else if m.path.is_ident("up") {
+                up = Some(m.value()?.parse()?);
+                Ok(())
             } else {
-                Err(m.error("expected `parent`"))
+                Err(m.error("expected `parent` or `up`"))
             }
         })?;
     }
-    Ok(parent)
+    match (parent, up) {
+        (None, None) => Ok(None),
+        (Some(parent), Some(up)) => Ok(Some(Route { parent, up })),
+        (Some(_), None) => Err(syn::Error::new(
+            attr.span(),
+            "`#[resolve_into(parent = ..)]` needs `up = ..`, the route enum's `Above::Up` half",
+        )),
+        (None, Some(_)) => Err(syn::Error::new(
+            attr.span(),
+            "`#[resolve_into(up = ..)]` needs `parent = ..`, the route enum itself",
+        )),
+    }
 }
 
 /// The single field type of a tuple variant `Foo(Bar)`.
@@ -170,8 +197,8 @@ pub struct Edge<'a> {
     pub parent: &'a Ident,
     /// True when the parent is the root (its path is `&mut Self`).
     pub is_root: bool,
-    /// The route enum for a multi-parent child; `None` for a single parent.
-    pub route: Option<&'a Path>,
+    /// The route a multi-parent child hangs on; `None` for a single parent.
+    pub route: Option<&'a Route>,
     /// True when the field or variant payload is `Box<Child>`.
     pub boxed: bool,
     /// How the child is reached on the parent.
@@ -199,6 +226,7 @@ impl Edge<'_> {
             // after this node, and re-derive the child through it.
             Some(route) => {
                 let parent = self.parent;
+                let route = &route.parent;
                 let variant = quote!(#route::#parent);
                 let (project, project_ref) = self.multi_parent_projection(&variant, &deref);
                 quote!(::laserbeam::PathMut::from_fn(
@@ -221,6 +249,7 @@ impl Edge<'_> {
             None => quote!(#child.into_parent()),
             Some(route) => {
                 let parent = self.parent;
+                let route = &route.parent;
                 let variant = quote!(#route::#parent);
                 quote!({
                     let #variant(pp) = #child.into_parent() else { ::core::unreachable!() };

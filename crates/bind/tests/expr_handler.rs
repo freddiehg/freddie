@@ -1,16 +1,24 @@
 //! A handler position accepts any EXPRESSION, not just a fn path. `trigger => make(n)`, where
-//! `make` returns a handler closure, works because the derive splices the handler as `#handler(ev,
-//! node)` — so `make(n)` is called, then its result is called with `(ev, node)`. This is what an
-//! `exclusive(h)`-style wrapper relies on, so it is pinned here.
+//! `make` returns a handler closure, works because the derive splices the rhs into call position
+//! — so `make(n)` is called, then its result is called with the event, the snap, and the state.
+//! This is what `exclusive` itself relies on, and what a `#[pre_post]` rhs like
+//! `exclusive(handler)` is, so it is pinned here.
 
 mod common;
 
-use bind::{Bind, Node};
+use bind::{AscendState, Bind};
 use common::{Demo, KeyEvent, Keyboard, key};
+use laserbeam::Completed;
 
 /// A higher-order handler: `plus(n)` returns a handler reporting the fired key's length plus `n`.
-fn plus(n: usize) -> impl Fn(&KeyEvent, Node<&mut ExprRoot, ()>) -> [usize; 1] {
-    move |ev, _node| [ev.key.len() + n]
+fn plus(
+    n: usize,
+) -> impl for<'a, 'b> Fn(
+    &KeyEvent,
+    (),
+    AscendState<'a, &'b mut ExprRoot>,
+) -> (Vec<usize>, Completed<&'b mut ExprRoot>) {
+    move |ev, (), st| (vec![ev.key.len() + n], st.complete())
 }
 
 #[derive(Bind)]

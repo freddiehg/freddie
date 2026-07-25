@@ -1,12 +1,12 @@
 //! Resize-layer handlers: place the focused window and return home.
 
-use bind::Node;
+use bind::AscendState;
 use freddie_windows::{Frame, WindowFrame};
-use laserbeam::IntoAncestor;
+use laserbeam::{Complete, Completed, HasStop, IntoAncestor, MaybeInvalidated};
 
 use super::and_go_home_from;
 use crate::MercuryEffect;
-use crate::state::{MercuryPath, Windows};
+use crate::state::{Mercury, MercuryPath, Windows};
 
 /// The whole visible frame.
 const fn maximized(visible: Frame) -> Frame {
@@ -30,25 +30,49 @@ const fn right_of(visible: Frame) -> Frame {
     }
 }
 
-pub(crate) fn maximize<'a, E, P: IntoAncestor<MercuryPath<'a>>>(
+pub(crate) fn maximize<'a, E, P>(
     _ev: &E,
-    node: Node<P, ()>,
-) -> Vec<MercuryEffect> {
-    place(node.parent, maximized)
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>)
+where
+    P: HasStop,
+    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    MercuryPath<'a>: Complete<P>,
+{
+    let root: MercuryPath<'a> = st.state.into_ancestor();
+    let effects = place(root, maximized);
+    (effects, root.complete())
 }
 
-pub(crate) fn left_half<'a, E, P: IntoAncestor<MercuryPath<'a>>>(
+pub(crate) fn left_half<'a, E, P>(
     _ev: &E,
-    node: Node<P, ()>,
-) -> Vec<MercuryEffect> {
-    place(node.parent, left_of)
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>)
+where
+    P: HasStop,
+    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    MercuryPath<'a>: Complete<P>,
+{
+    let root: MercuryPath<'a> = st.state.into_ancestor();
+    let effects = place(root, left_of);
+    (effects, root.complete())
 }
 
-pub(crate) fn right_half<'a, E, P: IntoAncestor<MercuryPath<'a>>>(
+pub(crate) fn right_half<'a, E, P>(
     _ev: &E,
-    node: Node<P, ()>,
-) -> Vec<MercuryEffect> {
-    place(node.parent, right_of)
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>)
+where
+    P: HasStop,
+    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    MercuryPath<'a>: Complete<P>,
+{
+    let root: MercuryPath<'a> = st.state.into_ancestor();
+    let effects = place(root, right_of);
+    (effects, root.complete())
 }
 
 /// Put the focused window in the frame `within` picks out of its screen's visible frame,
@@ -56,11 +80,7 @@ pub(crate) fn right_half<'a, E, P: IntoAncestor<MercuryPath<'a>>>(
 ///
 /// The effects are empty when there is no focused window or no screen has been reported.
 /// The layer returns home either way.
-fn place<'a, P: IntoAncestor<MercuryPath<'a>>>(
-    path: P,
-    within: impl Fn(Frame) -> Frame,
-) -> Vec<MercuryEffect> {
-    let root = path.into_ancestor();
+fn place(root: &mut Mercury, within: impl Fn(Frame) -> Frame) -> Vec<MercuryEffect> {
     let effects =
         target(&root.windows, within).map_or_else(Vec::new, |target| root.windows.placing(target));
     and_go_home_from(root, effects)
@@ -70,13 +90,20 @@ fn place<'a, P: IntoAncestor<MercuryPath<'a>>>(
 ///
 /// Restoring is one choice, not something to repeat, so it leaves the layer the way the
 /// arrows do.
-pub(crate) fn restore_window<'a, E, P: IntoAncestor<MercuryPath<'a>>>(
+pub(crate) fn restore_window<'a, E, P>(
     _ev: &E,
-    node: Node<P, ()>,
-) -> Vec<MercuryEffect> {
-    let root = node.parent.into_ancestor();
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>)
+where
+    P: HasStop,
+    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    MercuryPath<'a>: Complete<P>,
+{
+    let root: MercuryPath<'a> = st.state.into_ancestor();
     let effects = root.windows.restoring();
-    and_go_home_from(root, effects)
+    let effects = and_go_home_from(root, effects);
+    (effects, root.complete())
 }
 
 /// The focused window and the frame it is going to.

@@ -379,34 +379,6 @@ macro_rules! self_trigger {
     };
 }
 
-/// Consumes a child-typed value (a place path or a derived [`Node`]), dispatches
-/// `event` at that level, and surfaces at the parent.
-///
-/// A PLACE implements it by delegating to its own [`Dispatch`] and then handing the parent
-/// back. A DERIVED level implements it directly, because it has no [`Resolve`] and so cannot
-/// have `Dispatch`.
-///
-/// It exists because a derived-child caller cannot name the child's type. It calls this in
-/// method position on whatever the child function returned, and inference finds the impl.
-/// The name follows the `into_parent` / `into_ancestor` / `into_inner` convention of a
-/// consuming step that names its output, and the trait matches its method as
-/// `Complete::complete` does.
-///
-/// The place impl is emitted PER NODE by the derive, not once as a blanket
-/// `impl<N, P> DispatchIntoParent<M> for Path<N, P>`: `Dispatch` carries `Self: 'a`, and the
-/// HRTB needed to state the blanket is E0311.
-pub trait DispatchIntoParent<M: Bindings>: HasParent + Sized {
-    /// Runs the active binding for `event` into `effs` under `claim`, or hands
-    /// the PARENT back on a miss (`Some`). `None` means an exclusive handler
-    /// already ran.
-    fn dispatch_into_parent(
-        self,
-        event: &M::Event,
-        effs: &mut M::Output,
-        claim: &mut Claim<'_>,
-    ) -> Option<Self::Parent>;
-}
-
 /// Consumes a derived node, dispatches at that level, and surfaces at the place path beneath it.
 ///
 /// The derived counterpart of [`Dispatch`], and what replaces [`DispatchIntoParent`]: a derived
@@ -447,21 +419,24 @@ pub trait DerivedHandler<M: Bindings>: HasParent + Sized {
 
 /// The dispatch half. `#[derive(Bind)]` implements it alongside [`EventHandler`].
 ///
-/// Each node tries its active child first, then its own binds, so a child's
-/// binding takes priority over an ancestor's. Effects collect into `effs`; the
-/// first exclusive handler takes `claim`. `None` means that exclusive ran;
-/// `Some(path)` is a miss so the parent can walk up (`into_parent`) and try.
+/// Each node descends into its active child first, then runs its own scheduled items, so a
+/// child's binding takes priority over an ancestor's. Effects collect into `effs`; the first
+/// exclusive handler takes `claim`.
+///
+/// What comes back says where the leave this dispatch produced stopped: at this path, or
+/// somewhere above it. Every item runs either way, so nothing here is control flow.
 pub trait Dispatch<M: Bindings>: Place {
-    /// Runs the active binding for `event` into `effs` under `claim`, or hands
-    /// the path back on a miss.
+    /// Runs this node's scheduled items for `event` into `effs` under `claim`, and returns the
+    /// leave they completed to.
     fn dispatch<'a, 'c>(
         path: Self::Path<'a>,
         event: &M::Event,
         effs: &mut M::Output,
         claim: &mut Claim<'c>,
-    ) -> Option<Self::Path<'a>>
+    ) -> ::laserbeam::Completed<Self::Path<'a>>
     where
-        Self: 'a;
+        Self: 'a,
+        Self::Path<'a>: ::laserbeam::HasStop;
 }
 
 /// Dispatches `event` against the tree at `path` (the root's `&mut Root`),

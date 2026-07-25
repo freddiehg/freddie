@@ -5,8 +5,8 @@
 //! return the fired key's length, so a dispatch test can see which handler ran.
 #![expect(dead_code)]
 
-use bind::{Bind, Bindings, EventTrigger, Node};
-use laserbeam::{Above, Completed, PathMut};
+use bind::{AscendState, Bind, Bindings, EventTrigger};
+use laserbeam::{Above, Complete, Completed, HasStop, MaybeInvalidated, PathMut};
 
 // Two sources: a keyboard and the foregrounded app.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -81,42 +81,101 @@ impl Bindings for Demo {
     type Output = Vec<usize>;
 }
 
-// Handlers. Each takes its node's path and returns the fired key's length. The return types
-// vary on purpose: dispatch collects any iterable, so an array, a `Vec`, and a bare iterator
-// are all valid handler returns and each shape is exercised here.
-pub const fn on_esc(ev: &KeyEvent, node: Node<&mut App, ()>) -> [usize; 1] {
-    let app = node.parent;
-    app.hits += 1;
-    [ev.key.len()]
+// Handlers. Each is the one scheduled shape: the event, what its pre snapped, and the state the
+// descent left of its path. They return the fired key's length, so a dispatch test can see which
+// one ran, and the leave they completed to.
+//
+// A stayer completes where it stands; the `Invalidated` arm forwards the leave it was handed and
+// is unreachable for a leaf, whose state starts standing.
+pub fn on_esc<'x>(
+    ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, AppPath<'x>>,
+) -> (Vec<usize>, Completed<AppPath<'x>>) {
+    match st.state {
+        MaybeInvalidated::NotInvalidated(app) => {
+            app.hits += 1;
+            (vec![ev.key.len()], app.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![ev.key.len()], c),
+    }
 }
-pub fn on_f1(ev: &KeyEvent, _node: Node<LayerPath, ()>) -> Vec<usize> {
-    vec![ev.key.len()]
+pub fn on_f1<'x>(
+    ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, LayerPath<'x>>,
+) -> (Vec<usize>, Completed<LayerPath<'x>>) {
+    (vec![ev.key.len()], st.complete())
 }
-pub fn on_g(ev: &KeyEvent, mut node: Node<NavPath, ()>) -> impl Iterator<Item = usize> {
-    node.parent.get_mut().hits += 1;
-    std::iter::once(ev.key.len())
+pub fn on_g<'x>(
+    ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, NavPath<'x>>,
+) -> (Vec<usize>, Completed<NavPath<'x>>) {
+    match st.state {
+        MaybeInvalidated::NotInvalidated(mut nav) => {
+            nav.get_mut().hits += 1;
+            (vec![ev.key.len()], nav.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![ev.key.len()], c),
+    }
 }
-pub fn on_slack(ev: &FgEvent, _node: Node<NavPath, ()>) -> [usize; 1] {
-    [ev.app.len()]
+pub fn on_slack<'x>(
+    ev: &FgEvent,
+    _snap: (),
+    st: AscendState<'_, NavPath<'x>>,
+) -> (Vec<usize>, Completed<NavPath<'x>>) {
+    (vec![ev.app.len()], st.complete())
 }
-pub fn on_bksp(ev: &KeyEvent, mut node: Node<TypingPath, ()>) -> [usize; 1] {
-    node.parent.get_mut().hits += 1;
-    [ev.key.len()]
+pub fn on_bksp<'x>(
+    ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, TypingPath<'x>>,
+) -> (Vec<usize>, Completed<TypingPath<'x>>) {
+    match st.state {
+        MaybeInvalidated::NotInvalidated(mut typing) => {
+            typing.get_mut().hits += 1;
+            (vec![ev.key.len()], typing.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![ev.key.len()], c),
+    }
 }
-pub fn on_d(ev: &KeyEvent, mut node: Node<DeepPath, ()>) -> [usize; 1] {
-    node.parent.get_mut().hits += 1;
-    [ev.key.len()]
+pub fn on_d<'x>(
+    ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, DeepPath<'x>>,
+) -> (Vec<usize>, Completed<DeepPath<'x>>) {
+    match st.state {
+        MaybeInvalidated::NotInvalidated(mut deep) => {
+            deep.get_mut().hits += 1;
+            (vec![ev.key.len()], deep.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![ev.key.len()], c),
+    }
 }
 /// A handler for the armed node: clears what it was waiting on, so a test can see it ran.
-pub const fn on_armed(ev: &KeyEvent, node: Node<&mut Armed, ()>) -> [usize; 1] {
-    let armed = node.parent;
-    armed.waiting_for = None;
-    [ev.key.len()]
+pub fn on_armed<'x>(
+    ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, ArmedPath<'x>>,
+) -> (Vec<usize>, Completed<ArmedPath<'x>>) {
+    match st.state {
+        MaybeInvalidated::NotInvalidated(armed) => {
+            armed.waiting_for = None;
+            (vec![ev.key.len()], armed.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![ev.key.len()], c),
+    }
 }
 
-/// A handler for nodes a dispatch test never fires (any path, ignored).
-pub fn ignore<P>(ev: &KeyEvent, _node: Node<P, ()>) -> [usize; 1] {
-    [ev.key.len()]
+/// A handler for nodes a dispatch test never fires. It reads nothing, so it binds at any place:
+/// the bounds are the two every stayer needs, and neither names a node.
+pub fn ignore<P: HasStop + Complete<P>>(
+    ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<usize>, Completed<P>) {
+    (vec![ev.key.len()], st.complete())
 }
 
 // App -> Layer (enum) -> { Nav (leaf), Typing -> Box<Deep> (leaf) }.
@@ -211,7 +270,7 @@ pub enum Media {
 #[binds(Demo)]
 #[bind(Keyboard("a") => ignore)]
 pub struct Album {
-    #[resolve_into(parent = TitleParent)]
+    #[resolve_into(parent = TitleParent, up = TitleParentUp)]
     pub title: Title,
 }
 
@@ -220,14 +279,14 @@ pub struct Album {
 #[binds(Demo)]
 #[bind(Keyboard("s") => ignore)]
 pub struct Song {
-    #[resolve_into(parent = TitleParent)]
+    #[resolve_into(parent = TitleParent, up = TitleParentUp)]
     pub title: Title,
 }
 
 #[derive(Bind)]
 #[node(parent = TitleParent)]
 #[binds(Demo)]
-#[bind(Keyboard("t") => on_title)]
+#[bind(Keyboard("t") => on_title, Keyboard("home") => title_home)]
 pub struct Title {
     pub hits: u32,
 }
@@ -256,9 +315,41 @@ impl<'a> Above for TitleParent<'a> {
 }
 
 pub type TitlePath<'a> = PathMut<Title, TitleParent<'a>>;
-pub fn on_title(ev: &KeyEvent, mut node: Node<TitlePath, ()>) -> [usize; 1] {
-    node.parent.get_mut().hits += 1;
-    [ev.key.len()]
+pub fn on_title<'x>(
+    ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, TitlePath<'x>>,
+) -> (Vec<usize>, Completed<TitlePath<'x>>) {
+    match st.state {
+        MaybeInvalidated::NotInvalidated(mut title) => {
+            title.get_mut().hits += 1;
+            (vec![ev.key.len()], title.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![ev.key.len()], c),
+    }
+}
+
+/// Title's leave, on `home`: out through whichever route is live, to the root.
+///
+/// `into_parent()` on a `TitlePath` yields the route enum, which has no `into_parent` of its
+/// own, so the leave matches it and wraps one `Up` level by hand. Both arms are live, one per
+/// route, and `IntoAncestor` does not cross a route enum, so no generic go-home handler could
+/// stand in for this.
+pub fn title_home<'x>(
+    _ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, TitlePath<'x>>,
+) -> (Vec<usize>, Completed<TitlePath<'x>>) {
+    match st.state {
+        MaybeInvalidated::NotInvalidated(title) => {
+            let up = match title.into_parent() {
+                TitleParent::Album(album) => TitleParentUp::Album(album.into_parent().complete()),
+                TitleParent::Song(song) => TitleParentUp::Song(song.into_parent().complete()),
+            };
+            (vec![], Completed::up(up))
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![], c),
+    }
 }
 
 /// A keyboard trigger, for accumulate assertions.
@@ -339,15 +430,32 @@ pub struct ArmedChild {
 }
 
 /// Fires for the key the child's PARENT is waiting for, read through `parent()`.
-pub fn on_parents_key(ev: &KeyEvent, _node: Node<ArmedChildPath, ()>) -> [usize; 1] {
-    [ev.key.len() + 100]
+pub fn on_parents_key<'x>(
+    ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, ArmedChildPath<'x>>,
+) -> (Vec<usize>, Completed<ArmedChildPath<'x>>) {
+    (vec![ev.key.len() + 100], st.complete())
 }
 
-pub const fn on_esc_armed(ev: &KeyEvent, _node: Node<&mut Armed, ()>) -> [usize; 1] {
-    [ev.key.len()]
+pub fn on_esc_armed<'x>(
+    ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, ArmedPath<'x>>,
+) -> (Vec<usize>, Completed<ArmedPath<'x>>) {
+    (vec![ev.key.len()], st.complete())
 }
 
-pub fn on_child_armed(ev: &KeyEvent, mut node: Node<ArmedChildPath, ()>) -> [usize; 1] {
-    node.parent.get_mut().wants = None;
-    [ev.key.len()]
+pub fn on_child_armed<'x>(
+    ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, ArmedChildPath<'x>>,
+) -> (Vec<usize>, Completed<ArmedChildPath<'x>>) {
+    match st.state {
+        MaybeInvalidated::NotInvalidated(mut child) => {
+            child.get_mut().wants = None;
+            (vec![ev.key.len()], child.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![ev.key.len()], c),
+    }
 }

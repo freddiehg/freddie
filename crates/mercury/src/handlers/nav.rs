@@ -6,20 +6,19 @@
 //! records it and clears the flag. Until then the in-app level is empty (see
 //! [`app_data`](crate::state)), so the old app's bindings do not apply in the gap.
 
-use bind::Node;
+use bind::AscendState;
 use freddie_keys::{Key, ModifierFlags};
-use laserbeam::IntoAncestor;
+use laserbeam::{Complete, Completed, HasStop, IntoAncestor, MaybeInvalidated};
 
-use super::to_typing;
 use crate::effect::tap;
-use crate::state::{AppLayer, MercuryPath};
+use crate::state::{AppLayer, Mercury, MercuryPath, TypingLayer};
 use crate::{App, MercuryEffect};
 
 /// Foreground `app` and enter the in-app layer, with the navigation marked in flight.
 ///
-/// Generic over the path, so every opener binds it from its own node.
-fn navigate<'a, P: IntoAncestor<MercuryPath<'a>>>(path: P, app: App) -> Vec<MercuryEffect> {
-    let root: MercuryPath<'_> = path.into_ancestor();
+/// It takes the root, because its callers are leavers: entering the in-app layer replaces the
+/// node they were bound on, so each consumed its path to get here.
+fn navigate(root: &mut Mercury, app: App) -> Vec<MercuryEffect> {
     root.foreground.start_navigating();
     let (inapp, timer) = AppLayer::new();
     let mut effects = root.set_layer(inapp);
@@ -28,29 +27,61 @@ fn navigate<'a, P: IntoAncestor<MercuryPath<'a>>>(path: P, app: App) -> Vec<Merc
     effects
 }
 
-pub(crate) fn open_chrome<'a, E, P: IntoAncestor<MercuryPath<'a>>>(
+pub(crate) fn open_chrome<'a, E, P>(
     _ev: &E,
-    node: Node<P, ()>,
-) -> Vec<MercuryEffect> {
-    navigate(node.parent, App::Chrome)
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>)
+where
+    P: HasStop,
+    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    MercuryPath<'a>: Complete<P>,
+{
+    let root: MercuryPath<'a> = st.state.into_ancestor();
+    let effects = navigate(root, App::Chrome);
+    (effects, root.complete())
 }
-pub(crate) fn open_finder<'a, E, P: IntoAncestor<MercuryPath<'a>>>(
+pub(crate) fn open_finder<'a, E, P>(
     _ev: &E,
-    node: Node<P, ()>,
-) -> Vec<MercuryEffect> {
-    navigate(node.parent, App::Finder)
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>)
+where
+    P: HasStop,
+    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    MercuryPath<'a>: Complete<P>,
+{
+    let root: MercuryPath<'a> = st.state.into_ancestor();
+    let effects = navigate(root, App::Finder);
+    (effects, root.complete())
 }
-pub(crate) fn open_ghostty<'a, E, P: IntoAncestor<MercuryPath<'a>>>(
+pub(crate) fn open_ghostty<'a, E, P>(
     _ev: &E,
-    node: Node<P, ()>,
-) -> Vec<MercuryEffect> {
-    navigate(node.parent, App::Ghostty)
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>)
+where
+    P: HasStop,
+    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    MercuryPath<'a>: Complete<P>,
+{
+    let root: MercuryPath<'a> = st.state.into_ancestor();
+    let effects = navigate(root, App::Ghostty);
+    (effects, root.complete())
 }
-pub(crate) fn open_zed<'a, E, P: IntoAncestor<MercuryPath<'a>>>(
+pub(crate) fn open_zed<'a, E, P>(
     _ev: &E,
-    node: Node<P, ()>,
-) -> Vec<MercuryEffect> {
-    navigate(node.parent, App::Zed)
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>)
+where
+    P: HasStop,
+    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    MercuryPath<'a>: Complete<P>,
+{
+    let root: MercuryPath<'a> = st.state.into_ancestor();
+    let effects = navigate(root, App::Zed);
+    (effects, root.complete())
 }
 
 /// `space` in nav: open Spotlight and land in typing, so what you type next reaches its field.
@@ -59,11 +90,18 @@ pub(crate) fn open_zed<'a, E, P: IntoAncestor<MercuryPath<'a>>>(
 /// and it is opened with its own chord rather than by foregrounding anything. The tap comes before
 /// the transition, so the modifier downs typing's `open` emits land on Spotlight rather than on the
 /// app being left.
-pub(crate) fn open_spotlight<'a, E, P: IntoAncestor<MercuryPath<'a>>>(
-    ev: &E,
-    node: Node<P, ()>,
-) -> Vec<MercuryEffect> {
+pub(crate) fn open_spotlight<'a, E, P>(
+    _ev: &E,
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>)
+where
+    P: HasStop,
+    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    MercuryPath<'a>: Complete<P>,
+{
+    let root: MercuryPath<'a> = st.state.into_ancestor();
     let mut effects = vec![tap(Key::Space, ModifierFlags::COMMAND)];
-    effects.extend(to_typing(ev, node));
-    effects
+    effects.extend(root.set_layer(TypingLayer::new()));
+    (effects, root.complete())
 }

@@ -1,15 +1,16 @@
 //! The root's key catch-all: modifier tracking and passthrough, the last resort a key reaches
 //! when no layer bound it.
 
-use bind::Node;
+use bind::AscendState;
 use freddie::KeySequenceOutcome;
 use freddie_keys::KeyEvent;
+use laserbeam::{Complete, Completed};
 
 use freddie::TimerFired;
 
 use crate::MercuryEffect;
 use crate::effect::{emit, replay};
-use crate::state::{HomeLayer, Mercury, arm_jk_timeout};
+use crate::state::{HomeLayer, Mercury, MercuryPath, arm_jk_timeout};
 
 /// Any key the active layer did not bind.
 ///
@@ -21,11 +22,17 @@ use crate::state::{HomeLayer, Mercury, arm_jk_timeout};
 /// what it had swallowed for a key that broke it, or completes and leaves for home. A key the run
 /// does not want is passed through carrying exactly the flags it arrived with, so a baked-on
 /// modifier (an injected `cmd`-`v`, or `fn`) rides along.
-pub(crate) fn maybe_pass_through(
+pub(crate) fn maybe_pass_through<'x>(
     ev: &KeyEvent,
-    node: Node<&mut Mercury, ()>,
-) -> Vec<MercuryEffect> {
-    let root = node.parent;
+    _snap: (),
+    st: AscendState<'_, MercuryPath<'x>>,
+) -> (Vec<MercuryEffect>, Completed<MercuryPath<'x>>) {
+    let root: MercuryPath<'x> = st.state.into_ancestor();
+    (pass_through(ev, root), root.complete())
+}
+
+/// The key's own effects, with the root in hand.
+fn pass_through(ev: &KeyEvent, root: &mut Mercury) -> Vec<MercuryEffect> {
     if ev.key.is_modifier() {
         root.typing_state.held.apply(ev);
     }
@@ -56,7 +63,11 @@ pub(crate) fn maybe_pass_through(
 
 /// The window elapsed with no next key: what the run swallowed types itself, exactly as a key that
 /// broke the run would have made it.
-pub(crate) fn jk_timeout(_ev: &TimerFired, node: Node<&mut Mercury, ()>) -> Vec<MercuryEffect> {
-    let root = node.parent;
-    replay(root.typing_state.jk.interrupt())
+pub(crate) fn jk_timeout<'x>(
+    _ev: &TimerFired,
+    _snap: (),
+    st: AscendState<'_, MercuryPath<'x>>,
+) -> (Vec<MercuryEffect>, Completed<MercuryPath<'x>>) {
+    let root: MercuryPath<'x> = st.state.into_ancestor();
+    (replay(root.typing_state.jk.interrupt()), root.complete())
 }

@@ -1,7 +1,8 @@
 // A trigger expression must lift into the marker's `Trigger` via `Into` (the
 // accumulate half). `Weird` has `EventTrigger` and a valid handler, so dispatch
 // is satisfied and the only failure is the missing `Into`.
-use bind::{Bind, Bindings, EventTrigger};
+use bind::{AscendState, Bind, Bindings, EventTrigger};
+use laserbeam::Completed;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct Trig;
@@ -31,8 +32,12 @@ impl EventTrigger for Weird {
     }
 }
 
-fn handler(_: &KeyEv, _path: impl Sized) -> [usize; 1] {
-    [0]
+fn handler<'x>(
+    _: &KeyEv,
+    _snap: (),
+    st: AscendState<'_, &'x mut Nav>,
+) -> (Vec<usize>, Completed<&'x mut Nav>) {
+    (vec![0], st.complete())
 }
 
 #[derive(Bind)]

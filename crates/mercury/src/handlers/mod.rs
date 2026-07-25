@@ -1,10 +1,17 @@
 //! The key and foreground handlers, one module per layer.
 //!
-//! Each is a `fn(&SourceEvent, Node<OwnPath, ()>) -> R`, where `R` is `Vec<MercuryEffect>` or,
-//! for a handler with one thing to ask for, `MercuryEffect` itself: dispatch collects what comes
-//! back into the output type. It reaches the tree through the path the node carries, and returns
-//! inert effects. `crate::state` glob-imports this module so the derive-generated dispatch can
-//! name them.
+//! Each is the one scheduled shape,
+//! `fn(&SourceEvent, Snap, AscendState<P>) -> (Vec<MercuryEffect>, Completed<P>)`: the event, what
+//! its pre snapped before the descent, and what the descent left of the path it is bound on. It
+//! returns inert effects and the leave it completed to. `crate::state` glob-imports this module so
+//! the derive-generated dispatch can name them.
+//!
+//! Which of the two arms a handler takes is what it means. A stayer completes where it stands and
+//! reads the tree through `HasAncestor::ancestor`; a leaver consumes the path with
+//! `IntoAncestor::into_ancestor`, does its work at the root, and completes there, which is what
+//! tells everything above it that the layer it was bound on is gone. The `Invalidated` arm is the
+//! same answer either way: something below already left, so there is no path to act through, and
+//! the leave is forwarded untouched.
 
 mod app;
 mod foreground;
@@ -28,10 +35,8 @@ pub(crate) use root::*;
 pub(crate) use tab::*;
 pub(crate) use window::*;
 
-use laserbeam::IntoAncestor;
-
 use crate::MercuryEffect;
-use crate::state::{HomeLayer, Mercury, MercuryPath};
+use crate::state::{HomeLayer, Mercury};
 
 /// Go to the home layer, returning the modifier flush (empty unless leaving a passthrough layer).
 /// The one place the home layer is entered.
@@ -47,16 +52,8 @@ pub(crate) fn go_home(root: &mut Mercury) -> Vec<MercuryEffect> {
 /// is how it leaves. (Nav also leaves after one choice, but into the in-app layer rather than
 /// home; see [`super::nav`].)
 ///
-/// Generic over the path, so every chooser binds it from its own node.
-pub(crate) fn and_go_home<'a, P: IntoAncestor<MercuryPath<'a>>>(
-    path: P,
-    effects: impl IntoIterator<Item = MercuryEffect>,
-) -> Vec<MercuryEffect> {
-    and_go_home_from(path.into_ancestor(), effects)
-}
-
-/// [`and_go_home`] for a caller that already holds the root, which a handler that read the
-/// root's state to build its effects has.
+/// It takes the root, because its callers are leavers and already hold it: a leaver consumed its
+/// path to get here, and completes at the root once this hands the effects back.
 pub(crate) fn and_go_home_from(
     root: &mut Mercury,
     effects: impl IntoIterator<Item = MercuryEffect>,

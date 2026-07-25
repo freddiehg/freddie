@@ -1,48 +1,85 @@
 //! In-app handlers: Chrome's refresh, address bar and copies, and Ghostty's tmux window
 //! navigation.
 
-use bind::Node;
+use bind::AscendState;
 use freddie_keys::{Key, ModifierFlags};
-use laserbeam::IntoAncestor;
+use laserbeam::{Complete, Completed, HasAncestor, HasStop, IntoAncestor, MaybeInvalidated};
 
-use super::{and_go_home, to_typing};
+use super::and_go_home_from;
 use crate::MercuryEffect;
 use crate::effect::{Copied, UrlPart, tap};
 use crate::sources::host;
-use crate::state::MercuryPath;
+use crate::state::{Mercury, MercuryPath, TypingLayer};
 
-/// `r` in Chrome: cmd-r, a refresh. Touches neither event nor node, so both are generic.
-pub(crate) fn refresh<E, N>(_ev: &E, _node: N) -> MercuryEffect {
-    tap(Key::KeyR, ModifierFlags::COMMAND)
+/// `r` in Chrome: cmd-r, a refresh.
+///
+/// A pure effect: it reads no state and changes none, so it stays where it stands and its two
+/// arms differ only in whether there is still a path to stand on.
+pub(crate) fn refresh<E, P: HasStop + Complete<P>>(
+    _ev: &E,
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>) {
+    (vec![tap(Key::KeyR, ModifierFlags::COMMAND)], st.complete())
 }
 
 /// `l` in Chrome: cmd-l, focusing the address bar, and then typing.
 ///
 /// A focused text field is somewhere you type, and the in-app layer would swallow what you typed
 /// at it, so this leaves for typing the way nav's `space` does.
-pub(crate) fn focus_address_bar<'a, E, P: IntoAncestor<MercuryPath<'a>>, D>(
-    ev: &E,
-    node: Node<P, D>,
-) -> Vec<MercuryEffect> {
+pub(crate) fn focus_address_bar<'a, E, P>(
+    _ev: &E,
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>)
+where
+    P: HasStop,
+    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    MercuryPath<'a>: Complete<P>,
+{
+    let root: MercuryPath<'a> = st.state.into_ancestor();
     let mut effects = vec![tap(Key::KeyL, ModifierFlags::COMMAND)];
-    effects.extend(to_typing(ev, node));
-    effects
+    effects.extend(root.set_layer(TypingLayer::new()));
+    (effects, root.complete())
 }
 
 /// `shift-l` in Chrome: the front tab's whole URL, onto the clipboard.
-pub(crate) fn copy_url<'a, E, P: IntoAncestor<MercuryPath<'a>>, D>(
+///
+/// A stayer that reads the tree: it reaches the root by shared reference, so the path it was
+/// handed is still there to complete at.
+pub(crate) fn copy_url<'a, E, P>(
     _ev: &E,
-    node: Node<P, D>,
-) -> Vec<MercuryEffect> {
-    copy(node.parent, UrlPart::Whole)
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>)
+where
+    P: HasAncestor<MercuryPath<'a>> + HasStop + Complete<P>,
+{
+    match st.state {
+        MaybeInvalidated::NotInvalidated(path) => {
+            let effects = copy(path.ancestor(), UrlPart::Whole);
+            (effects, path.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (Vec::new(), c),
+    }
 }
 
 /// `cmd-l` in Chrome: the front tab's host, onto the clipboard.
-pub(crate) fn copy_host<'a, E, P: IntoAncestor<MercuryPath<'a>>, D>(
+pub(crate) fn copy_host<'a, E, P>(
     _ev: &E,
-    node: Node<P, D>,
-) -> Vec<MercuryEffect> {
-    copy(node.parent, UrlPart::Host)
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>)
+where
+    P: HasAncestor<MercuryPath<'a>> + HasStop + Complete<P>,
+{
+    match st.state {
+        MaybeInvalidated::NotInvalidated(path) => {
+            let effects = copy(path.ancestor(), UrlPart::Host);
+            (effects, path.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (Vec::new(), c),
+    }
 }
 
 /// Copy `part` of the front tab's URL.
@@ -54,8 +91,7 @@ pub(crate) fn copy_host<'a, E, P: IntoAncestor<MercuryPath<'a>>, D>(
 /// Without a reported URL there is nothing to take a host from, and asking Chrome is the only way
 /// to answer at all, so that case falls back to [`Copied::FrontTabUrl`]. A URL with no host
 /// (`about:blank`, `file:///...`) has no answer either way, and copies nothing.
-fn copy<'a, P: IntoAncestor<MercuryPath<'a>>>(path: P, part: UrlPart) -> Vec<MercuryEffect> {
-    let root: MercuryPath<'_> = path.into_ancestor();
+fn copy(root: &Mercury, part: UrlPart) -> Vec<MercuryEffect> {
     let Some(url) = root
         .foreground
         .confirmed_chrome()
@@ -82,13 +118,21 @@ fn tmux(flags: ModifierFlags, command: Key) -> Vec<MercuryEffect> {
 }
 
 /// `j` in Ghostty: tmux's previous window. Stays, because walking windows repeats.
-pub(crate) fn previous_window<E, N>(_ev: &E, _node: N) -> Vec<MercuryEffect> {
-    tmux(ModifierFlags::empty(), Key::KeyP)
+pub(crate) fn previous_window<E, P: HasStop + Complete<P>>(
+    _ev: &E,
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>) {
+    (tmux(ModifierFlags::empty(), Key::KeyP), st.complete())
 }
 
 /// `k` in Ghostty: tmux's next window.
-pub(crate) fn next_window<E, N>(_ev: &E, _node: N) -> Vec<MercuryEffect> {
-    tmux(ModifierFlags::empty(), Key::KeyN)
+pub(crate) fn next_window<E, P: HasStop + Complete<P>>(
+    _ev: &E,
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>) {
+    (tmux(ModifierFlags::empty(), Key::KeyN), st.complete())
 }
 
 /// The digits in Ghostty: jump straight to a tmux window, then go home.
@@ -102,11 +146,19 @@ pub(crate) fn next_window<E, N>(_ev: &E, _node: N) -> Vec<MercuryEffect> {
 /// See [`and_go_home`].
 macro_rules! select_window {
     ($($handler:ident => $digit:ident),* $(,)?) => {$(
-        pub(crate) fn $handler<'a, E, P: IntoAncestor<MercuryPath<'a>>, D>(
+        pub(crate) fn $handler<'a, E, P>(
             _ev: &E,
-            node: Node<P, D>,
-        ) -> Vec<MercuryEffect> {
-            and_go_home(node.parent, tmux(ModifierFlags::SHIFT, Key::$digit))
+            _snap: (),
+            st: AscendState<'_, P>,
+        ) -> (Vec<MercuryEffect>, Completed<P>)
+        where
+            P: HasStop,
+            MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+            MercuryPath<'a>: Complete<P>,
+        {
+            let root: MercuryPath<'a> = st.state.into_ancestor();
+            let effects = and_go_home_from(root, tmux(ModifierFlags::SHIFT, Key::$digit));
+            (effects, root.complete())
         }
     )*};
 }
@@ -132,14 +184,21 @@ select_window! {
 ///
 /// A new chat lands in its prompt box, which is somewhere you type, so this leaves for typing the
 /// way Chrome's `l` does.
-pub(crate) fn new_chat<'a, E, P: IntoAncestor<MercuryPath<'a>>, D>(
-    ev: &E,
-    node: Node<P, D>,
-) -> Vec<MercuryEffect> {
+pub(crate) fn new_chat<'a, E, P>(
+    _ev: &E,
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>)
+where
+    P: HasStop,
+    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    MercuryPath<'a>: Complete<P>,
+{
+    let root: MercuryPath<'a> = st.state.into_ancestor();
     let mut effects = vec![tap(
         Key::KeyO,
         ModifierFlags::COMMAND | ModifierFlags::SHIFT,
     )];
-    effects.extend(to_typing(ev, node));
-    effects
+    effects.extend(root.set_layer(TypingLayer::new()));
+    (effects, root.complete())
 }
