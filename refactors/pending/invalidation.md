@@ -161,7 +161,11 @@ At each level of the **framework** ascent (after the handler returns):
 ```rust
 #[derive(Clone, Copy)]
 enum Mutation {
+    /// No kill/reshape hop zone covers this level. `invalidation_depth == 0`.
     Intact,
+    /// A deeper handler climbed through this level with `into_parent` (or more
+    /// hops past it). Child fields along that climb may already be gone.
+    /// `invalidation_depth > 0`.
     MaybeDropped,
 }
 
@@ -179,7 +183,9 @@ impl AscentState {
         self.invalidation_depth
     }
 
-    /// Getter. Intact iff invalidation_depth == 0; else MaybeDropped. Not a stored field.
+    /// Intact iff `invalidation_depth == 0`; else MaybeDropped.
+    /// Not a stored field. If something deeper called `into_parent` through this
+    /// level, posts here see `MaybeDropped`.
     fn mutation(&self) -> Mutation {
         if self.invalidation_depth == 0 {
             Mutation::Intact
@@ -341,7 +347,11 @@ pub trait Bindings {
 
 #[derive(Clone, Copy)]
 pub enum Mutation {
+    /// No kill/reshape hop zone covers this level. `invalidation_depth == 0`.
     Intact,
+    /// A deeper handler climbed through this level with `into_parent` (or more
+    /// hops past it). Child fields along that climb may already be gone.
+    /// `invalidation_depth > 0`.
     MaybeDropped,
 }
 
@@ -358,7 +368,9 @@ impl AscentState {
         self.invalidation_depth
     }
 
-    /// Getter. Intact iff invalidation_depth == 0; else MaybeDropped. Not a stored field.
+    /// Intact iff `invalidation_depth == 0`; else MaybeDropped.
+    /// Not a stored field. If something deeper called `into_parent` through this
+    /// level, posts here see `MaybeDropped`.
     pub fn mutation(&self) -> Mutation {
         if self.invalidation_depth == 0 {
             Mutation::Intact
