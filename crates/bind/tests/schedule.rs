@@ -350,9 +350,9 @@ pub struct Mid {
 #[bind(
     Key("go") => leaf_home,
     // One gesture, composed from its units at the bind site.
-    Key("pair") => and(emits_flash, emits_cancel),
-    Key("nest") => and(emits_flash, and(emits_cancel, emits_flash)),
-    Key("leave-then-look") => and(leaf_home, witness_leaf),
+    Key("pair") => and!(emits_flash, emits_cancel),
+    Key("nest") => and!(emits_flash, emits_cancel, emits_flash),
+    Key("leave-then-look") => and!(leaf_home, witness_leaf),
 )]
 pub struct Leaf;
 
@@ -493,7 +493,8 @@ fn the_second_unit_sees_the_firsts_leave() {
     );
 }
 
-/// Nesting is composition: `and(a, and(b, c))` runs all three, in order, under the one claim.
+/// The flat spelling runs all three, in order, under the one claim, identically to the
+/// hand-nested `and(a, and(b, c))` it expands to.
 #[test]
 fn and_nests() {
     let mut top = Top {

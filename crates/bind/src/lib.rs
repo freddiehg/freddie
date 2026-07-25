@@ -138,7 +138,7 @@ where
 /// the state `a` left behind.
 ///
 /// The schedule's fold, at expression level, so one user action composes from
-/// units at its bind site: `#[bind(K => and(tap_cmd_l, enter_typing))]`. It
+/// units at its bind site: `#[bind(K => and!(tap_cmd_l, enter_typing))]`. It
 /// nests, and it claims nothing itself — `#[bind]` wraps the outermost
 /// expression in [`exclusive`], so the whole composition takes the one claim and
 /// no unit takes its own.
@@ -164,6 +164,19 @@ where
         effs.extend(e);
         (effs, completed)
     }
+}
+
+/// `and!(a, b, c)` is `and(a, and(b, c))`: the flat spelling of a gesture's unit list.
+///
+/// A macro over the fn rather than a collection, so each unit keeps its own type: closures and
+/// parameterized units like `tmux_window(1)` survive, where a slice would force one element type
+/// and `&dyn` would buy vtables.
+#[macro_export]
+macro_rules! and {
+    ($h:expr) => { $h };
+    ($h:expr, $($rest:expr),+ $(,)?) => {
+        $crate::and($h, $crate::and!($($rest),+))
+    };
 }
 
 /// Emits its body only when the `check` feature is on.
