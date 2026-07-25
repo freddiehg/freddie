@@ -280,6 +280,39 @@ impl<N, P> HasParent for ::laserbeam::PathMut<N, P> {
     }
 }
 
+/// The place path at the bottom of a parent chain: what a level ASCENDS at.
+///
+/// A place is its own; a [`Node`] flattens to its parent's, however many derived levels are
+/// stacked. That is what lets one handler shape serve both: ascent holds a path into the tree,
+/// never a `Node`, whose `data` is rebuilt from the tree on every dispatch and dies with it.
+pub trait HasPlace {
+    /// The place path this chain bottoms out at.
+    type Place;
+    /// Consumes this chain and returns that path, dropping every derived level's data.
+    fn into_place(self) -> Self::Place;
+}
+
+impl<R> HasPlace for &mut R {
+    type Place = Self;
+    fn into_place(self) -> Self {
+        self
+    }
+}
+
+impl<N, P> HasPlace for ::laserbeam::PathMut<N, P> {
+    type Place = Self;
+    fn into_place(self) -> Self {
+        self
+    }
+}
+
+impl<Parent: HasPlace, Data> HasPlace for Node<Parent, Data> {
+    type Place = Parent::Place;
+    fn into_place(self) -> Parent::Place {
+        self.parent.into_place()
+    }
+}
+
 /// Calls a closure trigger with the state its binding is bound on.
 ///
 /// The macro emits this rather than `(#closure)(state)`, because a closure parameter is not
@@ -361,6 +394,28 @@ pub trait DispatchIntoParent<M: Bindings>: HasParent + Sized {
         effs: &mut M::Output,
         claim: &mut Claim<'_>,
     ) -> Option<Self::Parent>;
+}
+
+/// Consumes a derived node, dispatches at that level, and surfaces at the place path beneath it.
+///
+/// The derived counterpart of [`Dispatch`], and what replaces [`DispatchIntoParent`]: a derived
+/// level's scheduled items ascend at [`HasPlace::Place`], so its caller folds what comes back
+/// exactly as it folds a place child's leave.
+///
+/// It exists because a derived-child caller cannot name the child's type. It calls this in
+/// method position on whatever the child function returned, and inference finds the impl.
+pub trait DispatchIntoPlace<M: Bindings>: HasPlace + Sized
+where
+    Self::Place: ::laserbeam::HasStop,
+{
+    /// Runs this level's scheduled items for `event` into `effs` under `claim`, and returns
+    /// the leave they completed to at the place beneath.
+    fn dispatch_into_place(
+        self,
+        event: &M::Event,
+        effs: &mut M::Output,
+        claim: &mut Claim<'_>,
+    ) -> ::laserbeam::Completed<Self::Place>;
 }
 
 /// A derived level's half of THE CHECK. It does not ship, for the same reason
@@ -495,5 +550,68 @@ impl<M: Bindings, N> SimpleRunner<'_, M, N> {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod has_place_tests {
+    use super::{HasPlace, Node};
+    use laserbeam::PathMut;
+
+    struct Root {
+        layer: u32,
+    }
+
+    fn path(root: &mut Root) -> PathMut<u32, &mut Root> {
+        PathMut::from_fn(root, |r| &mut r.layer, |r| &r.layer)
+    }
+
+    #[test]
+    fn a_root_path_is_its_own_place() {
+        let mut root = Root { layer: 7 };
+        let place: &mut Root = HasPlace::into_place(&mut root);
+        place.layer = 8;
+        assert_eq!(root.layer, 8);
+    }
+
+    #[test]
+    fn a_path_mut_is_its_own_place() {
+        let mut root = Root { layer: 7 };
+        {
+            let mut place: PathMut<u32, &mut Root> = HasPlace::into_place(path(&mut root));
+            *place.get_mut() = 9;
+        }
+        assert_eq!(root.layer, 9);
+    }
+
+    #[test]
+    fn a_node_flattens_to_its_parent_path() {
+        let mut root = Root { layer: 7 };
+        {
+            let node = Node {
+                parent: path(&mut root),
+                data: "derived",
+            };
+            let mut place: PathMut<u32, &mut Root> = HasPlace::into_place(node);
+            *place.get_mut() = 10;
+        }
+        assert_eq!(root.layer, 10);
+    }
+
+    #[test]
+    fn two_node_layers_flatten_to_the_same_place() {
+        let mut root = Root { layer: 7 };
+        {
+            let node = Node {
+                parent: Node {
+                    parent: path(&mut root),
+                    data: "outer",
+                },
+                data: 3_u8,
+            };
+            let mut place: PathMut<u32, &mut Root> = HasPlace::into_place(node);
+            *place.get_mut() = 11;
+        }
+        assert_eq!(root.layer, 11);
     }
 }
