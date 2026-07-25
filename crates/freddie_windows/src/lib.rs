@@ -638,6 +638,16 @@ impl WatcherState {
         }
     }
 
+    /// Where `window` was last reported to be, if it is being watched.
+    fn frame_of(&self, window: WindowId) -> Option<Frame> {
+        self.elements
+            .0
+            .lock()
+            .ok()?
+            .get(&window)
+            .map(|watched| watched.frame)
+    }
+
     /// Forget whichever window `element` names, and say which it was.
     ///
     /// By identity rather than by id: `kAXUIElementDestroyed` arrives for an element the app has
@@ -829,13 +839,22 @@ fn observe_window(
     }
 }
 
-/// Report a window as newly open. Its frame is read now, at announce time, rather than
-/// carried from `observe_window`: the two are one call apart and the window is live for
-/// both. A window whose frame cannot be read is not announced.
+/// Report a window as newly open, with the frame [`observe_window`] recorded for it.
+///
+/// The frame is carried rather than read again: reading position and size is two IPC round trips
+/// into the app that owns the window, `observe_window` has just made them, and nothing between the
+/// two calls can have moved it.
+///
+/// A window that is not in the table is not announced, which is how a window whose frame could not
+/// be read stays unreported: `observe_window` declined to record it.
 fn report_open(state: &WatcherState, element: AXUIElementRef) {
-    if let (Some(window), Some(frame)) = (window_id(element), window_frame(element)) {
-        state.report(WindowChange::Opened(WindowFrame { window, frame }));
-    }
+    let Some(window) = window_id(element) else {
+        return;
+    };
+    let Some(frame) = state.frame_of(window) else {
+        return;
+    };
+    state.report(WindowChange::Opened(WindowFrame { window, frame }));
 }
 
 /// Subscribe `observer` to one notification on `element`, carrying `refcon`.
