@@ -48,9 +48,9 @@ use core_foundation::array::CFArray;
 use core_foundation::base::{CFEqual, CFRelease, CFRetain, CFTypeRef, TCFType};
 use core_foundation::runloop::{CFRunLoop, CFRunLoopSource, kCFRunLoopDefaultMode};
 use core_foundation::string::{CFString, CFStringRef};
-use freddie_main_loop::{MainWaker, WakingSender};
 use core_graphics::geometry::{CGPoint, CGSize};
 use core_graphics::window::{CGWindowID, kCGNullWindowID};
+use freddie_main_loop::{MainWaker, WakingSender};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2_app_kit::{
@@ -466,7 +466,11 @@ fn set_attribute<A: AxAttribute>(element: AXUIElementRef, value: A::Value) {
         )
     };
     if status != 0 {
-        tracing::warn!(attribute = A::NAME, status, "an attribute write was refused");
+        tracing::warn!(
+            attribute = A::NAME,
+            status,
+            "an attribute write was refused"
+        );
     }
 }
 
