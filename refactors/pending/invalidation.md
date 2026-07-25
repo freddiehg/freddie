@@ -580,26 +580,25 @@ DESCENT Outer: opt_0 Some(id), opt_1 true, opt_2 Some(&KeyA event)
 DESCENT Inner: opt_0 Some(&KeyA event)
 
 ASCENT Inner
-  state = AscentState::new()
-    depth 0, claim None, frozen Intact
+  state = AscentState::new()             // depth 0, claim None
   run_exclusive:
     claim() → Some(())
-    inner_handler: invalidate(2)         // depth = 2; frozen still Intact
+    inner_handler: invalidate(2)         // depth = 2
   return (InnerPath, state)
 
 ASCENT Outer into_parent_ascent
-  freeze_mutation()                      // frozen = MaybeDropped (depth 2)
-  on_into_parent(&mut state):
+  parent = path.into_parent()
+  run_posts:
     after_child: mutation() MaybeDropped → LogDestroyed(id)
     only_if_intact: MaybeDropped → no rearm
-  step_up()                              // depth 2 → 1; frozen still MaybeDropped
+  step_up()                              // depth 2 → 1
 
 ASCENT Outer exclusive
   claim() → None                         // trap door already shut
   outer_handler not run
 
 return (OuterPath, state) depth 1, claimed true
-// ancestor hops: freeze_mutation from depth, posts, step_up until depth 0
+// ancestor hops: posts see mutation() from current depth; step_up until 0
 ```
 
 ## Walk: KeyB (AnyKey only)
@@ -613,7 +612,6 @@ ASCENT Inner
   no exclusive
 
 ASCENT Outer into_parent_ascent
-  freeze_mutation()                      // Intact (depth 0)
   after_child: Intact, assert live id
   only_if_intact: rearm → ScheduleTimer
   step_up()                              // depth 0
