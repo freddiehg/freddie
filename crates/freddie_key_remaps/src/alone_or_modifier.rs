@@ -1,3 +1,5 @@
+use std::fmt;
+
 use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 
 /// A physical hold key that taps as `alone` (+ flags) when released with no other key, and acts
@@ -9,7 +11,7 @@ use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 /// - hold `CapsLock`, alone Escape, modifier Control
 /// - hold `ShiftLeft`, alone `(`, modifier Shift
 /// - hold `ShiftRight`, alone `)`, modifier Shift
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct AloneOrModifier {
     hold: Key,
     alone: Key,
@@ -27,6 +29,20 @@ enum Role {
     Pending,
     /// Another key arrived while held; `modifier` down has been emitted.
     AsModifier,
+}
+
+impl fmt::Debug for AloneOrModifier {
+    /// Only the live phase: `AloneOrModifier { CapsLock: Pending }`. Idle is empty braces.
+    ///
+    /// Hold/alone/modifier config never changes for a given machine, so printing it on every
+    /// dispatch would repeat the definition rather than the state that moved.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "AloneOrModifier {{")?;
+        match self.role {
+            Role::Idle => f.write_str("}"),
+            role => write!(f, " {:?}: {:?} }}", self.hold, role),
+        }
+    }
 }
 
 impl AloneOrModifier {
@@ -236,5 +252,15 @@ mod tests {
     fn idle_up_is_noop() {
         let mut c = AloneOrModifier::caps_esc_control();
         assert!(c.on_hold(PressType::Up).is_empty());
+    }
+
+    #[test]
+    fn debug_prints_phase_only() {
+        let mut c = AloneOrModifier::caps_esc_control();
+        assert_eq!(format!("{c:?}"), "AloneOrModifier {}");
+        let _ = c.on_hold(PressType::Down);
+        assert_eq!(format!("{c:?}"), "AloneOrModifier { CapsLock: Pending }");
+        let _ = c.promote_if_pending();
+        assert_eq!(format!("{c:?}"), "AloneOrModifier { CapsLock: AsModifier }");
     }
 }
