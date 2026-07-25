@@ -33,7 +33,11 @@ impl Emitter {
 }
 ```
 
-`tap` is a press and then a release, both carrying the same flags. Each posted event is built from a `CGEventSource` created for it and dropped with it: posting through a source mutates it, so a single arrow key would leave `NumericPad` in a long-lived one and every key after it would be born carrying that bit, which is enough to stop `cmd`-`space` being the Spotlight hotkey for the rest of the run.
+`tap` is a press and then a release, both carrying the same flags.
+
+Every event is built from one long-lived `CGEventSource`, created once per thread that builds events: the emitter holds one and the tap thread holds one for remaps. A source per event would map about 16KB of window server memory per keystroke that `CFRelease` never unmaps, which is [a gigabyte in five hours](../freddie-internals/owning-os-resources.md). Reusing one is safe because the emitted flags are `to_cg(flags) | intrinsic_flags(code)` and never the bits the event was born with. Posting through a source mutates its flag state, so an arrow leaves `NumericPad` in it, and a `cmd`-`space` built afterwards that inherited that bit would stop matching Spotlight's hotkey for the rest of the run.
+
+Posting also runs inside an `objc2::rc::autoreleasepool`, because `CGEventPost` autoreleases two `CFData`s per call and the effect loop's thread has no run loop to drain them. See [Autorelease Pools](../freddie-internals/autorelease-pools.md).
 
 The model never calls either. It returns effects, and the effect loop performs them:
 
