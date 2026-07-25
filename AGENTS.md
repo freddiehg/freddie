@@ -14,6 +14,9 @@ This section is extremely important. A frequent source of frustration is deviati
   - It should describe what we are building. Do not discuss how we came to a conclusion, or what we are not building. Do not narrate your thought process. Do not discuss what has already landed.
   - It should have enough information for a new agent, with no context, to completely implement the feature **without making any important decisions.** All decisions are made as part of the planning document. Do not take shortcuts.
   - Stubs, hand-waving, and "sketch this later" are disallowed. The planning document must be comprehensive: write out the real types, functions, call sites, and before/after snippets. If we do not actually write the stuff out, it is impossible to know whether the implementation is real or just fantasy.
+  - Every struct, enum, and other data type must be written out in full. The data layout is the most important thing to review; a prose description of the shape is not a substitute for the actual fields and variants.
+  - Every interface must be explicit: the functions, their signatures, who calls them, and what they return. The end-user experience must be written out too (what the user does, what they see, what layer they end in), not left as a gloss on the code.
+  - If a step involves a complicated algorithm, procedural macros, or recursion, write out the generated or expanded code. The expansion is what we review; the generator is not a substitute for it.
   - All changes should have before and after snippets. New functions, new structs, etc. should be written out in advance.
   - If you need to have an additional scratch pad, you may — but do not do that work within the freddie repository, and do not check it in. Do not "write tests" for work that is still under active discussion.
   - Paragraphs of text are useless. Prefer code snippets.
