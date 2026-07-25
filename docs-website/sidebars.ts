@@ -36,6 +36,17 @@ const sidebars: SidebarsConfig = {
         'interacting-with-macos/logging',
       ],
     },
+    {
+      type: 'category',
+      label: 'Freddie Internals',
+      items: [
+        'freddie-internals/index',
+        'freddie-internals/threads',
+        'freddie-internals/autorelease-pools',
+        'freddie-internals/owning-os-resources',
+        'freddie-internals/measuring-memory',
+      ],
+    },
   ],
 };
 

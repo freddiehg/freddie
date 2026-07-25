@@ -42,3 +42,4 @@ Reading it is still the fastest way to learn freddie, because every freddie conc
 - [Adding an Effect](./adding-an-effect.md) adds a new thing the program can do.
 - [Architecture and Best Practices](./architecture/index.md) explains how dispatch works and how to test it.
 - [Interacting with macOS](./interacting-with-macos/index.md) covers the platform layer.
+- [Freddie Internals](./freddie-internals/index.md) covers threads, operating system resources, and the memory both own.
