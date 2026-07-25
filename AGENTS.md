@@ -138,6 +138,14 @@ Three things stay unrouted, because none of them is mercury's own output. clap w
 
 `docs/platform-apis.md` is what the `freddie_*` crates do when they hold something the OS gave them: which traits to claim and which to refuse, where `Drop` belongs, how a C callback reaches its state, and what the main thread is for. Read it before writing a new one or changing how an existing one holds a resource.
 
+## laserbeam vs bind
+
+`laserbeam` is the typed mutable path into a single-owner state tree: resolve to the active leaf, `get`/`get_mut` on the focused node, walk up with `into_parent` / `Ascend` / `AscendMut`. It knows nothing about triggers, handlers, or dispatch.
+
+`bind` is the binding layer over that tree: `#[derive(Bind)]`, trigger → handler mappings, `Dispatch`, and (behind `check`) the accumulate half that walks live binds for collisions. It sits on laserbeam paths; it is not a place for state-tree mechanics.
+
+Do not put anything in `bind` unless it is specifically about binding handlers to triggers, or about checking that those bindings are well-formed. Path navigation, resolve, ascend, projections, parent chains, state-tree structure — that is laserbeam. A design that wants a new primitive and is not sure which crate it belongs in defaults to laserbeam when it is about the tree, and only reaches for bind when it is about the binding of a handler. If the proposed change would still make sense in a program that has a state tree and no key bindings at all, it does not belong in `bind`.
+
 ## Coding standards
 
 - Maintainability is the most important standard. And that specifically means one thing: make impossible states unrepresentable and use the correct underlying representation or building blocks. If a field is not used when a boolean is true/false, use an option, for example.
