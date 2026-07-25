@@ -140,6 +140,11 @@ Kill = more `into_parent` calls before `complete`. Handwritten handlers `use las
 // Outer::dispatch returns Completed<OuterPath<'a>>
 // Root::dispatch  returns Completed<RootPath<'a>>   (bare &mut Root inside)
 
+// Post attribute syntax is ordered changes 5–6; the "declares" comments below
+// are what the generated sections expand from.
+
+/// The identity the posts track across a descent: snapped before the child
+/// dispatches, compared (kept arm) or reported (dropped arms) after.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct ChildId(u64);
 
@@ -151,19 +156,37 @@ impl TimerId {
     }
 }
 
+/// Owning half of a scheduled timer; dropping it is cancelling.
 struct TimerGuard {
     id: TimerId,
 }
 
+/// The state the rearm post writes: each key while the child survives replaces
+/// the guard, pushing the return-home deadline out.
 struct AndReturnHome {
     guard: TimerGuard,
 }
 
+/// Declares nothing of its own in the demo; `outer` is its #[resolve_into]
+/// child.
+struct Root {
+    outer: Outer,
+}
+
+/// Declares:
+///   bind  KeyA   → outer_handler                                   (opt_2)
+///   post  AnyKey → after_child_ok | after_child_dropped,
+///                   pre-descent snap: snap_child_id                 (opt_0)
+///   post  AnyKey → rearm, kept arm only                             (opt_1)
+/// `inner` is the #[resolve_into] child; `return_home` is what rearm writes.
 struct Outer {
     inner: Inner,
     return_home: AndReturnHome,
 }
 
+/// Declares:
+///   bind  KeyA → inner_handler                                      (opt_0)
+/// Deeper than Outer's KeyA bind, so when Inner is active its claim wins.
 struct Inner {
     id: ChildId,
 }
@@ -174,9 +197,8 @@ enum DemoEffect {
     SetLayerHome,
 }
 
+/// The Bindings marker: in real code `M: Bindings<Output = Vec<DemoEffect>>`.
 struct M;
-
-// In real code M: Bindings with Output = Vec<DemoEffect>
 
 fn log_destroyed(id: ChildId) -> DemoEffect {
     DemoEffect::LogDestroyed(id)
