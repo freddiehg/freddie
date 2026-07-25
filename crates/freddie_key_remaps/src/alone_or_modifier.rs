@@ -1,14 +1,19 @@
 use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 
-/// A physical hold key that taps as `alone` when released with no other key, and acts as
-/// `modifier`/`flag` when another key arrives while it is down.
+/// A physical hold key that taps as `alone` (+ flags) when released with no other key, and acts
+/// as `modifier`/`flag` when another key arrives while it is down.
 ///
 /// No timer. Alone vs modifier is only whether another key arrived before release.
 ///
-/// Classic instance: hold key = `CapsLock`, `alone` = Escape, `modifier` = `ControlLeft` + CONTROL.
+/// Examples:
+/// - hold `CapsLock`, alone Escape, modifier Control
+/// - hold `ShiftLeft`, alone `(`, modifier Shift
+/// - hold `ShiftRight`, alone `)`, modifier Shift
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AloneOrModifier {
+    hold: Key,
     alone: Key,
+    alone_flags: ModifierFlags,
     modifier: Key,
     flag: ModifierFlags,
     role: Role,
@@ -26,9 +31,17 @@ enum Role {
 
 impl AloneOrModifier {
     #[must_use]
-    pub const fn new(alone: Key, modifier: Key, flag: ModifierFlags) -> Self {
+    pub const fn new(
+        hold: Key,
+        alone: Key,
+        alone_flags: ModifierFlags,
+        modifier: Key,
+        flag: ModifierFlags,
+    ) -> Self {
         Self {
+            hold,
             alone,
+            alone_flags,
             modifier,
             flag,
             role: Role::Idle,
@@ -38,7 +51,43 @@ impl AloneOrModifier {
     /// `CapsLock` alone → Escape; held with other keys → Control.
     #[must_use]
     pub const fn caps_esc_control() -> Self {
-        Self::new(Key::Escape, Key::ControlLeft, ModifierFlags::CONTROL)
+        Self::new(
+            Key::CapsLock,
+            Key::Escape,
+            ModifierFlags::empty(),
+            Key::ControlLeft,
+            ModifierFlags::CONTROL,
+        )
+    }
+
+    /// Left shift alone → `(`; held with other keys → real left shift.
+    #[must_use]
+    pub const fn left_shift_open_paren() -> Self {
+        Self::new(
+            Key::ShiftLeft,
+            Key::Num9,
+            ModifierFlags::SHIFT,
+            Key::ShiftLeft,
+            ModifierFlags::SHIFT,
+        )
+    }
+
+    /// Right shift alone → `)`; held with other keys → real right shift.
+    #[must_use]
+    pub const fn right_shift_close_paren() -> Self {
+        Self::new(
+            Key::ShiftRight,
+            Key::Num0,
+            ModifierFlags::SHIFT,
+            Key::ShiftRight,
+            ModifierFlags::SHIFT,
+        )
+    }
+
+    /// The physical key this dual-role owns.
+    #[must_use]
+    pub const fn hold(self) -> Key {
+        self.hold
     }
 
     /// Whether the hold is acting as the modifier (another key already promoted this hold).
@@ -63,7 +112,7 @@ impl AloneOrModifier {
     /// key is never re-emitted (consumer swallows it).
     ///
     /// - Down: enter Pending, emit nothing.
-    /// - Up while Pending: `alone` down+up, return Idle.
+    /// - Up while Pending: `alone` down+up (with `alone_flags`), return Idle.
     /// - Up while acting as modifier: `modifier` up, return Idle.
     /// - Up while Idle: nothing (spurious).
     pub fn on_hold(&mut self, press: PressType) -> Vec<KeyEvent> {
@@ -77,12 +126,12 @@ impl AloneOrModifier {
                     KeyEvent {
                         key: self.alone,
                         press: PressType::Down,
-                        flags: ModifierFlags::empty(),
+                        flags: self.alone_flags,
                     },
                     KeyEvent {
                         key: self.alone,
                         press: PressType::Up,
-                        flags: ModifierFlags::empty(),
+                        flags: self.alone_flags,
                     },
                 ],
                 Role::AsModifier => vec![KeyEvent {
@@ -156,6 +205,31 @@ mod tests {
         assert_eq!(release.len(), 1);
         assert_eq!(release[0].key, Key::ControlLeft);
         assert_eq!(release[0].press, PressType::Up);
+    }
+
+    #[test]
+    fn left_shift_alone_is_open_paren() {
+        let mut s = AloneOrModifier::left_shift_open_paren();
+        assert_eq!(s.hold(), Key::ShiftLeft);
+        assert!(s.on_hold(PressType::Down).is_empty());
+        let out = s.on_hold(PressType::Up);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].key, Key::Num9);
+        assert!(out[0].flags.contains(ModifierFlags::SHIFT));
+        assert_eq!(out[1].key, Key::Num9);
+        assert!(out[1].flags.contains(ModifierFlags::SHIFT));
+    }
+
+    #[test]
+    fn left_shift_with_letter_is_real_shift() {
+        let mut s = AloneOrModifier::left_shift_open_paren();
+        assert!(s.on_hold(PressType::Down).is_empty());
+        let prefix = s.promote_if_pending();
+        assert_eq!(prefix[0].key, Key::ShiftLeft);
+        assert!(
+            s.stamp(ModifierFlags::empty())
+                .contains(ModifierFlags::SHIFT)
+        );
     }
 
     #[test]
