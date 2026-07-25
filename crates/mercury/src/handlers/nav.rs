@@ -1,7 +1,7 @@
-//! Nav-layer handlers: foreground an app and enter its in-app layer.
+//! Nav-layer units: mark a navigation in flight, foreground an app, and the Spotlight chord.
 //!
-//! Picking an app emits the foreground effect and switches straight to the in-app
-//! layer, marking a navigation in flight. The app is not recorded here; the watcher
+//! Picking an app is one gesture of three units, `and!(mark_navigating, foreground_x,
+//! enter_inapp)`: the flag, the effect, and the layer. The app is not recorded here; the watcher
 //! reports the app that actually comes up, and [`record_front_app`](super::record_front_app)
 //! records it and clears the flag. Until then the in-app level is empty (see
 //! [`app_data`](crate::state)), so the old app's bindings do not apply in the gap.
@@ -11,97 +11,56 @@ use freddie_keys::{Key, ModifierFlags};
 use laserbeam::{Complete, Completed, HasStop, IntoAncestor, MaybeInvalidated};
 
 use crate::effect::tap;
-use crate::state::{AppLayer, Mercury, MercuryPath, TypingLayer};
+use crate::state::MercuryPath;
 use crate::{App, MercuryEffect};
 
-/// Foreground `app` and enter the in-app layer, with the navigation marked in flight.
+/// The navigation is in flight: the watcher has not confirmed the new front app yet.
 ///
-/// It takes the root, because its callers are leavers: entering the in-app layer replaces the
-/// node they were bound on, so each consumed its path to get here.
-fn navigate(root: &mut Mercury, app: App) -> Vec<MercuryEffect> {
+/// It writes `foreground`, which lives on the root, so it ends there. Its gesture ends at the
+/// root anyway, since `enter_inapp` follows it, so the ending is truthful.
+pub(crate) fn mark_navigating<'a, E, P>(
+    _ev: &E,
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>)
+where
+    P: HasStop,
+    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    MercuryPath<'a>: Complete<P>,
+{
+    let root: MercuryPath<'a> = st.state.into_ancestor();
     root.foreground.start_navigating();
-    let (inapp, timer) = AppLayer::new();
-    let mut effects = root.set_layer(inapp);
-    effects.push(timer);
-    effects.push(MercuryEffect::Foreground(app));
-    effects
+    (vec![], root.complete())
 }
 
-pub(crate) fn open_chrome<'a, E, P>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
-where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
-{
-    let root: MercuryPath<'a> = st.state.into_ancestor();
-    let effects = navigate(root, App::Chrome);
-    (effects, root.complete())
-}
-pub(crate) fn open_finder<'a, E, P>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
-where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
-{
-    let root: MercuryPath<'a> = st.state.into_ancestor();
-    let effects = navigate(root, App::Finder);
-    (effects, root.complete())
-}
-pub(crate) fn open_ghostty<'a, E, P>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
-where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
-{
-    let root: MercuryPath<'a> = st.state.into_ancestor();
-    let effects = navigate(root, App::Ghostty);
-    (effects, root.complete())
-}
-pub(crate) fn open_zed<'a, E, P>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
-where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
-{
-    let root: MercuryPath<'a> = st.state.into_ancestor();
-    let effects = navigate(root, App::Zed);
-    (effects, root.complete())
+/// One unit per app: the effect and nothing else, so it runs on any state.
+macro_rules! foreground_unit {
+    ($($handler:ident => $app:ident),* $(,)?) => {$(
+        pub(crate) fn $handler<E, P: HasStop + Complete<P>>(
+            _ev: &E,
+            _snap: (),
+            st: AscendState<'_, P>,
+        ) -> (Vec<MercuryEffect>, Completed<P>) {
+            (vec![MercuryEffect::Foreground(App::$app)], st.complete())
+        }
+    )*};
 }
 
-/// `space` in nav: open Spotlight and land in typing, so what you type next reaches its field.
-///
-/// Not a [`navigate`]: Spotlight is a text field rather than an app with its own in-app bindings,
-/// and it is opened with its own chord rather than by foregrounding anything. The tap comes before
-/// the transition, so the modifier downs typing's `open` emits land on Spotlight rather than on the
-/// app being left.
-pub(crate) fn open_spotlight<'a, E, P>(
+foreground_unit! {
+    foreground_chrome => Chrome,
+    foreground_finder => Finder,
+    foreground_ghostty => Ghostty,
+    foreground_zed => Zed,
+}
+
+/// Spotlight's own chord. It is not a [`foreground_unit`]: Spotlight is a text field rather than
+/// an app with in-app bindings, and it is opened with a chord rather than by foregrounding
+/// anything. The tap comes first in its gesture, so the modifier downs that typing's open emits
+/// land on Spotlight rather than on the app being left.
+pub(crate) fn tap_cmd_space<E, P: HasStop + Complete<P>>(
     _ev: &E,
     _snap: (),
     st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
-where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
-{
-    let root: MercuryPath<'a> = st.state.into_ancestor();
-    let mut effects = vec![tap(Key::Space, ModifierFlags::COMMAND)];
-    effects.extend(root.set_layer(TypingLayer::new()));
-    (effects, root.complete())
+) -> (Vec<MercuryEffect>, Completed<P>) {
+    (vec![tap(Key::Space, ModifierFlags::COMMAND)], st.complete())
 }

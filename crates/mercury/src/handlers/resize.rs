@@ -1,10 +1,14 @@
-//! Resize-layer handlers: place the focused window and return home.
+//! Resize-layer units: place the focused window.
+//!
+//! Placing is the whole of each unit; returning home is `go_home` composing after it at the bind
+//! site, because placing a window is a choice rather than something you repeat. Each writes
+//! `windows`, which lives on the root, so each ends there, and the `go_home` after it ends there
+//! too: two root-enders compose, since the state-level `into_ancestor` is total on both branches.
 
 use bind::AscendState;
 use freddie_windows::{Frame, WindowFrame};
 use laserbeam::{Complete, Completed, HasStop, IntoAncestor, MaybeInvalidated};
 
-use super::and_go_home_from;
 use crate::MercuryEffect;
 use crate::state::{Mercury, MercuryPath, Windows};
 
@@ -75,22 +79,15 @@ where
     (effects, root.complete())
 }
 
-/// Put the focused window in the frame `within` picks out of its screen's visible frame,
-/// and return home.
+/// Put the focused window in the frame `within` picks out of its screen's visible frame.
 ///
 /// The effects are empty when there is no focused window or no screen has been reported.
-/// The layer returns home either way.
 fn place(root: &mut Mercury, within: impl Fn(Frame) -> Frame) -> Vec<MercuryEffect> {
-    let effects =
-        target(&root.windows, within).map_or_else(Vec::new, |target| root.windows.placing(target));
-    and_go_home_from(root, effects)
+    target(&root.windows, within).map_or_else(Vec::new, |target| root.windows.placing(target))
 }
 
-/// Put the focused window back where it was before it was placed, and return home.
-///
-/// Restoring is one choice, not something to repeat, so it leaves the layer the way the
-/// arrows do.
-pub(crate) fn restore_window<'a, E, P>(
+/// Put the focused window back where it was before it was placed.
+pub(crate) fn restore<'a, E, P>(
     _ev: &E,
     _snap: (),
     st: AscendState<'_, P>,
@@ -102,7 +99,6 @@ where
 {
     let root: MercuryPath<'a> = st.state.into_ancestor();
     let effects = root.windows.restoring();
-    let effects = and_go_home_from(root, effects);
     (effects, root.complete())
 }
 

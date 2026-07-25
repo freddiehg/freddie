@@ -1,4 +1,4 @@
-use bind::Bind;
+use bind::{Bind, and};
 use freddie::TimerGuard;
 use freddie_keys::Key;
 use laserbeam::HasAncestor;
@@ -33,10 +33,10 @@ pub(crate) const fn overlay_for(site: Option<Site>) -> &'static str {
 #[binds(MercuryStruct)]
 #[derived_child(site_data)]
 #[bind(
-    |path| path.get().home_timeout.trigger() => to_home,
-    Key::Escape.down() => to_home,
+    |path| path.get().home_timeout.trigger() => go_home,
+    Key::Escape.down() => go_home,
     Key::KeyO.down() => toggle_overlay,
-    Key::KeyT.down() => to_typing,
+    Key::KeyT.down() => enter_typing,
 )]
 pub struct SiteLayer {
     // Read for the trigger matching its firing, and held for its `Drop`: dropping the guard
@@ -86,5 +86,5 @@ fn site_data<'a, P: HasAncestor<MercuryPath<'a>>>(path: &P) -> Option<SiteData> 
 #[derive(Bind, Debug)]
 #[derived_node(parent = SiteLayerPath)]
 #[binds(MercuryStruct)]
-#[bind(Key::KeyN.down() => new_chat)]
+#[bind(Key::KeyN.down() => and!(tap_cmd_shift_o, enter_typing))]
 pub struct ClaudeAiSite;

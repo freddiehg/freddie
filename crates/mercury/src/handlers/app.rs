@@ -1,21 +1,21 @@
-//! In-app handlers: Chrome's refresh, address bar and copies, and Ghostty's tmux window
-//! navigation.
+//! In-app units: Chrome's refresh, address bar and copies, and Ghostty's tmux window navigation.
+//!
+//! The taps here emit and nothing else. What follows a tap is the bind site's business: Chrome's
+//! `l` is `and!(tap_cmd_l, enter_typing)`, because a focused address bar is somewhere you type
+//! and the in-app layer would swallow it; Chrome's `r` is `tap_cmd_r` alone, because refreshing
+//! repeats and the layer stays.
 
 use bind::AscendState;
 use freddie_keys::{Key, ModifierFlags};
-use laserbeam::{Complete, Completed, HasAncestor, HasStop, IntoAncestor, MaybeInvalidated};
+use laserbeam::{Complete, Completed, HasAncestor, HasStop, MaybeInvalidated};
 
-use super::and_go_home_from;
 use crate::MercuryEffect;
 use crate::effect::{Copied, UrlPart, tap};
 use crate::sources::host;
-use crate::state::{Mercury, MercuryPath, TypingLayer};
+use crate::state::{Mercury, MercuryPath};
 
-/// `r` in Chrome: cmd-r, a refresh.
-///
-/// A pure effect: it reads no state and changes none, so it stays where it stands and its two
-/// arms differ only in whether there is still a path to stand on.
-pub(crate) fn refresh<E, P: HasStop + Complete<P>>(
+/// Chrome's refresh: cmd-r.
+pub(crate) fn tap_cmd_r<E, P: HasStop + Complete<P>>(
     _ev: &E,
     _snap: (),
     st: AscendState<'_, P>,
@@ -23,24 +23,32 @@ pub(crate) fn refresh<E, P: HasStop + Complete<P>>(
     (vec![tap(Key::KeyR, ModifierFlags::COMMAND)], st.complete())
 }
 
-/// `l` in Chrome: cmd-l, focusing the address bar, and then typing.
-///
-/// A focused text field is somewhere you type, and the in-app layer would swallow what you typed
-/// at it, so this leaves for typing the way nav's `space` does.
-pub(crate) fn focus_address_bar<'a, E, P>(
+/// Chrome's address bar: cmd-l.
+pub(crate) fn tap_cmd_l<E, P: HasStop + Complete<P>>(
     _ev: &E,
     _snap: (),
     st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
-where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
-{
-    let root: MercuryPath<'a> = st.state.into_ancestor();
-    let mut effects = vec![tap(Key::KeyL, ModifierFlags::COMMAND)];
-    effects.extend(root.set_layer(TypingLayer::new()));
-    (effects, root.complete())
+) -> (Vec<MercuryEffect>, Completed<P>) {
+    (vec![tap(Key::KeyL, ModifierFlags::COMMAND)], st.complete())
+}
+
+/// claude.ai's new chat: cmd-shift-o, the site's own shortcut.
+///
+/// A remap rather than an automation: nothing reaches into the page. The modifiers ride as flags
+/// on the one key event, which is what keeps a modifier the user is really holding from being
+/// stranded.
+pub(crate) fn tap_cmd_shift_o<E, P: HasStop + Complete<P>>(
+    _ev: &E,
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>) {
+    (
+        vec![tap(
+            Key::KeyO,
+            ModifierFlags::COMMAND | ModifierFlags::SHIFT,
+        )],
+        st.complete(),
+    )
 }
 
 /// `shift-l` in Chrome: the front tab's whole URL, onto the clipboard.
@@ -117,8 +125,8 @@ fn tmux(flags: ModifierFlags, command: Key) -> Vec<MercuryEffect> {
     vec![tap(Key::KeyA, ModifierFlags::CONTROL), tap(command, flags)]
 }
 
-/// `j` in Ghostty: tmux's previous window. Stays, because walking windows repeats.
-pub(crate) fn previous_window<E, P: HasStop + Complete<P>>(
+/// `j` in Ghostty: tmux's previous window. Bound alone, because walking windows repeats.
+pub(crate) fn tmux_prev<E, P: HasStop + Complete<P>>(
     _ev: &E,
     _snap: (),
     st: AscendState<'_, P>,
@@ -127,7 +135,7 @@ pub(crate) fn previous_window<E, P: HasStop + Complete<P>>(
 }
 
 /// `k` in Ghostty: tmux's next window.
-pub(crate) fn next_window<E, P: HasStop + Complete<P>>(
+pub(crate) fn tmux_next<E, P: HasStop + Complete<P>>(
     _ev: &E,
     _snap: (),
     st: AscendState<'_, P>,
@@ -135,70 +143,17 @@ pub(crate) fn next_window<E, P: HasStop + Complete<P>>(
     (tmux(ModifierFlags::empty(), Key::KeyN), st.complete())
 }
 
-/// The digits in Ghostty: jump straight to a tmux window, then go home.
+/// Jump to a tmux window by its digit.
 ///
-/// The window is chosen with the digit's *shifted* symbol, because that is what the tmux config
+/// The window is chosen with the digit's SHIFTED symbol, because that is what the tmux config
 /// binds: `!` through `)` select windows 1 through 10, while the bare digits select window
 /// *indices* and so cannot reach the tenth. `1` sends `ctrl-a !` and `0` sends `ctrl-a )`.
 ///
-/// Jumping to a window is a choice rather than something you repeat, so it leaves the layer.
-/// Generic over the event, the path, and the node's data, since it only reaches `node.parent`.
-/// See [`and_go_home`].
-macro_rules! select_window {
-    ($($handler:ident => $digit:ident),* $(,)?) => {$(
-        pub(crate) fn $handler<'a, E, P>(
-            _ev: &E,
-            _snap: (),
-            st: AscendState<'_, P>,
-        ) -> (Vec<MercuryEffect>, Completed<P>)
-        where
-            P: HasStop,
-            MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-            MercuryPath<'a>: Complete<P>,
-        {
-            let root: MercuryPath<'a> = st.state.into_ancestor();
-            let effects = and_go_home_from(root, tmux(ModifierFlags::SHIFT, Key::$digit));
-            (effects, root.complete())
-        }
-    )*};
-}
-
-select_window! {
-    window_1 => Num1,
-    window_2 => Num2,
-    window_3 => Num3,
-    window_4 => Num4,
-    window_5 => Num5,
-    window_6 => Num6,
-    window_7 => Num7,
-    window_8 => Num8,
-    window_9 => Num9,
-    window_0 => Num0,
-}
-
-/// `n` on claude.ai: start a new chat, and then type.
-///
-/// `cmd-shift-o` is the site's own shortcut, so this is a remap and not an automation: nothing has
-/// to reach into the page. The modifiers ride as flags on the one key event, which is what keeps a
-/// modifier the user is really holding from being stranded.
-///
-/// A new chat lands in its prompt box, which is somewhere you type, so this leaves for typing the
-/// way Chrome's `l` does.
-pub(crate) fn new_chat<'a, E, P>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
-where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
-{
-    let root: MercuryPath<'a> = st.state.into_ancestor();
-    let mut effects = vec![tap(
-        Key::KeyO,
-        ModifierFlags::COMMAND | ModifierFlags::SHIFT,
-    )];
-    effects.extend(root.set_layer(TypingLayer::new()));
-    (effects, root.complete())
+/// Parameterized, so one unit serves all ten digits: `and!(tmux_window(Key::Num1), go_home)`.
+/// Jumping is a choice rather than something you repeat, which is why `go_home` composes after
+/// it while `tmux_prev` and `tmux_next` are bound alone.
+pub(crate) fn tmux_window<E, P: HasStop + Complete<P>>(
+    digit: Key,
+) -> impl Fn(&E, (), AscendState<'_, P>) -> (Vec<MercuryEffect>, Completed<P>) {
+    move |_ev, (), st| (tmux(ModifierFlags::SHIFT, digit), st.complete())
 }

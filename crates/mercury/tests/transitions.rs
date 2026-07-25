@@ -376,10 +376,11 @@ fn nav_c_foregrounds_chrome_and_enters_inapp() {
     assert_eq!(
         m.handle(&key(Key::KeyC)),
         (
+            // The gesture's units in call order: the foreground effect, then the layer's own.
             vec![
+                MercuryEffect::Foreground(App::Chrome),
                 shows("App"),
                 return_home_timer(),
-                MercuryEffect::Foreground(App::Chrome)
             ],
             true
         )
@@ -406,9 +407,9 @@ fn every_nav_choice_enters_inapp() {
             m.handle(&key(k)),
             (
                 vec![
+                    MercuryEffect::Foreground(app),
                     shows("App"),
                     return_home_timer(),
-                    MercuryEffect::Foreground(app)
                 ],
                 true
             )
@@ -451,10 +452,11 @@ fn n_c_then_foreground_then_r_refreshes_chrome() {
     assert_eq!(
         m.handle(&key(Key::KeyC)),
         (
+            // The gesture's units in call order: the foreground effect, then the layer's own.
             vec![
+                MercuryEffect::Foreground(App::Chrome),
                 shows("App"),
                 return_home_timer(),
-                MercuryEffect::Foreground(App::Chrome)
             ],
             true
         )
@@ -1107,9 +1109,9 @@ fn foregrounding_chrome_is_reported_back() {
         vec![
             shows("Nav"),
             return_home_timer(),
+            MercuryEffect::Foreground(App::Chrome),
             shows("App"),
             return_home_timer(),
-            MercuryEffect::Foreground(App::Chrome)
         ]
     );
     assert_eq!(m.foreground.app(), App::Chrome);

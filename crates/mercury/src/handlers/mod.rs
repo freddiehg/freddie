@@ -6,12 +6,17 @@
 //! returns inert effects and the leave it completed to. `crate::state` glob-imports this module so
 //! the derive-generated dispatch can name them.
 //!
-//! Which of the two arms a handler takes is what it means. A stayer completes where it stands and
-//! reads the tree through `HasAncestor::ancestor`; a leaver consumes the path with
-//! `IntoAncestor::into_ancestor`, does its work at the root, and completes there, which is what
-//! tells everything above it that the layer it was bound on is gone. The `Invalidated` arm is the
-//! same answer either way: something below already left, so there is no path to act through, and
-//! the leave is forwarded untouched.
+//! A handler is a UNIT: one job, and the whole of it. A user action with parts is not several
+//! handlers on several triggers, and not a helper that chains two mutations; it is one bind whose
+//! right-hand side is `and!(..)` of its units, so the parts share the one claim, their effects
+//! land in call order, and each sees the state the one before it left. Nothing composes in
+//! `Mercury::handle` after the fact.
+//!
+//! What a unit touches decides its shape. A pure effect is branch-free and completes where it
+//! stands. A unit that writes the root consumes the state to get there
+//! (`st.state.into_ancestor()`, total on both branches) and completes at the root, which is what
+//! tells everything above it that the layer it was bound on is gone. A unit that only reads the
+//! tree reaches up by shared reference and stays.
 
 mod app;
 mod foreground;
@@ -34,31 +39,3 @@ pub(crate) use resize::*;
 pub(crate) use root::*;
 pub(crate) use tab::*;
 pub(crate) use window::*;
-
-use crate::MercuryEffect;
-use crate::state::{HomeLayer, Mercury};
-
-/// Go to the home layer, returning the modifier flush (empty unless leaving a passthrough layer).
-/// The one place the home layer is entered.
-pub(crate) fn go_home(root: &mut Mercury) -> Vec<MercuryEffect> {
-    root.set_layer(HomeLayer::new())
-}
-
-/// Ask for `effects`, then return home.
-///
-/// A layer stays only if its actions make sense to do repeatedly. Walking tmux's panes and
-/// refreshing Chrome do, so the in-app layers stay. Placing a window does not: repeating it is
-/// a no-op, and anything else is a different choice. So resize is a one-shot chooser, and this
-/// is how it leaves. (Nav also leaves after one choice, but into the in-app layer rather than
-/// home; see [`super::nav`].)
-///
-/// It takes the root, because its callers are leavers and already hold it: a leaver consumed its
-/// path to get here, and completes at the root once this hands the effects back.
-pub(crate) fn and_go_home_from(
-    root: &mut Mercury,
-    effects: impl IntoIterator<Item = MercuryEffect>,
-) -> Vec<MercuryEffect> {
-    let mut effects: Vec<_> = effects.into_iter().collect();
-    effects.extend(go_home(root));
-    effects
-}

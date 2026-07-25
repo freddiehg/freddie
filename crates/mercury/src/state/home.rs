@@ -15,13 +15,13 @@ pub(crate) const OVERLAY: &str = include_str!("overlays/home.txt");
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
-    Key::Escape.down() => to_home,
+    Key::Escape.down() => go_home,
     Key::KeyO.down() => toggle_overlay,
-    Key::KeyN.down() => to_nav,
-    Key::KeyR.down() => to_resize,
-    Key::KeyT.down() => to_typing,
-    Key::KeyI.down() => to_inapp,
-    Key::KeyU.down() => to_site,
+    Key::KeyN.down() => enter_nav,
+    Key::KeyR.down() => enter_resize,
+    Key::KeyT.down() => enter_typing,
+    Key::KeyI.down() => enter_inapp,
+    Key::KeyU.down() => enter_site,
     Key::KeyQ.down() => quit,
 )]
 pub struct HomeLayer;

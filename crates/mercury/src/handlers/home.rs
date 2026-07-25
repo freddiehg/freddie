@@ -7,8 +7,12 @@
 //!
 //! Every one of them ends at the root, and says so by not matching the state at all: the state
 //! reaches the root on either branch, and what each completes is the walk it took to get there.
-//! On the invalidated branch that re-roots the leave, which is what these mean — wherever the
+//! On the invalidated branch that re-roots the leave, which is what these mean: wherever the
 //! descent below stopped, this dispatch ends at the root, in the layer just set.
+//!
+//! `set_layer` is the one mutation each makes, and it carries its own implied effects (hide the
+//! overlay, reset the jk run, open or close the held modifiers, name the layer for the menu bar).
+//! A unit that called it twice would be two gestures.
 //!
 //! Each is generic over the event and the path, so any trigger and any node that reaches the
 //! root can bind it from its own place in the tree.
@@ -16,14 +20,15 @@
 use bind::AscendState;
 use laserbeam::{Complete, Completed, HasStop, IntoAncestor, MaybeInvalidated};
 
-use super::go_home;
 use crate::MercuryEffect;
-use crate::state::{AppLayer, MercuryPath, NavLayer, ResizeLayer, SiteLayer, TypingLayer};
+use crate::state::{
+    AppLayer, HomeLayer, MercuryPath, NavLayer, ResizeLayer, SiteLayer, TypingLayer,
+};
 
 /// `escape` anywhere, and a layer's idle-timeout: go back to the home layer.
 ///
 /// Typing has to bind `escape` explicitly, because a plain escape passes through there.
-pub(crate) fn to_home<'a, E, P>(
+pub(crate) fn go_home<'a, E, P>(
     _ev: &E,
     _snap: (),
     st: AscendState<'_, P>,
@@ -34,14 +39,14 @@ where
     MercuryPath<'a>: Complete<P>,
 {
     let root: MercuryPath<'a> = st.state.into_ancestor();
-    let effects = go_home(root);
+    let effects = root.set_layer(HomeLayer::new());
     (effects, root.complete())
 }
 
 /// `n`: enter the nav layer. Bound from home and from the in-app layer.
 ///
 /// Nav arms an idle-timeout, so its constructor also hands back the effect that schedules it.
-pub(crate) fn to_nav<'a, E, P>(
+pub(crate) fn enter_nav<'a, E, P>(
     _ev: &E,
     _snap: (),
     st: AscendState<'_, P>,
@@ -60,7 +65,7 @@ where
 
 /// `t`: enter the typing layer. Bound from home, from the in-app layer, and from the app and
 /// site levels below it, whose own handlers end there too.
-pub(crate) fn to_typing<'a, E, P>(
+pub(crate) fn enter_typing<'a, E, P>(
     _ev: &E,
     _snap: (),
     st: AscendState<'_, P>,
@@ -76,7 +81,7 @@ where
 }
 
 /// `i` in home: enter the in-app layer for whatever app is foregrounded.
-pub(crate) fn to_inapp<'a, E, P>(
+pub(crate) fn enter_inapp<'a, E, P>(
     _ev: &E,
     _snap: (),
     st: AscendState<'_, P>,
@@ -97,7 +102,7 @@ where
 ///
 /// Next to `i` under the same finger, because the two are neighbours in meaning as well: `i` is
 /// what the frontmost app can do, `u` is what the site in its front tab can do.
-pub(crate) fn to_site<'a, E, P>(
+pub(crate) fn enter_site<'a, E, P>(
     _ev: &E,
     _snap: (),
     st: AscendState<'_, P>,
@@ -115,7 +120,7 @@ where
 }
 
 /// `r` in home: enter the resize layer.
-pub(crate) fn to_resize<'a, E, P>(
+pub(crate) fn enter_resize<'a, E, P>(
     _ev: &E,
     _snap: (),
     st: AscendState<'_, P>,

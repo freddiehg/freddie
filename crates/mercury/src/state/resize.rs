@@ -1,4 +1,4 @@
-use bind::Bind;
+use bind::{Bind, and};
 use freddie::TimerGuard;
 use freddie_keys::Key;
 
@@ -19,14 +19,14 @@ pub(crate) const OVERLAY: &str = include_str!("overlays/resize.txt");
 #[binds(MercuryStruct)]
 #[bind(
     // Only this layer's own timer: a firing from a layer already left matches nothing.
-    |path| path.get().home_timeout.trigger() => to_home,
-    Key::Escape.down() => to_home,
+    |path| path.get().home_timeout.trigger() => go_home,
+    Key::Escape.down() => go_home,
     Key::KeyO.down() => toggle_overlay,
-    Key::KeyT.down() => to_typing,
-    Key::UpArrow.down() => maximize,
-    Key::LeftArrow.down() => left_half,
-    Key::RightArrow.down() => right_half,
-    Key::KeyR.down() => restore_window,
+    Key::KeyT.down() => enter_typing,
+    Key::UpArrow.down() => and!(maximize, go_home),
+    Key::LeftArrow.down() => and!(left_half, go_home),
+    Key::RightArrow.down() => and!(right_half, go_home),
+    Key::KeyR.down() => and!(restore, go_home),
 )]
 pub struct ResizeLayer {
     // Read for the trigger matching its firing, and held for its `Drop`: dropping the guard cancels resize's return-home timer.

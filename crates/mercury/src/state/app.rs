@@ -1,4 +1,4 @@
-use bind::Bind;
+use bind::{Bind, and};
 use freddie::TimerGuard;
 use freddie_keys::{Key, ModifierFlags};
 use laserbeam::HasAncestor;
@@ -35,12 +35,12 @@ pub(crate) const fn overlay_for(app: App) -> &'static str {
 #[binds(MercuryStruct)]
 #[derived_child(app_data)]
 #[bind(
-    |path| path.get().home_timeout.trigger() => to_home,
-    Key::Escape.down() => to_home,
+    |path| path.get().home_timeout.trigger() => go_home,
+    Key::Escape.down() => go_home,
     Key::KeyO.down() => toggle_overlay,
-    Key::KeyN.down() => to_nav,
-    Key::KeyS.down() => to_site,
-    Key::KeyT.down() => to_typing,
+    Key::KeyN.down() => enter_nav,
+    Key::KeyS.down() => enter_site,
+    Key::KeyT.down() => enter_typing,
 )]
 pub struct AppLayer {
     // Read for the trigger matching its firing, and held for its `Drop`: dropping the guard cancels the in-app layer's return-home timer.
@@ -94,8 +94,8 @@ fn app_data<'a, P: HasAncestor<MercuryPath<'a>>>(path: &P) -> Option<AppData> {
 // `l` is bound at three modifier combinations, so all three are chords: a plain `KeyPress` ignores
 // the flags, and any two of these would then match the same event.
 #[bind(
-    Key::KeyR.down() => refresh,
-    Key::KeyL.down().bare() => focus_address_bar,
+    Key::KeyR.down() => tap_cmd_r,
+    Key::KeyL.down().bare() => and!(tap_cmd_l, enter_typing),
     Key::KeyL.down().with(ModifierFlags::SHIFT) => copy_url,
     Key::KeyL.down().with(ModifierFlags::COMMAND) => copy_host,
 )]
@@ -113,18 +113,18 @@ impl ChromeApp {
 #[derived_node(parent = AppLayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
-    Key::KeyJ.down() => previous_window,
-    Key::KeyK.down() => next_window,
-    Key::Num1.down() => window_1,
-    Key::Num2.down() => window_2,
-    Key::Num3.down() => window_3,
-    Key::Num4.down() => window_4,
-    Key::Num5.down() => window_5,
-    Key::Num6.down() => window_6,
-    Key::Num7.down() => window_7,
-    Key::Num8.down() => window_8,
-    Key::Num9.down() => window_9,
-    Key::Num0.down() => window_0,
+    Key::KeyJ.down() => tmux_prev,
+    Key::KeyK.down() => tmux_next,
+    Key::Num1.down() => and!(tmux_window(Key::Num1), go_home),
+    Key::Num2.down() => and!(tmux_window(Key::Num2), go_home),
+    Key::Num3.down() => and!(tmux_window(Key::Num3), go_home),
+    Key::Num4.down() => and!(tmux_window(Key::Num4), go_home),
+    Key::Num5.down() => and!(tmux_window(Key::Num5), go_home),
+    Key::Num6.down() => and!(tmux_window(Key::Num6), go_home),
+    Key::Num7.down() => and!(tmux_window(Key::Num7), go_home),
+    Key::Num8.down() => and!(tmux_window(Key::Num8), go_home),
+    Key::Num9.down() => and!(tmux_window(Key::Num9), go_home),
+    Key::Num0.down() => and!(tmux_window(Key::Num0), go_home),
 )]
 pub struct GhosttyApp;
 
