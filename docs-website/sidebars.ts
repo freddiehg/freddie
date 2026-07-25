@@ -15,6 +15,7 @@ const sidebars: SidebarsConfig = {
         'architecture/the-event-loop',
         'architecture/the-data-model',
         'architecture/dispatch-and-precedence',
+        'architecture/what-is-a-separate-handler',
         'architecture/typed-paths',
         'architecture/virtual-fields',
         'architecture/timers',
