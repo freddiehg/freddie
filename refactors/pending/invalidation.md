@@ -1,40 +1,44 @@
-# Invalidation: descent schedules, ascent returns a path doll
+# Invalidation: descent schedules, ascent runs posts
 
-Not done. Standalone.
+Not done. Depends on `path-peel-complete.md` (`Completed` / `Stop` / `Complete` / `Completed::up`).
 
 Descent schedules which pre/posts/binds run. That set is final. Ascent runs every scheduled post.
 
-Leave peels on **`Place::Path`** (`PathMut` vs root `&mut Self` as the bind macro already distinguishes) are **`path-peel-complete.md`**. Ship that prefactor first.
-
 ## Model
 
-Each non-root node returns `Ascent(self) = Doll<Self::Path, Ascent(parent)>` (root path bare). Child returns `Ascent(child)`; parent matches `Here`/`Up` and returns `Ascent(self)`. App only ever sees `LayerAscent`, not `NavAscent`.
+Every node's dispatch returns `Completed<Self::Path<'a>>`, root included. There is no per-node ascent type and no associated type: the return is the same expression of the node's own path everywhere.
 
-```text
-leave_at_nav(nav).complete()                              // Here(nav)
-leave_at_nav(nav).into_parent().complete()                // Up(Here(layer))
-leave_at_nav(nav).into_parent().into_parent().complete()  // Up(Up(app))
-```
-
-Public arms: `Here` / `Up` only. LeavePath is `LeavePath<Focus, Origin>` — see path-peel-complete.
-
-## Types (dispatch layer)
+A parent sees three outcomes, from two nested `into_inner` matches:
 
 ```rust
-// Doll, LeavePath<Focus, Origin>, ascent aliases, leave_at_*, complete:
-// see path-peel-complete.md
-//
-// Ascent(root) = &mut Root
-// Ascent(node) = Doll<Node::Path, Ascent(parent)>
-// e.g. LayerAscent, NavAscent = Doll<NavPath, LayerAscent>
-//
-// match child_ascent { Doll::Here(path) | Doll::Up(rest) => ... }
-// Up(rest) already has type Ascent(this); return rest upward unchanged
+match Inner::dispatch(inner_path, event, effs, claim).into_inner() {
+    Stop::Here(inner_path) => {
+        // child kept focus; this node's path is inner_path.into_parent()
+    }
+    Stop::Up(rest) => match rest.into_inner() {
+        Stop::Here(outer_path) => {
+            // the leave stopped at this node; child dropped, this node lives
+        }
+        Stop::Up(above) => {
+            // this node dropped too; forward Completed::up(above)
+        }
+    },
+}
+```
 
-// ---------------------------------------------------------------------------
-// Claim
-// ---------------------------------------------------------------------------
+The `Up` payload of a child's `Completed` is this node's own `Completed`, so the no-inspection form forwards `rest` unchanged; the inspecting form rebuilds its gone-above arm with `Completed::up`.
 
+Posts per arm:
+
+```text
+Here(child)            child survived   → child-ok posts; own binds (claim-gated)
+Up(Here(this))         child dropped    → child-dropped posts; posts that need this path
+Up(Up(above))          this node dropped → child-dropped posts from pre-descent snaps only
+```
+
+## Claim
+
+```rust
 pub struct Claim<'c> {
     slot: &'c mut Option<()>,
 }
@@ -70,11 +74,7 @@ impl<'c> Claim<'c> {
 }
 ```
 
-laserbeam `PathMut::into_parent(self) -> Parent` unchanged.
-
-### Worked peels
-
-See path-peel-complete (`leave_at_nav` / `leave_at_layer` on real Place paths).
+`with_exclusive` is for in-place handlers (effects only). A leaving handler takes the claim with `try_take` and its `Completed` is returned directly (see Generated: Inner).
 
 ## Dispatch
 
@@ -86,22 +86,58 @@ pub trait Bindings {
 }
 
 pub trait Dispatch<M: Bindings>: Place {
-    type Ascent<'a>
-    where
-        Self: 'a;
-
     fn dispatch<'a, 'c>(
         path: Self::Path<'a>,
         event: &M::Event,
         effs: &mut M::Output,
         claim: &mut Claim<'c>,
-    ) -> Self::Ascent<'a>
+    ) -> ::laserbeam::Completed<Self::Path<'a>>
     where
-        Self: 'a;
+        Self: 'a,
+        Self::Path<'a>: ::laserbeam::HasStop;
 }
 ```
 
-`Place::Path<'a>` is unchanged. `LeavePath<Focus, Origin>` for leave/kill; `into_parent` generic on `PathMut`.
+The root's `Path` is `&mut Root`, whose `Completed` wraps the bare path, so the same signature serves the root; the free dispatch drops it. bind now names laserbeam traits (`HasStop` in the bound, `Complete` in expansions), not only its types; `Place`'s doc comment updates accordingly.
+
+Derived levels live at their parent place, so their leave is the parent's:
+
+```rust
+pub trait Descend<M: Bindings>: HasParent + Sized
+where
+    Self::Parent: ::laserbeam::HasStop,
+{
+    fn dispatch<'c>(
+        self,
+        event: &M::Event,
+        effs: &mut M::Output,
+        claim: &mut Claim<'c>,
+    ) -> ::laserbeam::Completed<Self::Parent>;
+}
+```
+
+`Here(parent_path)` means the derived level kept focus at the place it lives at. A root-parented derived level works because `Completed<&mut Root>` exists. `EventHandler` / `DerivedHandler` (the check) are untouched.
+
+## Handlers
+
+Two shapes, distinguished by whether the handler leaves:
+
+```rust
+// in place: effects only; runs under with_exclusive or as a post
+fn outer_handler(_ev: &KeyEvent, _outer: &mut OuterPath<'_>) -> Vec<DemoEffect> {
+    vec![DemoEffect::SetLayerHome]
+}
+
+// leaving: effects + where dispatch is afterwards
+fn inner_handler<'a>(
+    _ev: &KeyEvent,
+    path: InnerPath<'a>,
+) -> (Vec<DemoEffect>, Completed<InnerPath<'a>>) {
+    (vec![], path.into_parent().complete()) // Up(Here(outer))
+}
+```
+
+Kill = more `into_parent` calls before `complete`. Handwritten handlers `use laserbeam::Complete;`.
 
 ## DX types
 
@@ -109,11 +145,10 @@ pub trait Dispatch<M: Bindings>: Place {
 // RootPath<'a>  = &'a mut Root
 // OuterPath<'a> = laserbeam::PathMut<Outer, RootPath<'a>>
 // InnerPath<'a> = laserbeam::PathMut<Inner, OuterPath<'a>>
-
-// Inner::Ascent<'a> = AscentOf<InnerPath<'a>>
-//   = Doll<OuterPath<'a>, RootPath<'a>>   (or Ascent wrapper around that)
-// Outer::Ascent<'a> = AscentOf<OuterPath<'a>>
-//   = RootPath<'a>   (boundary; no Doll layer)
+//
+// Inner::dispatch returns Completed<InnerPath<'a>>
+// Outer::dispatch returns Completed<OuterPath<'a>>
+// Root::dispatch  returns Completed<RootPath<'a>>   (bare &mut Root inside)
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct ChildId(u64);
@@ -180,34 +215,18 @@ fn rearm(outer: &mut OuterPath<'_>) -> Vec<DemoEffect> {
     outer.get_mut().return_home.guard = guard;
     vec![schedule]
 }
-
-fn outer_handler(_ev: &KeyEvent, _outer: &mut OuterPath<'_>) -> Vec<DemoEffect> {
-    vec![DemoEffect::SetLayerHome]
-}
-
-fn inner_handler<'a>(
-    _ev: &KeyEvent,
-    path: InnerPath<'a>,
-) -> (Vec<DemoEffect>, AscentOf<InnerPath<'a>>) {
-    let ascent = leave_at_inner(path).into_parent().complete()  // see path-peel-complete naming;
-    (vec![], ascent)
-}
 ```
 
 ## Generated: Inner
 
 ```rust
 impl Dispatch<M> for Inner {
-    type Ascent<'a> = AscentOf<InnerPath<'a>>
-    where
-        Self: 'a;
-
     fn dispatch<'a, 'c>(
         path: InnerPath<'a>,
         event: &M::Event,
         effs: &mut M::Output,
         claim: &mut Claim<'c>,
-    ) -> Self::Ascent<'a>
+    ) -> Completed<InnerPath<'a>>
     where
         Self: 'a,
     {
@@ -223,14 +242,14 @@ impl Dispatch<M> for Inner {
         };
 
         if let Some(ev) = opt_0 {
-            if let Some(()) = claim.try_take() {
-                let (e, ascent) = inner_handler(ev, path);
+            if claim.try_take().is_some() {
+                let (e, completed) = inner_handler(ev, path);
                 effs.extend(e);
-                return ascent;
+                return completed;
             }
         }
 
-        /* leave complete at this path — Here */
+        ::laserbeam::Complete::complete(path) // Here(inner)
     }
 }
 ```
@@ -242,19 +261,16 @@ impl Dispatch<M> for Outer
 where
     Inner: Dispatch<M>,
 {
-    type Ascent<'a> = AscentOf<OuterPath<'a>> // = RootPath<'a>
-    where
-        Self: 'a;
-
     fn dispatch<'a, 'c>(
         path: OuterPath<'a>,
         event: &M::Event,
         effs: &mut M::Output,
         claim: &mut Claim<'c>,
-    ) -> Self::Ascent<'a>
+    ) -> Completed<OuterPath<'a>>
     where
         Self: 'a,
     {
+        // Pre-descent snaps: the schedule is final before the child runs.
         let opt_0: Option<ChildId> = if let Ok(ev) = TryFrom::try_from(event) {
             let trigger = AnyKey;
             if EventTrigger::is_matching(&trigger, ev) {
@@ -289,54 +305,55 @@ where
             |p: &OuterPath<'a>| &p.get().inner,
         );
 
-        match Inner::dispatch(inner_path, event, effs, claim) {
-            Doll::Here(mut outer_path) => {
+        match Inner::dispatch(inner_path, event, effs, claim).into_inner() {
+            Stop::Here(inner_path) => {
+                let mut path = inner_path.into_parent();
                 if let Some(id) = opt_0 {
-                    effs.extend(after_child_ok(id, &mut outer_path));
+                    effs.extend(after_child_ok(id, &mut path));
                 }
                 if opt_1 {
-                    effs.extend(rearm(&mut outer_path));
+                    effs.extend(rearm(&mut path));
                 }
                 if let Some(ev) = opt_2 {
-                    let e = claim.with_exclusive(&mut outer_path, |p| outer_handler(ev, p));
+                    let e = claim.with_exclusive(&mut path, |p| outer_handler(ev, p));
                     effs.extend(e);
                 }
-                // Outer::Ascent is bare RootPath: laserbeam peel only.
-                outer_path.into_parent()
+                ::laserbeam::Complete::complete(path) // Here(outer)
             }
-            Doll::Up(root_path) => {
-                if let Some(id) = opt_0 {
-                    effs.extend(after_child_dropped(id));
+            Stop::Up(rest) => match rest.into_inner() {
+                Stop::Here(path) => {
+                    // Leave stopped at Outer: child dropped, Outer lives.
+                    if let Some(id) = opt_0 {
+                        effs.extend(after_child_dropped(id));
+                    }
+                    ::laserbeam::Complete::complete(path)
                 }
-                root_path
-            }
+                Stop::Up(above) => {
+                    // Outer dropped too: pre-descent snaps only.
+                    if let Some(id) = opt_0 {
+                        effs.extend(after_child_dropped(id));
+                    }
+                    Completed::up(above)
+                }
+            },
         }
     }
 }
 ```
 
-Outer/Layer with parent root: `LayerAscent = Doll<LayerPath, AppPath>`. App matches that only — never NavAscent.
-
-## Generated: Root (struct with one `#[resolve_into]` child)
+## Generated: Root
 
 ```rust
-// Place::Path<'a> = &'a mut Root
-// Root::Ascent<'a> = ()  // nothing above root
-
 impl Dispatch<M> for Root
 where
     Outer: Dispatch<M>,
 {
-    type Ascent<'a> = ()
-    where
-        Self: 'a;
-
     fn dispatch<'a, 'c>(
         path: &'a mut Root,
         event: &M::Event,
         effs: &mut M::Output,
         claim: &mut Claim<'c>,
-    ) -> Self::Ascent<'a>
+    ) -> Completed<&'a mut Root>
     where
         Self: 'a,
     {
@@ -346,12 +363,22 @@ where
             |r: &Root| &r.outer,
         );
 
-        let _root_path = Outer::dispatch(outer_path, event, effs, claim);
-        // Outer::Ascent = RootPath; free dispatch only needs effects + claim.
-        ()
+        match Outer::dispatch(outer_path, event, effs, claim).into_inner() {
+            Stop::Here(outer_path) => {
+                let mut path = outer_path.into_parent();
+                // root's own binds, claim-gated, as at any node
+                ::laserbeam::Complete::complete(path)
+            }
+            Stop::Up(root_path) => {
+                // The leave stopped at the root; it cannot go higher.
+                ::laserbeam::Complete::complete(root_path)
+            }
+        }
     }
 }
 ```
+
+The root's `Up` payload is the bare `&mut Root` (its parent slot in the child's nest), and its own return wraps the bare path. Nothing about the root is a special case in the trait.
 
 ## Free dispatch
 
@@ -366,7 +393,7 @@ where
     let mut effs: Vec<E> = Vec::new();
     let mut claim_slot = None;
     let mut claim = Claim::new(&mut claim_slot);
-    let _ascent = <N as Dispatch<M>>::dispatch(path, event, &mut effs, &mut claim);
+    let _completed = <N as Dispatch<M>>::dispatch(path, event, &mut effs, &mut claim);
     if claim.is_taken() || !effs.is_empty() {
         Some(effs)
     } else {
@@ -380,69 +407,51 @@ where
 ### KeyA, inner kills to root
 
 ```text
-Inner exclusive:
-  claim take
-  leave from inner → Up(…) : LayerAscent payload toward outer
-Outer match:
-  after_child_dropped(snap)
-  return root
-Root: ()
+Inner:  claim take; handler returns path.into_parent().into_parent().complete()
+        → Up(Up(root))
+Outer:  into_inner → Up(rest); rest.into_inner → Up(root_path)
+        after_child_dropped(snap); return Completed::up(root_path)
+Root:   into_inner → Up(root_path); return root_path.complete()
 ```
 
 ### KeyB, no kill
 
 ```text
-Child Here(path) / Up(ascent_of_this_node); this node returns Ascent(self) to parent.
-App receives only LayerAscent.
+Inner:  fallthrough → Here(inner)
+Outer:  Here(inner) → path = inner.into_parent(); after_child_ok, rearm,
+        maybe exclusive; return path.complete()
+Root:   Here(outer) → path = outer.into_parent(); return path.complete()
 ```
-
-## Ordered changes
-
-### P0 — Sink; drop ControlFlow
-
-Before (`bind`):
-
-```rust
-fn dispatch(path, event) -> ControlFlow<M::Output, Path>;
-// child: let child = Child::dispatch(...)?;  // Break propagates
-```
-
-After:
-
-```rust
-fn dispatch(path, event, effs: &mut M::Output, claim: &mut Claim) -> Self::Ascent;
-// child always returns ascent; parent unpacks; no ?
-```
-
-Free `dispatch` builds `effs` + `claim`, returns `Option<M::Output>`.
-
-### P1 — path-peel-complete (`Doll`, `LeavePath<Focus, Origin>`, recursive ascent aliases, tests)
-
-trybuild over-peel; multi-depth unify to `NavAscent`; mut through recovered paths.
-
-### P2 — Dispatch::Ascent + Claim; Inner/Outer/Root expands as above
-
-### P3 — bind_macro emits schedule opts, leave_at/complete, claim exclusive
-
-### F1 — `#[post]` on Here and Up
-
-### F2 — kill = extra `into_parent` before `complete` in exclusive
-
-### F3 — `#[pre_post]` pre-snap for Up
-
-### F4 — Here-only path mutation posts
 
 ## Rules
 
 1. No stubs.
-2. Public doll arms are `Here` / `Up` only.
-3. Leave/kill: `LeavePath<Focus, Origin>`; `Ascent(node) = Doll<path, Ascent(parent)>`.
-4. Each node receives `Ascent(child)`, returns `Ascent(self)`. App sees only child-of-root ascent.
-5. Posts on `Up` deferred (invalidation policy). Claim separate.
-6. path-peel-complete ships first.
+2. Arms `Here` / `Up`; three outcomes at a parent via two nested `into_inner` matches; the no-inspection form forwards `rest` unchanged.
+3. Every dispatch returns `Completed<Self::Path>` (derived levels: `Completed<Self::Parent>`); no ascent associated type.
+4. Opts are snapped before descent; the schedule is final; ascent runs every scheduled post.
+5. In-place handlers return effects and run under `with_exclusive`; leaving handlers take the claim and return `(effects, Completed<Path>)`.
+6. Claim separate; one exclusive handler per dispatch.
+7. path-peel-complete ships first, including `Completed::up`.
 
 ## Tests
 
-- path-peel-complete tests (smoke, over-peel fail, unify depths, usable paths)
-- KeyA / KeyB walks; App only matches LayerAscent
+- KeyA / KeyB walks on the Inner/Outer/Root expansion
+- three-arm coverage at Outer (kept / stopped-here / gone-above)
 - claim trap door
+- root binds fire in the Here arm, claim-gated
+
+## Ordered changes
+
+Skeletal; flesh out after the design above is agreed. Prefactors first, each independently shippable.
+
+### 1 — bind: `effs` sink + `Claim` on `Dispatch`/`Descend`; drop `ControlFlow` (behavior-preserving)
+
+### 2 — bind: dispatch returns `Completed<Self::Path>` / `Completed<Self::Parent>`; generated matches forward, fallthrough `complete()` (no posts yet)
+
+### 3 — bind_macro: snap trigger opts before descent (the schedule becomes final pre-descent)
+
+### 4 — leaving handlers: `(effects, Completed<Path>)`, claim-gated; kill = extra `into_parent` before `complete`
+
+### 5 — `#[post]` on the three arms (kept / stopped-here / gone-above)
+
+### 6 — `#[pre_post]` pre-snaps; `Here`-only path-mutation posts
