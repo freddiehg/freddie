@@ -4,251 +4,205 @@ Not done. Standalone. Prefactor for `invalidation.md`.
 
 ## Goal
 
-On existing `laserbeam::PathMut`:
-
 ```rust
-leave(path).into_parent().into_parent().complete()
-// → nested Doll::Here / Doll::Up
+after_first_peel(path).into_parent().complete()
+// → Doll nest (Here / Up) with a fixed origin type
 ```
 
-Peel is `PathMut::into_parent`. Public arms **Here** / **Up**.
+Peel is `laserbeam::PathMut::into_parent`. Public arms **Here** / **Up**.
 
-## Public doll
+This file’s types are the ones that **compile** (proved with a standalone rustc harness). No extra traits, no parallel spine type.
+
+## Data structures that work
 
 ```rust
 pub enum Doll<H, U> {
     Here(H),
     Up(U),
 }
-```
 
-Name the whole nest by leave origin path/node as needed (`AscentOf` alias or derive `type Ascent<'a> = …`). Do not spell the nest in ordinary signatures.
+/// complete → Here(focus). `Rest` is only in the type (unused `U` of that Here).
+pub struct NoWrap<Rest>(core::marker::PhantomData<Rest>);
 
-## Core: Option + function per layer
-
-No `AsHere` / `AsUp` pack types. The leave carrier holds the focus and a wrap that is **none** or **a function** (one layer at a time; nest of functions as you peel).
-
-### Start
-
-Path as first created for leave (after the first peel off the node, or at start of leave — same idea):
-
-```text
-focus = parent path (or current stop path)
-wrap  = None
-```
-
-```rust
-// complete with None → wrap in Here
-fn complete(self) -> … {
-    Doll::Here(self.focus)
-}
-```
-
-### `into_parent`
-
-```text
-old focus → PathMut::into_parent() → new focus
-wrap becomes Some(f)
-```
-
-`f` is the function for **this** skipped layer: when the leave eventually `complete`s further up, this layer contributes a `Doll::Up(…)`.
-
-Each further `into_parent` builds another function that closes over the previous wrap — a Russian doll, **one layer at a time**.
-
-```text
-// after first into_parent
-wrap = Some(f1)   // f1 wraps the eventual stop in Up for the first skipped PathMut
-
-// after second into_parent
-wrap = Some(f2)   // f2 uses f1 (or the previous Some) so complete nests Up(Up(…))
-```
-
-A boolean “are we past the first peel?” is not enough for the types: each layer has a different skipped path type and a different rest type. The wrap has to be a **function** (type-state of composable wraps) so each peel’s `Up` is well-typed.
-
-### `complete`
-
-```text
-wrap is None  →  Here(focus)
-wrap is Some(f) →  f applied so the stop focus becomes nested Up(…Here(focus)) or Up(…Up(focus))
-```
-
-One layer’s worth of work per peel; `complete` only runs the doll of functions already installed.
-
-## Type-state (what the Option becomes in Rust)
-
-`Option<fn…>` cannot name a different function type at each peel depth. Represent None / Some as types:
-
-```rust
-/// No wrap yet — complete is Here.
-pub struct NoWrap;
-
-/// One Up layer: skipped path type Q, then inner wrap.
-pub struct UpWrap<Q, Inner> {
+/// One skipped layer. `Skipped` is phantom (the PathMut type peeled past).
+/// complete → Up(inner’s finish of the same focus).
+pub struct WrapUp<Skipped, Inner> {
     inner: Inner,
-    _q: core::marker::PhantomData<Q>,
+    _skipped: core::marker::PhantomData<Skipped>,
 }
-```
 
-```rust
+/// complete → Up(focus) with no inner Here (bare terminal, e.g. &mut Root).
+pub struct Terminal;
+
+/// Focus is always a real path (`PathMut` or `&mut T`). Wrap is the Russian doll.
 pub struct LeavePath<P, W> {
     focus: P,
-    wrap: W, // NoWrap or UpWrap<…, UpWrap<…, NoWrap>>
+    wrap: W,
 }
 ```
 
-```rust
-// --- complete ---
+Mental model:
 
-impl<P> LeavePath<P, NoWrap> {
-    pub fn complete(self) -> Doll<P, /* unreachable rest — see note */> {
-        // With NoWrap, Out is just "Here only" for this stop.
-        // For a full origin doll type, first peel starts as LeavePath<Parent, NoWrap>
-        // and complete is Doll::Here(parent) : Doll<Parent, ParentRest> only if we
-        // type it as the origin Out — Rest is still in the type as the unused U parameter
-        // or origin Out is exactly Doll<Parent, Rest> with Rest = thinner ascent of Parent.
+```text
+start (after_first_peel):  wrap = NoWrap        complete → Here(focus)
+into_parent:               peel focus; wrap = WrapUp<SkippedPathMut, old_wrap>
+complete:                  run wrap on focus     → nested Up(…Here(focus)) or Up(focus)
+```
+
+`NoWrap` is the “option none.” `WrapUp` is the “option some(function)” — the function is the type’s `complete` body, one layer per peel. A bool cannot carry the skipped path type.
+
+## `complete` (full bodies)
+
+```rust
+impl<P, Rest> LeavePath<P, NoWrap<Rest>> {
+    pub fn complete(self) -> Doll<P, Rest> {
         Doll::Here(self.focus)
     }
 }
 
-impl<P, Q, Inner> LeavePath<P, UpWrap<Q, Inner>>
-where
-    // Inner complete builds the rest from P
-{
-    pub fn complete(self) -> Doll<Q, /* Inner’s complete type */> {
-        // Russian doll one layer:
-        //   inner produces rest from focus
-        //   this layer wraps: Up(rest)
-        Doll::Up(/* inner.complete_with(self.focus) */)
+impl<P, Sk, Rest> LeavePath<P, WrapUp<Sk, NoWrap<Rest>>> {
+    pub fn complete(self) -> Doll<Sk, Doll<P, Rest>> {
+        Doll::Up(Doll::Here(self.focus))
+    }
+}
+
+impl<P, Sk1, Sk2, Rest> LeavePath<P, WrapUp<Sk1, WrapUp<Sk2, NoWrap<Rest>>>> {
+    pub fn complete(self) -> Doll<Sk1, Doll<Sk2, Doll<P, Rest>>> {
+        Doll::Up(Doll::Up(Doll::Here(self.focus)))
+    }
+}
+
+impl<P, Sk> LeavePath<P, WrapUp<Sk, Terminal>> {
+    pub fn complete(self) -> Doll<Sk, P> {
+        Doll::Up(self.focus)
     }
 }
 ```
 
-Concrete bodies (single layer each):
+Deeper peels: one more `complete` impl per wrap depth under test (same pattern). No trait.
+
+## `into_parent` (full bodies)
+
+Focus must be `PathMut`. Peel with laserbeam. Grow wrap by one `WrapUp`.
 
 ```rust
-impl<P> LeavePath<P, NoWrap> {
-    pub fn complete(self) -> /* Here-only at P; typed as origin Out when Rest known */ {
-        // value:
-        // Doll::Here(self.focus)
-    }
-}
+use laserbeam::PathMut;
 
-// After one into_parent from PathMut<N, P> with NoWrap:
-// LeavePath { focus: P, wrap: UpWrap<PathMut<N, P>, NoWrap> }
-
-impl<Node, Parent> LeavePath<Parent, UpWrap<PathMut<Node, Parent>, NoWrap>> {
-    pub fn complete(self) -> Doll<PathMut<Node, Parent>, Parent /* or Doll if Parent not terminal */> {
-        let LeavePath { focus, wrap: UpWrap { .. } } = self;
-        // stop at Parent with Here, then this layer Up:
-        Doll::Up(Doll::Here(focus))
-        // bare terminal Parent (e.g. &mut Root): Doll::Up(focus) using AsTerminal-style
-        // — if Parent is not nested further, Up(focus) not Up(Here(focus))
-    }
-}
-```
-
-Bare root (`&mut T`) vs nested parent: one layer wraps `Up(Here(p))` when the stop still uses Here; `Up(p)` when the stop **is** the terminal path (no further Here). Same as before; choose by whether `Parent` is `PathMut` or `&mut T` when writing the `into_parent` impl.
-
-### `into_parent` installs the next function
-
-```rust
-impl<Node, Parent> LeavePath<PathMut<Node, Parent>, NoWrap> {
-    pub fn into_parent(self) -> LeavePath<Parent, UpWrap<PathMut<Node, Parent>, NoWrap>> {
-        LeavePath {
-            focus: self.focus.into_parent(), // laserbeam
-            wrap: UpWrap {
-                inner: NoWrap,
-                _q: core::marker::PhantomData,
-            },
-        }
-    }
-}
-
-impl<Node, Parent, Q, Inner> LeavePath<PathMut<Node, Parent>, UpWrap<Q, Inner>> {
-    pub fn into_parent(self) -> LeavePath<Parent, UpWrap<Q, UpWrap<PathMut<Node, Parent>, Inner>>> {
-        // or UpWrap { inner: old wrap, … } so the doll of functions grows inward
+impl<N, P, R> LeavePath<PathMut<N, P>, NoWrap<Doll<P, R>>> {
+    pub fn into_parent(self) -> LeavePath<P, WrapUp<PathMut<N, P>, NoWrap<R>>> {
         LeavePath {
             focus: self.focus.into_parent(),
-            wrap: UpWrap {
-                inner: UpWrap {
-                    inner: self.wrap.inner, // previous doll
-                    _q: core::marker::PhantomData::<PathMut<Node, Parent>>,
+            wrap: WrapUp {
+                inner: NoWrap(core::marker::PhantomData),
+                _skipped: core::marker::PhantomData,
+            },
+        }
+    }
+}
+
+impl<N, P> LeavePath<PathMut<N, P>, NoWrap<P>> {
+    /// Bare rest: Parent is the terminal path type (e.g. &mut Root).
+    pub fn into_parent(self) -> LeavePath<P, WrapUp<PathMut<N, P>, Terminal>> {
+        LeavePath {
+            focus: self.focus.into_parent(),
+            wrap: WrapUp {
+                inner: Terminal,
+                _skipped: core::marker::PhantomData,
+            },
+        }
+    }
+}
+
+impl<N, P, Sk, R> LeavePath<PathMut<N, P>, WrapUp<Sk, NoWrap<Doll<P, R>>>> {
+    pub fn into_parent(self) -> LeavePath<P, WrapUp<Sk, WrapUp<PathMut<N, P>, NoWrap<R>>>> {
+        LeavePath {
+            focus: self.focus.into_parent(),
+            wrap: WrapUp {
+                inner: WrapUp {
+                    inner: NoWrap(core::marker::PhantomData),
+                    _skipped: core::marker::PhantomData,
                 },
-                _q: self.wrap._q, // keep outer skipped types — structure as needed
+                _skipped: core::marker::PhantomData,
             },
         }
     }
 }
 ```
 
-Exact `UpWrap` nesting order must match `complete` application order so types equal the known origin nest (`Doll<Layer, Doll<App, App>>` etc.). One layer per `into_parent`.
-
-### Start of leave
+## Start leave
 
 ```rust
-/// First peel off this node’s PathMut; wrap = None (NoWrap).
-pub fn after_first_peel<Node, Parent>(
-    path: PathMut<Node, Parent>,
-) -> LeavePath<Parent, NoWrap> {
+pub fn after_first_peel<N, P, Rest>(path: PathMut<N, P>) -> LeavePath<P, NoWrap<Rest>> {
     LeavePath {
         focus: path.into_parent(),
-        wrap: NoWrap,
+        wrap: NoWrap(core::marker::PhantomData),
     }
 }
 ```
 
+`Rest` is fixed by the origin nest (turbofish or expected type on `complete`).
+
+## Proven values (same as rustc harness)
+
+```rust
+// AppPath = Root token (stand-in for &mut App)
+// LayerPath = PathMut<Layer, AppPath>
+// NavPath   = PathMut<Nav, LayerPath>
+// NavOut    = Doll<LayerPath, Doll<AppPath, AppPath>>
+
+after_first_peel::<Nav, LayerPath, Doll<AppPath, AppPath>>(nav).complete()
+// Here(layer)
+
+after_first_peel::<Nav, LayerPath, Doll<AppPath, AppPath>>(nav)
+    .into_parent()
+    .complete()
+// Up(Here(app))
+
+// bare Up(root):
+LeavePath { focus: layer_path, wrap: NoWrap::<AppPath>::… }
+    .into_parent()
+    .complete()
+// Up(app)
+```
+
+Three peels:
+
 ```text
-after_first_peel(nav).complete()
-  → Here(layer)
-
-after_first_peel(nav).into_parent().complete()
-  → Up(…)   // function installed by into_parent ran
+after_first_peel(deep).into_parent().into_parent().complete()
+// Up(Up(Here(root)))
 ```
 
-## Existing path types only
+## Origin nest type
+
+Concrete alias per known path (derive later). Example:
 
 ```rust
-// laserbeam
-PathMut::into_parent(self) -> Parent
-
-// bind Place paths (examples)
-type AppPath<'a> = &'a mut App;
-type LayerPath<'a> = PathMut<Layer, AppPath<'a>>;
-type NavPath<'a> = PathMut<Nav, LayerPath<'a>>;
+type NavAscent<'a> = Doll<LayerPath<'a>, Doll<&'a mut App, &'a mut App>>;
 ```
 
-No parallel spine type.
+No `AscentOut` trait required for the machine to work.
 
-## Origin nest type (no trait)
-
-At each known path alias, the leave return type is a concrete `Doll` nest (derive or hand alias). Example:
+## Existing peel only
 
 ```rust
-// leave started at NavPath
-type NavAscent<'a> = Doll<LayerPath<'a>, Doll<AppPath<'a>, AppPath<'a>>>;
-// or bare terminal: Doll<LayerPath<'a>, AppPath<'a>>
+// laserbeam — already exists
+impl<Node, Parent> PathMut<Node, Parent> {
+    pub fn into_parent(self) -> Parent { self.parent }
+}
 ```
-
-`complete()`’s return type is that alias. Fixed by the path you started from + how many peels, not by a trait.
 
 ## Tests (when implemented)
 
-On real `from_fn` `PathMut` trees.
-
-| Call | Value |
-| --- | --- |
-| `after_first_peel(nav).complete()` | `Here(layer)` |
-| `after_first_peel(nav).into_parent().complete()` | `Up(…)` at app |
-| type | equals the path’s leave alias |
+Assert the harness cases above on real `PathMut::from_fn` trees.
 
 ## Rules
 
-1. Start: `wrap = None` (`NoWrap`); `complete` → `Here(focus)`.
-2. `into_parent`: laserbeam peel; install/compose one wrap function (`UpWrap`) for the skipped layer.
-3. `complete` with wraps: Russian doll of those functions, one layer each.
-4. Functions (type-state), not a boolean — types differ per layer.
+1. `LeavePath { focus, wrap }`. Focus is `PathMut` / `&mut T` only.
+2. `NoWrap` = none → `complete` is `Here(focus)`.
+3. Each `into_parent` peels once and adds one `WrapUp` (function layer).
+4. `complete` monomorphizes the wrap doll; no runtime `Option<fn>`.
 5. Public `Doll::Here` / `Doll::Up` only.
-6. Focus is always real `PathMut` / `&mut T`.
+6. Only depths with written `complete` / `into_parent` impls exist — add an impl when a test needs another peel.
 
 ## Relation to invalidation
 
