@@ -23,10 +23,10 @@ Invalidated(Completed<P>)  yes — the completed leave, ready to forward;
                            Here inside it: the leave stopped at this path
 ```
 
-Every handler, bind or post, has the same signature, and it returns the call to `.complete()`:
+Every handler, bind or post, has the same shape, and it returns the call to `.complete()`: whatever its opt captured, as separate parameters, then the state. A bind is `(ev, st)`; a pre-snapped post is `(ev, snap, st)`; the generated code destructures its own opt, and no handler ever takes a tuple:
 
 ```rust
-FnOnce(Payload, AscendState<'a, 'c, P>) -> (Vec<E>, Completed<P>)
+FnOnce(…opt captures…, AscendState<'a, P>) -> (Vec<E>, Completed<P>)
 ```
 
 A handler matches the state totally, no helpers, `into_parent` the only way up; staying put is `st.complete()`:
@@ -140,14 +140,15 @@ impl<'a, R> From<&'a mut R> for Completed<&'a mut R> {
 ## bind additions
 
 ```rust
-/// What every scheduled handler receives beside the event.
-pub struct AscendState<'a, 'c, P: ::laserbeam::HasStop> {
-    claim: &'a mut Claim<'c>,
+/// What every scheduled handler receives beside the event. One lifetime: the
+/// claim rides by value, reborrowed per item.
+pub struct AscendState<'a, P: ::laserbeam::HasStop> {
+    claim: Claim<'a>,
     pub state: ::laserbeam::MaybeInvalidated<P>,
 }
 
-impl<'a, 'c, P: ::laserbeam::HasStop> AscendState<'a, 'c, P> {
-    pub fn new(state: ::laserbeam::MaybeInvalidated<P>, claim: &'a mut Claim<'c>) -> Self {
+impl<'a, P: ::laserbeam::HasStop> AscendState<'a, P> {
+    pub fn new(state: ::laserbeam::MaybeInvalidated<P>, claim: Claim<'a>) -> Self {
         Self { claim, state }
     }
 
@@ -164,14 +165,23 @@ impl<'a, 'c, P: ::laserbeam::HasStop> AscendState<'a, 'c, P> {
     }
 }
 
+/// `Claim` gains the per-item reborrow the generated code hands to each
+/// `AscendState`:
+///
+/// ```rust
+/// pub fn reborrow(&mut self) -> Claim<'_> {
+///     Claim { slot: &mut *self.slot }
+/// }
+/// ```
+///
 /// The claim gate, shape-preserving: the handler runs iff the claim is won;
 /// otherwise it completes the state where it stands.
 pub fn exclusive<Payload, P, E, H>(
     handler: H,
-) -> impl for<'a, 'c> FnOnce(Payload, AscendState<'a, 'c, P>) -> (Vec<E>, ::laserbeam::Completed<P>)
+) -> impl for<'a> FnOnce(Payload, AscendState<'a, P>) -> (Vec<E>, ::laserbeam::Completed<P>)
 where
     P: ::laserbeam::HasStop + ::laserbeam::Complete<P>,
-    H: for<'a, 'c> FnOnce(Payload, AscendState<'a, 'c, P>) -> (Vec<E>, ::laserbeam::Completed<P>),
+    H: for<'a> FnOnce(Payload, AscendState<'a, P>) -> (Vec<E>, ::laserbeam::Completed<P>),
 {
     move |payload, mut st| match st.claim() {
         Some(()) => handler(payload, st),
@@ -311,9 +321,9 @@ The handlers, all user-written:
 
 ```rust
 /// B's bind: go home.
-fn go_home<'a, 'c, 'x>(
+fn go_home<'x>(
     _ev: &KeyEvent,
-    st: AscendState<'a, 'c, BPath<'x>>,
+    st: AscendState<'_, BPath<'x>>,
 ) -> (Vec<DemoEffect>, Completed<BPath<'x>>) {
     match st.state {
         MaybeInvalidated::NotInvalidated(b) => (vec![], b.into_parent().complete()), // Up(a)
@@ -322,9 +332,9 @@ fn go_home<'a, 'c, 'x>(
 }
 
 /// A's bind.
-fn flash<'a, 'c, 'x>(
+fn flash<'x>(
     _ev: &KeyEvent,
-    st: AscendState<'a, 'c, APath<'x>>,
+    st: AscendState<'_, APath<'x>>,
 ) -> (Vec<DemoEffect>, Completed<APath<'x>>) {
     (vec![DemoEffect::FlashOverlay], st.complete())
 }
@@ -338,9 +348,10 @@ fn snap_return_home(_ev: &KeyEvent, a: &APath<'_>) -> TimerId {
 
 /// A's post: the whole return-home deadline. B on the active path → push the
 /// deadline out. Invalidated → the snap is all that is left of the timer.
-fn return_home_deadline<'a, 'c, 'x>(
-    (_ev, snapped): (&KeyEvent, TimerId),
-    st: AscendState<'a, 'c, APath<'x>>,
+fn return_home_deadline<'x>(
+    _ev: &KeyEvent,
+    snapped: TimerId,
+    st: AscendState<'_, APath<'x>>,
 ) -> (Vec<DemoEffect>, Completed<APath<'x>>) {
     match st.state {
         MaybeInvalidated::NotInvalidated(a) => {
@@ -385,7 +396,7 @@ impl Dispatch<M> for B {
         let mut state = MaybeInvalidated::NotInvalidated(path);
 
         if let Some(ev) = opt_0 {
-            let (e, completed) = (::bind::exclusive(go_home))(ev, AscendState::new(state, &mut *claim));
+            let (e, completed) = (::bind::exclusive(go_home))(ev, AscendState::new(state, claim.reborrow()));
             effs.extend(e);
             state = completed.to_maybe_invalidated();
         }
@@ -438,14 +449,14 @@ where
 
         let mut state = B::dispatch(b_path, event, effs, claim).into_inner().to_maybe_invalidated();
 
-        if let Some(payload) = opt_0 {
-            let (e, completed) = return_home_deadline(payload, AscendState::new(state, &mut *claim));
+        if let Some((ev, snapped)) = opt_0 {
+            let (e, completed) = return_home_deadline(ev, snapped, AscendState::new(state, claim.reborrow()));
             effs.extend(e);
             state = completed.to_maybe_invalidated();
         }
 
         if let Some(ev) = opt_1 {
-            let (e, completed) = (::bind::exclusive(flash))(ev, AscendState::new(state, &mut *claim));
+            let (e, completed) = (::bind::exclusive(flash))(ev, AscendState::new(state, claim.reborrow()));
             effs.extend(e);
             state = completed.to_maybe_invalidated();
         }
@@ -563,7 +574,7 @@ bind gains `AscendState` and `exclusive`; laserbeam gains `MaybeInvalidated` (+ 
 
 ```rust
 if let ::core::option::Option::Some(payload) = opt_N {
-    let (e, completed) = (#rhs)(payload, ::bind::AscendState::new(state, &mut *claim));
+    let (e, completed) = (#rhs)(payload, ::bind::AscendState::new(state, claim.reborrow()));
     ::core::iter::Extend::extend(effs, e);
     state = ::laserbeam::Completed::to_maybe_invalidated(completed);
 }
