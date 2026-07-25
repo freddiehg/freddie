@@ -47,30 +47,54 @@ type Ascent<'a> = Result<ParentPath<'a>, <P as Dispatch<M>>::Ascent<'a>>;
 
 Root does not return a doll; free `dispatch` owns the process and ends at `0Path` / effects.
 
-### Parent matches the doll
+### One level up
+
+That is the entire ascent step. Same types on both arms:
+
+```rust
+// what_we_got: Result<ThisPath, Rest>   // Rest = parent Ascent doll
+// returns:     Result<ParentPath, Rest> // or Rest's shape after peel of ThisPath
+
+match what_we_got {
+    Ok(path) => Ok(path.into_parent()),
+    Err(e) => e,
+}
+```
+
+```text
+Ok(path)  →  still own this level’s path → peel once → Ok(parent)
+Err(e)    →  already further up → e is already the return type → pass through
+```
+
+Example: C returned `Result<BPath, Result<APath, 0Path>>`. One level up (B → A):
+
+```rust
+match c_result {
+    Ok(b_path) => Ok(b_path.into_parent()), // Ok(APath): Result<APath, 0Path>
+    Err(e) => e,                            // e: Result<APath, 0Path>
+}
+```
+
+### Parent runs posts, then one level up
+
+Posts/exclusive sit on the `Ok` arm (have path) or the `Err` arm (pre-snap only), then the same step:
 
 ```rust
 // B::dispatch — child is C
 let child_path = PathMut::from_fn(b_path, ...);
 match <C as Dispatch<M>>::dispatch(child_path, event, effs, claim) {
     Ok(mut b_path) => {
-        // Own B. C layer already peeled inside C or by Ok construction.
-        // B posts run here with &mut b_path (Intact).
-        // exclusive via claim on &mut b_path / a thin wrapper if needed.
-        Ok(b_path.into_parent()) // Result::Ok for B's Ascent = Result<APath, 0Path>
+        // B posts + exclusive with &mut b_path
+        Ok(b_path.into_parent())
     }
-    Err(rest) => {
-        // rest: Result<APath, 0Path> — B's own Ascent type.
-        // No B path. B was skipped by a jump. B posts still run (scheduled)
-        // but only with pre-snapped descent data + knowledge they are dropped.
-        // Then propagate: already the type B must return.
-        // (run MaybeDropped posts first)
-        rest
+    Err(e) => {
+        // B posts dropped (pre-snap only); no b_path
+        e
     }
 }
 ```
 
-Normal walk C → B → A → 0 is a chain of `Ok` peels. A kill that jumps past B is `Err` from C carrying `Ok(a)` or `Err(z)`; B never receives a fabricated B path.
+Normal walk is a chain of `Ok` peels. A jump past B is `Err` from C; B never invents a B path.
 
 ### Kill
 
@@ -221,18 +245,17 @@ if child:
   child_path = PathMut::from_fn(path, ...)
   match Child::dispatch(child_path, event, effs, claim) {
     Ok(path) => {
-      // posts Intact with &mut path
-      // exclusive with claim + &mut path
-      Ok(path.into_parent())            // if this node is not root
+      // posts + exclusive with &mut path
+      Ok(path.into_parent())     // one level up
     }
-    Err(rest) => {
-      // posts MaybeDropped without this level's path
-      rest                              // already Self::Ascent's Err payload shape
+    Err(e) => {
+      // posts dropped (pre-snap only)
+      e                          // one level up
     }
   }
 
 if leaf:
-  // exclusive may peel into Err nest
+  // exclusive may return Err nest (multi-peel kill)
   // else Ok(path.into_parent())
 ```
 
@@ -556,10 +579,11 @@ Handlers that do not kill: `fn(ev, &mut P)`. Handlers that kill: consume path, r
 
 1. Descent schedules; set final. Ascent runs every scheduled post.
 2. Owned path position is the dispatch return value (nested `Result`), not counters.
-3. `Ok(parent_path)` = this level still has that path after the child peel. `Err(rest)` = jump; this level has no path.
-4. Kill = `into_parent` peels + return the matching `Err` nest. No `invalidate(d)` integer.
-5. Posts on Ok get `&mut path`. Posts on Err get pre-snap only.
-6. `Claim` is separate; exclusive only when this level owns a path (Ok arm), unless a later rule says otherwise.
+3. One level up is only:
+   `match x { Ok(path) => Ok(path.into_parent()), Err(e) => e }`
+4. Kill = multi-peel + return the matching `Err` nest. No `invalidate(d)` integer.
+5. Posts on Ok get `&mut path`. Posts on Err get pre-snap only. Then one level up.
+6. `Claim` is separate; exclusive on Ok arm when this level owns a path.
 7. laserbeam `into_parent` is the only peel.
 8. Generate matches expand above.
 
