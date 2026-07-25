@@ -5,7 +5,9 @@ Not done. Standalone.
 Descent schedules which pre/posts/binds run. That set is final. Ascent runs every scheduled post leaf to root.
 
 - **`AscentState`**: live hop counter + claim. Owned by the dispatch machine. Constructed at the leaf. Threaded as `&mut AscentState` through framework code and into exclusive bodies (`run_exclusive`). **Not** an argument to posts.
-- **`AscentStateSnapshot`**: frozen at `state.snapshot()` on entry to framework `into_parent`. **This is what posts receive** (`&AscentStateSnapshot`). `snap.mutation() -> Intact | MaybeDropped`.
+- **`AscentStateSnapshot`**: frozen at `state.snapshot()` on entry to framework `into_parent` (after the child has fully returned, so any deeper `claim` / `invalidate` is already on the live state). **This is what posts receive** (`&AscentStateSnapshot`). Freezes both facts a post may read:
+  - `snap.mutation() -> Intact | MaybeDropped`
+  - `snap.claimed() -> bool` (deeper exclusive already took this event)
 
 ## Types (`crates/bind`)
 
@@ -33,9 +35,12 @@ pub struct AscentState {
     claim: Option<Claimed>,
 }
 
-/// Frozen view passed to user post functions.
+/// Frozen view passed to user post functions. Both fields are set at `snapshot()`;
+/// posts do not call `claim` / `invalidate` / `step_up`.
 pub struct AscentStateSnapshot {
     mutation: Mutation,
+    /// Whether a deeper exclusive already try-took this event (`claim` is Some).
+    claimed: bool,
 }
 
 impl AscentState {
@@ -47,7 +52,7 @@ impl AscentState {
         }
     }
 
-    /// Framework `into_parent`, before posts.
+    /// Framework `into_parent`, before posts. Freezes mutation + claimed.
     pub fn snapshot(&self) -> AscentStateSnapshot {
         AscentStateSnapshot {
             mutation: if self.invalidation_depth == 0 {
@@ -55,6 +60,7 @@ impl AscentState {
             } else {
                 Mutation::MaybeDropped
             },
+            claimed: self.claim.is_some(),
         }
     }
 
@@ -90,6 +96,11 @@ impl AscentState {
 impl AscentStateSnapshot {
     pub fn mutation(&self) -> Mutation {
         self.mutation
+    }
+
+    /// Deeper exclusive already took this event. Read-only; does not try-take.
+    pub fn claimed(&self) -> bool {
+        self.claimed
     }
 }
 ```
@@ -660,10 +671,11 @@ ASCENT Inner (leaf)
   return (InnerPath, state)
 
 ASCENT Outer into_parent
-  snap = state.snapshot()                // MaybeDropped (depth 2)
+  snap = state.snapshot()                // mutation MaybeDropped (depth 2); claimed true
   on_into_parent(&snap):
     after_child(id, node, snap)          // MaybeDropped branch
     only_if_intact(rearm)                // skip; Drop cancels guard
+    // posts may also read snap.claimed() == true
   state.step_up()                        // depth 2 → 1
   run_exclusive outer_handler:
     claim() → None                       // already taken; skip body
@@ -682,7 +694,7 @@ DESCENT Inner: opt_0 None
 
 ASCENT Inner: state = new(); no exclusive
 ASCENT Outer into_parent:
-  snap = Intact (depth 0)
+  snap = Intact (depth 0); claimed false
   after_child Intact branch
   only_if_intact → rearm runs
   step_up (still 0)
@@ -779,7 +791,9 @@ Schedule field replace at owner. Exclusive still returns same-level `P`. Framewo
 
 - post after deep bind sees `MaybeDropped` when `invalidate(N)` set depth > 0
 - post sees `Intact` when no invalidate
-- snapshot is pre-`step_up` for that hop
+- post after deep exclusive sees `snap.claimed() == true`
+- post with no exclusive below sees `snap.claimed() == false`
+- snapshot is pre-`step_up` for that hop (claimed already final from child)
 - each framework hop calls `step_up` once
 - deepest exclusive wins claim; parent exclusive skips
 - exclusive returns same path type it received
