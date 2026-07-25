@@ -457,8 +457,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
 dependencies = [
  "bitflags",
- "block2",
- "libc",
  "objc2",
 ]
 
@@ -642,7 +640,7 @@ dependencies = [
 name = "freddie_overlay"
 version = "0.0.1"
 dependencies = [
- "dispatch2",
+ "freddie_main_loop",
  "objc2",
  "objc2-app-kit",
  "objc2-core-graphics",

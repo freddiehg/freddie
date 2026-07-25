@@ -5,23 +5,21 @@
 //! takes focus (`NonactivatingPanel`), and it stays put when the app it covers is deactivated, so
 //! it reads as part of the screen rather than as a window.
 //!
-//! [`overlay`] builds one on the main thread and returns the [`Overlay`] that owns it. Dropping
-//! that closes the panel and gives it back. [`Overlay::sink`] hands out an [`OverlaySink`], which
-//! is `Send`: [`OverlaySink::show`] and [`OverlaySink::hide`] are callable from any thread and
-//! marshal to the main thread, where `AppKit` lives, by dispatching onto the main queue. It is
-//! serviced by the main run loop, so this needs `freddie_main_loop` running and `NSApp`
-//! initialized, the same as the menu bar.
+//! [`overlay`] builds one on the main thread and returns the [`Overlay`] that owns the panel
+//! beside the first [`OverlaySink`]. Dropping the overlay closes the panel. The sink is `Send`
+//! and `Clone`: [`OverlaySink::show`] and [`OverlaySink::hide`] are callable from any thread and
+//! send over a [`freddie_main_loop::WakingSender`], which wakes the main run loop so
+//! [`Overlay::pump`] (called from `on_wake`) applies the change. Needs `freddie_main_loop`
+//! running and `NSApp` initialized, the same as the menu bar.
 //!
 //! More than one overlay is fine: each handle drives its own panel, and dropping one leaves the
 //! others alone.
 //!
 //! macOS only.
 
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::marker::PhantomData;
+use std::sync::mpsc::Receiver;
 
-use dispatch2::DispatchQueue;
+use freddie_main_loop::{MainWaker, WakingSender};
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{
@@ -43,86 +41,100 @@ const MARGIN: f64 = 20.0;
 /// see what is underneath, high enough for white monospaced text to stay legible over anything.
 const BACKGROUND_ALPHA: f64 = 0.7;
 
-thread_local! {
-    /// Every overlay built on this thread, by id.
-    ///
-    /// Private, and only an [`Overlay`] or [`OverlaySink`] can reach an entry: a block dispatched
-    /// to the main queue has to be `'static` and `Send`, so it cannot carry an `NSPanel` and looks
-    /// one up here instead. An id is in the table between [`overlay`] building it and the handle
-    /// dropping.
-    ///
-    /// A table and not a single slot: nothing about a panel makes it the only one.
-    static PANELS: RefCell<HashMap<OverlayId, Panel>> = RefCell::new(HashMap::new());
-
-    /// Mints the next [`OverlayId`]. A plain `Cell` because overlays are only ever built on this
-    /// thread.
-    static NEXT_ID: Cell<u64> = const { Cell::new(0) };
-}
-
-/// One overlay's entry in `PANELS`. Ids are never reused within a run, so a sink outliving its
-/// overlay cannot end up pointed at a later one.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-struct OverlayId(u64);
-
 /// One overlay's panel and the label it draws.
 struct Panel {
     panel: Retained<NSPanel>,
     label: Retained<NSTextField>,
 }
 
+/// What a sink asks its overlay to do. Sent over the channel, drained on the main thread.
+enum OverlayMsg {
+    /// Show with this text, sizing the panel to it.
+    Show(String),
+    /// Take the panel off the screen; the panel stays built.
+    Hide,
+}
+
 /// The overlay's lifetime. Holding it keeps the panel built; dropping it closes the panel.
 ///
-/// `!Send`, because `Drop` reaches `PANELS`, and a `thread_local` reached from another thread is a
-/// different table: a handle dropped off main would find no entry and leave the real panel on
-/// screen. It stays where [`overlay`] built it, like `freddie_menu_bar`'s `MenuBar`.
+/// `!Send`, because the panel is: `Retained<NSPanel>` stays on the thread that built it. It stays
+/// where [`overlay`] built it, like `freddie_menu_bar`'s `MenuBar`.
 ///
-/// It does not show anything. [`sink`](Overlay::sink) is what a worker uses.
+/// It does not show anything. The [`OverlaySink`] returned beside it is what a worker uses.
 pub struct Overlay {
-    id: OverlayId,
-    _main_thread_only: PhantomData<*const ()>,
+    /// The panel this overlay owns. `Retained<NSPanel>` is not `Send`, which keeps `Overlay` on
+    /// the thread that built it without a `PhantomData`.
+    panel: Panel,
+    /// Drained by [`Overlay::pump`] on the main thread when the loop wakes. The overlay holds only
+    /// this end of the channel; the sinks hold the senders.
+    message_receiver: Receiver<OverlayMsg>,
 }
 
-/// The handle showing and hiding go through. Cheap to copy and `Send`, because it carries nothing:
-/// [`show`](Self::show) and [`hide`](Self::hide) dispatch to the main queue and find the panel
-/// there.
+/// The handle showing and hiding go through. `Send` and `Clone`, so any thread can hold one; the
+/// panel it drives is on the main thread, reached by sending rather than by touching it.
 ///
-/// Safe to keep past its [`Overlay`]. The dispatched block finds no entry for its id and does
-/// nothing, which is what hiding an already-hidden overlay would have done.
-#[derive(Clone, Copy, Debug)]
+/// Safe to keep past its [`Overlay`]: once the overlay is dropped the receiver is gone, and a send
+/// is a harmless error, which is what hiding an already-gone overlay would have been.
+#[derive(Clone)]
 pub struct OverlaySink {
-    id: OverlayId,
+    message_sender: WakingSender<OverlayMsg>,
 }
 
-/// Build an overlay panel, hidden, and return the handle that owns it.
+impl std::fmt::Debug for OverlaySink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OverlaySink").finish_non_exhaustive()
+    }
+}
+
+/// Build an overlay panel, hidden, and return the handle that owns it beside the first sink.
 ///
-/// Eagerly, not on first show: it is what keeps the entry present for the whole life of the
-/// [`Overlay`], so showing never has to build one and a keystroke puts an existing panel on screen.
+/// Eagerly, not on first show: the panel is present for the whole life of the [`Overlay`], so
+/// showing never has to build one and a keystroke puts an existing panel on screen.
 ///
 /// # Panics
 ///
 /// If called off the main thread, where `NSPanel` cannot be built.
 #[must_use]
-pub fn overlay() -> Overlay {
+pub fn overlay(waker: &MainWaker) -> (Overlay, OverlaySink) {
     let mtm = MainThreadMarker::new().expect("overlay must be built on the main thread");
-    let id = NEXT_ID.with(|next| {
-        let id = next.get();
-        next.set(id + 1);
-        OverlayId(id)
-    });
-    PANELS.with_borrow_mut(|panels| panels.insert(id, build(mtm)));
-    debug!(?id, "overlay built");
-    Overlay {
-        id,
-        _main_thread_only: PhantomData,
-    }
+    let (message_sender, message_receiver) = waker.channel();
+    debug!("overlay built");
+    (
+        Overlay {
+            panel: build(mtm),
+            message_receiver,
+        },
+        OverlaySink { message_sender },
+    )
 }
 
 impl Overlay {
-    /// A handle to show and hide through. Cheap to copy, `Send`, and safe to keep past the overlay
-    /// itself.
-    #[must_use]
-    pub const fn sink(&self) -> OverlaySink {
-        OverlaySink { id: self.id }
+    /// Apply every queued show/hide to the panel. Call on the main thread, from `on_wake`.
+    ///
+    /// # Panics
+    ///
+    /// If called off the main thread, where the panel cannot be touched.
+    pub fn pump(&self) {
+        let mtm = MainThreadMarker::new().expect("Overlay::pump must run on the main thread");
+        let Panel { panel, label } = &self.panel;
+        for msg in self.message_receiver.try_iter() {
+            match msg {
+                OverlayMsg::Show(text) => {
+                    // Trimmed: each keymap is a file, and a file ends with a newline, which would
+                    // draw as a blank last row.
+                    label.setStringValue(&NSString::from_str(text.trim_end()));
+                    label.sizeToFit();
+                    resize_to_label(panel, label);
+                    place(panel, mtm);
+                    panel.orderFrontRegardless();
+                    debug!(text, "overlay shown");
+                }
+                OverlayMsg::Hide => {
+                    panel.orderOut(None);
+                    debug!("overlay hidden");
+                }
+            }
+        }
     }
 }
 
@@ -134,45 +146,19 @@ impl Drop for Overlay {
     /// reach it. `close` takes it off the screen and off that list, so no `orderOut` is needed
     /// first, and `build` cleared `releasedWhenClosed` so the release is ours to perform.
     fn drop(&mut self) {
-        PANELS.with_borrow_mut(|panels| {
-            if let Some(panel) = panels.remove(&self.id) {
-                panel.panel.close();
-            }
-        });
-        debug!(id = ?self.id, "overlay closed");
+        self.panel.panel.close();
+        debug!("overlay closed");
     }
 }
 
 impl OverlaySink {
-    /// Show the overlay with `text`, from any thread.
+    /// Show the overlay with `text`, from any thread. The send wakes the main loop, so `pump` runs
+    /// and the panel updates at once.
     ///
     /// The panel is sized to the text, so a keymap with more rows makes a taller panel rather than
     /// a clipped one.
-    ///
-    /// # Panics
-    ///
-    /// If the dispatched block somehow runs off the main queue, which would mean libdispatch
-    /// handed the main queue's work to another thread.
     pub fn show(&self, text: String) {
-        let id = self.id;
-        DispatchQueue::main().exec_async(move || {
-            let mtm = MainThreadMarker::new().expect("dispatched to the main queue");
-            // Shared, not mutable: every setter here takes `&self`, and the table itself is only
-            // written by `overlay` and `Overlay::drop`.
-            PANELS.with_borrow(|panels| {
-                let Some(Panel { panel, label }) = panels.get(&id) else {
-                    return;
-                };
-                // Trimmed: each keymap is a file, and a file ends with a newline, which would
-                // draw as a blank last row.
-                label.setStringValue(&NSString::from_str(text.trim_end()));
-                label.sizeToFit();
-                resize_to_label(panel, label);
-                place(panel, mtm);
-                panel.orderFrontRegardless();
-            });
-            debug!(text, "overlay shown");
-        });
+        let _ = self.message_sender.send(OverlayMsg::Show(text));
     }
 
     /// Hide the overlay, from any thread. A no-op if it is not up.
@@ -180,15 +166,7 @@ impl OverlaySink {
     /// The panel stays built, because it will be shown again: the next show puts an existing panel
     /// on screen rather than constructing one.
     pub fn hide(&self) {
-        let id = self.id;
-        DispatchQueue::main().exec_async(move || {
-            PANELS.with_borrow(|panels| {
-                if let Some(panel) = panels.get(&id) {
-                    panel.panel.orderOut(None);
-                }
-            });
-            debug!("overlay hidden");
-        });
+        let _ = self.message_sender.send(OverlayMsg::Hide);
     }
 }
 

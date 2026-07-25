@@ -15,7 +15,7 @@ From any layer except typing, `o` shows an overlay of the layer's keymap.
 
 Creating the status item is main-thread-only, and so is `set_title` on it: an `NSStatusItem` may only be touched from the thread that built it, and `MenuBar` is `!Send` so that the type says as much. `NSApp` has to exist first, which is `freddie_main_loop::init_menu_bar_app`, called once on main before the item is built. It sets the accessory activation policy, keeping the process out of the Dock and the cmd-tab switcher, and calls `finishLaunching`, which posts the launch notifications `AppKit` expects before it will deliver events.
 
-Building and moving the overlay panel is main-thread-only too, but the callers are not. `freddie_overlay::show` and `hide` are callable from any thread and marshal themselves with `DispatchQueue::main().exec_async`, so the effect loop calls them directly from the worker.
+Building and moving the overlay panel is main-thread-only too, but the callers are not. `OverlaySink::show` and `hide` are callable from any thread: they send on a waking channel, and `Overlay::pump` on main applies the change, so the effect loop calls the sink directly from the worker.
 
 The main thread gets there by parking in `MainLoop::run` and doing nothing else:
 
@@ -24,10 +24,11 @@ main_loop.run(|| {
     if let Some(name) = title_rx.try_iter().last() {
         menu_bar.set_title(Some(&format!(" {name}")));
     }
+    overlay.pump();
 });
 ```
 
-`run` pumps `NSApplication` events, `nextEventMatchingMask` then `sendEvent`, rather than a bare `CFRunLoop`. A bare `CFRunLoop` services run-loop sources, which covers the `NSWorkspace` notifications, but it never dispatches the window-server events that a status item's clicks and menu tracking need. The same pump is what services the main queue the overlay dispatches onto. It wakes at least every 100ms to check whether it has been stopped, and again whenever an event arrives.
+`run` pumps `NSApplication` events, `nextEventMatchingMask` then `sendEvent`, rather than a bare `CFRunLoop`. A bare `CFRunLoop` services run-loop sources, which covers the `NSWorkspace` notifications, but it never dispatches the window-server events that a status item's clicks and menu tracking need. The same pump runs `on_wake`, which drains the title and overlay channels. It sleeps until a real event or a posted wake, so an idle process costs nothing.
 
 That leaves the main thread a doorman. A callback on it is serialized against every other one, so each does one send and returns, and the real work happens on the worker.
 
@@ -41,7 +42,7 @@ effects.push(MercuryEffect::ShowLayer(self.layer.name()));
 
 Nothing else produces `ShowLayer`, so the item and the model cannot disagree about which layer is active. `Layer::name` is a `match` over the layer enum, which is what forces a new layer to have a name rather than defaulting to something.
 
-The effect loop, on the worker, cannot touch the status item, so it sends the name over a `std::sync::mpsc` channel. The receiving end is the main thread, which is not in the tokio runtime, which is why this one channel is not tokio's. The main loop drains it on its next wake with `try_iter().last()`, so only the last name in a batch is drawn: intermediate layers in one dispatch are not worth showing. The cost is up to 100ms of latency on a layer change, which is invisible on a passive indicator.
+The effect loop, on the worker, cannot touch the status item, so it sends the name over a waking channel. The receiving end is the main thread, which is not in the tokio runtime, which is why this one channel is not tokio's. The main loop drains it on its next wake with `try_iter().last()`, so only the last name in a batch is drawn: intermediate layers in one dispatch are not worth showing. The send wakes main, so the title updates at once rather than on the next real event.
 
 The daemon sends one name by hand before the loops start, because nothing has transitioned yet and no `ShowLayer` has been produced:
 

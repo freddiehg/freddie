@@ -46,6 +46,6 @@ Private symbols are acceptable when they are the only route, and should be isola
 
 `AppKit` and the Accessibility observers deliver on the main thread, from its run loop, and main-thread callbacks are serialized. A callback that does real work stalls every other source, so it should hand the work elsewhere and return. Sending on a channel is the intended body.
 
-Work that must happen on main, from a thread that is not main, has two routes. `DispatchQueue::main().exec_async` runs a block promptly, because the main queue is drained from inside the run loop, but the block must be `'static` and `Send`, so it cannot carry a thread-bound value and has to find one already there. A channel drained in `freddie_main_loop`'s `on_wake` can carry anything, but waits for the current slice to end.
+Work that must happen on main, from a thread that is not main, goes through a channel drained in `freddie_main_loop`'s `on_wake`. Build the channel with `MainWaker::channel`: the sender wakes the run loop on each send, so the value is applied at once rather than when the next real event arrives. The receiver stays on main with whatever non-`Send` handle it mutates (an `NSStatusItem` title, an `NSPanel`). That is how the menu-bar title and the overlay reach main from the worker.
 
 Reading OS state is something you do while constructing, before `main_loop.run`. After that every fact arrives as an event. See the seed rule in `CLAUDE.md` and `refactors/past/seed-at-construction.md`.

@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-dispatch2 = "0.3"
+freddie_main_loop = { path = "../freddie_main_loop", version = "0.0.1" }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = [
     "NSColor", "NSControl", "NSFont", "NSPanel", "NSResponder", "NSScreen",

@@ -48,7 +48,7 @@ match effect {
     MercuryEffect::Foreground(app) => foreground_app(app),
     MercuryEffect::Place(placement) => place_window(placement),
     MercuryEffect::Copy(what) => copy(what),
-    MercuryEffect::HideOverlay => freddie_overlay::hide(),
+    MercuryEffect::HideOverlay => overlay.hide(),
     MercuryEffect::Kill => {
         info!("kill: exiting");
         return ControlFlow::Break(());

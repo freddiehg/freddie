@@ -106,8 +106,9 @@ pub(crate) fn run(port: u16) {
     menu_bar.set_title(Some(&format!(" {}", Mercury::BOOT_TITLE)));
 
     // The overlay panel, built here because `NSPanel` is main-thread-only, and held for the
-    // life of `main` like `menu_bar`: dropping it closes the panel.
-    let overlay = freddie_overlay::overlay();
+    // life of `main` like `menu_bar`: dropping it closes the panel. The sink goes to the worker;
+    // main drains it on each wake.
+    let (overlay, overlay_sink) = freddie_overlay::overlay(&waker);
 
     // The app-navigation source, installed before the seed below is read: an app switch
     // between the two is then queued as an event rather than lost, and the model converges.
@@ -147,7 +148,7 @@ pub(crate) fn run(port: u16) {
             .map_or(App::Other, |bundle_id| App::from_bundle_id(&bundle_id)),
         windows: window_state,
         window_sink,
-        overlay: overlay.sink(),
+        overlay: overlay_sink,
     };
 
     let worker = std::thread::Builder::new()
@@ -162,14 +163,16 @@ pub(crate) fn run(port: u16) {
         })
         .expect("spawning the runtime thread");
 
-    // Pumps AppKit events until the worker drops the stopper, applying any pending title on each
-    // wake. Only the last one is drawn: intermediate layers in one batch are not worth showing.
-    // The leading space is the gap between the glyph and the text, which the status item does not
-    // put there itself.
+    // Pumps AppKit events until the worker drops the stopper, applying any pending title and
+    // overlay messages on each wake. Only the last title is drawn: intermediate layers in one
+    // batch are not worth showing. The leading space is the gap between the glyph and the text,
+    // which the status item does not put there itself. Overlay messages are all applied in order
+    // so a Hide after a Show in the same wake still hides.
     main_loop.run(|| {
         if let Some(name) = title_rx.try_iter().last() {
             menu_bar.set_title(Some(&format!(" {name}")));
         }
+        overlay.pump();
     });
     let _ = worker.join();
     // Held until the loop returns, so the icon is up and the panel is available for the whole run.
@@ -333,7 +336,7 @@ async fn run_effect_loop(
             &event_tx,
             &title_tx,
             windows.as_ref(),
-            overlay,
+            &overlay,
         )
         .is_break()
         {
@@ -354,7 +357,7 @@ fn perform_effect(
     event_tx: &UnboundedSender<MercuryEvent>,
     title_tx: &freddie_main_loop::WakingSender<&'static str>,
     windows: Option<&WindowSink>,
-    overlay: OverlaySink,
+    overlay: &OverlaySink,
 ) -> ControlFlow<()> {
     match effect {
         MercuryEffect::Foreground(app) => foreground_app(app),
