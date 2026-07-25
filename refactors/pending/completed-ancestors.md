@@ -305,9 +305,9 @@ fn back_to_layer<'x>(
 
 ## Tests
 
-A new `#[cfg(test)]` mod in laserbeam's `lib.rs`, on a three-level fixture with a `hits` counter at each level (`App { hits, layer }`, `Layer { hits, nav }`, `Nav { hits }`, with `AppPath`/`LayerPath`/`NavPath` and the `layer_path`/`nav_path` builders the existing test mods use). All of the following ran green in the design scratch.
+A new `#[cfg(test)]` mod in laserbeam's `lib.rs`, on a four-level fixture with a `hits` counter at each level (`App { hits, layer }`, `Layer { hits, nav }`, `Nav { hits, deep }`, `Deep { hits }`, with `AppPath`/`LayerPath`/`NavPath`/`DeepPath` and the path builders the existing test mods use). The fourth level exists to make the macro's `Err` path reachable: from a three-level tree, every distance-two-or-more target is the root, which never errs. The first seven tests ran green in the design scratch; the last three are later additions and are not yet checked.
 
-- `completed_and_state_reach_the_root_at_every_depth`: a const fn bounded on `HasAncestor<AppPath> + IntoAncestor<AppPath>` instantiated at `Completed` and `MaybeInvalidated` of all three depths.
+- `completed_and_state_reach_the_root_at_every_depth`: a const fn bounded on `HasAncestor<AppPath> + IntoAncestor<AppPath>` instantiated at `Completed` and `MaybeInvalidated` of all four depths.
 - `a_leave_holds_the_root_wherever_it_stopped`: `ancestor` reads and `into_ancestor` writes the root through leaves stopped at `Nav`, at `Layer`, and at the root.
 - `one_root_handler_serves_both_branches_at_every_depth`: the depth-generic root handler, written out:
 
@@ -330,6 +330,9 @@ driven at `NotInvalidated(nav_path)`, at `Invalidated` of a one-peel leave, and 
 - `try_reaches_a_mid_ancestor_iff_the_leave_stopped_at_or_below_it`: target `LayerPath` from `Completed<NavPath>`: `Ok` when stopped at `Nav` (the target is above the stop), `Ok` when stopped at `Layer` (exactly the target), `Err` when peeled to the root, with the returned leave still unwrapping to the root.
 - `try_to_the_root_always_succeeds`: target `AppPath` from a fully peeled leave.
 - `try_on_the_state_covers_both_branches`: `MaybeInvalidated<NavPath>`: `Ok(LayerPath)` on the standing branch; `Err` returning the state, still `Invalidated` and still holding the forwardable leave, on the peeled one.
+- `the_state_reads_the_root_on_both_branches`: `ancestor` on `MaybeInvalidated<NavPath>` reads the root's `hits` through the standing branch and through an `Invalidated` one-peel leave alike.
+- `try_here_arm_at_macro_depth`: target `LayerPath` from a `Completed<DeepPath>` stopped at `Deep` (distance two, the macro impl's `Here` walk): `Ok`, and the recovered layer's `hits` writes through.
+- `try_err_rebuilds_through_the_macro`: target `LayerPath` from a `Completed<DeepPath>` peeled to the root: `Err`, the leave rebuilt through the stacked `Completed::up`s (`map_err` at each distance), and the returned value still unwraps to the root and writes it.
 
 ## Ordered changes
 
