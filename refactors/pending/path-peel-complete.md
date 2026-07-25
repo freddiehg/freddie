@@ -92,11 +92,14 @@ Value-level pack/`complete` must return exactly that associated type (`after_fir
 
 ### How we name it
 
-Do **not** name the expanded nest (`Result<OuterPath, Result<RootPath, …>>`) in user or derive signatures. Name it by the path the leave started from.
+Do **not** name the expanded nest (`Result<OuterPath, Result<RootPath, …>>`) in user or derive signatures. Name it by the **path** the leave started from, and/or by the **node** (`Place`) whose path that is.
 
 ```rust
-/// Opaque (or transparent) doll for a leave that started at path type `P`.
+/// Doll for a leave that started at path type `P`.
 pub type AscentOf<P> = <P as AscentOut>::Out;
+
+/// Same doll, named from the node. `N: Place`.
+pub type AscentOfNode<'a, N> = AscentOf<<N as Place>::Path<'a>>;
 
 // or newtype so the Result is private:
 pub struct Ascent<P: AscentOut> {
@@ -107,21 +110,27 @@ pub struct Ascent<P: AscentOut> {
 | Role | Name |
 | --- | --- |
 | Trait on the path spine | `AscentOut` |
-| Associated type (raw nest) | `Out` (only behind `AscentOf` / `Ascent`) |
-| Leave started at child path | `AscentOf<ChildPath>` or `Ascent<ChildPath>` |
-| Leave started at this node | `AscentOf<Self::Path<'a>>` or node alias below |
-| Per-node derive alias | `type Ascent<'a> = AscentOf<<Self as Place>::Path<'a>>` |
+| Associated type (raw nest) | `Out` (only behind the aliases) |
+| Leave started at a path | `AscentOf<P>` / `Ascent<P>` |
+| Leave started at a node | `AscentOfNode<'a, N>` or `N`’s `type Ascent<'a>` |
+| Child return (posts unpack) | `AscentOf<ChildPath>` **or** `AscentOfNode<'a, Child>` |
+| This node’s leave | `AscentOf<Self::Path<'a>>` **or** `AscentOfNode<'a, Self>` |
+| Derive on node | `type Ascent<'a> = AscentOfNode<'a, Self>;` |
 
 ```rust
-// posts / unpack — child return type
+// posts / unpack — by path or by node (same type)
 fn after_child(ascent: AscentOf<InnerPath<'_>>, …) { … }
+fn after_child(ascent: AscentOfNode<'_, Inner>, …) { … }
 
-// Dispatch
-type Ascent<'a> = AscentOf<Self::Path<'a>>;
-// expands to Result<OuterPath<'a>, RootPath<'a>> for Inner, but nobody writes that by hand
+// Dispatch on the node
+type Ascent<'a> = AscentOfNode<'a, Self>;
+// = AscentOf<Self::Path<'a>>
+// expands to Result<OuterPath<'a>, RootPath<'a>> for Inner — never written by hand
 ```
 
-`Step::Here` / `Step::Up` unpack `AscentOf<ChildPath>` without spelling the nest. The nest shows up in `AscentOut` impls and in `Pack::Out` proofs only.
+`Step` already carries `Node` as a tag (`Step<Node, Parent>`). `Place::Path` ties node → path. Naming by path or by node is the same doll; use whichever call site has in scope.
+
+Unpack `Here` / `Up` still goes through that alias, not the raw `Result` nest.
 
 ## Simpler path (this prefactor)
 
