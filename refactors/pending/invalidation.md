@@ -122,6 +122,8 @@ Root boundary: parent `Ascent` is bare `0Path`, so Ok arm is `path.into_parent()
 
 Only the node that still holds `PathMut<…>` down to the leaf can multi-peel. That is the exclusive handler (or leaf code after claim) **before** it returns from that node’s `dispatch`.
 
+Path recovery is only through the return value. After `into_parent`, the child layer is gone from the local binding. The parent (or free `dispatch`) sees a path again only because this call **returns** it inside the doll. There is no side channel, no “put it back on Ascent,” no ambient slot. Drop the return and the path is dropped.
+
 Concrete types (demo depth 2):
 
 ```rust
@@ -133,27 +135,25 @@ Concrete types (demo depth 2):
 // Inner::Ascent = Result<OuterPath, RootPath>
 ```
 
-Normal leave Inner (no kill) — framework, not user:
+Normal leave Inner (no kill) — framework peels once and returns the parent path to the caller:
 
 ```rust
 // end of Inner::dispatch when exclusive did not consume path
 Ok(path.into_parent())
 // type: Result<OuterPath, RootPath>
+// caller (Outer) matches Ok(outer_path) and recovers outer_path
 ```
 
-Kill to root — user handler returns the **finished doll**. Framework only `return`s it.
+Kill to root — handler peels, wraps, **returns the stopped path in the doll**. Framework only forwards that return to the caller.
 
 ```rust
 fn inner_handler(
     _ev: &KeyEvent,
     path: InnerPath,
 ) -> (Vec<DemoEffect>, Result<OuterPath, RootPath>) {
-    // peel 1: InnerPath -> OuterPath
-    let outer = path.into_parent();
-    // peel 2: OuterPath -> RootPath
-    let root = outer.into_parent();
-    // wrap into Inner::Ascent: skipped Outer Ok, stop at Root
-    (vec![], Err(root))
+    let outer = path.into_parent(); // Inner gone; outer in hand
+    let root = outer.into_parent(); // Outer gone; root in hand
+    (vec![], Err(root))             // return root to caller inside the doll
 }
 ```
 
@@ -162,10 +162,19 @@ Generated leaf after claim:
 ```rust
 let (e, ascent) = inner_handler(ev, path);
 effs.extend(e);
-return ascent; // already Result<OuterPath, RootPath>
+return ascent; // path the handler recovered is inside ascent
 ```
 
-No second wrap in the derive. Handler (or a helper it calls) peels and builds `Ok`/`Err`.
+Outer recovers:
+
+```rust
+match Inner::dispatch(...) {
+    Ok(mut outer_path) => { /* recovered OuterPath */ ... outer_path.into_parent() }
+    Err(root_path) => { /* recovered RootPath; Outer was never re-handed */ root_path }
+}
+```
+
+No second wrap in the derive. Handler (or a helper it calls) peels, wraps `Ok`/`Err`, and returns the path to the caller.
 
 Depth 3 for the same idea (`C::Ascent = Result<BPath, Result<APath, 0Path>>`):
 
