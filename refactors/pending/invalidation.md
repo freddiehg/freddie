@@ -184,40 +184,132 @@ pub fn only_if_intact<P, N, Effect>(
 }
 ```
 
-## `PathMut::into_parent`
+## `PathMut` (laserbeam) + ascent hop (bind)
 
-Before (threaded sink, empty posts — after P1):
+laserbeam must not name `AscentState` / `AscentStateSnapshot` (bind depends on laserbeam, not reverse). PathMut is generic over the post context `C` and effect item `E`.
+
+### Before (master today)
 
 ```rust
-pub fn into_parent(self, sink: &mut Vec<Effect>) -> P {
-    let (parent, post_effs) = (self.on_into_parent)(self.parent);
-    Extend::extend(sink, post_effs);
-    parent
+// crates/laserbeam
+pub struct PathMut<Node, Parent> {
+    parent: Parent,
+    projection: ProjMut<Node, Parent>,
+    shared: ProjRef<Node, Parent>,
 }
-// F: FnOnce(P) -> (P, Vec<Effect>)
+
+impl<Node, Parent> PathMut<Node, Parent> {
+    pub const fn from_fn(
+        parent: Parent,
+        projection: fn(&mut Parent) -> &mut Node,
+        shared: fn(&Parent) -> &Node,
+    ) -> Self { /* … */ }
+
+    pub fn into_parent(self) -> Parent {
+        self.parent
+    }
+}
 ```
 
-After:
+### After P1 — posts + sink, no ascent state yet
 
 ```rust
-pub fn into_parent(self, sink: &mut Vec<Effect>, state: &mut AscentState) -> P {
-    let snap = state.snapshot();
-    let (parent, post_effs) = (self.on_into_parent)(self.parent, &snap);
-    Extend::extend(sink, post_effs);
-    state.step_up();
-    parent
+// crates/laserbeam
+pub struct PathMut<Node, Parent, F> {
+    parent: Parent,
+    projection: ProjMut<Node, Parent>,
+    shared: ProjRef<Node, Parent>,
+    on_into_parent: F,
 }
-// F: FnOnce(P, &AscentStateSnapshot) -> (P, Vec<Effect>)
-```
 
-```rust
-fn empty_on_into_parent<P, Effect>(
-    parent: P,
-    _snap: &AscentStateSnapshot,
-) -> (P, Vec<Effect>) {
+impl<Node, Parent, F> PathMut<Node, Parent, F> {
+    pub fn from_fn<E>(
+        parent: Parent,
+        projection: fn(&mut Parent) -> &mut Node,
+        shared: fn(&Parent) -> &Node,
+        on_into_parent: F,
+    ) -> Self
+    where
+        F: FnOnce(Parent) -> (Parent, Vec<E>),
+    {
+        Self {
+            parent,
+            projection: ProjMut::Bare(projection),
+            shared: ProjRef::Bare(shared),
+            on_into_parent,
+        }
+    }
+
+    pub fn into_parent<E>(self, sink: &mut Vec<E>) -> Parent
+    where
+        F: FnOnce(Parent) -> (Parent, Vec<E>),
+    {
+        let (parent, post_effs) = (self.on_into_parent)(self.parent);
+        sink.extend(post_effs);
+        parent
+    }
+}
+
+// every site until posts exist:
+fn empty_on_into_parent<P, E>(parent: P) -> (P, Vec<E>) {
     (parent, Vec::new())
 }
 ```
+
+### After P3 — post context `C` (bind passes `AscentStateSnapshot`)
+
+```rust
+// crates/laserbeam — still no bind types
+impl<Node, Parent, F> PathMut<Node, Parent, F> {
+    pub fn from_fn<C, E>(
+        parent: Parent,
+        projection: fn(&mut Parent) -> &mut Node,
+        shared: fn(&Parent) -> &Node,
+        on_into_parent: F,
+    ) -> Self
+    where
+        F: FnOnce(Parent, &C) -> (Parent, Vec<E>),
+    {
+        Self {
+            parent,
+            projection: ProjMut::Bare(projection),
+            shared: ProjRef::Bare(shared),
+            on_into_parent,
+        }
+    }
+
+    /// Runs posts with `ctx`, extends `sink`, returns parent. Does **not** know AscentState.
+    pub fn into_parent<C, E>(self, ctx: &C, sink: &mut Vec<E>) -> Parent
+    where
+        F: FnOnce(Parent, &C) -> (Parent, Vec<E>),
+    {
+        let (parent, post_effs) = (self.on_into_parent)(self.parent, ctx);
+        sink.extend(post_effs);
+        parent
+    }
+}
+
+// crates/bind — snapshot + step_up live here
+pub fn into_parent_ascent<Node, Parent, F, E>(
+    path: PathMut<Node, Parent, F>,
+    sink: &mut Vec<E>,
+    state: &mut AscentState,
+) -> Parent
+where
+    F: FnOnce(Parent, &AscentStateSnapshot) -> (Parent, Vec<E>),
+{
+    let snap = state.snapshot();
+    let parent = path.into_parent(&snap, sink);
+    state.step_up();
+    parent
+}
+
+fn empty_on_into_parent<P, C, E>(parent: P, _ctx: &C) -> (P, Vec<E>) {
+    (parent, Vec::new())
+}
+```
+
+Generated Outer calls `::bind::into_parent_ascent(inner_path, effs, &mut state)`, not a laserbeam method that names `AscentState`.
 
 ## `Dispatch` / top-level
 
@@ -273,20 +365,19 @@ DESCENT
   for each attr i: if trigger matches, opt_i = Some(pre_or_noop_pre(...)) else None
 
   if has resolve_into child:
-    child_path = from_fn(path, project, on_into_parent capturing opts)
+    child_path = PathMut::from_fn(path, proj_mut, proj_ref, on_into_parent)
+      // on_into_parent: FnOnce(Parent, &AscentStateSnapshot) -> (Parent, Vec<Effect>)
     (child_path, state) = Child::dispatch(child_path, event, effs)
-    path = child_path.into_parent(effs, &mut state)
-      // inside into_parent:
-      //   snap = state.snapshot()
-      //   (path, post_effs) = on_into_parent(path, &snap)  // all posts for this node
-      //   extend effs
-      //   state.step_up()
+    path = bind::into_parent_ascent(child_path, effs, &mut state)
+      // snap = state.snapshot()
+      // parent = laserbeam into_parent(&snap, sink)
+      // state.step_up()
 
   if leaf (no child):
     state = AscentState::new()
 
-  if exclusive scheduled (opt for bind is Some):
-    re-TryFrom event; run_exclusive(path, &mut state, |node, state| handler(ev, node, state))
+  if exclusive scheduled (opt holds &SourceEvent from descent TryFrom):
+    run_exclusive(path, &mut state, |node, state| handler(ev, node, state))
 
   return (path, state)
 ```
@@ -390,20 +481,9 @@ fn inner_handler(
 
 ### Generated code for the DX tree
 
-Exact expand for the Outer/Inner example above. This is what the derive emits (plus library helpers it calls). Review this block.
+`M` is a `Bindings` marker with `type Effect = DemoEffect` (or any effect item the handlers return; must be the same type in `effs`).
 
-#### `into_parent` (library; every hop)
-
-```rust
-// ::laserbeam::PathMut / bind — called from Outer after Inner returns
-pub fn into_parent(self, sink: &mut Vec<M::Effect>, state: &mut AscentState) -> OuterPath {
-    let snap = state.snapshot();
-    let (parent, post_effs) = (self.on_into_parent)(self.parent, &snap);
-    ::core::iter::Extend::extend(sink, post_effs);
-    state.step_up();
-    parent
-}
-```
+Exact expand. Review this block.
 
 #### Inner
 
@@ -421,40 +501,30 @@ impl ::bind::Dispatch<M> for Inner {
     where
         Self: 'a,
     {
-        // ----- descent: schedule -----
-        // attr index 0: #[bind(KeyA => inner_handler)] → (noop_pre, exclusive)
-        let opt_0 = if let ::core::option::Option::Some(ev) =
-            ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
-        {
-            let trigger = KeyA;
-            if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                ::core::option::Option::Some(::bind::noop_pre(
-                    ev,
-                    ::bind::Node {
-                        parent: &path,
-                        data: (),
-                    },
-                ))
-            } else {
-                ::core::option::Option::None
-            }
-        } else {
-            ::core::option::Option::None
-        };
-
-        // ----- ascent: leaf constructs internal AscentState -----
-        let mut state = ::bind::AscentState::new();
-
-        if let ::core::option::Option::Some(()) = opt_0 {
+        // attr 0: #[bind(KeyA => inner_handler)]
+        // Capture &KeyEvent once — do not TryFrom again on the ascent.
+        let opt_0: ::core::option::Option<&KeyEvent> =
             if let ::core::option::Option::Some(ev) =
                 ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
             {
-                let (path, out_effs) = ::bind::run_exclusive(path, &mut state, |node, state| {
-                    inner_handler(ev, node, state)
-                });
-                ::core::iter::Extend::extend(effs, out_effs);
-                return (path, state);
-            }
+                let trigger = KeyA;
+                if ::bind::EventTrigger::is_matching(&trigger, ev) {
+                    ::core::option::Option::Some(ev)
+                } else {
+                    ::core::option::Option::None
+                }
+            } else {
+                ::core::option::Option::None
+            };
+
+        let mut state = ::bind::AscentState::new();
+
+        if let ::core::option::Option::Some(ev) = opt_0 {
+            let (path, out_effs) = ::bind::run_exclusive(path, &mut state, |node, state| {
+                inner_handler(ev, node, state)
+            });
+            ::core::iter::Extend::extend(effs, out_effs);
+            return (path, state);
         }
         (path, state)
     }
@@ -480,77 +550,66 @@ where
     where
         Self: 'a,
     {
-        // ----- descent: schedule -----
-        // attr index 0: #[pre_post(AnyKey => (snap_child_id, after_child))]
-        let opt_0 = if let ::core::option::Option::Some(ev) =
-            ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
-        {
-            let trigger = AnyKey;
-            if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                ::core::option::Option::Some(snap_child_id(
-                    ev,
-                    ::bind::Node {
-                        parent: &path,
-                        data: (),
-                    },
-                ))
+        // attr 0: #[pre_post(AnyKey => (snap_child_id, after_child))]
+        let opt_0: ::core::option::Option<ChildId> =
+            if let ::core::option::Option::Some(ev) =
+                ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
+            {
+                let trigger = AnyKey;
+                if ::bind::EventTrigger::is_matching(&trigger, ev) {
+                    ::core::option::Option::Some(snap_child_id(
+                        ev,
+                        ::bind::Node {
+                            parent: &path,
+                            data: (),
+                        },
+                    ))
+                } else {
+                    ::core::option::Option::None
+                }
             } else {
                 ::core::option::Option::None
-            }
-        } else {
-            ::core::option::Option::None
-        };
+            };
 
-        // attr index 1: #[post(AnyKey => only_if_intact(|p| &mut p.get_mut().return_home, rearm))]
-        let opt_1 = if let ::core::option::Option::Some(ev) =
-            ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
-        {
-            let trigger = AnyKey;
-            if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                ::core::option::Option::Some(::bind::noop_pre(
-                    ev,
-                    ::bind::Node {
-                        parent: &path,
-                        data: (),
-                    },
-                ))
+        // attr 1: #[post(AnyKey => only_if_intact(...))]
+        let opt_1: bool =
+            if let ::core::option::Option::Some(ev) =
+                ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
+            {
+                let trigger = AnyKey;
+                ::bind::EventTrigger::is_matching(&trigger, ev)
+            } else {
+                false
+            };
+
+        // attr 2: #[bind(KeyA => outer_handler)] — capture &KeyEvent once
+        let opt_2: ::core::option::Option<&KeyEvent> =
+            if let ::core::option::Option::Some(ev) =
+                ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
+            {
+                let trigger = KeyA;
+                if ::bind::EventTrigger::is_matching(&trigger, ev) {
+                    ::core::option::Option::Some(ev)
+                } else {
+                    ::core::option::Option::None
+                }
             } else {
                 ::core::option::Option::None
-            }
-        } else {
-            ::core::option::Option::None
-        };
+            };
 
-        // attr index 2: #[bind(KeyA => outer_handler)] → (noop_pre, exclusive)
-        let opt_2 = if let ::core::option::Option::Some(ev) =
-            ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
-        {
-            let trigger = KeyA;
-            if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                ::core::option::Option::Some(::bind::noop_pre(
-                    ev,
-                    ::bind::Node {
-                        parent: &path,
-                        data: (),
-                    },
-                ))
-            } else {
-                ::core::option::Option::None
-            }
-        } else {
-            ::core::option::Option::None
-        };
-
-        // ----- build child path; posts capture opt_0 / opt_1; snap passed at into_parent -----
+        // Child path. F: FnOnce(OuterPath, &AscentStateSnapshot) -> (OuterPath, Vec<M::Effect>)
+        // C = AscentStateSnapshot is only in F's type, not inside laserbeam's definition.
         let inner_path = ::laserbeam::PathMut::from_fn(
             path,
-            |p| &mut p.get_mut().inner,
-            |p| &p.get().inner,
-            move |parent, snap: &::bind::AscentStateSnapshot| {
-                let mut local = ::std::vec::Vec::new();
+            |p: &mut <Outer as ::bind::Place>::Path<'a>| &mut p.get_mut().inner,
+            |p: &<Outer as ::bind::Place>::Path<'a>| &p.get().inner,
+            move |
+                parent: <Outer as ::bind::Place>::Path<'a>,
+                snap: &::bind::AscentStateSnapshot,
+            | {
+                let mut local = ::std::vec::Vec::<<M as ::bind::Bindings>::Effect>::new();
                 let mut path = parent;
 
-                // post for attr 0: after_child(pre_return, node, snap)
                 if let ::core::option::Option::Some(id) = opt_0 {
                     let (p, e) = ::bind::run_post(path, snap, |node, snap| {
                         after_child(id, node, snap)
@@ -559,11 +618,12 @@ where
                     ::core::iter::Extend::extend(&mut local, e);
                 }
 
-                // post for attr 1: only_if_intact(..., rearm)(node, snap)
-                if let ::core::option::Option::Some(()) = opt_1 {
+                if opt_1 {
                     let (p, e) = ::bind::run_post(path, snap, |node, snap| {
                         ::bind::only_if_intact(
-                            |p| &mut p.get_mut().return_home,
+                            |p: &mut <Outer as ::bind::Place>::Path<'a>| {
+                                &mut p.get_mut().return_home
+                            },
                             rearm,
                         )(node, snap)
                     });
@@ -575,24 +635,23 @@ where
             },
         );
 
-        // ----- child full dispatch (constructs AscentState at leaf) -----
         let (inner_path, mut state) =
             <Inner as ::bind::Dispatch<M>>::dispatch(inner_path, event, effs);
 
-        // ----- into_parent: see library body above (snapshot → posts → step_up) -----
-        let mut path = inner_path.into_parent(effs, &mut state);
+        // bind::into_parent_ascent =
+        //   let snap = state.snapshot();
+        //   let parent = path.into_parent(&snap, sink);  // laserbeam
+        //   state.step_up();
+        //   parent
+        let mut path =
+            ::bind::into_parent_ascent(inner_path, effs, &mut state);
 
-        // ----- exclusive for attr 2 -----
-        if let ::core::option::Option::Some(()) = opt_2 {
-            if let ::core::option::Option::Some(ev) =
-                ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
-            {
-                let (p, e) = ::bind::run_exclusive(path, &mut state, |node, state| {
-                    outer_handler(ev, node, state)
-                });
-                path = p;
-                ::core::iter::Extend::extend(effs, e);
-            }
+        if let ::core::option::Option::Some(ev) = opt_2 {
+            let (p, e) = ::bind::run_exclusive(path, &mut state, |node, state| {
+                outer_handler(ev, node, state)
+            });
+            path = p;
+            ::core::iter::Extend::extend(effs, e);
         }
 
         (path, state)
@@ -600,16 +659,15 @@ where
 }
 ```
 
-
-#### Helpers those expands call (bind library, not generated per node)
+#### Helpers (bind library)
 
 ```rust
-pub(crate) fn noop_pre<E, P, D>(_ev: &E, _node: ::bind::Node<&P, D>) {}
+pub fn noop_pre<E, P, D>(_ev: &E, _node: ::bind::Node<&P, D>) {}
 
-pub(crate) fn run_post<P>(
+pub fn run_post<P, Effect>(
     path: P,
     snap: &AscentStateSnapshot,
-    body: impl ::core::ops::FnOnce(
+    body: impl FnOnce(
         ::bind::Node<P, ()>,
         &AscentStateSnapshot,
     ) -> (::std::vec::Vec<Effect>, P),
@@ -623,10 +681,10 @@ pub(crate) fn run_post<P>(
     )
 }
 
-pub(crate) fn run_exclusive<P>(
+pub fn run_exclusive<P, Effect>(
     path: P,
     state: &mut AscentState,
-    body: impl ::core::ops::FnOnce(
+    body: impl FnOnce(
         ::bind::Node<P, ()>,
         &mut AscentState,
     ) -> (::std::vec::Vec<Effect>, P),
@@ -643,10 +701,10 @@ pub(crate) fn run_exclusive<P>(
     }
 }
 
-pub fn only_if_intact<P, N>(
-    project: impl ::core::ops::Fn(&mut P) -> &mut N,
-    f: impl ::core::ops::FnOnce(&mut N) -> ::std::vec::Vec<Effect>,
-) -> impl ::core::ops::FnOnce(
+pub fn only_if_intact<P, N, Effect>(
+    project: impl Fn(&mut P) -> &mut N,
+    f: impl FnOnce(&mut N) -> ::std::vec::Vec<Effect>,
+) -> impl FnOnce(
     ::bind::Node<P, ()>,
     &AscentStateSnapshot,
 ) -> (::std::vec::Vec<Effect>, P) {
@@ -657,6 +715,20 @@ pub fn only_if_intact<P, N>(
         };
         (effects, node.parent)
     }
+}
+
+pub fn into_parent_ascent<Node, Parent, F, Effect>(
+    path: ::laserbeam::PathMut<Node, Parent, F>,
+    sink: &mut ::std::vec::Vec<Effect>,
+    state: &mut AscentState,
+) -> Parent
+where
+    F: FnOnce(Parent, &AscentStateSnapshot) -> (Parent, ::std::vec::Vec<Effect>),
+{
+    let snap = state.snapshot();
+    let parent = path.into_parent(&snap, sink);
+    state.step_up();
+    parent
 }
 ```
 
@@ -780,11 +852,17 @@ fn empty_on_into_parent<P>(parent: P) -> (P, Vec<Effect>) {
 
 Crate-private / sealed. No user call sites outside laserbeam/bind.
 
-### P3 — `AscentState` + `into_parent` snapshot / step_up
+### P3 — `AscentState` + `into_parent_ascent` snapshot / step_up
 
-Before: P1 `into_parent` + `ControlFlow` dispatch.
+Before: P1 laserbeam `into_parent(sink)` with `F: FnOnce(Parent) -> (Parent, Vec<E>)`.
 
-After: full `AscentState` / `AscentStateSnapshot` types (see Types). Dispatch returns `(Path, AscentState)`. Leaf `AscentState::new()`. `into_parent(self, sink, state)` as in Types section. Exclusive through `run_exclusive`. Top-level `claimed() || !effs.is_empty()`. No user `#[post]` yet (`on_into_parent` still empty).
+After:
+- laserbeam `F: FnOnce(Parent, &C) -> (Parent, Vec<E>)`, `into_parent(&C, sink)`
+- bind `into_parent_ascent` = `snapshot` + laserbeam `into_parent` + `step_up`
+- Dispatch returns `(Path, AscentState)`; leaf `AscentState::new()`
+- Exclusive via `run_exclusive`
+- Top-level `claimed() || !effs.is_empty()`
+- No user posts yet (`empty_on_into_parent`)
 
 ### P4 — `#[bind]` only through `run_exclusive`
 
@@ -832,10 +910,11 @@ After: exclusive still returns same-level `P` and still only `invalidate(N)` for
 1. Descent schedules `opt_0`… only; set is final.
 2. Ascent runs every scheduled post.
 3. Posts: `&AscentStateSnapshot` only. Exclusive: `&mut AscentState`.
-4. `into_parent` = `snapshot` → posts → `step_up`.
+4. laserbeam never names bind ascent types. bind `into_parent_ascent` = `snapshot` → laserbeam `into_parent(&snap, sink)` → `step_up`.
 5. Kill = `invalidate(N)` on live state; same-level path return; stack still walks.
-6. `claim` only inside `run_exclusive`.
-7. Generate stays thin: schedule + call helpers. The expand for the DX tree above is the template.
+6. Exclusive schedule stores `&SourceEvent` from descent `TryFrom` (no second TryFrom).
+7. `claim` only inside `run_exclusive`.
+8. Generate stays thin: schedule + call helpers. The expand for the DX tree above is the template.
 
 ## Tests (implement after the matching feature step)
 
