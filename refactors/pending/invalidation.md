@@ -487,6 +487,108 @@ where
 
 The same body serves every node: only the `state` construction differs (leaf: `NotInvalidated(path)`; parent: the child call chained through `to_maybe_invalidated`), and that difference is one expression, not a shape.
 
+## Generated: derived levels (target, `tests/derived.rs` tree)
+
+Shell's `#state`, a place with `#[derived_child(app_data)]` — the same fold shape as a place child's:
+
+```rust
+let mut state = match app_data(&path) {
+    ::core::option::Option::Some(data) => ::laserbeam::Completed::to_maybe_invalidated(
+        ::bind::DispatchIntoPlace::<Demo>::dispatch_into_place(
+            ::bind::Node { parent: path, data },
+            event,
+            effs,
+            claim,
+        ),
+    ),
+    ::core::option::Option::None => ::laserbeam::MaybeInvalidated::NotInvalidated(
+        ::bind::HasPlace::into_place(path),
+    ),
+};
+```
+
+`AppData`, a derived level with its own derived child:
+
+```rust
+impl<'a> ::bind::DispatchIntoPlace<Demo> for ::bind::Node<ShellPath<'a>, AppData> {
+    fn dispatch_into_place(
+        self,
+        event: &DemoEvent,
+        effs: &mut Vec<usize>,
+        claim: &mut ::bind::Claim<'_>,
+    ) -> ::laserbeam::Completed<ShellPath<'a>> {
+        let node = self;
+
+        let opt_0 = match ::core::convert::TryFrom::try_from(event) {
+            ::core::result::Result::Ok(ev) => {
+                let trigger = Keyboard("r");
+                if ::bind::EventTrigger::is_matching(&trigger, ev) {
+                    ::core::option::Option::Some((ev, (snap_tab)(ev, &node)))
+                } else {
+                    ::core::option::Option::None
+                }
+            }
+            ::core::result::Result::Err(_) => ::core::option::Option::None,
+        };
+
+        let mut state = match tab_data(&node) {
+            ::core::option::Option::Some(data) => ::laserbeam::Completed::to_maybe_invalidated(
+                ::bind::DispatchIntoPlace::<Demo>::dispatch_into_place(
+                    ::bind::Node { parent: node, data },
+                    event,
+                    effs,
+                    claim,
+                ),
+            ),
+            ::core::option::Option::None => ::laserbeam::MaybeInvalidated::NotInvalidated(
+                ::bind::HasPlace::into_place(node),
+            ),
+        };
+
+        if let ::core::option::Option::Some((ev, snap)) = opt_0 {
+            let (e, completed) = (::bind::exclusive(on_r))(
+                ev,
+                snap,
+                ::bind::AscendState::new(state, ::bind::Claim::reborrow(claim)),
+            );
+            ::core::iter::Extend::extend(effs, e);
+            state = ::laserbeam::Completed::to_maybe_invalidated(completed);
+        }
+
+        state.complete()
+    }
+}
+```
+
+The opts snap while the node is whole; the descent then consumes it. The `None` arm still holds the node and flattens it; the `Some` arm gets the place back inside the child's `Completed`. `TabData`, the nested leaf, is the same body with `#state = NotInvalidated(into_place(node))` and return type `Completed<ShellPath<'a>>` reached through two `Node` layers of the `HasPlace` projection. Mercury's enum level dispatches per variant, every arm returning the same `Completed<AppLayerPath>`, so the match is total with no dead arms:
+
+```rust
+impl<'a> ::bind::DispatchIntoPlace<MercuryStruct> for ::bind::Node<AppLayerPath<'a>, AppData> {
+    fn dispatch_into_place(
+        self,
+        event: &MercuryEvent,
+        effs: &mut Vec<MercuryEffect>,
+        claim: &mut ::bind::Claim<'_>,
+    ) -> ::laserbeam::Completed<AppLayerPath<'a>> {
+        let ::bind::Node { parent, data } = self;
+        match data {
+            AppData::Chrome(data) => ::bind::DispatchIntoPlace::<MercuryStruct>::dispatch_into_place(
+                ::bind::Node { parent, data },
+                event,
+                effs,
+                claim,
+            ),
+            AppData::Ghostty(data) => ::bind::DispatchIntoPlace::<MercuryStruct>::dispatch_into_place(
+                ::bind::Node { parent, data },
+                event,
+                effs,
+                claim,
+            ),
+        }
+    }
+}
+```
+
 ## bind and bind_macro (before / after)
 
 What changes where: the free `dispatch` return in `bind/src/lib.rs` (change 2, landed); opts emission in `dispatch_impl` (change 3, landed); the trait signatures, `dispatch_impl`, `dispatch_body` (route folds included), the place `dispatch_into_parent_impl` deletion, `up =` parsing, `#[post]` / `#[pre_post]` registration and parsing, `derived_node_impl`, and `derived_enum_node_impl` (change 5, with `derived-levels.md`); the demo tree and full walks (change 6).
@@ -685,9 +787,222 @@ match <#name as ::bind::Dispatch<#marker>>::dispatch(self, event, effs, claim) {
 
 After: not emitted, for any place. The impl has no caller (the derived-child descent calls `Node` impls), and its `Self::Parent: HasStop` bound is unsatisfiable for route-parented nodes.
 
-`derived_node_impl` / `derived_enum_node_impl` migrate per `derived-levels.md`, in this same change.
+`derived_child_descent`, before (early return, parent handed back on a miss):
+
+```rust
+let #place = match #f(&#place) {
+    ::core::option::Option::Some(data) => {
+        match ::bind::DispatchIntoParent::<#marker>::dispatch_into_parent(
+            ::bind::Node { parent: #place, data },
+            event,
+            effs,
+            claim,
+        ) {
+            ::core::option::Option::None => return ::core::option::Option::None,
+            ::core::option::Option::Some(p) => p,
+        }
+    }
+    ::core::option::Option::None => #place,
+};
+```
+
+After — the derived edge's `#state`, one template for a place's `#[derived_child]` (`#place` is `path`) and a derived level's own descent (`#place` is `node`); `into_place` is the identity for a place:
+
+```rust
+let mut state = match #f(&#place) {
+    ::core::option::Option::Some(data) => ::laserbeam::Completed::to_maybe_invalidated(
+        ::bind::DispatchIntoPlace::<#marker>::dispatch_into_place(
+            ::bind::Node { parent: #place, data },
+            event,
+            effs,
+            claim,
+        ),
+    ),
+    ::core::option::Option::None => ::laserbeam::MaybeInvalidated::NotInvalidated(
+        ::bind::HasPlace::into_place(#place),
+    ),
+};
+```
+
+`derived_node_impl`, before (dispatch half):
+
+```rust
+impl<'a> ::bind::DispatchIntoParent<#marker> for ::bind::Node<#parent<'a>, #name> {
+    fn dispatch_into_parent<'c>(
+        self,
+        event: &<#marker as ::bind::Bindings>::Event,
+        effs: &mut <#marker as ::bind::Bindings>::Output,
+        claim: &mut ::bind::Claim<'c>,
+    ) -> ::core::option::Option<<Self as ::bind::HasParent>::Parent> {
+        let node = self;
+        #descend
+        #(#checks)*
+        ::core::option::Option::Some(::bind::HasParent::into_parent(node))
+    }
+}
+```
+
+After — `dispatch_impl`'s linear shape over `node`:
+
+```rust
+#[automatically_derived]
+impl<'a> ::bind::DispatchIntoPlace<#marker> for ::bind::Node<#parent<'a>, #name> {
+    fn dispatch_into_place(
+        self,
+        event: &<#marker as ::bind::Bindings>::Event,
+        effs: &mut <#marker as ::bind::Bindings>::Output,
+        claim: &mut ::bind::Claim<'_>,
+    ) -> ::laserbeam::Completed<
+        <::bind::Node<#parent<'a>, #name> as ::bind::HasPlace>::Place,
+    > {
+        let node = self;
+        #(#opts)*
+        let mut state = #state;
+        #(#scheduled)*
+        state.complete()
+    }
+}
+```
+
+The derive cannot name the place path (the nested test level's attribute names only `AppNode`), so the return type spells it through the `HasPlace` projection, which resolves because `#parent` is concrete at the impl. Opts, trigger closures, and pres emit over `&node` where a place emits over `&path`; the scheduled list is the same source-ordered list across `#[bind]` / `#[post]` / `#[pre_post]` that a place assembles; `#state` is the descent fold above for a `#[derived_child]`, or `NotInvalidated(into_place(node))` for a derived level with nothing below it.
+
+`derived_enum_node_impl`, before / after: the arms swap `DispatchIntoParent::dispatch_into_parent` for `DispatchIntoPlace::dispatch_into_place` and the impl's return becomes the same `Completed<.. as HasPlace>::Place>`; each arm rebuilds `Node { parent, data }` as today, every arm returns the same type, and the existing error stands — an enum of derived levels binds nothing itself, so the impl has no opts or scheduled items of its own.
+
+`derived_node_impl` / `derived_enum_node_impl` also gain a rejection: a `#[resolve_into]` field on a derived level (struct field or enum variant payload) errors at derive time. Today the attribute is accepted and silently ignored, and the descent is unimplementable here, since folding such a child's leave would need `Completed<PathMut<Sub, Node<..>>>` and hence `Node: Above`, which the design refuses (stance: `refactors/past/derived-child-persistence.md`):
+
+```text
+a derived level cannot have a `#[resolve_into]` child: its `data` dies with the
+dispatch. Persist the state in the tree at a real place the derived level reads,
+or hang a fresh level with `#[derived_child]`.
+```
 
 Handler migration, in the same workspace change: every bind handler in mercury and the bind tests goes from `(ev, Node<P, ()>) -> impl IntoIterator<Item = E>` to `(ev, _snap: (), AscendState<P>) -> (Vec<E>, Completed<P>)`, with `st.complete()` where the body stays put.
+
+Derived-level handlers migrate to the same shape over their place path, under two conventions:
+
+- A stayer that reads the tree reads through `HasAncestor::ancestor` and completes where it stands; only a leaver consumes through `IntoAncestor`. Mercury's `copy` therefore takes `&MercuryStruct` instead of consuming a path (its body loses only the `into_ancestor` line); `focus_address_bar`, which leaves into typing, keeps its `IntoAncestor` walk.
+- A handler whose effect needs the path emits nothing on `Invalidated` and forwards `c`. On a derived leaf the arm cannot fire in practice, since a leaf's `#state` starts `NotInvalidated`, but the match is total.
+
+`copy_url` is the model for mercury's stayers. Before:
+
+```rust
+pub(crate) fn copy_url<'a, E, P: IntoAncestor<MercuryPath<'a>>, D>(
+    _ev: &E,
+    node: Node<P, D>,
+) -> Vec<MercuryEffect> {
+    copy(node.parent, UrlPart::Whole)
+}
+```
+
+After:
+
+```rust
+pub(crate) fn copy_url<'a, E, P>(
+    _ev: &E,
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>)
+where
+    P: HasAncestor<MercuryPath<'a>> + HasStop + Complete<P>,
+{
+    match st.state {
+        MaybeInvalidated::NotInvalidated(path) => {
+            let effs = copy(path.ancestor(), UrlPart::Whole);
+            (effs, path.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![], c),
+    }
+}
+```
+
+`copy_host` follows it with `UrlPart::Host`; `refresh` and the tmux handlers are pure effects and need no match at all (`(vec![tap(..)], st.complete())`). No mercury derived handler reads `data` (`ChromeApp`, `GhosttyApp`, `ClaudeAiSite` are units), so none needs a pre; the affected set is `refresh`, `focus_address_bar`, `copy_url`, `copy_host`, the tmux window handlers in `handlers/app.rs`, `new_chat` on the site side, and the layer handlers (`to_home`, `to_nav`, `to_site`, `to_typing`, `toggle_overlay`) where bound on derived levels.
+
+The bind tests' derived handlers do read data, which is why `#[pre_post]` parses in this change. `tests/derived.rs` migrates to:
+
+```rust
+#[derive(Bind)]
+#[derived_node(parent = ShellPath)]
+#[binds(Demo)]
+#[derived_child(tab_data)]
+#[pre_post(Keyboard("r") => (snap_tab, exclusive(on_r)))]
+#[bind(Keyboard("q") => app_home)]
+pub struct AppData {
+    pub tab: String,
+}
+
+#[derive(Bind)]
+#[derived_node(parent = AppNode)]
+#[binds(Demo)]
+#[pre_post(Keyboard("g") => (snap_tab_thread, exclusive(on_g)))]
+pub struct TabData {
+    pub thread: u32,
+}
+
+fn snap_tab(_ev: &KeyEvent, node: &AppNode) -> String {
+    node.data.tab.clone()
+}
+
+fn on_r<'x>(
+    ev: &KeyEvent,
+    tab: String,
+    st: AscendState<'_, ShellPath<'x>>,
+) -> (Vec<usize>, Completed<ShellPath<'x>>) {
+    match st.state {
+        MaybeInvalidated::NotInvalidated(mut shell) => {
+            shell.get_mut().log.push_str(&tab);
+            (vec![ev.key.len()], shell.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![ev.key.len()], c),
+    }
+}
+
+fn snap_tab_thread(_ev: &KeyEvent, node: &TabNode) -> (String, u32) {
+    (node.parent.data.tab.clone(), node.data.thread)
+}
+
+fn on_g<'x>(
+    ev: &KeyEvent,
+    (tab, thread): (String, u32),
+    st: AscendState<'_, ShellPath<'x>>,
+) -> (Vec<usize>, Completed<ShellPath<'x>>) {
+    match st.state {
+        MaybeInvalidated::NotInvalidated(mut shell) => {
+            let _ = write!(shell.get_mut().log, "{tab}{thread}");
+            (vec![ev.key.len()], shell.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![ev.key.len()], c),
+    }
+}
+
+// The derived-leave walk: `q` leaves from the derived level; Shell's post sees
+// Invalidated. Shell gains #[post(Keyboard("q") => log_leave)].
+fn app_home<'x>(
+    _ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, ShellPath<'x>>,
+) -> (Vec<usize>, Completed<ShellPath<'x>>) {
+    match st.state {
+        MaybeInvalidated::NotInvalidated(shell) => (vec![9], shell.into_parent().complete()),
+        MaybeInvalidated::Invalidated(c) => (vec![9], c),
+    }
+}
+
+fn log_leave<'x>(
+    _ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, ShellPath<'x>>,
+) -> (Vec<usize>, Completed<ShellPath<'x>>) {
+    match st.state {
+        MaybeInvalidated::NotInvalidated(mut shell) => {
+            shell.get_mut().log.push('s');
+            (vec![], shell.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![7], c),
+    }
+}
+```
+
+Handwritten claimers in `#[pre_post]` position add `exclusive` to their `use bind::...;` line.
 
 ### Change 5 (parsing) — `#[post]` / `#[pre_post]`
 
@@ -733,7 +1048,7 @@ All three attribute kinds feed one scheduled list in source order; the differenc
 
 ### Derived levels
 
-The design is `derived-levels.md`: ascent flattens to the place path beneath the `Node` chain (`HasPlace`), `DispatchIntoParent` becomes `DispatchIntoPlace`, and derived data reaches handlers through pres. Change 5 implements it.
+The model and the change-1 additions (`HasPlace`, `DispatchIntoPlace`) are `derived-levels.md`: ascent flattens to the place path beneath the `Node` chain, and derived data reaches handlers through pres. The codegen before/afters, the handler migration, and the expansions live in the change-5 sections above.
 
 ## Walks
 
@@ -788,6 +1103,12 @@ Unit tests on the laserbeam items land with change 1; the rest land with the cha
   `NotInvalidated`; `home` (`title_home`) leaves through each route and the
   fold forwards `Invalidated` (change 5)
 - the `Completed<TitlePath>` shape pin (change 4)
+- derived: the four `derived.rs` dispatch tests and its accumulate test keep
+  their exact assertions across the migration; the derived-leave walk (`q`:
+  `app_home` leaves, Shell's `log_leave` post sees `Invalidated`, asserting
+  `(vec![9, 7], true)`) (change 5)
+- trybuild: `#[resolve_into]` on a `#[derived_node]` struct fails with the
+  rejection message (change 5)
 
 ## Ordered changes
 
