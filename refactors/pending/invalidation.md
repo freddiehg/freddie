@@ -739,28 +739,32 @@ Posts run whether or not anything claimed: they are scheduled by their trigger, 
 
 ## Ordered changes
 
-Each change compiles and passes tests against only its predecessors; per-change landability is noted. The code deltas live in "bind and bind_macro (before / after)" and the additions sections.
+Each change compiles and passes tests against only its stated prerequisites. 0, 1, and 3 have none beyond the landed baseline and can proceed now, in parallel; the code deltas live in "bind and bind_macro (before / after)" and the additions sections.
 
-### 0 — the standalone `DispatchIntoParent` rename (section above; in flight)
+### 0 — the standalone `DispatchIntoParent` rename (section above)
+
+Lands: now (in flight). Prerequisites: none.
 
 ### 1 — laserbeam: `MaybeInvalidated` (+ `complete`), the `to_maybe_invalidated` conversions, `From<&mut R> for Completed<&mut R>`
 
-Pure additions with unit tests; nothing consumes them yet.
+Lands: now. Prerequisites: none; pure additions with unit tests, nothing consumes them yet.
 
 ### 2 — bind: `AscendState`, `exclusive`, `Claim::reborrow`; free `dispatch` returns `(Vec<E>, bool)`
 
-Additions plus one signature change; consumers of the free `dispatch` (mercury's loop, `SimpleRunner`, tests) migrate mechanically in the same change.
+Lands: after 1 (the types), except the free `dispatch` return change, which has no prerequisites and may land any time, migrating its consumers (mercury's loop, `SimpleRunner`, tests) in the same change.
 
 ### 3 — bind_macro: opts before descent, source order, synthesized `|_, _| ()` pre
 
-Behavior change confined to when triggers and pres read state; checks keep their firing form, so it lands alone.
+Lands: now, in parallel with 1 and 2; checks keep their firing form, so the only behavior change is that triggers and pres read pre-descent state.
 
 ### 4 — bind_macro: the linear `Completed` body, scheduled blocks, `dispatch_into_parent_impl`, derived interim; handler migration in mercury and tests
 
-The one big change; it cannot split further because the handler signature change is workspace-global.
+Lands: after 1, 2, and 3, all of them. The one big change; it cannot split further because the handler signature change is workspace-global.
 
 ### 5 — `#[post]` / `#[pre_post]`: registration, parsing, collectors
 
-Additive; until it lands, only `#[bind]` items populate the schedule.
+Lands: after 4; parsing alone would be inert before the scheduled blocks exist to call three-argument handlers.
 
 ### 6 — derived levels: binds to the scheduled shape; derived-edge posts
+
+Lands: after 4 (and 5 for derived-edge posts).
