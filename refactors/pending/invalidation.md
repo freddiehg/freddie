@@ -41,7 +41,7 @@ match st.state {
 }
 ```
 
-`Invalidated` is unforgeable, since `Completed` has no public constructor; `NotInvalidated` accepts only a path of exactly type `P`. The state threading is wrapper-internal: `exclusive` and `post` fold a fired handler's `Completed` back into the state (`HasStop::reopen`: `Here` re-establishes the path as `NotInvalidated`, `Up` stays a forwarded leave), so the state evolves through the schedule — with `#[post(a => b, c => d)]`, `b` can receive `NotInvalidated`, leave, and `d` then receives `Invalidated`. Every scheduled item runs; a leave is data, not control flow, and nothing early-returns. The wrapper outputs (`(Vec<E>, MaybeInvalidated<P>)`) are the macro-facing shape; no one handwrites it.
+`Invalidated` is unforgeable, since `Completed` has no public constructor; `NotInvalidated` accepts only a path of exactly type `P`. The state threading is wrapper-internal: `exclusive` and `post` fold a fired handler's `Completed` back into the state (`HasStop::to_maybe_invalidated`: `Here` re-establishes the path as `NotInvalidated`, `Up` stays a forwarded leave), so the state evolves through the schedule — with `#[post(a => b, c => d)]`, `b` can receive `NotInvalidated`, leave, and `d` then receives `Invalidated`. Every scheduled item runs; a leave is data, not control flow, and nothing early-returns. The wrapper outputs (`(Vec<E>, MaybeInvalidated<P>)`) are the macro-facing shape; no one handwrites it.
 
 `#[bind(X => foo)]` desugars to `#[post(X => exclusive(foo))]`; the macro wraps every rhs (`exclusive(tokens)` for `#[bind]`, `post(tokens)` for `#[post]`/`#[pre_post]`) and never looks inside. `exclusive` means not claimed: the claim gate and nothing else, calling `foo` iff the claim is won; a gated state passes through untouched, which is what preserves an earlier leave for later items. The claim's win is not part of any signature, because winning the claim does not imply `NotInvalidated` (a post can leave without claiming); what each state branch means is the handler's business.
 
@@ -99,13 +99,13 @@ impl<N, N2, Q: Above> Stop<PathMut<N, PathMut<N2, Q>>, Completed<PathMut<N2, Q>>
 ```rust
 pub trait HasStop: Sized {
     type Stop;
-    /// Re-open a completed leave from this path into the active-path state.
-    fn reopen(completed: Completed<Self>) -> MaybeInvalidated<Self>;
+    /// A handler's returned leave, as the state it leaves behind.
+    fn to_maybe_invalidated(completed: Completed<Self>) -> MaybeInvalidated<Self>;
 }
 
 impl<N, P: Above> HasStop for PathMut<N, P> {
     type Stop = Stop<PathMut<N, P>, P::Up>;
-    fn reopen(completed: Completed<Self>) -> MaybeInvalidated<Self> {
+    fn to_maybe_invalidated(completed: Completed<Self>) -> MaybeInvalidated<Self> {
         match completed.into_inner() {
             Stop::Here(path) => MaybeInvalidated::NotInvalidated(path),
             Stop::Up(rest) => MaybeInvalidated::Invalidated(Completed::up(rest)),
@@ -115,7 +115,7 @@ impl<N, P: Above> HasStop for PathMut<N, P> {
 
 impl<'a, R> HasStop for &'a mut R {
     type Stop = &'a mut R;
-    fn reopen(completed: Completed<Self>) -> MaybeInvalidated<Self> {
+    fn to_maybe_invalidated(completed: Completed<Self>) -> MaybeInvalidated<Self> {
         MaybeInvalidated::NotInvalidated(completed.into_inner())
     }
 }
@@ -170,7 +170,7 @@ where
     move |payload, mut st| match st.claim() {
         Some(()) => {
             let (e, completed) = handler(payload, st);
-            (e, P::reopen(completed))
+            (e, P::to_maybe_invalidated(completed))
         }
         None => (Vec::new(), st.state),
     }
@@ -186,7 +186,7 @@ where
 {
     move |payload, st| {
         let (e, completed) = f(payload, st);
-        (e, P::reopen(completed))
+        (e, P::to_maybe_invalidated(completed))
     }
 }
 ```
@@ -568,7 +568,7 @@ let opt_N = match ::core::convert::TryFrom::try_from(event) {
 
 ### Change 3 — `AscendState` threading; one scheduled block
 
-bind gains `AscendState`, `exclusive`, and `post`; laserbeam gains `MaybeInvalidated` (+ `finish`), `to_maybe_invalidated`, and `HasStop::reopen` (code above). The check emission, before: the change-1 `*effs = collect(..)` form. After, one kind-blind block per scheduled item; `#rhs` is the attribute's rhs tokens wrapped at parse time, `::bind::exclusive(#tokens)` for `#[bind]` and `::bind::post(#tokens)` for `#[post]`/`#[pre_post]`, and the macro never looks inside:
+bind gains `AscendState`, `exclusive`, and `post`; laserbeam gains `MaybeInvalidated` (+ `finish`) and the two `to_maybe_invalidated` conversions, on `Stop` and on `HasStop` (code above). The check emission, before: the change-1 `*effs = collect(..)` form. After, one kind-blind block per scheduled item; `#rhs` is the attribute's rhs tokens wrapped at parse time, `::bind::exclusive(#tokens)` for `#[bind]` and `::bind::post(#tokens)` for `#[post]`/`#[pre_post]`, and the macro never looks inside:
 
 ```rust
 if let ::core::option::Option::Some(payload) = opt_N {
@@ -681,7 +681,7 @@ Prefactors first, each independently shippable. The macro deltas per change are 
 
 ### 2 — opts before descent, source order
 
-### 3 — laserbeam `MaybeInvalidated` (+ `finish`), `to_maybe_invalidated`, `HasStop::reopen`; bind `AscendState`, `exclusive`, `post`; one scheduled block per item; handler migration
+### 3 — laserbeam `MaybeInvalidated` (+ `finish`) and both `to_maybe_invalidated` conversions; bind `AscendState`, `exclusive`, `post`; one scheduled block per item; handler migration
 
 ### 4 — `#[post]` / `#[pre_post]`: registration, parsing, payload capture
 
