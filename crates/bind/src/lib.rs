@@ -31,9 +31,34 @@
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::hash::Hash;
-use std::ops::ControlFlow;
 
 pub use bind_macro::Bind;
+
+/// One exclusive bind handler per dispatch: the first to [`try_take`](Self::try_take) wins.
+pub struct Claim<'c> {
+    slot: &'c mut Option<()>,
+}
+
+impl<'c> Claim<'c> {
+    #[must_use]
+    pub const fn new(slot: &'c mut Option<()>) -> Self {
+        Self { slot }
+    }
+
+    #[must_use]
+    pub const fn is_taken(&self) -> bool {
+        self.slot.is_some()
+    }
+
+    pub const fn try_take(&mut self) -> Option<()> {
+        if self.slot.is_some() {
+            None
+        } else {
+            *self.slot = Some(());
+            Some(())
+        }
+    }
+}
 
 /// Emits its body only when the `check` feature is on.
 ///
@@ -260,8 +285,15 @@ macro_rules! self_trigger {
 /// `impl<N, P> Descend<M> for Path<N, P>`: `Dispatch` carries `Self: 'a`, and the HRTB needed
 /// to state the blanket is E0311.
 pub trait Descend<M: Bindings>: HasParent + Sized {
-    /// Runs the active binding for `event`, or hands the PARENT back on a miss.
-    fn dispatch(self, event: &M::Event) -> ControlFlow<M::Output, Self::Parent>;
+    /// Runs the active binding for `event` into `effs` under `claim`, or hands
+    /// the PARENT back on a miss (`Some`). `None` means an exclusive handler
+    /// already ran.
+    fn dispatch(
+        self,
+        event: &M::Event,
+        effs: &mut M::Output,
+        claim: &mut Claim<'_>,
+    ) -> Option<Self::Parent>;
 }
 
 /// A derived level's half of THE CHECK. It does not ship, for the same reason
@@ -283,15 +315,18 @@ pub trait DerivedHandler<M: Bindings>: HasParent + Sized {
 /// The dispatch half. `#[derive(Bind)]` implements it alongside [`EventHandler`].
 ///
 /// Each node tries its active child first, then its own binds, so a child's
-/// binding takes priority over an ancestor's. [`Break`](ControlFlow::Break)
-/// carries the handler's output up; [`Continue`](ControlFlow::Continue) hands the
-/// node's path back so the parent can walk up (`into_parent`) and take its turn.
+/// binding takes priority over an ancestor's. Effects collect into `effs`; the
+/// first exclusive handler takes `claim`. `None` means that exclusive ran;
+/// `Some(path)` is a miss so the parent can walk up (`into_parent`) and try.
 pub trait Dispatch<M: Bindings>: Place {
-    /// Runs the active binding for `event`, or hands the path back on a miss.
-    fn dispatch<'a>(
+    /// Runs the active binding for `event` into `effs` under `claim`, or hands
+    /// the path back on a miss.
+    fn dispatch<'a, 'c>(
         path: Self::Path<'a>,
         event: &M::Event,
-    ) -> ControlFlow<M::Output, Self::Path<'a>>
+        effs: &mut M::Output,
+        claim: &mut Claim<'c>,
+    ) -> Option<Self::Path<'a>>
     where
         Self: 'a;
 }
@@ -303,11 +338,13 @@ pub fn dispatch<'a, M, N>(path: N::Path<'a>, event: &M::Event) -> Option<M::Outp
 where
     M: Bindings,
     N: Dispatch<M> + 'a,
+    M::Output: Default,
 {
-    match <N as Dispatch<M>>::dispatch(path, event) {
-        ControlFlow::Break(out) => Some(out),
-        ControlFlow::Continue(_) => None,
-    }
+    let mut effs = M::Output::default();
+    let mut claim_slot = None;
+    let mut claim = Claim::new(&mut claim_slot);
+    let _path = <N as Dispatch<M>>::dispatch(path, event, &mut effs, &mut claim);
+    if claim.is_taken() { Some(effs) } else { None }
 }
 
 // The real event loop is bespoke: its queue and its wait-when-empty differ per
@@ -330,6 +367,7 @@ pub struct SimpleRunner<'a, M: Bindings, N> {
 impl<'a, M, N> SimpleRunner<'a, M, N>
 where
     M: Bindings,
+    M::Output: Default,
     N: Dispatch<M> + for<'b> Place<Path<'b> = &'b mut N>,
 {
     /// A runner over the tree rooted at `root`, with an empty queue.

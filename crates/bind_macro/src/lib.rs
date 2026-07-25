@@ -163,6 +163,8 @@ fn derived_enum_node_impl(
             #name::#vi(data) => ::bind::Descend::<#marker>::dispatch(
                 ::bind::Node { parent, data },
                 event,
+                effs,
+                claim,
             ),
         });
         acc_arms.push(quote! {
@@ -175,13 +177,12 @@ fn derived_enum_node_impl(
     Ok(quote! {
         #[automatically_derived]
         impl<'a> ::bind::Descend<#marker> for ::bind::Node<#parent<'a>, #name> {
-            fn dispatch(
+            fn dispatch<'c>(
                 self,
                 event: &<#marker as ::bind::Bindings>::Event,
-            ) -> ::core::ops::ControlFlow<
-                <#marker as ::bind::Bindings>::Output,
-                <Self as ::bind::HasParent>::Parent,
-            > {
+                effs: &mut <#marker as ::bind::Bindings>::Output,
+                claim: &mut ::bind::Claim<'c>,
+            ) -> ::core::option::Option<<Self as ::bind::HasParent>::Parent> {
                 let ::bind::Node { parent, data } = self;
                 match data { #(#dispatch_arms)* }
             }
@@ -238,11 +239,12 @@ fn derived_node_impl(
             {
                 let trigger = #trigger;
                 if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                    return ::core::ops::ControlFlow::Break(
-                        ::core::iter::Iterator::collect(
+                    if let ::core::option::Option::Some(()) = claim.try_take() {
+                        *effs = ::core::iter::Iterator::collect(
                             ::core::iter::IntoIterator::into_iter(#handler(ev, node)),
-                        ),
-                    );
+                        );
+                        return ::core::option::Option::None;
+                    }
                 }
             }
         }
@@ -251,17 +253,16 @@ fn derived_node_impl(
     Ok(quote! {
         #[automatically_derived]
         impl<'a> ::bind::Descend<#marker> for ::bind::Node<#parent<'a>, #name> {
-            fn dispatch(
+            fn dispatch<'c>(
                 self,
                 event: &<#marker as ::bind::Bindings>::Event,
-            ) -> ::core::ops::ControlFlow<
-                <#marker as ::bind::Bindings>::Output,
-                <Self as ::bind::HasParent>::Parent,
-            > {
+                effs: &mut <#marker as ::bind::Bindings>::Output,
+                claim: &mut ::bind::Claim<'c>,
+            ) -> ::core::option::Option<<Self as ::bind::HasParent>::Parent> {
                 let node = self;
                 #descend
                 #(#checks)*
-                ::core::ops::ControlFlow::Continue(::bind::HasParent::into_parent(node))
+                ::core::option::Option::Some(::bind::HasParent::into_parent(node))
             }
         }
 
@@ -298,10 +299,15 @@ fn derived_child_descent(f: &Path, marker: &Path, place: &TokenStream2) -> Token
     quote! {
         let #place = match #f(&#place) {
             ::core::option::Option::Some(data) => {
-                ::bind::Descend::<#marker>::dispatch(
+                match ::bind::Descend::<#marker>::dispatch(
                     ::bind::Node { parent: #place, data },
                     event,
-                )?
+                    effs,
+                    claim,
+                ) {
+                    ::core::option::Option::None => return ::core::option::Option::None,
+                    ::core::option::Option::Some(p) => p,
+                }
             }
             ::core::option::Option::None => #place,
         };
@@ -355,21 +361,16 @@ fn descend_impl(input: &DeriveInput, name: &Ident, marker: &Path) -> TokenStream
         where
             #name: 'a,
         {
-            fn dispatch(
+            fn dispatch<'c>(
                 self,
                 event: &<#marker as ::bind::Bindings>::Event,
-            ) -> ::core::ops::ControlFlow<
-                <#marker as ::bind::Bindings>::Output,
-                <Self as ::bind::HasParent>::Parent,
-            > {
-                match <#name as ::bind::Dispatch<#marker>>::dispatch(self, event) {
-                    ::core::ops::ControlFlow::Break(out) => {
-                        ::core::ops::ControlFlow::Break(out)
-                    }
-                    ::core::ops::ControlFlow::Continue(path) => {
-                        ::core::ops::ControlFlow::Continue(
-                            ::bind::HasParent::into_parent(path),
-                        )
+                effs: &mut <#marker as ::bind::Bindings>::Output,
+                claim: &mut ::bind::Claim<'c>,
+            ) -> ::core::option::Option<<Self as ::bind::HasParent>::Parent> {
+                match <#name as ::bind::Dispatch<#marker>>::dispatch(self, event, effs, claim) {
+                    ::core::option::Option::None => ::core::option::Option::None,
+                    ::core::option::Option::Some(path) => {
+                        ::core::option::Option::Some(::bind::HasParent::into_parent(path))
                     }
                 }
             }
@@ -428,7 +429,7 @@ fn accumulate_impl(
 }
 
 /// The accumulate recursion, the child types to bound, and whether the path binding needs
-/// `mut`. Mirrors `dispatch_body`, minus the `ControlFlow`: accumulate never stops early.
+/// `mut`. Mirrors `dispatch_body`, minus early return: accumulate never stops early.
 fn accumulate_body(
     input: &DeriveInput,
     name: &Ident,
@@ -541,11 +542,14 @@ fn dispatch_impl(
             {
                 let trigger = #trigger;
                 if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                    return ::core::ops::ControlFlow::Break(::core::iter::Iterator::collect(
-                        ::core::iter::IntoIterator::into_iter(
-                            #handler(ev, ::bind::Node { parent: path, data: () }),
-                        ),
-                    ));
+                    if let ::core::option::Option::Some(()) = claim.try_take() {
+                        *effs = ::core::iter::Iterator::collect(
+                            ::core::iter::IntoIterator::into_iter(
+                                #handler(ev, ::bind::Node { parent: path, data: () }),
+                            ),
+                        );
+                        return ::core::option::Option::None;
+                    }
                 }
             }
         }
@@ -553,19 +557,18 @@ fn dispatch_impl(
     Ok(quote! {
         #[automatically_derived]
         impl ::bind::Dispatch<#marker> for #name #where_clause {
-            fn dispatch<'a>(
+            fn dispatch<'a, 'c>(
                 #binding: <Self as ::bind::Place>::Path<'a>,
                 event: &<#marker as ::bind::Bindings>::Event,
-            ) -> ::core::ops::ControlFlow<
-                <#marker as ::bind::Bindings>::Output,
-                <Self as ::bind::Place>::Path<'a>,
-            >
+                effs: &mut <#marker as ::bind::Bindings>::Output,
+                claim: &mut ::bind::Claim<'c>,
+            ) -> ::core::option::Option<<Self as ::bind::Place>::Path<'a>>
             where
                 Self: 'a,
             {
                 #recurse
                 #(#checks)*
-                ::core::ops::ControlFlow::Continue(path)
+                ::core::option::Option::Some(path)
             }
         }
     })
@@ -605,8 +608,17 @@ fn dispatch_body(
                 let child_path = edge.child_path(&quote!(path));
                 let recover = edge.recover_parent(&quote!(child));
                 let recurse = quote! {
-                    let child = <#child as ::bind::Dispatch<#marker>>::dispatch(#child_path, event)?;
-                    path = #recover;
+                    match <#child as ::bind::Dispatch<#marker>>::dispatch(
+                        #child_path,
+                        event,
+                        effs,
+                        claim,
+                    ) {
+                        ::core::option::Option::None => return ::core::option::Option::None,
+                        ::core::option::Option::Some(child) => {
+                            path = #recover;
+                        }
+                    }
                 };
                 Ok((recurse, vec![child.clone()], true))
             }
@@ -631,8 +643,17 @@ fn dispatch_body(
                 let recover = edge.recover_parent(&quote!(child));
                 arms.push(quote! {
                     Self::#vi(_) => {
-                        let child = <#child as ::bind::Dispatch<#marker>>::dispatch(#child_path, event)?;
-                        path = #recover;
+                        match <#child as ::bind::Dispatch<#marker>>::dispatch(
+                            #child_path,
+                            event,
+                            effs,
+                            claim,
+                        ) {
+                            ::core::option::Option::None => return ::core::option::Option::None,
+                            ::core::option::Option::Some(child) => {
+                                path = #recover;
+                            }
+                        }
                     }
                 });
             }
