@@ -4,162 +4,21 @@ Not done. Standalone.
 
 Descent schedules which pre/posts/binds run. That set is final. Ascent runs every scheduled post.
 
-Every type and function below has a body. No stubs.
+Leave peels (`after_first_peel` / `into_parent` / `complete` → nested `Result`) are documented in **`path-peel-complete.md`**. That is a separate prefactor; ship it first. Pack/Path/PeelPack types live only there.
 
 ## Model
 
-Spine `A → B → C`. `C::dispatch` always returns `C`’s ascent type.
-
-Path for leaving is focus + pack. `complete()` is `pack.pack(focus)` and returns `Pack::Out`. `into_parent` peels laserbeam focus and rewrites the pack so `Out` is unchanged.
+Spine `A → B → C`. `C::dispatch` always returns `C`’s ascent type (opaque `Ascent` around the doll from path-peel-complete).
 
 ```text
-after_first_peel(c_path)  →  Path at B, pack AsHere, Out = Result<B, Rest>
-.into_parent()            →  Path at A, pack AsUp…, same Out
-.complete()               →  Out
+after_first_peel(c_path).complete()                 // Ok(b)
+after_first_peel(c_path).into_parent().complete()   // Err(Ok(a)) or Err(a)
 ```
 
-```text
-complete at B       Ok(b)
-complete at A       Err(Ok(a))     // Rest still a Result layer
-complete at bare Z  Err(…Err(z))   // terminal rest is the path type itself
-```
-
-The nested `Result` doll is bind-internal. App-facing type is `Ascent<D>`.
-
-## Types
+## Types (dispatch layer)
 
 ```rust
-use core::marker::PhantomData;
-
-// ---------------------------------------------------------------------------
-// Pack: stop path P → Out
-// ---------------------------------------------------------------------------
-
-pub trait Pack<P> {
-    type Out;
-    fn pack(self, path: P) -> Self::Out;
-}
-
-/// Result layer stops here: Ok(path).
-pub struct AsHere<E>(PhantomData<E>);
-
-impl<P, E> Pack<P> for AsHere<E> {
-    type Out = Result<P, E>;
-    fn pack(self, path: P) -> Result<P, E> {
-        Ok(path)
-    }
-}
-
-/// Result layer skipped: Err(inner.pack(path)).
-pub struct AsUp<Q, Inner>(Inner, PhantomData<Q>);
-
-impl<Q, Inner, P> Pack<P> for AsUp<Q, Inner>
-where
-    Inner: Pack<P>,
-{
-    type Out = Result<Q, Inner::Out>;
-    fn pack(self, path: P) -> Self::Out {
-        Err(self.0.pack(path))
-    }
-}
-
-/// Terminal stop: Out is the path itself (no Result wrapper).
-pub struct AsTerminal;
-
-impl<P> Pack<P> for AsTerminal {
-    type Out = P;
-    fn pack(self, path: P) -> P {
-        path
-    }
-}
-
-// ---------------------------------------------------------------------------
-// PeelPack: PathMut → Parent, Out unchanged
-// ---------------------------------------------------------------------------
-
-pub trait PeelPack<Node, Parent>: Pack<laserbeam::PathMut<Node, Parent>> + Sized {
-    type After: Pack<Parent, Out = Self::Out>;
-    fn peel_pack(self) -> Self::After;
-}
-
-/// Rest is another Result layer: AsHere<Result<Parent, E>> → AsUp + AsHere<E>
-impl<Node, Parent, E> PeelPack<Node, Parent> for AsHere<Result<Parent, E>> {
-    type After = AsUp<laserbeam::PathMut<Node, Parent>, AsHere<E>>;
-    fn peel_pack(self) -> Self::After {
-        AsUp(AsHere(PhantomData), PhantomData)
-    }
-}
-
-/// Rest is the bare parent path (root boundary): AsHere<Parent> → AsUp + AsTerminal
-/// complete() at Parent yields Err(parent): Result<PathMut, Parent>
-impl<Node, Parent> PeelPack<Node, Parent> for AsHere<Parent> {
-    type After = AsUp<laserbeam::PathMut<Node, Parent>, AsTerminal>;
-    fn peel_pack(self) -> Self::After {
-        AsUp(AsTerminal, PhantomData)
-    }
-}
-
-impl<Node, Parent, Q, Inner> PeelPack<Node, Parent> for AsUp<Q, Inner>
-where
-    Inner: PeelPack<Node, Parent>,
-{
-    type After = AsUp<Q, Inner::After>;
-    fn peel_pack(self) -> Self::After {
-        AsUp(self.0.peel_pack(), PhantomData)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Path
-// ---------------------------------------------------------------------------
-
-pub struct Path<P, Pk> {
-    focus: P,
-    pack: Pk,
-}
-
-impl<P, Pk> Path<P, Pk>
-where
-    Pk: Pack<P>,
-{
-    pub fn complete(self) -> Pk::Out {
-        self.pack.pack(self.focus)
-    }
-
-    pub fn focus(&self) -> &P {
-        &self.focus
-    }
-
-    pub fn focus_mut(&mut self) -> &mut P {
-        &mut self.focus
-    }
-}
-
-impl<Node, Parent, Pk> Path<laserbeam::PathMut<Node, Parent>, Pk>
-where
-    Pk: PeelPack<Node, Parent>,
-{
-    pub fn into_parent(self) -> Path<Parent, Pk::After> {
-        Path {
-            focus: self.focus.into_parent(),
-            pack: self.pack.peel_pack(),
-        }
-    }
-}
-
-/// First peel off this node’s PathMut. Out = Result<Parent, Rest>.
-pub fn after_first_peel<Node, Parent, Rest>(
-    path: laserbeam::PathMut<Node, Parent>,
-) -> Path<Parent, AsHere<Rest>> {
-    Path {
-        focus: path.into_parent(),
-        pack: AsHere(PhantomData),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Ascent (opaque) + unpack
-// ---------------------------------------------------------------------------
+// Pack / Path / PeelPack / after_first_peel / complete: see path-peel-complete.md
 
 pub struct Ascent<D> {
     doll: D,
