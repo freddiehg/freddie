@@ -13,7 +13,7 @@ use derive_support::{
 };
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
+use quote::{format_ident, quote};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::{Data, DeriveInput, Expr, Ident, Path, Token, Type, parse_macro_input};
@@ -527,30 +527,26 @@ fn dispatch_impl(
     } else {
         quote!(path)
     };
-    // Each bind: extract this source's event (the type match), then `is_matching`
-    // (the key match). The trigger is built once into a local; `TryFrom` and the
-    // handler pin the source-event type by inference.
-    //
-    // The handler's return is iterated and collected, so a handler returns any iterable of
-    // effects and each bind's call site is typed on its own. A handler that already returns
-    // `M::Output` collects back into it, which std does in place for a `Vec`.
-    let checks = binds.iter().map(|b| {
-        let trigger = trigger_expr(&b.trigger, &quote!(path));
+    let opts = binds
+        .iter()
+        .enumerate()
+        .map(|(i, b)| opt(i, b, &quote!(path)));
+    // Each scheduled item consumes the opt its trigger produced. The handler's return is
+    // iterated and collected, so a handler returns any iterable of effects and each bind's call
+    // site is typed on its own. A handler that already returns `M::Output` collects back into
+    // it, which std does in place for a `Vec`.
+    let checks = binds.iter().enumerate().map(|(i, b)| {
+        let opt = opt_ident(i);
         let handler = &b.handler;
         quote! {
-            if let ::core::option::Option::Some(ev) =
-                ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
-            {
-                let trigger = #trigger;
-                if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                    if let ::core::option::Option::Some(()) = claim.try_take() {
-                        *effs = ::core::iter::Iterator::collect(
-                            ::core::iter::IntoIterator::into_iter(
-                                #handler(ev, ::bind::Node { parent: path, data: () }),
-                            ),
-                        );
-                        return ::core::option::Option::None;
-                    }
+            if let ::core::option::Option::Some((ev, _snap)) = #opt {
+                if let ::core::option::Option::Some(()) = claim.try_take() {
+                    *effs = ::core::iter::Iterator::collect(
+                        ::core::iter::IntoIterator::into_iter(
+                            #handler(ev, ::bind::Node { parent: path, data: () }),
+                        ),
+                    );
+                    return ::core::option::Option::None;
                 }
             }
         }
@@ -567,6 +563,7 @@ fn dispatch_impl(
             where
                 Self: 'a,
             {
+                #(#opts)*
                 #recurse
                 #(#checks)*
                 ::core::option::Option::Some(path)
@@ -723,10 +720,50 @@ fn claimed_triggers(binds: &[Binding]) -> impl Iterator<Item = &Expr> {
         .map(|b| &b.trigger)
 }
 
+/// The local a scheduled item's opt lands in, numbered in source order across the node's
+/// attributes.
+fn opt_ident(i: usize) -> Ident {
+    format_ident!("opt_{i}")
+}
+
+/// One scheduled item's opt, snapped BEFORE the descent: the trigger is read off the state as it
+/// stands on the way down, and so is whatever the pre takes from it, while the child the descent
+/// is about to run in is still there.
+///
+/// The pre is called rather than inlined even when it is the synthesized `|_, _| ()`, so one
+/// emitted shape serves every kind of scheduled item and the `Snap` a handler receives is
+/// whatever the pre returned.
+fn opt(i: usize, b: &Binding, state: &TokenStream2) -> TokenStream2 {
+    let ident = opt_ident(i);
+    let trigger = trigger_expr(&b.trigger, state);
+    let pre = &b.pre;
+    quote! {
+        let #ident = match ::core::convert::TryFrom::try_from(event) {
+            ::core::result::Result::Ok(ev) => {
+                let trigger = #trigger;
+                if ::bind::EventTrigger::is_matching(&trigger, ev) {
+                    ::core::option::Option::Some((ev, (#pre)(ev, &#state)))
+                } else {
+                    ::core::option::Option::None
+                }
+            }
+            ::core::result::Result::Err(_) => ::core::option::Option::None,
+        };
+    }
+}
+
+/// The pre a `#[bind]` gets: it takes nothing off the state, so the `Snap` its handler is
+/// handed is `()`.
+fn unit_pre() -> Expr {
+    syn::parse_quote!(|_, _| ())
+}
+
 /// One `trigger => handler` pair. `accumulate` uses the trigger; `dispatch` uses
 /// both.
 struct Binding {
     trigger: Expr,
+    /// What runs before the descent and produces the handler's `Snap`.
+    pre: Expr,
     handler: Expr,
 }
 
@@ -735,7 +772,11 @@ impl syn::parse::Parse for Binding {
         let trigger = input.parse()?;
         input.parse::<Token![=>]>()?;
         let handler = input.parse()?;
-        Ok(Self { trigger, handler })
+        Ok(Self {
+            trigger,
+            pre: unit_pre(),
+            handler,
+        })
     }
 }
 
