@@ -29,7 +29,7 @@ Every handler, bind or post, has the same signature, the one scheduled shape:
 FnOnce(Payload, AscendState<'a, 'c, P>) -> (Vec<E>, AscendState<'a, 'c, P>)
 ```
 
-A handler that stays put hands the state back unchanged. A handler that leaves puts the call to `.complete()` into the state (`Invalidated(path.into_parent().complete())`). The state evolves through the schedule: with `#[post(a => b, c => d)]`, `b` can receive `NotInvalidated`, leave, and `d` then receives `Invalidated`. Every scheduled item runs; a leave is data in the state, not control flow, and nothing early-returns.
+A handler that stays put hands the state back unchanged. A handler that leaves is `st.invalidate(|path| path.into_parent().complete())`: the call to `.complete()` goes into the state, applied only if the path is still held. The state evolves through the schedule: with `#[post(a => b, c => d)]`, `b` can receive `NotInvalidated`, leave, and `d` then receives `Invalidated`. Every scheduled item runs; a leave is data in the state, not control flow, and nothing early-returns.
 
 `#[bind(X => foo)]` desugars to `#[post(X => exclusive(foo))]`, token wrapping and nothing more; the macro never looks inside any rhs. `exclusive` means not claimed: it is the claim gate and nothing else, calling `foo` iff the claim is won and handing the state back untouched otherwise. The claim's win is not part of any signature, because winning the claim does not imply `NotInvalidated` (a post can leave without claiming); what each state branch means is the handler's business.
 
@@ -57,6 +57,16 @@ where
         match self {
             Self::NotInvalidated(path) => path.complete(),
             Self::Invalidated(completed) => completed,
+        }
+    }
+}
+
+impl<P: HasStop> MaybeInvalidated<P> {
+    /// Leave, if the path is still held; pass through otherwise.
+    pub fn invalidate(self, leave: impl FnOnce(P) -> Completed<P>) -> Self {
+        match self {
+            Self::NotInvalidated(path) => Self::Invalidated(leave(path)),
+            other => other,
         }
     }
 }
@@ -116,6 +126,11 @@ impl<'a, 'c, P: ::laserbeam::HasStop> AscendState<'a, 'c, P> {
         P: ::laserbeam::Complete<P>,
     {
         self.state.finish()
+    }
+
+    pub fn invalidate(mut self, leave: impl FnOnce(P) -> ::laserbeam::Completed<P>) -> Self {
+        self.state = self.state.invalidate(leave);
+        self
     }
 }
 
@@ -276,16 +291,9 @@ The handlers, all user-written:
 /// B's bind: go home.
 fn go_home<'a, 'c, 'x>(
     _ev: &KeyEvent,
-    mut st: AscendState<'a, 'c, BPath<'x>>,
+    st: AscendState<'a, 'c, BPath<'x>>,
 ) -> (Vec<DemoEffect>, AscendState<'a, 'c, BPath<'x>>) {
-    let state = st.state;
-    st.state = match state {
-        MaybeInvalidated::NotInvalidated(b) => {
-            MaybeInvalidated::Invalidated(b.into_parent().complete()) // Up(a)
-        }
-        other => other,
-    };
-    (vec![], st)
+    (vec![], st.invalidate(|b| b.into_parent().complete())) // Up(a)
 }
 
 /// A's bind.
@@ -321,7 +329,7 @@ fn return_home_deadline<'a, 'c, 'x>(
 }
 ```
 
-`Stop` never appears in user code. Staying put is handing the state back; leaving is one field write; branches where an action makes no sense pass the state through.
+`Stop` never appears in user code. Staying put is handing the state back; leaving is `st.invalidate(..)`; branches where an action makes no sense pass the state through.
 
 ## Generated: B (target, leaf)
 
