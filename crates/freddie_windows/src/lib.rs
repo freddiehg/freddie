@@ -437,6 +437,14 @@ fn focused_window(pid: pid_t) -> Option<AXUIElementRef> {
 }
 
 /// Set one `AXValue` attribute of `element`.
+///
+/// A refusal is logged and skipped rather than returned: a placement is two or three of these and
+/// there is nothing useful for a caller to do with a partial one. The log is what says whether a
+/// write landed, which is how the ordering in [`set_frame`] is checked.
+///
+/// `warn`, because a window that does not go where it was asked to go is visible to whoever asked.
+/// An app refusing a frame it considers out of bounds, or below its minimum size, is the likeliest
+/// reason a placement looks broken, and it should not take `--level debug` to find out.
 fn set_attribute<A: AxAttribute>(element: AXUIElementRef, value: A::Value) {
     // SAFETY: `AXValueCreate` copies out of the pointer it is given, which lives for the
     // call, and returns a +1 reference `Owned` takes responsibility for.
@@ -444,17 +452,21 @@ fn set_attribute<A: AxAttribute>(element: AXUIElementRef, value: A::Value) {
     let Some(boxed) =
         (unsafe { Owned::new(AXValueCreate(A::KIND, (&raw const value).cast()).cast()) })
     else {
+        tracing::warn!(attribute = A::NAME, "could not box an attribute value");
         return;
     };
     // SAFETY: `element` is live, and setting an attribute takes ownership of neither
     // argument. `boxed` is released when it drops at the end of this function.
     #[expect(unsafe_code)]
-    unsafe {
+    let status = unsafe {
         AXUIElementSetAttributeValue(
             element,
             CFString::new(A::NAME).as_concrete_TypeRef(),
             boxed.0,
-        );
+        )
+    };
+    if status != 0 {
+        tracing::warn!(attribute = A::NAME, status, "an attribute write was refused");
     }
 }
 
