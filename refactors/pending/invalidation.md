@@ -98,23 +98,63 @@ Normal walk is a chain of `Ok` peels. A jump past B is `Err` from C; B never inv
 
 ### Kill
 
-No `invalidate(d)` counter. Kill peels with `into_parent` and returns the matching `Err` nest.
+No `invalidate(d)` counter. Kill peels with `into_parent`, then wraps the stopped path into the doll.
+
+Two constructors for one `Result` layer:
 
 ```rust
-// From C, jump past B, stop at A:
+// Result<P, E>
+fn here<P, E>(path: P) -> Result<P, E> {
+    Ok(path)
+}
+
+fn up<P, E>(rest: E) -> Result<P, E> {
+    Err(rest)
+}
+```
+
+Peel first, then wrap outside-in. Each extra level above the stop is one `up`.
+
+```rust
+// C::Ascent = Result<BPath, Result<APath, 0Path>>
+
+// Stop at B (normal leave C): one peel, here
+let b = c_path.into_parent();
+here(b)                    // Ok(b)
+
+// Stop at A: two peels, up(here(a))
 let b = c_path.into_parent();
 let a = b.into_parent();
-// C::Ascent = Result<BPath, Result<APath, 0Path>>
-Err(Ok(a))
+up(here(a))                // Err(Ok(a))
 
-// From C, jump to 0:
+// Stop at 0: three peels; innermost Ascent is bare 0Path, so last wrap is up only
 let b = c_path.into_parent();
 let a = b.into_parent();
 let z = a.into_parent();
-Err(Err(z))
+up(up(z))                  // Err(Err(z))
+// not up(here(z)) — 0Path is not Result<0Path, _>
 ```
 
-Helpers can wrap that so user code does not write the nests by hand; the type still is the nest.
+```text
+peels  stop   wrap (C’s doll)
+1      B      here(b)           Ok(b)
+2      A      up(here(a))       Err(Ok(a))
+3      0      up(up(z))         Err(Err(z))
+```
+
+Same pattern from any node: peel until the path type you want to keep, then `here` if that type is the `Ok` of the remaining doll, else nest `up` until the doll type matches `Self::Ascent`.
+
+At the root boundary, parent `Ascent` is bare `0Path` (not `Result`). One level up is not wrapped in `Ok`:
+
+```rust
+// Outer::Ascent = RootPath  (bare)
+match inner_result {
+    Ok(outer_path) => outer_path.into_parent(), // RootPath, not Ok(...)
+    Err(z) => z,
+}
+```
+
+`here` / `up` are the library helpers so user/kill code does not write `Err(Ok(...))` by hand. A blanket `FromPath` trait hits coherence (`Result<P,E>: FromPath<P>` vs inject-into-Err); two functions plus peels stay coherent. Derive/sugar can emit the peel+wrap sequence for a named ancestor.
 
 ### Claim
 
@@ -172,10 +212,14 @@ impl<'c> Claim<'c> {
     }
 }
 
-/// Build C::Ascent = Result<B, Result<A, Z>> by peeling.
-/// Framework/helper territory; exact API open but must produce the doll, not counters.
-pub fn peel_ok<N, P>(path: laserbeam::PathMut<N, P>) -> Result<P, std::convert::Infallible> {
-    Ok(path.into_parent())
+/// Ok side of one Result layer of the doll.
+pub fn here<P, E>(path: P) -> Result<P, E> {
+    Ok(path)
+}
+
+/// Err side of one Result layer — rest is already a deeper Ascent.
+pub fn up<P, E>(rest: E) -> Result<P, E> {
+    Err(rest)
 }
 ```
 
@@ -597,7 +641,7 @@ Handlers that do not kill: `fn(ev, &mut P)`. Handlers that kill: consume path, r
 
 ## Open
 
-- Sugar for kill handlers so users do not write `Err(Ok(Err(...)))` by hand
-- Root `Ascent` = `()` vs `0Path` returned to free `dispatch`
+- Derive/sugar: peel N times to a named ancestor, emit `here`/`up` nest (coherence blocks a single `FromPath` blanket)
+- Root `Ascent` bare `0Path` vs `()` after free `dispatch` consumes it
 - Derived / enum nodes: same doll relative to their parent path type
 - Whether exclusive on Err is always skip (claim already taken) or can run with only a higher path
