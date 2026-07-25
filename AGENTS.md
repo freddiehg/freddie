@@ -13,6 +13,7 @@ This section is extremely important. A frequent source of frustration is deviati
 - Each doc must, at all times that we are actively working on it, conform to several standards:
   - It should describe what we are building. Do not discuss how we came to a conclusion, or what we are not building. Do not narrate your thought process. Do not discuss what has already landed.
   - It should have enough information for a new agent, with no context, to completely implement the feature **without making any important decisions.** All decisions are made as part of the planning document. Do not take shortcuts.
+  - Stubs, hand-waving, and "sketch this later" are disallowed. The planning document must be comprehensive: write out the real types, functions, call sites, and before/after snippets. If we do not actually write the stuff out, it is impossible to know whether the implementation is real or just fantasy.
   - All changes should have before and after snippets. New functions, new structs, etc. should be written out in advance.
   - If you need to have an additional scratch pad, you may — but do not do that work within the freddie repository, and do not check it in. Do not "write tests" for work that is still under active discussion.
   - Paragraphs of text are useless. Prefer code snippets.
