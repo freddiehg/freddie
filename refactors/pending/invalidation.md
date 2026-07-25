@@ -6,21 +6,18 @@ Descent schedules which pre/posts/binds run. That set is final. Ascent runs ever
 
 One type: **`AscentState`**, passed as **`&mut AscentState`** to posts and exclusives.
 
-- **`mutation()`** — frozen at a point in time (`freeze_mutation` at the start of each `into_parent_ascent`). Intact / MaybeDropped from `invalidation_depth` at freeze. Posts read this; it does not change mid-post-batch when `step_up` runs after.
-- **`claim()`** — one-way trap door. Try-take. `claimed()` is the read. Once taken, stays taken.
-- **`invalidate(d)`** / **`step_up()`** — mutate the live hop counter only through these methods.
-
-No second “snapshot” type. No separate frozen bag for posts.
+- **`mutation()`** — derived from `invalidation_depth` (0 → Intact, else MaybeDropped).
+- **`claim()`** — one-way trap door. `Option<()>`. `claimed()` is the read.
+- **`invalidate(d)`** / **`step_up()`** — hop counter only through these methods.
 
 ## Types (`crates/bind`)
 
 ```rust
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mutation {
-    /// `invalidation_depth == 0` at the last `freeze_mutation`.
+    /// `invalidation_depth == 0`.
     Intact,
-    /// `invalidation_depth > 0` at the last `freeze_mutation`.
-    /// A deeper exclusive called `invalidate(N)` covering this hop.
+    /// `invalidation_depth > 0`. A deeper exclusive called `invalidate(N)` covering this hop.
     MaybeDropped,
 }
 
@@ -28,8 +25,6 @@ pub struct AscentState {
     invalidation_depth: u32,
     /// `Some(())` once exclusive has taken this event.
     claim: Option<()>,
-    /// Set only by `freeze_mutation`. What `mutation()` returns.
-    frozen_mutation: Mutation,
 }
 
 impl AscentState {
@@ -37,22 +32,15 @@ impl AscentState {
         Self {
             invalidation_depth: 0,
             claim: None,
-            frozen_mutation: Mutation::Intact,
         }
     }
 
-    /// Call at the start of each framework hop (before posts).
-    /// Freezes Intact/MaybeDropped from the current hop counter.
-    pub fn freeze_mutation(&mut self) {
-        self.frozen_mutation = if self.invalidation_depth == 0 {
+    pub fn mutation(&self) -> Mutation {
+        if self.invalidation_depth == 0 {
             Mutation::Intact
         } else {
             Mutation::MaybeDropped
-        };
-    }
-
-    pub fn mutation(&self) -> Mutation {
-        self.frozen_mutation
+        }
     }
 
     /// One-way trap door. `Some(())` if open (now taken). `None` if already taken.
@@ -70,12 +58,11 @@ impl AscentState {
     }
 
     /// Exclusive kill: `invalidation_depth = invalidation_depth.max(d)`.
-    /// Does not change `frozen_mutation` (current level’s freeze stays).
     pub fn invalidate(&mut self, d: u32) {
         self.invalidation_depth = self.invalidation_depth.max(d);
     }
 
-    /// After posts at this level. Does not change `frozen_mutation`.
+    /// After posts at this level.
     pub fn step_up(&mut self) {
         self.invalidation_depth = self.invalidation_depth.saturating_sub(1);
     }
@@ -162,7 +149,6 @@ pub fn into_parent_ascent<Node, Parent, E>(
     state: &mut AscentState,
     run_posts: impl FnOnce(Parent, &mut AscentState) -> (Parent, Vec<E>),
 ) -> Parent {
-    state.freeze_mutation();
     let parent = path.into_parent();
     let (parent, post_effs) = run_posts(parent, state);
     sink.extend(post_effs);
@@ -297,7 +283,7 @@ DESCENT
       // posts; opts captured from descent
       (parent, local_effs)
     })
-      // freeze_mutation(); parent = path.into_parent(); run_posts; step_up()
+      // parent = path.into_parent(); run_posts; step_up()
 
   if leaf:
     state = AscentState::new()
@@ -665,11 +651,11 @@ Handlers `(ev, node, &mut AscentState) -> (Vec, P)`. Same-level path.
 
 ### F1 — `#[post]` with `&mut AscentState`
 
-Posts read `state.mutation()` (frozen for this hop). `run_posts` closure is the generate site (Outer expand).
+Posts read `state.mutation()` (from depth). `run_posts` closure is the generate site (Outer expand).
 
 ### F2 — `invalidate(N)`
 
-Exclusive kill: `state.invalidate(N)`. Next hop’s `freeze_mutation` sees MaybeDropped.
+Exclusive kill: `state.invalidate(N)`. Ancestor posts see MaybeDropped via `mutation()`.
 
 ### F3 — `#[pre_post]`
 
@@ -690,19 +676,19 @@ Exclusive still returns same-level `P`. Field replace at owner is a later carrie
 1. Descent schedules; set final.
 2. Ascent runs every scheduled post.
 3. One `AscentState`. Posts and exclusive take `&mut AscentState`.
-4. `mutation()` is frozen at `freeze_mutation` (into_parent_ascent entry).
-5. `claim()` is a one-way trap door; `claimed()` reads it.
-6. `into_parent_ascent` = freeze → laserbeam `into_parent` → run_posts → step_up.
+4. `mutation()` is Intact iff `invalidation_depth == 0`.
+5. `claim()` is a one-way trap door (`Option<()>`); `claimed()` reads it.
+6. `into_parent_ascent` = laserbeam `into_parent` → run_posts → step_up.
 7. Kill = `invalidate(N)` on live depth; path type unchanged.
 8. Generate: schedule + helpers. Expand above is the template.
 
 ## Tests
 
-- after `invalidate(N)`, next hop `freeze_mutation` → `MaybeDropped`
+- after `invalidate(N)`, posts at ancestor see `MaybeDropped`
 - no invalidate → `Intact`
 - `claim` then parent `claim` is None
 - `claimed()` true after successful claim
-- freeze then `step_up` leaves `mutation()` unchanged until next freeze
+- `step_up` drops depth; above owner, `mutation()` is Intact
 - exclusive returns same path type
 - pre return once; pre miss → no post
 - `only_if_intact` skips on MaybeDropped
