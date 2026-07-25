@@ -382,13 +382,10 @@ impl Key {
         )
     }
 
-    /// Whether this is a navigation key: home, end, page up/down, insert.
+    /// Whether this is a navigation key: home, end, page up/down.
     #[must_use]
     pub const fn is_navigation(self) -> bool {
-        matches!(
-            self,
-            Self::Home | Self::End | Self::PageUp | Self::PageDown | Self::Insert
-        )
+        matches!(self, Self::Home | Self::End | Self::PageUp | Self::PageDown)
     }
 }
 
@@ -409,7 +406,7 @@ pub enum KeyGroup {
     Modifier,
     /// Arrow keys.
     Arrow,
-    /// Home, end, page up/down, insert.
+    /// Home, end, page up/down.
     Navigation,
 }
 
@@ -643,6 +640,7 @@ mod tests {
         assert!(!KeyGroup::Modifier.contains(Key::CapsLock));
         assert!(KeyGroup::Arrow.contains(Key::LeftArrow));
         assert!(KeyGroup::Navigation.contains(Key::Home));
+        assert!(!KeyGroup::Navigation.contains(Key::Insert));
         assert!(KeyGroup::Any.contains(Key::Raw(0)));
     }
 
