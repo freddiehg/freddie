@@ -1,6 +1,6 @@
 # PathMut peel + complete (Here / Up)
 
-Not done. Prefactor for `invalidation.md`. Depends on `ascend-to-ancestor.md` (landed; uses `path_nest!`).
+Done. Prefactor for `invalidation.md`. Depends on `ascend-to-ancestor.md` (landed; uses `path_nest!`).
 
 Everything below is the implementation, compile-checked against the real `laserbeam::PathMut`: the traits, the newtype, the distance-indexed impls at depth 12, every peel value, the parent-composition seam, root uniformity (one generic handler binding at nav and at the root), and the negatives (over-peel, off-chain complete, route-parented complete).
 
