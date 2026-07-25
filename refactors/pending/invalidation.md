@@ -10,264 +10,181 @@ Spine `A → B → C`. Descent builds a path to `C`.
 
 `C::dispatch` **always** returns `C`’s ascent type (same type on every exit). That type is a private nested doll inside bind. App code never names the `Result` nest.
 
-```text
-// bind-private doll for C (illustration)
-Result<BPath, Result<APath, …>>
+### Path is generic over what `complete()` returns
 
-// after peels + complete, same return type every time:
-Ok(b)              stopped at B
-Err(Ok(a))         stopped at A
-Err(Err(…))        stopped further up
+The path value carries a type parameter `Out`: the type of `complete()`. That is the origin node’s ascent type for this climb. `into_parent` peels the focus and **preserves `Out`**. Every stop still completes to the same `Out`.
+
+```rust
+// Node, Parent: laserbeam focus (as today)
+// Out: what complete() returns — origin ascent for this climb
+PathMut<Node, Parent, Out>
+// or a bind Path wrapper: Path<Inner, Out> with the same idea
 ```
 
-### The bug with `Return<P>`
+```rust
+impl<Node, Parent, Out> PathMut<Node, Parent, Out> {
+    /// Peel one layer. Parent path still completes to the same Out.
+    pub fn into_parent(self) -> Parent
+    where
+        Parent: /* still tagged with Out — see below */;
 
-`Return<P>` / “marker that is just the path” is the wrong return type. After two peels you hold `PathA`, but `C::dispatch` must still return **C’s ascent**, not `Return<PathA>`. Those are different types. The path at the stop level has to be **wrapped back up** to the origin node’s ascent type.
+    /// Package this path into Out by running the pack stack pushed on each peel.
+    pub fn complete(self) -> Out;
+}
+```
 
-### `into_parent` installs a wrap; `complete` runs the stack
+Parent after peel is not a bare `Parent` that forgot `Out`. The parent path type is still “path at parent focus, complete → Out”. So either:
 
-Leaving a node is a climb: each `into_parent` peels the path **and** pushes a pack callback for that level. `complete()` packages the path you still hold by running those callbacks from the stop level back to the origin. The result type is always the origin’s ascent.
+- `Parent` is itself a `PathMut<…, Out>` (nested paths all share `Out`), and the root of the climb is e.g. `PathMut<C, PathMut<B, PathMut<A, Root, Out>, Out>, Out>` — awkward repeating `Out`, or
+- bind’s path type is `Path<P, Out>` where `P` is the laserbeam focus chain and `Out` sits once on the outside:
+
+```rust
+pub struct Path<P, Out> {
+    focus: P, // PathMut chain or &mut Root
+    // pack stack for peels; private
+    _out: PhantomData<fn() -> Out>,
+}
+
+impl<P, Out> Path<P, Out> {
+    pub fn into_parent(self) -> Path<P::Parent, Out>
+    where
+        P: HasParent;
+
+    pub fn complete(self) -> Out;
+}
+```
+
+Same fact either way: **`Out` is a generic on the path you hold; `into_parent` does not change `Out`; `complete() -> Out`.**
+
+At `C::dispatch`, the path is `Path<…, C::Ascent>`. After two peels you hold path-at-A still with `Out = C::Ascent`. `complete()` returns `C::Ascent`, not something parameterized by A.
+
+### Climb: peels push wraps; complete runs them
+
+Each `into_parent` peels the focus **and** pushes a pack callback for that level. `complete()` runs the stack from the stop level back to the origin. Return type is always `Out`.
 
 ```text
 A → B → C
-start at C (origin; return type = C’s ascent)
+path at C with Out = C::Ascent
 
-into_parent  →  path = B, stack = [C’s wrap]
-into_parent  →  path = A, stack = [C’s wrap, B’s wrap]
+into_parent  →  path at B, Out = C::Ascent, stack = [C wrap]
+into_parent  →  path at A, Out = C::Ascent, stack = [C wrap, B wrap]
 
-complete at A  (apply wraps back to C):
-  base at A, then B’s wrap, then C’s wrap
+complete() at A → wrap back to C::Ascent
 ```
 
-What each wrap does (private doll = nested `Result`):
+Private doll layers (illustration):
 
 ```text
-// Stop at this level’s path → Ok(path) for this layer
-// Stop further up (got rest from below) → Err(rest) for this layer
+// stop at this level’s path → Ok(path) for this layer
+// stop further up           → Err(rest) for this layer
 ```
 
-Worked with path value `PathA` after two peels from `C`:
+With stop path `PathA` after two peels from `C`:
 
 ```text
-// conceptual: complete running the stack upward
-
-// after applying only the wrap that sits at A (terminal stop as Err payload
-// in the illustration the user cares about for a jump):
-complete through A  →  Err(PathA)
-
-// then B’s wrap adds another Err:
-complete through B  →  Err(Err(PathA))
-
-// C’s wrap would add another layer if the origin were above C, etc.
+through A’s layer  →  Err(PathA)        // jump form as discussed
+through B’s layer  →  Err(Err(PathA))
+// type is still Out = C::Ascent
 ```
 
-Same climb, stop at `B` instead (one peel only):
+One peel only, stop at B:
 
 ```text
-into_parent  →  path = B, stack = [C’s wrap]
-complete at B  →  Ok(PathB)   // C’s ascent: Here at B
+into_parent  →  path at B, Out = C::Ascent
+complete()   →  Ok(PathB) inside C::Ascent
 ```
-
-So:
 
 ```rust
-// always returns C’s ascent type (opaque public type; Result private)
+// always Out = C::Ascent
 path_c
-    .into_parent()   // Climb at B, pack stack includes C
-    .into_parent()   // Climb at A, pack stack includes C then B
-    .complete()      // PathA wrapped back to C’s ascent
+    .into_parent()   // Path at B, same Out
+    .into_parent()   // Path at A, same Out
+    .complete()      // -> C::Ascent
 ```
-
-Not:
-
-```rust
-// WRONG — different type depending on stop path; does not wrap back to C
-path.into_parent().into_parent().complete()  // as Return<PathA>
-```
-
-### Public API shape
-
-```rust
-// Climb is tied to origin ascent type Out (the type dispatch must return).
-struct Climb<P, Out> { /* path + pack stack; fields private */ }
-
-// Peel one level: new path is parent; push this level’s wrap into the stack.
-impl<Node, Parent, Out> Climb<PathMut<Node, Parent>, Out> {
-    fn into_parent(self) -> Climb<Parent, Out>;
-}
-
-// Stop here: run pack stack → Out (always origin ascent).
-impl<P, Out> Climb<P, Out> {
-    fn complete(self) -> Out;
-}
-```
-
-Starting a climb from the path `dispatch` holds (origin = this node’s ascent):
-
-```rust
-// bind, used by derive / handlers that leave or kill
-fn climb<P, Out>(path: P) -> Climb<P, Out>
-where
-    // P packs into Out when completed at P, etc.
-;
-```
-
-Handler / leaf leave:
-
-```rust
-// Normal leave C: one peel, complete → Ok(b) inside Out
-climb(path).into_parent().complete()
-
-// Jump to A: two peels, complete → Err(…) inside same Out
-climb(path).into_parent().into_parent().complete()
-```
-
-`Out` is inferred as `Self::Ascent` from the return position of `dispatch`. Same type every branch.
-
-### Pack stack (bind-private)
-
-Each `into_parent` from a `PathMut` level pushes: “if the stop path is my parent path, this layer is `Ok(parent)`; if the stop is further up, this layer is `Err(rest)`.”
-
-```text
-// illustration only — Result is private to bind
-
-// Layer for C (C::Ascent = Result<BPath, B::Ascent>):
-//   complete at B:  Ok(b)
-//   complete above: Err(b_ascent)
-
-// Layer for B (B::Ascent = Result<APath, A::Ascent>):
-//   complete at A:  Ok(a)
-//   complete above: Err(a_ascent)
-
-// Climb C → B → A, complete at A:
-//   base: a
-//   B layer: Ok(a)
-//   C layer: Err(Ok(a))
-```
-
-User-facing picture of the jump (Err nest growing as wraps apply upward), with stop path `PathA`:
-
-```text
-after A’s layer   Err(PathA)           // or Ok(PathA) if A is Here of that layer
-after B’s layer   Err(Err(PathA))      // one more Err from B when jump skipped B’s Here
-```
-
-Exact `Ok` vs `Err` at the terminal layer follows the private doll (`Ok` when the stop path **is** that layer’s Here path). The important mechanical fact: **wraps run on the way back up; return type is always origin `Out`.**
 
 ### One level up (parent)
 
-Parent does not build a climb from the child’s deep path. Child already returned `Child::Ascent` (fully wrapped to the child origin). Parent unpacks one private layer:
+Child returned `Child::Ascent` (already completed to the child’s origin). Parent unpacks one private layer. On `Here`, the recovered path is re-tagged / is a `Path<…, Parent::Ascent>` for the parent’s own leave:
 
 ```rust
 match unpack(child_ascent) {
     Here(mut path) => {
-        // posts + exclusive at this path
-        climb(path).into_parent().complete() // Out = Parent::Ascent
-        // or equivalent: pack Here peel without a multi-stack
+        // path: Path<…, Parent::Ascent>  (Out = parent ascent)
+        // posts + exclusive
+        path.into_parent().complete()
     }
     Up(rest) => {
-        // posts dropped; rest already Parent::Ascent’s Up payload
-        rest
+        // posts dropped
+        rest // already Parent::Ascent
     }
 }
 ```
 
-`unpack` / `Here` / `Up` live in bind. App code does not match `Result`.
+`unpack` / `Here` / `Up` in bind only. No public `Result`.
 
 ### Claim
 
-Separate root-owned slot. Not part of the climb / doll.
+Separate root-owned slot. Not on the path.
 
 ### Posts
 
-- `Here`: posts get `&mut path`.
-- `Up`: pre-snap only; no path at this level.
+- `Here`: `&mut` focus path.
+- `Up`: pre-snap only.
 
-## Types (`crates/bind`)
+## Types
 
 ```rust
-/// Opaque ascent out of a node. Always the same type for that node.
-/// Contains the private doll. No public Result.
-pub struct Ascent<D> {
-    doll: D, // private; D is the nested Result (or equivalent) layout
-}
-
-/// Climb: current path + pack stack back to origin ascent Out.
-pub struct Climb<P, Out> {
-    path: P,
-    // pack stack: private; type-state or private trait object internal
+/// Path with pack stack. Out = complete() return type (origin ascent).
+pub struct Path<P, Out> {
+    focus: P,
+    // private pack stack
     _out: core::marker::PhantomData<fn() -> Out>,
 }
 
-impl<Node, Parent, Out> Climb<laserbeam::PathMut<Node, Parent>, Out> {
-    /// Peel one path layer; push this level’s wrap for complete().
-    pub fn into_parent(self) -> Climb<Parent, Out>;
+impl<P, Out> Path<P, Out>
+where
+    P: HasParent,
+{
+    /// Peel focus; keep Out; push this level’s wrap.
+    pub fn into_parent(self) -> Path<P::Parent, Out>;
+
+    pub fn get(&self) -> &P::Node { /* via focus */ }
+    pub fn get_mut(&mut self) -> &mut P::Node { /* via focus */ }
 }
 
-impl<P, Out> Climb<P, Out> {
-    /// Run the pack stack. Type is always Out (origin ascent).
+impl<P, Out> Path<P, Out> {
+    /// Run pack stack → always Out.
     pub fn complete(self) -> Out;
 }
 
-/// Start a climb whose complete() type is Out (usually Self::Ascent).
-pub fn climb<P, Out>(path: P) -> Climb<P, Out>;
+/// Build path at this node for dispatch. Out = this node’s Ascent.
+pub fn path_for<P, Out>(focus: P) -> Path<P, Out>;
 
-/// One unpack step for the derive (not public Result).
 pub enum Step<Here, Up> {
     Here(Here),
     Up(Up),
 }
 
-// bind-private:
-// fn unpack_step(...) -> Step<...>;
-// pack stack: Here = Ok(path), Up = Err(rest) for each Result layer
-
 pub struct Claim<'c> {
     slot: &'c mut Option<()>,
 }
 
-impl<'c> Claim<'c> {
-    pub fn new(slot: &'c mut Option<()>) -> Self {
-        Self { slot }
-    }
-
-    pub fn is_taken(&self) -> bool {
-        self.slot.is_some()
-    }
-
-    pub fn try_take(&mut self) -> Option<()> {
-        if self.slot.is_some() {
-            None
-        } else {
-            *self.slot = Some(());
-            Some(())
-        }
-    }
-
-    pub fn with_exclusive<P, E>(
-        &mut self,
-        path: &mut P,
-        body: impl FnOnce(&mut P) -> Vec<E>,
-    ) -> Vec<E> {
-        match self.try_take() {
-            None => Vec::new(),
-            Some(()) => body(path),
-        }
-    }
-}
+// Claim methods as before (try_take, with_exclusive, …)
 ```
+
+laserbeam can stay `PathMut<Node, Parent>` as the **focus** only. Bind’s `Path<P, Out>` adds `Out` and the pack stack. Alternatively laserbeam gains `Out` on `PathMut` if we want one type — decision: prefer bind wrapper so laserbeam stays path-only; `Out` is an ascent concern.
 
 Dispatch:
 
 ```rust
 pub trait Dispatch<M: Bindings>: Place {
-    /// Opaque. Same type on every exit from this node.
     type Ascent<'a>
     where
         Self: 'a;
 
     fn dispatch<'a, 'c>(
-        path: Self::Path<'a>,
+        path: Path<Self::Path<'a>, Self::Ascent<'a>>,
+        // or Place::Path already includes Out = Ascent
         event: &M::Event,
         effs: &mut Vec<M::Effect>,
         claim: &mut Claim<'c>,
@@ -277,24 +194,16 @@ pub trait Dispatch<M: Bindings>: Place {
 }
 ```
 
-Derive sets `type Ascent<'a> = Ascent</* private doll type for this node */>`.
+Cleaner: **`Place::Path<'a>` is already `Path<Focus, Self::Ascent<'a>>`** so the path’s `Out` is this node’s ascent by construction.
 
 ## User signatures
 
 ```rust
-fn pre(ev: &SourceEvent, node: Node<&P, D>) -> T;
-
-fn post_here(pre_return: T, path: &mut P) -> Vec<M::Effect>;
-fn post_up(pre_return: T) -> Vec<M::Effect>;
-
-// Leave or kill: climb peels + complete → node’s Ascent (same type always)
-fn exclusive_leave(ev: &SourceEvent, path: P) -> (Vec<M::Effect>, NodeAscent);
-```
-
-```rust
-// Inner kill to root — return type is Inner::Ascent, not Return<RootPath>
-fn inner_handler(ev: &KeyEvent, path: InnerPath) -> (Vec<DemoEffect>, <Inner as Dispatch<M>>::Ascent<'_>) {
-    let ascent = climb(path).into_parent().into_parent().complete();
+fn exclusive(
+    ev: &SourceEvent,
+    path: Path<Focus, NodeAscent>,
+) -> (Vec<M::Effect>, NodeAscent) {
+    let ascent = path.into_parent().into_parent().complete(); // NodeAscent
     (vec![], ascent)
 }
 ```
@@ -302,123 +211,68 @@ fn inner_handler(ev: &KeyEvent, path: InnerPath) -> (Vec<DemoEffect>, <Inner as 
 ## Level order
 
 ```text
-DESCENT: schedule opts
+DESCENT: schedule; child PathMut focus with Out = Child::Ascent
 
 if child:
-  child_path = PathMut::from_fn(path, ...)
-  match unpack(Child::dispatch(child_path, event, effs, claim)) {
-    Here(path) => {
-      // posts + exclusive
-      climb(path).into_parent().complete()   // Parent::Ascent
-    }
-    Up(rest) => {
-      // posts dropped
-      rest
-    }
+  match unpack(Child::dispatch(child_path, ...)) {
+    Here(path) => { /* Out = Parent::Ascent */ path.into_parent().complete() }
+    Up(rest) => rest
   }
 
 if leaf:
-  exclusive may climb(path).into_parent()…complete()
-  else climb(path).into_parent().complete()
+  path.into_parent().…complete()  // Out = Leaf::Ascent
 ```
 
-## DX example
+## DX
 
 ```rust
-// Inner::Ascent — always the same opaque type (doll: Result<OuterPath, RootPath>)
-// Outer::Ascent — always RootPath (boundary bare / opaque wrap)
-
 fn inner_handler(
     _ev: &KeyEvent,
-    path: InnerPath,
+    path: Path<InnerFocus, <Inner as Dispatch<M>>::Ascent<'_>>,
 ) -> (Vec<DemoEffect>, <Inner as Dispatch<M>>::Ascent<'_>) {
-    // two peels to root; complete wraps back to Inner::Ascent (Err(root) private)
-    (vec![], climb(path).into_parent().into_parent().complete())
-}
-
-// normal leave (generated if no exclusive kill):
-// climb(path).into_parent().complete()  → Here(outer) inside Inner::Ascent
-```
-
-Outer unpack child:
-
-```rust
-match unpack(Inner::dispatch(...)) {
-    Step::Here(mut outer_path) => {
-        // after_child_ok, rearm, exclusive…
-        climb(outer_path).into_parent().complete() // Outer::Ascent
-    }
-    Step::Up(rest) => {
-        // after_child_dropped
-        rest
-    }
+    (vec![], path.into_parent().into_parent().complete())
 }
 ```
 
-## Walk: A→B→C, kill to A
+## Walk: two peels to A from C
 
 ```text
-C exclusive:
-  climb(path_c)
-    .into_parent()    // path B; C wrap pushed
-    .into_parent()    // path A; B wrap pushed
-    .complete()       // wrap back to C::Ascent
-                      // private: Err(Ok(a)) or Err-nest as per doll
-  return that (type C::Ascent)
-
-B unpack:
-  Up(...): no B path; dropped posts; pass rest (type B::Ascent)
-
-A unpack:
-  Here or Up depending on doll; …
-```
-
-## Walk: normal leave C
-
-```text
-climb(path_c).into_parent().complete()  // Ok(b) inside C::Ascent
-B unpack Here(b): posts; climb(b).into_parent().complete()
+path: Path<focus_C, C::Ascent>
+into_parent → Path<focus_B, C::Ascent>
+into_parent → Path<focus_A, C::Ascent>
+complete()  → C::Ascent   // Err(Err(PathA)) private nest, same Out
 ```
 
 ## Ordered changes
 
 ### P0 — Sink; drop ControlFlow
 
-### P1 — `Climb<P, Out>` + `into_parent` pack stack + `complete() -> Out` + private doll + `unpack`/`Step`
+### P1 — `Path<P, Out>` (or `PathMut<…, Out>`): `into_parent` keeps `Out`, `complete() -> Out`, private pack stack + doll
 
-No `Return<P>` as dispatch return. No hop counters. No public `Result`.
+### P2 — Dispatch path is `Path<_, Self::Ascent>`; exclusive leave via peels + complete
 
-### P2 — Exclusive / leave via climb peels + complete
-
-### F1 — posts on Here / Up
-
-### F2 — multi-peel kill = more `into_parent` before `complete`
-
-### F3 — pre_post pre-snap for Up
-
-### F4 — only_if_intact = Here only
+### F1–F4 — posts Here/Up, pre_post, only_if_intact, kill multi-peel
 
 ## Rules
 
 1. Descent schedules; set final. Ascent runs every scheduled post.
-2. Each node’s `dispatch` always returns that node’s `Ascent` type.
-3. Climb: `into_parent` peels path and pushes a wrap; `complete` runs wraps back to origin `Out`.
-4. Private doll (`Result` nest) only inside bind. App never constructs or matches it.
-5. Parent: `unpack` → Here (posts + climb peel complete) / Up (posts dropped + pass rest).
-6. `Claim` separate. laserbeam peels the path; bind owns the pack stack.
-7. No `Return<P>` as the ascent type. No `Infallible`. No hop counters.
+2. Path is generic over `Out` = what `complete()` returns (origin ascent).
+3. `into_parent` peels focus, preserves `Out`, pushes a pack wrap.
+4. `complete() -> Out` always — same type at every stop depth.
+5. Private `Result` doll only in bind. No public `Result` ascent. No `Return<P>`. No hop counters.
+6. Parent: unpack Here/Up; Here path has `Out = Parent::Ascent`.
+7. `Claim` separate.
 
 ## Tests
 
-- Normal leave: Here chain; complete type equals `Self::Ascent`
-- Two peels + complete: still `Self::Ascent`, not `Return<PathA>`
-- Up arm has no path at skipped level
+- After N peels, path type still has same `Out`
+- `complete()` type equals origin `Ascent`, not the stop focus type
+- Two peels from C: private nest jump; type is `C::Ascent`
 - App cannot match ascent as `Result`
-- Claim trap door
 
 ## Open
 
-- Type-state pack stack vs private sealed trait `Pack<Out>` per spine level (must compile; no coherence dodge)
-- Whether `Climb::into_parent` is only for `PathMut` or also other `HasParent` paths
+- Bind `Path<P, Out>` wrapper vs `Out` on laserbeam `PathMut`
+- Type-state pack stack representation
 - Derived / enum nodes
-- Root boundary: `Out` bare path vs `Ascent` newtype around path
+- Root: `Out` at root free-dispatch boundary
