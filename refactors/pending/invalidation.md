@@ -4,7 +4,7 @@ Not done. Standalone.
 
 Descent schedules which pre/posts/binds run. That set is final. Ascent runs every scheduled post.
 
-Leave peels (`after_first_peel` / `into_parent` / `complete` → nested **Here/Up** doll) are **`path-peel-complete.md`**. Ship that prefactor first. Pack/Path/PeelPack live only there.
+Leave peels on **`Place::Path`** (`PathMut` vs root `&mut Self` as the bind macro already distinguishes) are **`path-peel-complete.md`**. Ship that prefactor first.
 
 ## Model
 

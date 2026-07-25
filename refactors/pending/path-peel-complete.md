@@ -1,67 +1,77 @@
-# PathMut peel + complete (Here / Up doll)
+# PathMut peel + complete (Here / Up), on bind’s root / non-root split
 
 Not done. Standalone. Prefactor for `invalidation.md`.
 
-Leave starts on a **`laserbeam::PathMut`**. Peel is only `PathMut::into_parent`. The doll is nested `Here`/`Up` of the **parent path types** along that `PathMut` chain (ending at root `&mut T`).
+This only makes sense on top of **existing** `Place` paths and the bind derive’s root vs non-root split. It is not a second path system.
 
-Deliverable when implemented: unit tests on real `PathMut::from_fn` trees that assert the nests.
+Deliverable when implemented: unit tests on the real bind test tree (`App` / `Layer` / `Nav` / `Deep` with `PathMut::from_fn` as the macro emits).
 
-## Existing machinery (the only path type)
+## What bind already does
+
+### Place path types (`bind_macro` `place_impl`)
 
 ```rust
-// crates/laserbeam
-pub struct PathMut<Node, Parent> {
-    parent: Parent,
-    projection: ProjMut<Node, Parent>,
-    shared: ProjRef<Node, Parent>,
+// #[node(root)]
+impl Place for App {
+    type Path<'a> = &'a mut Self;   // NOT PathMut
 }
 
-impl<Node, Parent> PathMut<Node, Parent> {
-    pub const fn from_fn(
-        parent: Parent,
-        projection: fn(&mut Parent) -> &mut Node,
-        shared: fn(&Parent) -> &Node,
-    ) -> Self { /* … */ }
-
-    pub fn get(&self) -> &Node { /* … */ }
-    pub fn get_mut(&mut self) -> &mut Node { /* … */ }
-    pub const fn parent(&self) -> &Parent { /* … */ }
-
-    /// The only peel.
-    pub fn into_parent(self) -> Parent {
-        self.parent
-    }
+// #[node(parent = LayerPath)]
+impl Place for Nav {
+    type Path<'a> = laserbeam::PathMut<Self, LayerPath<'a>>;
 }
-
-// crates/bind
-impl<N, P> HasParent for laserbeam::PathMut<N, P> {
-    type Parent = P;
-    fn into_parent(self) -> P {
-        laserbeam::PathMut::into_parent(self)
-    }
-}
-
-pub trait Place {
-    type Path<'a>
-    where
-        Self: 'a;
-}
-// root:  type Path<'a> = &'a mut Self;
-// child: type Path<'a> = PathMut<Self, <Parent as Place>::Path<'a>>;
 ```
 
-### Real path nests (bind / mercury style)
+From the live test tree:
 
 ```rust
+// #[node(root)]
 type AppPath<'a> = &'a mut App;
+
+// #[node(parent = AppPath)]
 type LayerPath<'a> = PathMut<Layer, AppPath<'a>>;
+
+// #[node(parent = LayerPath)]
 type NavPath<'a> = PathMut<Nav, LayerPath<'a>>;
-type DeepPath<'a> = PathMut<Deep, NavPath<'a>>;
+type TypingPath<'a> = PathMut<Typing, LayerPath<'a>>;
+
+// #[node(parent = TypingPath)]
+type DeepPath<'a> = PathMut<Deep, TypingPath<'a>>;
 ```
 
-Every leave example below is one of these (or the same shape).
+### Descent / ascent today (`derive_support::Edge`)
 
-## Doll
+Parent is root (`is_root: true`) vs non-root changes **projections**, not the fact that the child path is always `PathMut`:
+
+```rust
+// Edge::child_path — always PathMut::from_fn(parent_path, …)
+// parent_path is either &mut App (root) or PathMut<…> (non-root)
+
+// root parent field:
+PathMut::from_fn(path, |o| &mut o.layer, |o| &o.layer)
+
+// non-root parent field:
+PathMut::from_fn(path, |np| &mut np.get_mut().deep, |np| &np.get().deep)
+```
+
+```rust
+// Edge::recover_parent — always the peel we need for leave
+child.into_parent()   // PathMut::into_parent → Parent path type
+```
+
+So: **every non-root place path is a `PathMut`**. Recovering the parent after a child dispatch is already `into_parent`. This prefactor is that same peel, plus a typed `Here`/`Up` doll for “where did we stop.”
+
+### Root never peels
+
+`&mut App` has no `into_parent`. Root dispatch:
+
+- builds child `PathMut` with `from_fn` on `&mut App`
+- on the way back, `recover_parent` yields `&mut App` again
+- does **not** run the leave doll **starting at** `&mut App`
+
+Leave/kill dolls start at a **non-root** `Place::Path` (`PathMut<…>`). Root only **receives** a doll whose innermost terminal type is `AppPath` (`&mut App`).
+
+## Public doll
 
 ```rust
 pub enum Doll<H, U> {
@@ -70,74 +80,83 @@ pub enum Doll<H, U> {
 }
 ```
 
-Same shape as `Result` / frunk `Coproduct` (`Inl`/`Inr`). Public names stay **Here** / **Up**.
-
 ```text
-Here(path)  — stop at this PathMut (or root path)
-Up(rest)    — PathMut::into_parent already happened past that layer
+Here(path)  — stop at this path (still a Place::Path value)
+Up(rest)    — PathMut::into_parent already moved past that layer
 ```
 
-## Origin nest is the PathMut parent chain
+## Origin nest = this node’s PathMut parent chain down to root `&mut T`
 
-Leave started **at** `NavPath` (includes `NavPath` as outermost Here):
+Leave **started at** `NavPath` (non-root):
 
 ```text
 NavAscent<'a> =
   Doll<
-    NavPath<'a>,
+    NavPath<'a>,                    // Place::Path for Nav = PathMut<Nav, LayerPath>
     Doll<
-      LayerPath<'a>,
-      AppPath<'a>           // root path bare — last Up holds &mut App
+      LayerPath<'a>,                // Place::Path for Layer = PathMut<Layer, AppPath>
+      AppPath<'a>                   // Place::Path for App = &mut App  — bare terminal
     >
   >
 ```
 
-| stop after peels | `PathMut` focus | value |
+| peels (`into_parent`) | focus type | `complete` value |
 | --- | --- | --- |
-| 0 | `NavPath` | `Here(nav)` |
-| 1× `into_parent` | `LayerPath` | `Up(Here(layer))` |
-| 2× `into_parent` | `AppPath` (`&mut App`) | `Up(Up(app))` — **bare** app, no `Here(app)` |
+| 0 | `NavPath` = `PathMut<Nav, LayerPath>` | `Here(nav)` |
+| 1 | `LayerPath` = `PathMut<Layer, AppPath>` | `Up(Here(layer))` |
+| 2 | `AppPath` = `&mut App` | `Up(Up(app))` — **bare** `&mut App`, no `Here(app)` |
+
+Leave **started at** `LayerPath` (parent is root):
 
 ```text
-// Result spelling of the same nest:
-Result<NavPath, Result<LayerPath, AppPath>>
-  Ok(nav)              = Here(nav)
-  Err(Ok(layer))       = Up(Here(layer))
-  Err(Err(app))        = Up(Up(app))
+LayerAscent<'a> = Doll<LayerPath<'a>, AppPath<'a>>
+
+0 peels:  Here(layer)
+1 peel:   Up(app)          // Terminal — parent is &mut App
 ```
 
-No `Result<AppPath, !>` / `CNil` unless we choose uniform termination later. Prefer bare `AppPath` as the nest bottom (matches root `Place::Path = &mut Self`).
+Leave **started at** `DeepPath`:
 
-## Function on every leave: `complete = f(Here(path_mut_or_root))`
+```text
+DeepAscent<'a> =
+  Doll<DeepPath, Doll<TypingPath, Doll<LayerPath, AppPath>>>
+// four Place path types; last is still bare AppPath
+```
 
-`LeavePath` wraps a **focus** that is either `PathMut<…>` or root `&mut T`, plus type-state for `f`:
+Same rule for every non-root node: nest is `Doll<Self::Path, <parent path nest>>` until root `&mut T` is bare at the bottom.
+
+## Function `f` on the leave (peel history)
+
+```text
+complete (non-root focus) = f(Here(focus))
+complete (root &mut T)    = bare Up chain ending in focus   // Terminal
+```
 
 ```text
 start at NavPath:     f = id
-complete:             f(Here(nav)) = Here(nav)
+                      complete → Here(nav)
 
-PathMut::into_parent  // NavPath → LayerPath
-f := |x| f(Up(x))     // one Up per peel
-complete:             f(Here(layer)) = Up(Here(layer))
+PathMut::into_parent  // same as Edge::recover_parent
+f := |x| f(Up(x))
+                      complete → Up(Here(layer))
 
-PathMut::into_parent  // LayerPath → AppPath
-f := |x| f(Up(x))     // compose
-complete at root:     Up(Up(app))   // Terminal: no Here on &mut App
+PathMut::into_parent  // LayerPath → AppPath; parent is root
+f := |x| f(Up(x)) with Terminal
+                      complete → Up(Up(app))
 ```
 
-One-level lift (Result language), still about **path types**:
+Result spelling:
 
 ```text
-// lift past NavPath layer:
-Result<LayerPath, T> → Result<NavPath, Result<LayerPath, T>>   // Err / Up
-
-f_layer = lift_nav ∘ Here     // |layer| Err(Ok(layer))
-f_app   = lift_nav ∘ lift_layer  // bare app: |app| Err(Err(app))
+Result<NavPath, Result<LayerPath, AppPath>>
+  Ok(nav)         = Here(nav)
+  Err(Ok(layer))  = Up(Here(layer))
+  Err(Err(app))   = Up(Up(app))
 ```
 
-## Data structures
+No `!`. Root path type is the terminal `U` of the last `Doll` / `Err`.
 
-Focus is always `PathMut` or root path. Wrap is the composed `f` (Cayley / difference-list of `Up` constructors — one per `PathMut::into_parent`).
+## Data structures
 
 ```rust
 use core::marker::PhantomData;
@@ -148,7 +167,6 @@ pub enum Doll<H, U> {
     Up(U),
 }
 
-/// f = id.
 pub struct Id<Rest>(PhantomData<Rest>);
 
 impl<Rest> Id<Rest> {
@@ -157,7 +175,6 @@ impl<Rest> Id<Rest> {
     }
 }
 
-/// f = |x| outer(Up(x)). `Skipped` = the PathMut type just peeled.
 pub struct ComposeUp<Skipped, Inner> {
     inner: Inner,
     _skipped: PhantomData<Skipped>,
@@ -172,25 +189,23 @@ impl<Skipped, Inner> ComposeUp<Skipped, Inner> {
     }
 }
 
-/// Innermost at root `&mut T`: Up(app) with no Here.
+/// Innermost wrap when focus is root Place::Path (&mut T).
 pub struct Terminal;
 
-/// `P` is PathMut<…> or &mut Root.
+/// `P` is always a Place::Path: PathMut<…> or &mut Root.
 pub struct LeavePath<P, F> {
     focus: P,
     f: F,
 }
 ```
 
-## Full impls: leave started at `NavPath`
+`ComposeUp` / `Id` / `Terminal` are the type-state for `f` (composed `Up` constructors). One `PathMut::into_parent` ↔ one `ComposeUp` layer.
+
+## Full impls for the bind test tree
+
+### Nav (`#[node(parent = LayerPath)]`)
 
 ```rust
-// Types (production lifetimes)
-// type AppPath<'a> = &'a mut App;
-// type LayerPath<'a> = PathMut<Layer, AppPath<'a>>;
-// type NavPath<'a> = PathMut<Nav, LayerPath<'a>>;
-// type NavAscent<'a> = Doll<NavPath<'a>, Doll<LayerPath<'a>, AppPath<'a>>>;
-
 pub type NavAscent<'a> = Doll<NavPath<'a>, Doll<LayerPath<'a>, AppPath<'a>>>;
 
 pub fn leave_at_nav<'a>(path: NavPath<'a>) -> LeavePath<NavPath<'a>, Id<Doll<LayerPath<'a>, AppPath<'a>>>> {
@@ -201,46 +216,42 @@ pub fn leave_at_nav<'a>(path: NavPath<'a>) -> LeavePath<NavPath<'a>, Id<Doll<Lay
 }
 
 impl<'a> LeavePath<NavPath<'a>, Id<Doll<LayerPath<'a>, AppPath<'a>>>> {
-    /// f = id → Here(nav)
     pub fn complete(self) -> NavAscent<'a> {
         Doll::Here(self.focus)
     }
 
-    /// PathMut::into_parent: NavPath → LayerPath; f := Up
     pub fn into_parent(self) -> LeavePath<LayerPath<'a>, ComposeUp<NavPath<'a>, Id<AppPath<'a>>>> {
         LeavePath {
-            focus: self.focus.into_parent(),
+            focus: self.focus.into_parent(), // PathMut::into_parent → LayerPath
             f: ComposeUp::new(Id::new()),
         }
     }
 }
 
 impl<'a> LeavePath<LayerPath<'a>, ComposeUp<NavPath<'a>, Id<AppPath<'a>>>> {
-    /// f(Here(layer)) = Up(Here(layer))
     pub fn complete(self) -> NavAscent<'a> {
         Doll::Up(Doll::Here(self.focus))
     }
 
-    /// PathMut::into_parent: LayerPath → AppPath; f := Up∘Up, Terminal at root
+    /// Next parent is AppPath = &mut App → Terminal
     pub fn into_parent(
         self,
     ) -> LeavePath<AppPath<'a>, ComposeUp<NavPath<'a>, ComposeUp<LayerPath<'a>, Terminal>>> {
         LeavePath {
-            focus: self.focus.into_parent(),
+            focus: self.focus.into_parent(), // → &mut App
             f: ComposeUp::new(ComposeUp::new(Terminal)),
         }
     }
 }
 
 impl<'a> LeavePath<AppPath<'a>, ComposeUp<NavPath<'a>, ComposeUp<LayerPath<'a>, Terminal>>> {
-    /// bare root: Up(Up(app))
     pub fn complete(self) -> NavAscent<'a> {
         Doll::Up(Doll::Up(self.focus))
     }
 }
 ```
 
-## Full impls: leave started at `LayerPath` (parent is root)
+### Layer (`#[node(parent = AppPath)]` — parent is root)
 
 ```rust
 pub type LayerAscent<'a> = Doll<LayerPath<'a>, AppPath<'a>>;
@@ -259,7 +270,7 @@ impl<'a> LeavePath<LayerPath<'a>, Id<AppPath<'a>>> {
 
     pub fn into_parent(self) -> LeavePath<AppPath<'a>, ComposeUp<LayerPath<'a>, Terminal>> {
         LeavePath {
-            focus: self.focus.into_parent(),
+            focus: self.focus.into_parent(), // PathMut → &mut App
             f: ComposeUp::new(Terminal),
         }
     }
@@ -272,70 +283,66 @@ impl<'a> LeavePath<AppPath<'a>, ComposeUp<LayerPath<'a>, Terminal>> {
 }
 ```
 
-## Walk on `PathMut`
+### Deep (`#[node(parent = TypingPath)]`)
+
+Same pattern; nest has four layers; last peel still ends in `Terminal` + `AppPath`. Emit with a macro once Nav/Layer tests pass:
 
 ```text
-nav: PathMut<Nav, PathMut<Layer, &mut App>>
-
-leave_at_nav(nav)
-  focus = nav
-  complete → Here(nav)
-
-.into_parent()                    // PathMut::into_parent
-  focus = layer : PathMut<Layer, &mut App>
-  complete → Up(Here(layer))
-
-.into_parent()                    // PathMut::into_parent
-  focus = app : &mut App
-  complete → Up(Up(app))
+DeepAscent = Doll<DeepPath, Doll<TypingPath, Doll<LayerPath, AppPath>>>
 ```
 
-## Root
+### App (`#[node(root)]`)
 
-| | |
-| --- | --- |
-| Root path type | `&mut App` = `Place::Path` for root — **not** a `PathMut` |
-| In `NavAscent` | only as bare innermost type of last `Up` |
-| `into_parent` on `&mut App` | does not exist |
-| Detect peel-to-root | `PathMut<N, Parent>` with `Parent = &mut T` installs `Terminal` |
-| Leave **from** root | root dispatch does not `leave_at(&mut app)`; only unpacks child’s doll |
+No `leave_at_app`. Root path is `&mut App`. After a child returns `LayerAscent` / `NavAscent`, root matches `Here`/`Up` and finishes. Free `dispatch` only needs effects + claim.
 
-No `!` / `CNil` required. Optional later: uniform `Doll<AppPath, CNil>` if every layer must be an Either; not the default.
+## Tie-in to current dispatch recover
 
-## Coproduct / inject (what this is, what it is not)
+Today (macro expand):
 
-`Doll` is a two-variant coproduct (`Inl`/`Inr` = `Here`/`Up`), nestable like frunk’s `Coproduct` / `Result` generalized past two types.
-
-**Construction is by peel history, not by type search.**
-
-```text
-// frunk-style inject: count Inrs by searching the type list for T
-// peel-style: one Up per PathMut::into_parent call on this LeavePath
+```rust
+let child = Child::dispatch(child_path, event)?;
+path = child.into_parent(); // Edge::recover_parent
 ```
 
-`finish` composition (`lift ∘ Here`) is the same *idea* as `inject`, but the number of `Up`s comes from the call chain stored in `ComposeUp`, not from `CoprodInjector<T, Index>` inference.
+After this prefactor (invalidation):
 
-`PathMut<Node, Parent>` is indexed by **node and parent**, so two different spine positions are different types even if `Node` matched. Peel-history stays well-defined if laserbeam later allowed recursive `PathMut<Node, PathMut<Node, _>>`; type-search inject would go ambiguous there.
+```rust
+let ascent = Child::leave_or_dispatch(…); // returns NavAscent / LayerAscent / …
+match ascent {
+    Doll::Here(mut path) => {
+        // posts at this Place::Path
+        // leave: leave_at_*(path).into_parent()*.complete() or continue doll
+    }
+    Doll::Up(rest) => { /* posts dropped; rest is thinner Place path nest */ }
+}
+```
 
-**No frunk dependency.** Steal ideas only if useful later: empty-enum terminal (`CNil`) for uniform layers; fold-over-handlers for parent consumers in invalidation. Newtyping frunk to rename `Inl`/`Inr` → `Here`/`Up` kills `inject`/`embed` — not worth the crate for a two-variant enum we own.
+`into_parent` on `LeavePath` is the same `PathMut::into_parent` recover already uses; the wrap type-state is the only addition.
 
-Runtime zippers (`Option` parent, erased path) are **not** this: they drop “how far up” from the type.
+## Root vs non-root (checklist)
 
-`Id` / `ComposeUp` is the composed constructor chain (difference-list / Cayley representation of the finish function): store the pipeline of `Up`s, apply at `complete`, not a runtime `Vec` of ops.
+| | `#[node(root)]` | `#[node(parent = …)]` |
+| --- | --- | --- |
+| `Place::Path` | `&mut Self` | `PathMut<Self, ParentPath>` |
+| `from_fn` parent | `&mut Root` field/variant | `path.get_mut()` / `path.get()` |
+| `into_parent` on path | no | yes → `ParentPath` |
+| start leave doll | no | yes (`leave_at_*`) |
+| appears in doll | bare terminal `AppPath` only | `Here` or intermediate `Up(Here(…))` |
+| detect Terminal peel | — | `ParentPath` is `&mut T` not `PathMut` |
 
 ## Tests (deliverable)
 
-Build real trees with `PathMut::from_fn` (same as bind tests: App / Layer / Nav).
+Use `bind` fixtures: build `App`, take `LayerPath` / `NavPath` via the same `from_fn` the macro emits (or call into a test helper that mirrors `Edge::child_path`).
 
 ```rust
 #[test]
-fn nav_complete_at_nav() {
-    // … from_fn …
+fn nav_here() {
+    // nav: NavPath from real App tree
     assert!(matches!(leave_at_nav(nav).complete(), Doll::Here(_)));
 }
 
 #[test]
-fn nav_one_peel_layer() {
+fn nav_up_here_layer() {
     assert!(matches!(
         leave_at_nav(nav).into_parent().complete(),
         Doll::Up(Doll::Here(_))
@@ -343,7 +350,7 @@ fn nav_one_peel_layer() {
 }
 
 #[test]
-fn nav_two_peels_app() {
+fn nav_up_up_app() {
     assert!(matches!(
         leave_at_nav(nav).into_parent().into_parent().complete(),
         Doll::Up(Doll::Up(_))
@@ -351,7 +358,7 @@ fn nav_two_peels_app() {
 }
 
 #[test]
-fn layer_peel_to_app() {
+fn layer_up_app() {
     assert!(matches!(
         leave_at_layer(layer).into_parent().complete(),
         Doll::Up(_)
@@ -359,26 +366,30 @@ fn layer_peel_to_app() {
 }
 
 #[test]
-fn nav_ascent_type() {
+fn types_are_place_paths() {
     let out: NavAscent<'_> = leave_at_nav(nav).into_parent().into_parent().complete();
-    let _ = out;
+    let _: &mut App = match out {
+        Doll::Up(Doll::Up(app)) => app,
+        _ => panic!(),
+    };
 }
 ```
 
 ## Ordered changes
 
-### 1 — `Doll`, `Id`, `ComposeUp`, `Terminal`, `LeavePath` in bind (or small module)
+### 1 — `Doll`, `Id`, `ComposeUp`, `Terminal`, `LeavePath` in bind
 
-### 2 — `leave_at_nav` / `leave_at_layer` style APIs for fixtures; tests above
+### 2 — `leave_at_nav` + `leave_at_layer` + tests on real `App` tree paths
 
-### 3 — Macro or derive helper: given `PathMut` nest depth, emit the `complete`/`into_parent` chain for that origin path type
+### 3 — Macro: given `Place` path nest (root vs `PathMut` layers), emit `leave_at_*` / ascent alias for that node
 
-### 4 — invalidation leave/kill calls this on `Place::Path`
+### 4 — invalidation: child returns ascent doll; parent matches `Here`/`Up`; recover = same `into_parent`
 
 ## Rules
 
-1. Focus is `PathMut` or root `&mut T` only. Peel is `PathMut::into_parent`.
-2. Origin nest = `Doll<ThisPathMut, Doll<ParentPath, … AppPath>>` with root bare.
-3. Start `f = id`; each peel composes one `Up`; `complete` runs `f` on `Here(focus)` until root uses `Terminal`.
-4. Public `Here`/`Up`. Construction by peel count in type-state, not inject-by-type.
-5. No second path ADT. No frunk required.
+1. Only `Place::Path` values: `&mut Root` or `PathMut<Self, ParentPath>`.
+2. Peel is only `PathMut::into_parent` (same as `Edge::recover_parent`).
+3. Leave dolls start only on non-root places; root is bare terminal inside the nest.
+4. `complete` at `PathMut` focus: `f(Here(focus))`; at `&mut Root`: bare `Up` chain + `Terminal`.
+5. Public match: `Doll::Here` / `Doll::Up`.
+6. Tests use the existing bind tree and path aliases.
