@@ -53,28 +53,15 @@ impl<'c> Claim<'c> {
     }
 
     pub fn try_take(&mut self) -> Option<()> {
-        if self.slot.is_some() {
-            None
-        } else {
-            *self.slot = Some(());
-            Some(())
-        }
-    }
-
-    pub fn with_exclusive<P, E>(
-        &mut self,
-        path: &mut P,
-        body: impl FnOnce(&mut P) -> Vec<E>,
-    ) -> Vec<E> {
-        match self.try_take() {
-            None => Vec::new(),
-            Some(()) => body(path),
+        match self.slot.replace(()) {
+            Some(()) => None,
+            None => Some(()),
         }
     }
 }
 ```
 
-`with_exclusive` is for in-place handlers (effects only). A leaving handler takes the claim with `try_take` and its `Completed` is returned directly (see Generated: Inner).
+Every bind handler runs behind `try_take`, and its `Completed` is returned directly (see Generated: Inner and Outer).
 
 ## Dispatch
 
@@ -120,15 +107,18 @@ where
 
 ## Handlers
 
-Two shapes, distinguished by whether the handler leaves:
+A bind handler is a post handler that claims: it consumes its path, returns effects plus where dispatch is afterwards, and the only difference from a post is the claim and the `Completed`. One shape:
 
 ```rust
-// in place: effects only; runs under with_exclusive or as a post
-fn outer_handler(_ev: &KeyEvent, _outer: &mut OuterPath<'_>) -> Vec<DemoEffect> {
-    vec![DemoEffect::SetLayerHome]
+// stays put: ends with the zero-peel complete
+fn outer_handler<'a>(
+    _ev: &KeyEvent,
+    mut path: OuterPath<'a>,
+) -> (Vec<DemoEffect>, Completed<OuterPath<'a>>) {
+    (vec![DemoEffect::SetLayerHome], path.complete()) // Here(outer)
 }
 
-// leaving: effects + where dispatch is afterwards
+// leaves: peels first
 fn inner_handler<'a>(
     _ev: &KeyEvent,
     path: InnerPath<'a>,
@@ -137,7 +127,7 @@ fn inner_handler<'a>(
 }
 ```
 
-Kill = more `into_parent` calls before `complete`. Handwritten handlers `use laserbeam::Complete;`.
+Kill = more `into_parent` calls before `complete`. Handwritten handlers `use laserbeam::Complete;`. Posts return effects only; they run on the ascent and do not move focus.
 
 ## DX types
 
@@ -315,8 +305,11 @@ where
                     effs.extend(rearm(&mut path));
                 }
                 if let Some(ev) = opt_2 {
-                    let e = claim.with_exclusive(&mut path, |p| outer_handler(ev, p));
-                    effs.extend(e);
+                    if claim.try_take().is_some() {
+                        let (e, completed) = outer_handler(ev, path);
+                        effs.extend(e);
+                        return completed;
+                    }
                 }
                 ::laserbeam::Complete::complete(path) // Here(outer)
             }
@@ -429,7 +422,7 @@ Root:   Here(outer) → path = outer.into_parent(); return path.complete()
 2. Arms `Here` / `Up`; three outcomes at a parent via two nested `into_inner` matches; the no-inspection form forwards `rest` unchanged.
 3. Every dispatch returns `Completed<Self::Path>` (derived levels: `Completed<Self::Parent>`); no ascent associated type.
 4. Opts are snapped before descent; the schedule is final; ascent runs every scheduled post.
-5. In-place handlers return effects and run under `with_exclusive`; leaving handlers take the claim and return `(effects, Completed<Path>)`.
+5. Every bind handler runs behind the claim and returns `(effects, Completed<Self::Path>)`; staying put is `path.complete()`. Posts return effects only.
 6. Claim separate; one exclusive handler per dispatch.
 7. path-peel-complete ships first, including `Completed::up`.
 
@@ -450,7 +443,7 @@ Skeletal; flesh out after the design above is agreed. Prefactors first, each ind
 
 ### 3 — bind_macro: snap trigger opts before descent (the schedule becomes final pre-descent)
 
-### 4 — leaving handlers: `(effects, Completed<Path>)`, claim-gated; kill = extra `into_parent` before `complete`
+### 4 — bind handlers return `(effects, Completed<Path>)`, claim-gated; staying put is `path.complete()`; kill = extra `into_parent`
 
 ### 5 — `#[post]` on the three arms (kept / stopped-here / gone-above)
 
