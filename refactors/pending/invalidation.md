@@ -315,24 +315,47 @@ fn inner_handler(
 }
 ```
 
-### Generated: Inner
+### Generated code for the DX tree
+
+Exact expand for the Outer/Inner example above. This is what the derive emits (plus library helpers it calls). Review this block.
+
+#### `into_parent` (library; every hop)
 
 ```rust
-impl Dispatch<M> for Inner {
+// ::laserbeam::PathMut / bind — called from Outer after Inner returns
+pub fn into_parent(self, sink: &mut Vec<M::Effect>, state: &mut AscentState) -> OuterPath {
+    let snap = state.snapshot();
+    let (parent, post_effs) = (self.on_into_parent)(self.parent, &snap);
+    ::core::iter::Extend::extend(sink, post_effs);
+    state.step_up();
+    parent
+}
+```
+
+#### Inner
+
+```rust
+#[automatically_derived]
+impl ::bind::Dispatch<M> for Inner {
     fn dispatch<'a>(
-        path: <Inner as Place>::Path<'a>,
-        event: &M::Event,
-        effs: &mut Vec<M::Effect>,
-    ) -> (<Inner as Place>::Path<'a>, AscentState)
+        path: <Inner as ::bind::Place>::Path<'a>,
+        event: &<M as ::bind::Bindings>::Event,
+        effs: &mut ::std::vec::Vec<<M as ::bind::Bindings>::Effect>,
+    ) -> (
+        <Inner as ::bind::Place>::Path<'a>,
+        ::bind::AscentState,
+    )
     where
         Self: 'a,
     {
+        // ----- descent: schedule -----
+        // attr index 0: #[bind(KeyA => inner_handler)] → (noop_pre, exclusive)
         let opt_0 = if let ::core::option::Option::Some(ev) =
-            ::core::convert::TryFrom::try_from(event).ok()
+            ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
         {
             let trigger = KeyA;
             if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                ::core::option::Option::Some(noop_pre(
+                ::core::option::Option::Some(::bind::noop_pre(
                     ev,
                     ::bind::Node {
                         parent: &path,
@@ -346,35 +369,48 @@ impl Dispatch<M> for Inner {
             ::core::option::Option::None
         };
 
-        let mut state = AscentState::new();
+        // ----- ascent: leaf constructs internal AscentState -----
+        let mut state = ::bind::AscentState::new();
 
         if let ::core::option::Option::Some(()) = opt_0 {
-            let ev = /* &KeyEvent from event */;
-            let (path, out_effs) = run_exclusive(path, &mut state, |node, state| {
-                inner_handler(ev, node, state)
-            });
-            ::core::iter::Extend::extend(effs, out_effs);
-            return (path, state);
+            if let ::core::option::Option::Some(ev) =
+                ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
+            {
+                let (path, out_effs) = ::bind::run_exclusive(path, &mut state, |node, state| {
+                    inner_handler(ev, node, state)
+                });
+                ::core::iter::Extend::extend(effs, out_effs);
+                return (path, state);
+            }
         }
         (path, state)
     }
 }
 ```
 
-### Generated: Outer
+#### Outer
 
 ```rust
-impl Dispatch<M> for Outer {
+#[automatically_derived]
+impl ::bind::Dispatch<M> for Outer
+where
+    Inner: ::bind::Dispatch<M>,
+{
     fn dispatch<'a>(
-        mut path: <Outer as Place>::Path<'a>,
-        event: &M::Event,
-        effs: &mut Vec<M::Effect>,
-    ) -> (<Outer as Place>::Path<'a>, AscentState)
+        mut path: <Outer as ::bind::Place>::Path<'a>,
+        event: &<M as ::bind::Bindings>::Event,
+        effs: &mut ::std::vec::Vec<<M as ::bind::Bindings>::Effect>,
+    ) -> (
+        <Outer as ::bind::Place>::Path<'a>,
+        ::bind::AscentState,
+    )
     where
         Self: 'a,
     {
+        // ----- descent: schedule -----
+        // attr index 0: #[pre_post(AnyKey => (snap_child_id, after_child))]
         let opt_0 = if let ::core::option::Option::Some(ev) =
-            ::core::convert::TryFrom::try_from(event).ok()
+            ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
         {
             let trigger = AnyKey;
             if ::bind::EventTrigger::is_matching(&trigger, ev) {
@@ -392,12 +428,13 @@ impl Dispatch<M> for Outer {
             ::core::option::Option::None
         };
 
+        // attr index 1: #[post(AnyKey => only_if_intact(|p| &mut p.get_mut().return_home, rearm))]
         let opt_1 = if let ::core::option::Option::Some(ev) =
-            ::core::convert::TryFrom::try_from(event).ok()
+            ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
         {
             let trigger = AnyKey;
             if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                ::core::option::Option::Some(noop_pre(
+                ::core::option::Option::Some(::bind::noop_pre(
                     ev,
                     ::bind::Node {
                         parent: &path,
@@ -411,12 +448,13 @@ impl Dispatch<M> for Outer {
             ::core::option::Option::None
         };
 
+        // attr index 2: #[bind(KeyA => outer_handler)] → (noop_pre, exclusive)
         let opt_2 = if let ::core::option::Option::Some(ev) =
-            ::core::convert::TryFrom::try_from(event).ok()
+            ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
         {
             let trigger = KeyA;
             if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                ::core::option::Option::Some(noop_pre(
+                ::core::option::Option::Some(::bind::noop_pre(
                     ev,
                     ::bind::Node {
                         parent: &path,
@@ -430,45 +468,125 @@ impl Dispatch<M> for Outer {
             ::core::option::Option::None
         };
 
+        // ----- build child path; posts capture opt_0 / opt_1; snap passed at into_parent -----
         let inner_path = ::laserbeam::PathMut::from_fn(
             path,
             |p| &mut p.get_mut().inner,
             |p| &p.get().inner,
-            move |parent, snap| {
+            move |parent, snap: &::bind::AscentStateSnapshot| {
                 let mut local = ::std::vec::Vec::new();
                 let mut path = parent;
+
+                // post for attr 0: after_child(pre_return, node, snap)
                 if let ::core::option::Option::Some(id) = opt_0 {
-                    let (p, e) = run_post(path, snap, |node, snap| {
+                    let (p, e) = ::bind::run_post(path, snap, |node, snap| {
                         after_child(id, node, snap)
                     });
                     path = p;
                     ::core::iter::Extend::extend(&mut local, e);
                 }
+
+                // post for attr 1: only_if_intact(..., rearm)(node, snap)
                 if let ::core::option::Option::Some(()) = opt_1 {
-                    let (p, e) = run_post(path, snap, |node, snap| {
-                        only_if_intact(|p| &mut p.get_mut().return_home, rearm)(node, snap)
+                    let (p, e) = ::bind::run_post(path, snap, |node, snap| {
+                        ::bind::only_if_intact(
+                            |p| &mut p.get_mut().return_home,
+                            rearm,
+                        )(node, snap)
                     });
                     path = p;
                     ::core::iter::Extend::extend(&mut local, e);
                 }
+
                 (path, local)
             },
         );
 
+        // ----- child full dispatch (constructs AscentState at leaf) -----
         let (inner_path, mut state) =
             <Inner as ::bind::Dispatch<M>>::dispatch(inner_path, event, effs);
 
+        // ----- into_parent: snapshot → posts(&snap) → step_up -----
+        // expands to:
+        //   let snap = state.snapshot();
+        //   let (path, post_effs) = on_into_parent(inner_path.parent, &snap);
+        //   Extend::extend(effs, post_effs);
+        //   state.step_up();
         let mut path = inner_path.into_parent(effs, &mut state);
 
+        // ----- exclusive for attr 2 -----
         if let ::core::option::Option::Some(()) = opt_2 {
-            let ev = /* &KeyEvent from event */;
-            let (p, e) = run_exclusive(path, &mut state, |node, state| {
-                outer_handler(ev, node, state)
-            });
-            path = p;
-            ::core::iter::Extend::extend(effs, e);
+            if let ::core::option::Option::Some(ev) =
+                ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
+            {
+                let (p, e) = ::bind::run_exclusive(path, &mut state, |node, state| {
+                    outer_handler(ev, node, state)
+                });
+                path = p;
+                ::core::iter::Extend::extend(effs, e);
+            }
         }
+
         (path, state)
+    }
+}
+```
+
+#### Helpers those expands call (bind library, not generated per node)
+
+```rust
+pub(crate) fn noop_pre<E, P, D>(_ev: &E, _node: ::bind::Node<&P, D>) {}
+
+pub(crate) fn run_post<P>(
+    path: P,
+    snap: &AscentStateSnapshot,
+    body: impl ::core::ops::FnOnce(
+        ::bind::Node<P, ()>,
+        &AscentStateSnapshot,
+    ) -> (::std::vec::Vec<Effect>, P),
+) -> (P, ::std::vec::Vec<Effect>) {
+    body(
+        ::bind::Node {
+            parent: path,
+            data: (),
+        },
+        snap,
+    )
+}
+
+pub(crate) fn run_exclusive<P>(
+    path: P,
+    state: &mut AscentState,
+    body: impl ::core::ops::FnOnce(
+        ::bind::Node<P, ()>,
+        &mut AscentState,
+    ) -> (::std::vec::Vec<Effect>, P),
+) -> (P, ::std::vec::Vec<Effect>) {
+    match state.claim() {
+        ::core::option::Option::None => (path, ::std::vec::Vec::new()),
+        ::core::option::Option::Some(Claimed) => body(
+            ::bind::Node {
+                parent: path,
+                data: (),
+            },
+            state,
+        ),
+    }
+}
+
+pub fn only_if_intact<P, N>(
+    project: impl ::core::ops::Fn(&mut P) -> &mut N,
+    f: impl ::core::ops::FnOnce(&mut N) -> ::std::vec::Vec<Effect>,
+) -> impl ::core::ops::FnOnce(
+    ::bind::Node<P, ()>,
+    &AscentStateSnapshot,
+) -> (::std::vec::Vec<Effect>, P) {
+    move |mut node, snap| {
+        let effects = match snap.mutation() {
+            Mutation::Intact => f(project(&mut node.parent)),
+            Mutation::MaybeDropped => ::std::vec::Vec::new(),
+        };
+        (effects, node.parent)
     }
 }
 ```
