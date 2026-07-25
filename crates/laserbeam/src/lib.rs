@@ -407,8 +407,8 @@ impl<'a, R> HasStop for &'a mut R {
 
 /// A completed leave from origin `P`: where the peeling stopped.
 ///
-/// Only [`Complete::complete`] constructs one; `new` is private. Consumers get
-/// [`into_inner`](Self::into_inner) and nothing else.
+/// [`Complete::complete`] and [`Completed::up`] construct one; `new` is private.
+/// Consumers get [`into_inner`](Self::into_inner) to unwrap.
 pub struct Completed<P: HasStop> {
     stop: P::Stop,
 }
@@ -421,6 +421,17 @@ impl<P: HasStop> Completed<P> {
     #[must_use]
     pub fn into_inner(self) -> P::Stop {
         self.stop
+    }
+}
+
+impl<N, Par: Above> Completed<PathMut<N, Par>> {
+    /// Rebuild "the leave went above this path" from the payload `into_inner`
+    /// handed out: the inverse of unwrapping one `Up` level. A parent that
+    /// inspects its child's leave, finds it went past it, and must still
+    /// return its own `Completed` returns this.
+    #[must_use]
+    pub const fn up(above: Par::Up) -> Self {
+        Self::new(Stop::Up(above))
     }
 }
 
@@ -781,5 +792,37 @@ mod complete_tests {
             root.hits = 9;
         }
         assert_eq!(app.hits, 9);
+    }
+
+    /// The inspecting parent form: two nested `into_inner` matches, with
+    /// `Completed::up` rebuilding the gone-above arm.
+    #[test]
+    fn parent_inspects_and_rebuilds_with_up() {
+        fn parent_inspect(child: Completed<NavPath<'_>>) -> Completed<LayerPath<'_>> {
+            match child.into_inner() {
+                Stop::Here(nav) => nav.into_parent().complete(),
+                Stop::Up(rest) => match rest.into_inner() {
+                    Stop::Here(layer) => layer.complete(),
+                    Stop::Up(above) => Completed::up(above),
+                },
+            }
+        }
+
+        let mut app = tree(7, 0);
+        let stopped_here = parent_inspect(nav_path(&mut app).into_parent().complete());
+        let Stop::Here(layer) = stopped_here.into_inner() else {
+            panic!("stopped at layer");
+        };
+        assert_eq!(layer.get().nav.hits, 7);
+
+        let mut app = tree(0, 0);
+        {
+            let gone = parent_inspect(nav_path(&mut app).into_parent().into_parent().complete());
+            let Stop::Up(root) = gone.into_inner() else {
+                panic!("gone above layer");
+            };
+            root.hits = 4;
+        }
+        assert_eq!(app.hits, 4);
     }
 }
