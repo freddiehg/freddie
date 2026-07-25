@@ -592,31 +592,243 @@ no invalidate; hops=1 inv=0 → Intact at B posts
 rearm may use path
 ```
 
+## How this is implemented
+
+Today (`crates/bind` + `bind_macro`):
+
+```rust
+// Dispatch returns ControlFlow. First matching bind Breaks with Output.
+// Parent only runs if child Continues (miss).
+fn dispatch(path) -> ControlFlow<Output, Path> {
+    let child = Child::dispatch(child_path, event)?; // Break propagates; parent never runs
+    path = recover(child); // into_parent equivalent — only on Continue
+    // own binds: handler(ev, Node { parent: path, data: () }) → Break(collect)
+    Continue(path)
+}
+```
+
+The path peel we need already exists as `recover` / `HasParent::into_parent`. What is missing: always peel and run the parent side after the child, even when the child "handled" the event; carry hop coverage; gate exclusive with claim instead of `ControlFlow::Break`.
+
+Stopgap for "potentially invalidated" is exactly:
+
+```rust
+// child returns Ascent { path: PathMut<C, B>, inv, hops }
+ascent.into_parent_ascent(effs, |ascent| {
+    // path is B (parent half of into_parent). C ownership gone.
+    // mutation() from inv/hops. B posts run here.
+});
+```
+
+No second mint of a path into C. No ideal "path segment deleted from the type." Parent half + `mutation()` is the implementable form of "pass the potentially invalidated."
+
+Ideal later (F5+): covered segment is unownable for real. Not in the first cut.
+
 ## Ordered changes
 
-### P0 — Effect batch + Break
+Each step is independently shippable. Prefactors keep mercury green until exclusive/post semantics land.
 
-### P1 — optional sink
+### P0 — Sink + always return path (still one exclusive)
 
-### P2 — from_fn framework-only
+Before (`bind` free function + trait):
 
-### P3 — `Ascent<P>` + `Claim<'c>` + `into_parent_ascent` + `Claim::with_exclusive`
+```rust
+fn dispatch(path, event) -> ControlFlow<M::Output, Path>;
+// Break = handled; Continue = miss
+pub fn dispatch(...) -> Option<M::Output> {
+    match N::dispatch(path, event) {
+        Break(out) => Some(out),
+        Continue(_) => None,
+    }
+}
+```
 
-Path ownership peels with `into_parent`. Posts get the path still owned at that hop plus `mutation()`.
+After:
 
-### P4 — bind via `claim.with_exclusive`
+```rust
+fn dispatch<'a>(
+    path: Self::Path<'a>,
+    event: &M::Event,
+    effs: &mut Vec<M::Effect>, // or keep Output = Vec; sink is that vec
+) -> Self::Path<'a>; // always return path; no ControlFlow
 
-### F1 — post
+pub fn dispatch(...) -> Option<Vec<M::Effect>> {
+    let mut effs = Vec::new();
+    let _path = N::dispatch(path, event, &mut effs);
+    if effs.is_empty() { None } else { Some(effs) }
+}
+```
 
-### F2 — invalidate(d)
+Macro: child call no longer `?` on ControlFlow. Own bind that matches extends `effs` and still returns path (deepest exclusive still needs a "handled" flag — temporary: first match sets a local `handled` and shallower binds check it). Or keep Break only for exclusive and always recover path on Break too by restructuring:
 
-### F3 — pre_post (snap identity before the child can die)
+```rust
+// intermediate shape that unlocks posts:
+let (path, child_out) = match Child::dispatch(child_path, event) {
+    Break(out) => (recover(path_from_somewhere), Some(out)), // CAN'T — path stuck in Break
+};
+```
 
-### F4 — only_if_intact + rearm
+So P0 must stop putting path only on Continue. Return path always; output goes to sink. Deepest-wins becomes a bool or claim in P3.
 
-### F5 — reshape carrier
+Macro before (recurse):
 
-Ideal later: invalidate drops ownership of the covered segment for real (no path value for that segment remains). Stopgap: keep parent half after `into_parent`, flag MaybeDropped; sameness after kill is unknown.
+```rust
+let child = <Child as Dispatch<M>>::dispatch(child_path, event)?;
+path = recover;
+```
+
+Macro after:
+
+```rust
+let path = <Child as Dispatch<M>>::dispatch(child_path, event, effs);
+// path is already parent if child returned parent — see P3; for P0 child returns its path, parent recovers:
+let path = HasParent::into_parent(path); // if child returns child path
+// OR child returns parent path already (today recover lives in parent)
+```
+
+Prefer: child always returns **its** path type; parent always `into_parent`s. Same as today on Continue path.
+
+Tests: all existing dispatch tests still pass (same who-runs semantics via temporary `taken: &mut bool` for exclusive).
+
+### P1 — `Ascent<P>` + `Claim` types in `bind` (no macro yet)
+
+Add types from this doc. Unit tests only:
+
+```rust
+#[test]
+fn invalidate_2_after_one_hop_is_maybe_dropped() {
+    let mut root = 0u32;
+    let path = PathMut::from_fn(&mut root, |r| r, |r| r);
+    // nested fake: use a two-level PathMut in the test
+    let mut ascent = Ascent::new(inner_path);
+    ascent.invalidate(2);
+    let mut effs = vec![];
+    let ascent = ascent.into_parent_ascent(&mut effs, |a| {
+        assert_eq!(a.mutation(), Mutation::MaybeDropped);
+        vec![]
+    });
+    // second hop → Intact
+}
+```
+
+`Bindings` gains nothing yet. laserbeam unchanged.
+
+### P2 — Dispatch returns `Ascent`, threads `Claim`
+
+Before:
+
+```rust
+fn dispatch(path, event, effs) -> Path;
+```
+
+After:
+
+```rust
+fn dispatch<'a, 'c>(
+    path: Self::Path<'a>,
+    event: &M::Event,
+    effs: &mut Vec<M::Effect>,
+    claim: &mut Claim<'c>,
+) -> Ascent<Self::Path<'a>>;
+```
+
+Leaf:
+
+```rust
+let mut ascent = Ascent::new(path);
+// exclusive binds: claim.with_exclusive(&mut ascent, |a| handler(...))
+ascent
+```
+
+Parent:
+
+```rust
+let ascent = Child::dispatch(child_path, event, effs, claim);
+let mut ascent = ascent.into_parent_ascent(effs, |_ascent| Vec::new()); // posts empty until F1
+// exclusive binds via claim
+ascent
+```
+
+Handler signature change (exclusive only for now):
+
+```rust
+// before
+fn handler(ev: &E, node: Node<P, ()>) -> impl IntoIterator<Item = Effect>
+// after
+fn handler(ev: &E, ascent: &mut Ascent<P>) -> Vec<Effect>
+// path: ascent.path_mut()
+```
+
+Mercury + bind tests migrate handler signatures. Semantics: deepest exclusive still wins via claim; no posts yet.
+
+### P3 — Macro emits schedule-then-ascent skeleton
+
+Replace early-return bind checks with opt schedule + ascent exclusive:
+
+```rust
+// DESCENT
+let opt_0: Option<&KeyEvent> = /* match trigger */;
+// CHILD
+let ascent = Child::dispatch(...);
+let mut ascent = ascent.into_parent_ascent(effs, |_| Vec::new());
+// EXCLUSIVE
+if let Some(ev) = opt_0 {
+    let e = claim.with_exclusive(&mut ascent, |ascent| handler(ev, ascent));
+    effs.extend(e);
+}
+ascent
+```
+
+### F1 — `#[post]`
+
+Attribute + schedule `opt` bool or unit. In `into_parent_ascent` closure, if scheduled, `run_post(ascent, post_fn)`.
+
+```rust
+#[post(AnyKey => rearm_wrapper)]
+// expand inside into_parent_ascent callback:
+if opt_post {
+    local.extend(run_post(ascent, |a| rearm_wrapper(a)));
+}
+```
+
+Posts always run when scheduled, independent of claim.
+
+### F2 — `invalidate(d)`
+
+Already a method on `Ascent` from P1. User handlers call it. Tests: hop table.
+
+No macro change.
+
+### F3 — `#[pre_post(trig => (pre, post))]`
+
+Descent: if trigger matches, `opt = Some(pre(ev, Node { parent: &path, data: () }))`.
+Ascent: if `Some(t) = opt`, `post(t, ascent)`.
+
+```rust
+fn pre(ev: &E, node: Node<&P, D>) -> T;
+fn post(t: T, ascent: &mut Ascent<P>) -> Vec<Effect>;
+```
+
+### F4 — `only_if_intact` helper
+
+Library function as in this doc. User writes `#[post(AnyKey => only_if_intact(|p| ..., rearm))]`.
+
+### F5 — reshape carrier (later)
+
+Ideal: invalidate means covered path segment cannot be used as a live projection. Stopgap remains parent half + `MaybeDropped`. Reshape replaces `ascent.path` with a new path value already in hand (e.g. home), same counters.
+
+## Implementation map (files)
+
+- `crates/bind/src/lib.rs` — `Mutation`, `Ascent`, `Claim`, `into_parent_ascent`, `run_post`, `only_if_intact`, `Dispatch` + free `dispatch`
+- `crates/bind_macro/src/lib.rs` — `dispatch_impl` / `dispatch_body`: no `ControlFlow`, schedule opts, `into_parent_ascent`, `with_exclusive`; parse `#[post]` / `#[pre_post]`
+- `crates/laserbeam` — no change for stopgap (`into_parent` already peels)
+- `crates/bind/tests/*` — handler sigs + new invalidation tests
+- `crates/mercury` — handlers take `&mut Ascent`; kills call `invalidate(d)`; any post/rearm moves to `#[post]` / `#[pre_post]`
+
+## What we are not implementing in the first cut
+
+- Deleting path segments from the type when invalidated (ideal unown)
+- Proving path sameness after kill
+- Recreating a path into a killed child at post time
 
 ## Rules
 
