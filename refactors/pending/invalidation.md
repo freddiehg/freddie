@@ -4,26 +4,56 @@ Not done. Standalone.
 
 Descent schedules which pre/posts/binds run. That set is final. Ascent runs every scheduled post leaf to root.
 
-One type: **`AscentState`**, passed as **`&mut AscentState`** to posts and exclusives.
+## Model
 
-- **`mutation()`** — derived from `invalidation_depth` (0 → Intact, else MaybeDropped).
-- **`claim()`** — one-way trap door. `Option<()>`. `claimed()` is the read.
-- **`invalidate(d)`** / **`step_up()`** — hop counter only through these methods.
+**`AscentState`** is framework-owned. User code never receives bare `&mut AscentState`.
+
+Handlers receive a **capability view** that holds `&mut AscentState` and exposes only the methods that role may use:
+
+| | `PostCtx` | `ExclusiveCtx` |
+|---|---|---|
+| `mutation()` | yes | yes |
+| `claimed()` | yes | yes |
+| `claim()` | no | yes (trap door) |
+| `invalidate(d)` | no | yes |
+| hop counters | no | no |
+
+**Depth is two numbers:**
+
+- **`invalidation_depth`** — how many hops of spine a kill covers (from the exclusive’s level upward). **Only kill / path recovery mutates this** (`invalidate`). Framework post hops do **not** change it.
+- **`ascent_hops`** — how many framework parent recoveries since the leaf. **Only framework `into_parent_ascent` bumps this** (once per hop, before posts at the parent).
+
+```text
+mutation() = if ascent_hops < invalidation_depth { MaybeDropped } else { Intact }
+```
+
+Example: leaf exclusive `invalidate(2)`. Levels from leaf: hop 0 = leaf, hop 1 = Outer, hop 2 = Root.
+
+- After leave leaf, `ascent_hops = 1` → Outer posts: `1 < 2` → MaybeDropped
+- After leave Outer, `ascent_hops = 2` → Root posts: `2 < 2` → Intact
+
+**`into_parent` (laserbeam)** only recovers the parent path. It does **not** touch invalidation depth.
+
+**Kill** is what raises `invalidation_depth` (via `ExclusiveCtx::invalidate`, driven by how many path hops the kill climbs — `into_parent().into_parent()` ⇒ `invalidate(2)`).
+
+**`claim()`** is a one-way trap door: `Option<()>`.
 
 ## Types (`crates/bind`)
 
 ```rust
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mutation {
-    /// `invalidation_depth == 0`.
     Intact,
-    /// `invalidation_depth > 0`. A deeper exclusive called `invalidate(N)` covering this hop.
     MaybeDropped,
 }
 
 pub struct AscentState {
+    /// Kill coverage from the exclusive’s level (inclusive hops upward).
+    /// Mutated only by invalidate (kill / path climb), never by framework post hops.
     invalidation_depth: u32,
-    /// `Some(())` once exclusive has taken this event.
+    /// Framework recoveries since leaf. Bumped only by into_parent_ascent.
+    ascent_hops: u32,
+    /// Some(()) once exclusive has taken this event.
     claim: Option<()>,
 }
 
@@ -31,20 +61,25 @@ impl AscentState {
     pub fn new() -> Self {
         Self {
             invalidation_depth: 0,
+            ascent_hops: 0,
             claim: None,
         }
     }
 
     pub fn mutation(&self) -> Mutation {
-        if self.invalidation_depth == 0 {
-            Mutation::Intact
-        } else {
+        if self.ascent_hops < self.invalidation_depth {
             Mutation::MaybeDropped
+        } else {
+            Mutation::Intact
         }
     }
 
-    /// One-way trap door. `Some(())` if open (now taken). `None` if already taken.
-    pub fn claim(&mut self) -> Option<()> {
+    pub fn claimed(&self) -> bool {
+        self.claim.is_some()
+    }
+
+    /// One-way trap door. Some(()) if open (now taken). None if already taken.
+    fn claim(&mut self) -> Option<()> {
         if self.claim.is_some() {
             None
         } else {
@@ -53,18 +88,54 @@ impl AscentState {
         }
     }
 
-    pub fn claimed(&self) -> bool {
-        self.claim.is_some()
-    }
-
-    /// Exclusive kill: `invalidation_depth = invalidation_depth.max(d)`.
-    pub fn invalidate(&mut self, d: u32) {
+    /// Kill only. invalidation_depth = invalidation_depth.max(d).
+    fn invalidate(&mut self, d: u32) {
         self.invalidation_depth = self.invalidation_depth.max(d);
     }
 
-    /// After posts at this level.
-    pub fn step_up(&mut self) {
-        self.invalidation_depth = self.invalidation_depth.saturating_sub(1);
+    /// Framework only: one hop of parent recovery finished; about to run parent posts.
+    fn bump_ascent_hop(&mut self) {
+        self.ascent_hops = self.ascent_hops.saturating_add(1);
+    }
+}
+
+/// User posts receive this — not bare AscentState.
+pub struct PostCtx<'a> {
+    state: &'a mut AscentState,
+}
+
+impl<'a> PostCtx<'a> {
+    pub fn mutation(&self) -> Mutation {
+        self.state.mutation()
+    }
+
+    pub fn claimed(&self) -> bool {
+        self.state.claimed()
+    }
+}
+
+/// User exclusive bodies receive this — not bare AscentState.
+pub struct ExclusiveCtx<'a> {
+    state: &'a mut AscentState,
+}
+
+impl<'a> ExclusiveCtx<'a> {
+    pub fn mutation(&self) -> Mutation {
+        self.state.mutation()
+    }
+
+    pub fn claimed(&self) -> bool {
+        self.state.claimed()
+    }
+
+    /// Trap door. Some(()) if this call took it.
+    pub fn claim(&mut self) -> Option<()> {
+        self.state.claim()
+    }
+
+    /// Kill coverage. d = path hops climbed for the kill (into_parent count).
+    pub fn invalidate(&mut self, d: u32) {
+        self.state.invalidate(d);
     }
 }
 ```
@@ -77,34 +148,24 @@ fn pre(ev: &SourceEvent, node: Node<&P, D>) -> T;
 fn post(
     pre_return: T,
     node: Node<P, D>,
-    state: &mut AscentState,
+    ctx: PostCtx<'_>,
 ) -> (Vec<M::Effect>, P);
 
 fn post(
     node: Node<P, D>,
-    state: &mut AscentState,
+    ctx: PostCtx<'_>,
 ) -> (Vec<M::Effect>, P);
 
 fn exclusive(
     ev: &SourceEvent,
     node: Node<P, D>,
-    state: &mut AscentState,
+    ctx: ExclusiveCtx<'_>,
 ) -> (Vec<M::Effect>, P);
-```
-
-Same `P` in and out. Posts and exclusive both take `&mut AscentState`.
-
-## Attr → schedule
-
-```rust
-#[pre_post(trig => (pre, post))]  // opt = Some(pre(...))
-#[post(trig => post)]             // opt = Some(()) via match only
-#[bind(trig => handler)]          // opt = Some(&SourceEvent) captured at match
 ```
 
 ## PathMut (laserbeam)
 
-Master shape. Parent + projections. `into_parent` returns the parent.
+Unchanged. Does not know `AscentState`. Does not bump any invalidation counter.
 
 ```rust
 pub struct PathMut<Node, Parent> {
@@ -134,6 +195,7 @@ impl<Node, Parent> PathMut<Node, Parent> {
         self.projection.apply(&mut self.parent)
     }
 
+    /// Recover parent only. Does not touch AscentState.
     pub fn into_parent(self) -> Parent {
         self.parent
     }
@@ -142,17 +204,19 @@ impl<Node, Parent> PathMut<Node, Parent> {
 
 ## `into_parent_ascent` (bind)
 
+Framework hop. **Does not** call `invalidate` / change `invalidation_depth`.
+
 ```rust
 pub fn into_parent_ascent<Node, Parent, E>(
     path: laserbeam::PathMut<Node, Parent>,
     sink: &mut Vec<E>,
     state: &mut AscentState,
-    run_posts: impl FnOnce(Parent, &mut AscentState) -> (Parent, Vec<E>),
+    run_posts: impl FnOnce(Parent, PostCtx<'_>) -> (Parent, Vec<E>),
 ) -> Parent {
     let parent = path.into_parent();
-    let (parent, post_effs) = run_posts(parent, state);
+    state.bump_ascent_hop();
+    let (parent, post_effs) = run_posts(parent, PostCtx { state });
     sink.extend(post_effs);
-    state.step_up();
     parent
 }
 ```
@@ -162,29 +226,30 @@ pub fn into_parent_ascent<Node, Parent, E>(
 ```rust
 pub fn run_post<P, E>(
     path: P,
-    state: &mut AscentState,
-    body: impl FnOnce(Node<P, ()>, &mut AscentState) -> (Vec<E>, P),
+    ctx: PostCtx<'_>,
+    body: impl FnOnce(Node<P, ()>, PostCtx<'_>) -> (Vec<E>, P),
 ) -> (P, Vec<E>) {
-    body(Node { parent: path, data: () }, state)
+    body(Node { parent: path, data: () }, ctx)
 }
 
 pub fn run_exclusive<P, E>(
     path: P,
     state: &mut AscentState,
-    body: impl FnOnce(Node<P, ()>, &mut AscentState) -> (Vec<E>, P),
+    body: impl FnOnce(Node<P, ()>, ExclusiveCtx<'_>) -> (Vec<E>, P),
 ) -> (P, Vec<E>) {
-    match state.claim() {
+    let mut ctx = ExclusiveCtx { state };
+    match ctx.claim() {
         None => (path, Vec::new()),
-        Some(()) => body(Node { parent: path, data: () }, state),
+        Some(()) => body(Node { parent: path, data: () }, ctx),
     }
 }
 
 pub fn only_if_intact<P, N, E>(
     project: impl Fn(&mut P) -> &mut N,
     f: impl FnOnce(&mut N) -> Vec<E>,
-) -> impl FnOnce(Node<P, ()>, &mut AscentState) -> (Vec<E>, P) {
-    move |mut node, state| {
-        let effects = match state.mutation() {
+) -> impl FnOnce(Node<P, ()>, PostCtx<'_>) -> (Vec<E>, P) {
+    move |mut node, ctx| {
+        let effects = match ctx.mutation() {
             Mutation::Intact => f(project(&mut node.parent)),
             Mutation::MaybeDropped => Vec::new(),
         };
@@ -193,33 +258,27 @@ pub fn only_if_intact<P, N, E>(
 }
 ```
 
-## Dispatch
+## Kill and path hops
 
-### Before (master)
+Exclusive climbs with path `into_parent` (same laserbeam recovery). **Each kill hop** counts toward `d`. After the climb (or as it goes), exclusive calls `ctx.invalidate(d)`.
 
 ```rust
-pub trait Dispatch<M: Bindings>: Place {
-    fn dispatch<'a>(
-        path: Self::Path<'a>,
-        event: &M::Event,
-    ) -> ControlFlow<M::Output, Self::Path<'a>>
-    where
-        Self: 'a;
-}
-
-pub fn dispatch<'a, M, N>(path: N::Path<'a>, event: &M::Event) -> Option<M::Output>
-where
-    M: Bindings,
-    N: Dispatch<M> + 'a,
-{
-    match <N as Dispatch<M>>::dispatch(path, event) {
-        ControlFlow::Break(out) => Some(out),
-        ControlFlow::Continue(_) => None,
-    }
+fn inner_handler(
+    _ev: &KeyEvent,
+    node: Node<InnerPath, ()>,
+    mut ctx: ExclusiveCtx<'_>,
+) -> (Vec<DemoEffect>, InnerPath) {
+    // Kill covers two framework hops above this exclusive (Outer + one more).
+    // The path climb for reshape is what *defines* d; invalidate records it.
+    // Until reshape carrier exists, exclusive only records coverage:
+    ctx.invalidate(2);
+    (vec![], node.parent)
 }
 ```
 
-### After P0 (batch, still Break)
+When reshape carrier exists: each `path.into_parent()` on the kill climb increments a hop counter, then `invalidate(hops)` (or `invalidate` once at end with total hops). Framework `into_parent_ascent` still only `bump_ascent_hop`, never `invalidate`.
+
+## Dispatch
 
 ```rust
 pub trait Bindings {
@@ -228,20 +287,6 @@ pub trait Bindings {
     type Effect;
 }
 
-pub trait Dispatch<M: Bindings>: Place {
-    fn dispatch<'a>(
-        path: Self::Path<'a>,
-        event: &M::Event,
-        effs: &mut Vec<M::Effect>,
-    ) -> ControlFlow<(), Self::Path<'a>>
-    where
-        Self: 'a;
-}
-```
-
-### After P3 (ascent state)
-
-```rust
 pub trait Dispatch<M: Bindings>: Place {
     fn dispatch<'a>(
         path: Self::Path<'a>,
@@ -273,25 +318,23 @@ where
 ## Level order
 
 ```text
-DESCENT
-  schedule opts (pre values / exclusive &Event / post bool)
+DESCENT: schedule opts
 
-  if child:
-    path = PathMut::from_fn(path, proj_mut, proj_ref)   // 3-arg, no F
-    (path, state) = Child::dispatch(path, event, effs)
-    path = into_parent_ascent(path, effs, &mut state, |parent, state| {
-      // posts; opts captured from descent
-      (parent, local_effs)
-    })
-      // parent = path.into_parent(); run_posts; step_up()
+if child:
+  child_path = PathMut::from_fn(path, proj_mut, proj_ref)
+  (child_path, state) = Child::dispatch(child_path, event, effs)
+  path = into_parent_ascent(child_path, effs, &mut state, |parent, post_ctx| {
+    // posts with PostCtx
+  })
+  // = into_parent(); bump_ascent_hop(); run_posts;  NOT invalidate
 
-  if leaf:
-    state = AscentState::new()
+if leaf:
+  state = AscentState::new()
 
-  if exclusive scheduled:
-    run_exclusive(path, &mut state, handler)
+if exclusive scheduled:
+  run_exclusive(path, &mut state, |node, excl_ctx| handler(ev, node, excl_ctx))
 
-  return (path, state)
+return (path, state)
 ```
 
 ## DX example
@@ -308,7 +351,6 @@ struct TimerId(u64);
 
 impl TimerId {
     fn fresh() -> Self {
-        // demo only
         Self(1)
     }
 }
@@ -327,14 +369,6 @@ enum DemoEffect {
     LogDestroyed(ChildId),
     ScheduleTimer(TimerId),
     SetLayerHome,
-}
-
-struct M;
-
-impl Bindings for M {
-    type Trigger = /* key trigger */;
-    type Event = DemoEvent;
-    type Effect = DemoEffect;
 }
 
 fn log_destroyed(id: ChildId) -> DemoEffect {
@@ -373,9 +407,9 @@ fn snap_child_id(_ev: &KeyEvent, node: Node<&OuterPath, ()>) -> ChildId {
 fn after_child(
     id: ChildId,
     node: Node<OuterPath, ()>,
-    state: &mut AscentState,
+    ctx: PostCtx<'_>,
 ) -> (Vec<DemoEffect>, OuterPath) {
-    match state.mutation() {
+    match ctx.mutation() {
         Mutation::Intact => {
             let live = node.parent.get().inner.id;
             debug_assert_eq!(live, id);
@@ -394,7 +428,7 @@ fn rearm(child: &mut AndReturnHome) -> Vec<DemoEffect> {
 fn outer_handler(
     _ev: &KeyEvent,
     node: Node<OuterPath, ()>,
-    _state: &mut AscentState,
+    _ctx: ExclusiveCtx<'_>,
 ) -> (Vec<DemoEffect>, OuterPath) {
     (vec![DemoEffect::SetLayerHome], node.parent)
 }
@@ -402,9 +436,10 @@ fn outer_handler(
 fn inner_handler(
     _ev: &KeyEvent,
     node: Node<InnerPath, ()>,
-    state: &mut AscentState,
+    mut ctx: ExclusiveCtx<'_>,
 ) -> (Vec<DemoEffect>, InnerPath) {
-    state.invalidate(2);
+    // d = kill path hop count (two into_parents of coverage)
+    ctx.invalidate(2);
     (vec![], node.parent)
 }
 ```
@@ -442,8 +477,8 @@ impl ::bind::Dispatch<M> for Inner {
         let mut state = ::bind::AscentState::new();
 
         if let ::core::option::Option::Some(ev) = opt_0 {
-            let (path, out_effs) = ::bind::run_exclusive(path, &mut state, |node, state| {
-                inner_handler(ev, node, state)
+            let (path, out_effs) = ::bind::run_exclusive(path, &mut state, |node, ctx| {
+                inner_handler(ev, node, ctx)
             });
             ::core::iter::Extend::extend(effs, out_effs);
             return (path, state);
@@ -530,27 +565,27 @@ where
             inner_path,
             effs,
             &mut state,
-            move |parent, state| {
+            move |parent, ctx| {
                 let mut local =
                     ::std::vec::Vec::<<M as ::bind::Bindings>::Effect>::new();
                 let mut path = parent;
 
                 if let ::core::option::Option::Some(id) = opt_0 {
-                    let (p, e) = ::bind::run_post(path, state, |node, state| {
-                        after_child(id, node, state)
+                    let (p, e) = ::bind::run_post(path, ctx, |node, ctx| {
+                        after_child(id, node, ctx)
                     });
                     path = p;
                     ::core::iter::Extend::extend(&mut local, e);
                 }
 
                 if opt_1 {
-                    let (p, e) = ::bind::run_post(path, state, |node, state| {
+                    let (p, e) = ::bind::run_post(path, ctx, |node, ctx| {
                         ::bind::only_if_intact(
                             |p: &mut <Outer as ::bind::Place>::Path<'a>| {
                                 &mut p.get_mut().return_home
                             },
                             rearm,
-                        )(node, state)
+                        )(node, ctx)
                     });
                     path = p;
                     ::core::iter::Extend::extend(&mut local, e);
@@ -561,8 +596,8 @@ where
         );
 
         if let ::core::option::Option::Some(ev) = opt_2 {
-            let (p, e) = ::bind::run_exclusive(path, &mut state, |node, state| {
-                outer_handler(ev, node, state)
+            let (p, e) = ::bind::run_exclusive(path, &mut state, |node, ctx| {
+                outer_handler(ev, node, ctx)
             });
             path = p;
             ::core::iter::Extend::extend(effs, e);
@@ -576,118 +611,86 @@ where
 ## Walk: KeyA, Inner `invalidate(2)`
 
 ```text
-DESCENT Outer: opt_0 Some(id), opt_1 true, opt_2 Some(&KeyA event)
-DESCENT Inner: opt_0 Some(&KeyA event)
+DESCENT Outer: opt_0 Some(id), opt_1 true, opt_2 Some(ev)
+DESCENT Inner: opt_0 Some(ev)
 
 ASCENT Inner
-  state = AscentState::new()             // depth 0, claim None
-  run_exclusive:
-    claim() → Some(())
-    inner_handler: invalidate(2)         // depth = 2
+  state = new()                          // inv=0, hops=0, claim=None
+  run_exclusive: claim → Some(())
+  inner_handler: invalidate(2)           // inv=2
+  mutation at leaf: hops 0 < 2 → MaybeDropped (unused; no posts at leaf)
   return (InnerPath, state)
 
 ASCENT Outer into_parent_ascent
-  parent = path.into_parent()
-  run_posts:
-    after_child: mutation() MaybeDropped → LogDestroyed(id)
-    only_if_intact: MaybeDropped → no rearm
-  step_up()                              // depth 2 → 1
+  parent = path.into_parent()            // path only; inv still 2
+  bump_ascent_hop()                      // hops = 1
+  posts with PostCtx:
+    mutation: 1 < 2 → MaybeDropped
+    after_child → LogDestroyed(id)
+    only_if_intact → skip rearm
+  // inv still 2 — framework hop did not invalidate/step invalidation_depth
 
 ASCENT Outer exclusive
-  claim() → None                         // trap door already shut
+  claim → None
   outer_handler not run
 
-return (OuterPath, state) depth 1, claimed true
-// ancestor hops: posts see mutation() from current depth; step_up until 0
+return hops=1, inv=2, claimed
+// next hop to Root: bump hops=2; posts see 2 < 2 → Intact
 ```
 
-## Walk: KeyB (AnyKey only)
+## Walk: KeyB
 
 ```text
-DESCENT Outer: opt_0 Some(id), opt_1 true, opt_2 None
-DESCENT Inner: opt_0 None
+DESCENT: AnyKey posts scheduled; no KeyA exclusive
 
-ASCENT Inner
-  state = new()
+ASCENT Inner: state = new(); no exclusive
+ASCENT Outer into_parent_ascent:
+  bump hops=1
+  inv=0 → mutation Intact (1 < 0 is false)
+  after_child Intact; rearm runs
   no exclusive
-
-ASCENT Outer into_parent_ascent
-  after_child: Intact, assert live id
-  only_if_intact: rearm → ScheduleTimer
-  step_up()                              // depth 0
-
-  no exclusive
-
-return claim None, depth 0
 ```
 
 ## Ordered changes
 
-### P0 — `Bindings::Effect` + threaded batch (keep `Break`)
+### P0 — Effect batch + Break
 
-Before: `type Output`; `Break(output)`.
+### P1 — optional sink thread
 
-After: `type Effect`; `effs: &mut Vec<Effect>`; `Break(())`; top-level `Some(effs)` / `None`.
+### P2 — from_fn framework-only
 
-### P1 — sink only (optional prefactor)
+### P3 — AscentState + PostCtx + ExclusiveCtx + into_parent_ascent
 
-If posts need a sink before ascent state: thread `effs` through dispatch. PathMut shape unchanged.
+Full types above. No `step_up` on invalidation_depth. Framework bumps `ascent_hops` only.
 
-### P2 — `from_fn` framework-only
+### P4 — bind through run_exclusive + ExclusiveCtx
 
-### P3 — `AscentState` + `into_parent_ascent`
+### F1 — post + PostCtx
 
-- Dispatch returns `(Path, AscentState)`.
-- Leaf `AscentState::new()`.
-- `into_parent_ascent(path, sink, state, run_posts)` as written above.
-- Exclusive via `run_exclusive` / trap-door `claim`.
-- Top-level `claimed() || !effs.is_empty()`.
+### F2 — invalidate(d) from exclusive (d from kill path hops)
 
-### P4 — `#[bind]` through `run_exclusive`
+### F3 — pre_post
 
-Handlers `(ev, node, &mut AscentState) -> (Vec, P)`. Same-level path.
+### F4 — only_if_intact + rearm
 
-### F1 — `#[post]` with `&mut AscentState`
-
-Posts read `state.mutation()` (from depth). `run_posts` closure is the generate site (Outer expand).
-
-### F2 — `invalidate(N)`
-
-Exclusive kill: `state.invalidate(N)`. Ancestor posts see MaybeDropped via `mutation()`.
-
-### F3 — `#[pre_post]`
-
-Pre return threaded into post first arg.
-
-### F4 — `only_if_intact` + rearm
-
-```rust
-#[post(AnyKey => only_if_intact(|p| &mut p.get_mut().return_home, rearm))]
-```
-
-### F5 — reshape carrier
-
-Exclusive still returns same-level `P`. Field replace at owner is a later carrier; specify full types before implementing.
+### F5 — reshape carrier: path into_parent on kill counts hops into invalidate(d)
 
 ## Rules
 
 1. Descent schedules; set final.
 2. Ascent runs every scheduled post.
-3. One `AscentState`. Posts and exclusive take `&mut AscentState`.
-4. `mutation()` is Intact iff `invalidation_depth == 0`.
-5. `claim()` is a one-way trap door (`Option<()>`); `claimed()` reads it.
-6. `into_parent_ascent` = laserbeam `into_parent` → run_posts → step_up.
-7. Kill = `invalidate(N)` on live depth; path type unchanged.
-8. Generate: schedule + helpers. Expand above is the template.
+3. User code gets `PostCtx` / `ExclusiveCtx`, not bare `AscentState`.
+4. laserbeam `into_parent` recovers parent only — no depth.
+5. Kill / path climb sets `invalidation_depth` via `invalidate`.
+6. Framework hop sets `ascent_hops` via `bump_ascent_hop` before parent posts.
+7. `mutation()` = MaybeDropped iff `ascent_hops < invalidation_depth`.
+8. `claim()` is a one-way trap door (`Option<()>`).
+9. Generate: schedule + helpers. Expand above is the template.
 
 ## Tests
 
-- after `invalidate(N)`, posts at ancestor see `MaybeDropped`
-- no invalidate → `Intact`
-- `claim` then parent `claim` is None
-- `claimed()` true after successful claim
-- `step_up` drops depth; above owner, `mutation()` is Intact
-- exclusive returns same path type
-- pre return once; pre miss → no post
-- `only_if_intact` skips on MaybeDropped
+- `invalidate(2)`: after one framework hop, posts MaybeDropped; after two, Intact
+- framework hop does not change `invalidation_depth`
+- bare `AscentState` methods `claim`/`invalidate`/`bump_ascent_hop` are not callable from user modules (only via ctx / bind helpers)
+- claim trap door; parent exclusive skips
 - KeyA / KeyB walks match above
