@@ -29,12 +29,14 @@ That is the child’s leave doll. From child path `Step<Child, MyPath>` (parent 
   = Result<MyPath, Result<ParentPath, Result<GrandParentPath, …>>>
 ```
 
-Unpack:
+Unpack (public arms are **Here** / **Up**, not `Ok`/`Err` or `ControlFlow`):
 
 ```text
-Ok(my_path)  →  Here — posts run with MyPath
-Err(rest)    →  Up   — rest : Result<ParentPath, Result<GrandParentPath, …>>
+Here(my_path)  — posts run with MyPath
+Up(rest)       — rest : thinner doll (ParentPath nest)
 ```
+
+`Result` may still be the private layout (`Ok` ↔ Here, `Err` ↔ Up). Call sites and derive match `Here`/`Up` only.
 
 After Here posts, this node leaves with one thinner doll:
 
@@ -111,7 +113,7 @@ pub type AscentOf<P> = <P as AscentOut>::Out;
 
 Do not ship both path-keyed and node-keyed public aliases until a call site forces it. Prefer one name in code; the other is just `AscentOf` of the related path/node.
 
-Unpack `Here` / `Up` uses that name, not the raw nest.
+Unpack is `Here` / `Up`. That naming is settled. Not `Ok`/`Err` at the API, not `ControlFlow::Continue`/`Break`.
 
 ## Simpler path (this prefactor)
 
