@@ -45,7 +45,7 @@ use accessibility_sys::{
 };
 use block2::RcBlock;
 use core_foundation::array::CFArray;
-use core_foundation::base::{CFRelease, CFRetain, CFTypeRef, TCFType};
+use core_foundation::base::{CFEqual, CFRelease, CFRetain, CFTypeRef, TCFType};
 use core_foundation::runloop::{CFRunLoop, CFRunLoopSource, kCFRunLoopDefaultMode};
 use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::geometry::{CGPoint, CGSize};
@@ -587,34 +587,40 @@ impl WatcherState {
             .lock()
             .is_ok_and(|mut table| table.remove(&window).is_some())
     }
+
+    /// Forget whichever window `element` names, and say which it was.
+    ///
+    /// By identity rather than by id: `kAXUIElementDestroyed` arrives for an element the app has
+    /// already torn down, `_AXUIElementGetWindow` refuses it, and `CFEqual` still matches the
+    /// element that was retained when the window opened. `None` when the element was not a window
+    /// this was watching, which is most of them: the notification is registered on the app, so it
+    /// reports every element the app destroys.
+    fn forget_element(&self, element: AXUIElementRef) -> Option<WindowId> {
+        let mut table = self.elements.0.lock().ok()?;
+        // SAFETY: both are live `AXUIElement`s as far as CoreFoundation is concerned. A destroyed
+        // element is still a valid CF object; it is the Accessibility calls on it that fail.
+        #[expect(unsafe_code)]
+        let found = table
+            .iter()
+            .find(|(_, held)| unsafe { CFEqual(held.raw().cast(), element.cast()) != 0 })
+            .map(|(id, _)| *id)?;
+        table.remove(&found);
+        drop(table);
+        Some(found)
+    }
 }
 
-/// What one registration's notifications are about.
-///
-/// `kAXUIElementDestroyed` arrives for an element the app has already torn down, and
-/// `_AXUIElementGetWindow` on one of those answers with nothing, so the id a destroyed window
-/// is reported under is the one recorded here when it was still live.
-#[derive(Clone, Copy)]
-enum Subject {
-    /// The app element: focus changes, and windows being created.
-    App,
-    /// One window: its moves, its resizes, and its destruction.
-    Window(WindowId),
-}
-
-/// One app's observer, and the `refcon`s its callbacks reach the [`Watcher`]'s state through.
+/// One app's observer, and the `refcon` its callbacks reach the [`Watcher`]'s state through.
 struct AppObserver {
     observer: AXObserverRef,
-    /// The app element's `refcon`. Boxed so its address is stable, and owned here so it is
-    /// freed exactly when the observer naming it is.
-    _app: Box<Registration>,
-    /// One `refcon` per window this observer was given, in the order they arrived. Each is
-    /// boxed so its heap address is stable under `Vec` reallocation; the framework keeps that
-    /// address as the notification `refcon`. Kept for the life of the observer, not until its
-    /// window closes, so the framework can never hand back a freed address. All of them go when
-    /// the app quits.
-    #[expect(clippy::vec_box)]
-    windows: Vec<Box<Registration>>,
+    /// The `refcon` every notification for this app carries. Boxed so its address is
+    /// stable, and owned here so it is freed exactly when the observer naming it is.
+    _registration: Box<Registration>,
+    /// Window ids this observer registered. Used by [`forget_app`] when the app quits without
+    /// (or before) individual destroy notifications. Destroy itself removes from the element
+    /// table via [`WatcherState::forget_element`]; this list may then name ids already gone, and
+    /// [`WatcherState::forget`] returning false is what keeps them from being reported twice.
+    window_ids: Vec<WindowId>,
 }
 
 impl Drop for AppObserver {
@@ -637,26 +643,23 @@ impl Drop for AppObserver {
 }
 
 /// What a notification callback needs: the observer to register a new window on, the pid of
-/// the app it is for, what the registration is about, and the state to report into. A C
-/// callback has this instead of a closure.
+/// the app it is for, and the state to report into. A C callback has this instead of a closure.
 ///
 /// `observer` is held so a window created later is registered without going back through
 /// `apps` for it. `pid` is what a focus-changed notification is gated on, so only the frontmost
 /// app's focused window is reported and a background app changing its own focus is ignored, and
-/// it is also which app's `AppObserver` a new window's registration belongs to.
+/// it is also which app's `AppObserver` a new window belongs to.
 ///
 /// [`Weak`](std::rc::Weak), not [`Rc`]: [`WatcherState`] owns `apps`, an [`AppObserver`] owns its
-/// registrations, so a strong reference here would be a cycle that never frees.
+/// registration, so a strong reference here would be a cycle that never frees.
 struct Registration {
     observer: AXObserverRef,
     pid: Pid,
-    subject: Subject,
     state: std::rc::Weak<WatcherState>,
 }
 
 /// The one `AXObserver` callback. `refcon` is a [`Registration`] the app's [`AppObserver`]
-/// owns (in `_app` or `windows`), which is how a C callback reaches the watcher's state
-/// without a global.
+/// owns, which is how a C callback reaches the watcher's state without a global.
 ///
 /// Runs on the main thread, since that is the run loop the sources were added to.
 #[expect(unsafe_code)]
@@ -670,20 +673,15 @@ unsafe extern "C" fn on_notification(
     // runs. `observe_window` does `apps.borrow_mut()` and pushes into the same
     // `AppObserver` the app `refcon` points into; holding that reference across the push
     // would alias.
-    let (state, observer, pid, subject) = {
-        // SAFETY: `refcon` is a `Box<Registration>` this app's `AppObserver` still owns
-        // (in `_app` or `windows`). The observer's source is removed before those boxes are
-        // dropped, so no notification can arrive after the pointer goes stale.
+    let (state, observer, pid, refcon) = {
+        // SAFETY: `refcon` is the `Box<Registration>` this app's `AppObserver` still owns. The
+        // observer's source is removed before the box is dropped, so no notification can arrive
+        // after the pointer goes stale.
         let registration = unsafe { &*refcon.cast::<Registration>() };
         let Some(state) = registration.state.upgrade() else {
             return;
         };
-        (
-            state,
-            registration.observer,
-            registration.pid,
-            registration.subject,
-        )
+        (state, registration.observer, registration.pid, refcon)
     };
 
     // SAFETY: `notification` is a live string owned by the caller for this call.
@@ -693,7 +691,7 @@ unsafe extern "C" fn on_notification(
     // Comparisons rather than match arms: these constants are lowercase, and a lowercase
     // path in a pattern binds rather than matches the moment it stops resolving.
     if name == kAXWindowCreatedNotification {
-        observe_window(&state, observer, pid, element);
+        observe_window(&state, observer, pid, refcon, element);
         report_open(&state, element);
     } else if name == kAXWindowMovedNotification || name == kAXWindowResizedNotification {
         if let (Some(window), Some(frame)) = (window_id(element), window_frame(element)) {
@@ -705,11 +703,11 @@ unsafe extern "C" fn on_notification(
             });
         }
     } else if name == kAXUIElementDestroyedNotification {
-        // The element is gone and cannot be asked what it was, so the id comes from this
-        // registration, which is the window's own.
-        if let Subject::Window(window) = subject
-            && state.forget(window)
-        {
+        // Registered on the app, so this reports every element the app destroys. The element
+        // cannot be asked for its id, and `CFEqual` still matches the one retained when the
+        // window opened, so the table answers instead. `None` for anything that was not a
+        // window being watched.
+        if let Some(window) = state.forget_element(element) {
             state.report(WindowChange::Closed(window));
         }
     } else if name == kAXFocusedWindowChangedNotification {
@@ -721,23 +719,21 @@ unsafe extern "C" fn on_notification(
     }
 }
 
-/// Record a window, subscribe to what it does, and keep the `refcon` those notifications
-/// carry. Nothing is announced here.
+/// Record a window and subscribe to its moves and resizes. Nothing is announced here.
 ///
 /// The setup pass calls this alone: every window it finds is already in the `Snapshot` `watch`
 /// returns, so reporting `Opened` for it would be a redundant replay of the seed. A window that
 /// opens later goes through here too, and `on_notification` then calls `report_open`; see its
 /// call site.
 ///
-/// The `refcon` is the window's own [`Registration`], not its app's, which is how
-/// `kAXUIElementDestroyed` names the window it is about after the element is gone. The app's
-/// [`AppObserver`] takes the box before any notification names it and holds it until its
-/// observer is released, so the address the framework keeps stays valid for as long as it
-/// could be handed back.
+/// Destroy is registered on the app element, not here: a window-element registration for
+/// `kAXUIElementDestroyed` returns success and never fires. Move and resize keep the app's
+/// `refcon`; the live element still answers for its id.
 fn observe_window(
     state: &Rc<WatcherState>,
     observer: AXObserverRef,
     pid: Pid,
+    refcon: *mut c_void,
     element: AXUIElementRef,
 ) {
     let Some(window) = window_id(element) else {
@@ -752,27 +748,15 @@ fn observe_window(
         return;
     };
 
-    let registration = Box::new(Registration {
-        observer,
-        pid,
-        subject: Subject::Window(window),
-        state: Rc::downgrade(state),
-    });
-    // The box's heap address, which it keeps when it moves into `windows` below.
-    let refcon = std::ptr::from_ref(registration.as_ref()).cast_mut().cast();
     {
         let mut apps = state.apps.borrow_mut();
         let Some(app) = apps.get_mut(&pid) else {
             return;
         };
-        app.windows.push(registration);
+        app.window_ids.push(window);
     }
 
-    for notification in [
-        kAXWindowMovedNotification,
-        kAXWindowResizedNotification,
-        kAXUIElementDestroyedNotification,
-    ] {
+    for notification in [kAXWindowMovedNotification, kAXWindowResizedNotification] {
         add_notification(observer, element, notification, refcon);
     }
 
@@ -844,7 +828,6 @@ fn observe_app(state: &Rc<WatcherState>, ObservableApp(pid): ObservableApp) {
     let registration = Box::new(Registration {
         observer,
         pid,
-        subject: Subject::App,
         state: Rc::downgrade(state),
     });
     let refcon = std::ptr::from_ref(registration.as_ref()).cast_mut().cast();
@@ -852,6 +835,9 @@ fn observe_app(state: &Rc<WatcherState>, ObservableApp(pid): ObservableApp) {
     for notification in [
         kAXFocusedWindowChangedNotification,
         kAXWindowCreatedNotification,
+        // On the app element, not on each window: a window-element registration for this one
+        // returns success and never fires.
+        kAXUIElementDestroyedNotification,
     ] {
         add_notification(observer, app_element, notification, refcon);
     }
@@ -870,14 +856,14 @@ fn observe_app(state: &Rc<WatcherState>, ObservableApp(pid): ObservableApp) {
         pid,
         AppObserver {
             observer,
-            _app: registration,
-            windows: Vec::new(),
+            _registration: registration,
+            window_ids: Vec::new(),
         },
     );
 
-    // After the insert: `observe_window` puts each window's `refcon` in the entry this made.
+    // After the insert: `observe_window` records each window id on the entry this made.
     for window in app_windows(app_element) {
-        observe_window(state, observer, pid, window.raw());
+        observe_window(state, observer, pid, refcon, window.raw());
     }
 }
 
@@ -904,25 +890,19 @@ fn app_windows(app: AXUIElementRef) -> Vec<Element> {
 
 /// Stop watching an app, reporting every window it took with it.
 ///
-/// The windows are the ones this app's own registrations name, so a window another app still
-/// has open is not reported closed, and no dead element is asked for an id. A window whose own
-/// `AXUIElementDestroyed` already arrived was forgotten then, and `forget` returning false is
-/// what keeps it from being reported twice.
+/// The windows are the ones this app registered, so a window another app still has open is not
+/// reported closed. A window whose destroy notification already arrived was forgotten then, and
+/// `forget` returning false is what keeps it from being reported twice. With destroy reporting
+/// for real this path is the fallback: it catches windows whose destroy never arrived, and an
+/// app that quits outright takes its windows down without individual notifications.
 ///
 /// The observer is dropped before any `Closed` is reported: that removes its run loop source
 /// so a late notification cannot run against an `apps` map that no longer holds it.
 fn forget_app(state: &WatcherState, pid: Pid) {
-    let Some(observer) = state.apps.borrow_mut().remove(&pid) else {
+    let Some(mut observer) = state.apps.borrow_mut().remove(&pid) else {
         return;
     };
-    let windows: Vec<WindowId> = observer
-        .windows
-        .iter()
-        .filter_map(|registration| match registration.subject {
-            Subject::Window(window) => Some(window),
-            Subject::App => None,
-        })
-        .collect();
+    let windows = std::mem::take(&mut observer.window_ids);
     drop(observer);
     for window in windows {
         if state.forget(window) {

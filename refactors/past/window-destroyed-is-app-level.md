@@ -42,6 +42,10 @@ struct AppObserver {
     /// The `refcon` every notification for this app carries. Boxed so its address is
     /// stable, and owned here so it is freed exactly when the observer naming it is.
     _registration: Box<Registration>,
+    /// Window ids this observer registered. Used by `forget_app` when the app quits
+    /// without individual destroy notifications. Not a per-window `Registration`: only
+    /// the id, so quit does not reintroduce the global dead-element scan.
+    window_ids: Vec<WindowId>,
 }
 
 /// What a notification callback needs: the observer to register a new window on, the pid of
@@ -206,30 +210,21 @@ The `Subject` field goes, so the block that copies out of the `Registration` yie
 
 ### `forget_app`
 
-Unchanged in shape, but it can no longer read window ids out of per-window registrations. It goes back to naming the app's windows by the only thing that still distinguishes them, which is that their elements no longer answer:
+Cannot read window ids out of per-window registrations (those are gone), and must not scan the global element table for dead elements: that was the bug `window-closed.md` fixed (one app quitting reported every earlier app's leftovers). The app's own ids live on `AppObserver::window_ids`, filled in `observe_window`:
 
 ```rust
 /// Stop watching an app, reporting every window it took with it.
 ///
-/// The observer is dropped before any `Closed` is reported, so its run loop source is gone
-/// before the reports run. A window whose own destroyed notification already arrived was
-/// forgotten then and is not in the table to report twice.
+/// The windows are the ones this app registered, so a window another app still has open is not
+/// reported closed. A window whose destroy notification already arrived was forgotten then, and
+/// `forget` returning false is what keeps it from being reported twice.
 fn forget_app(state: &WatcherState, pid: Pid) {
-    let Some(observer) = state.apps.borrow_mut().remove(&pid) else {
+    let Some(mut observer) = state.apps.borrow_mut().remove(&pid) else {
         return;
     };
+    let windows = std::mem::take(&mut observer.window_ids);
     drop(observer);
-    let gone: Vec<WindowId> = state.elements.0.lock().map_or_else(
-        |_| Vec::new(),
-        |table| {
-            table
-                .iter()
-                .filter(|(_, element)| window_id(element.raw()).is_none())
-                .map(|(id, _)| *id)
-                .collect()
-        },
-    );
-    for window in gone {
+    for window in windows {
         if state.forget(window) {
             state.report(WindowChange::Closed(window));
         }
@@ -237,7 +232,7 @@ fn forget_app(state: &WatcherState, pid: Pid) {
 }
 ```
 
-With destroy reporting for real, this path is now the fallback rather than the only one: it catches windows whose destroyed notification never arrived, and an app that quits outright takes its windows down without individual notifications.
+With destroy reporting for real, this path is the fallback: it catches windows whose destroy never arrived, and an app that quits outright takes its windows down without individual notifications.
 
 `WatcherState::forget` keeps returning `bool`, which is what stops a window being reported twice when both paths see it.
 
@@ -269,4 +264,4 @@ vmmap -summary $PID | grep DefaultMallocZone
 
 ## Ordered commits
 
-1. Change 1: the destroyed notification on the app element, `forget_element` by `CFEqual`, `Subject` and the per-window registrations removed, `forget_app` back to the element scan as a fallback.
+1. Change 1: the destroyed notification on the app element, `forget_element` by `CFEqual`, `Subject` and the per-window registrations removed, `AppObserver::window_ids` for `forget_app`.
