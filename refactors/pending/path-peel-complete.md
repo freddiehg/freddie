@@ -2,320 +2,398 @@
 
 Not done. Standalone. Prefactor for `invalidation.md`.
 
-## Goal
+Deliverable when implemented: unit tests that assert the nests below. Code shapes below are the ones that **compile** (standalone harness). No parallel spine type: focus is `PathMut` / root path.
 
-On `laserbeam::PathMut`. Leave holds a function `f` (type-state). Start: `f = identity`. Each `into_parent`: peel focus, set `f := |x| f(Up(x))` (one `Up`/`Err` layer).
+## Model (complete the composition)
 
-```text
-non-root focus:  complete = f(Here(focus))   // Here then apply lifts
-root focus:      complete = f_bare(focus)    // last Up holds &mut Root; no Here layer
-```
-
-Root bottoms the nest as bare `APath` — no `Result<APath, !>`.
-
-Public arms: **Here** / **Up**. Same Either as `Result` Ok/Err.
-
-## Origin type includes the start path
-
-Leave started at **C** (C still in the nest):
-
-```text
-Out = Doll<CPath, Doll<BPath, APath>>
-// or Result<CPath, Result<BPath, APath>>
-
-// or with explicit never further past A:
-// Result<CPath, Result<BPath, Result<APath, !>>>
-```
-
-Not “first peel drops C then Out starts at B.” C is the outermost Here.
-
-## Line of thinking (corrected)
-
-Every leave path has `f` mapping **a one-layer doll at the current focus** into **origin Out**.
-
-```text
-complete(focus) = f(Here(focus))
-```
-
-### At C — identity
-
-```text
-f_C = id
-complete = id(Here(c)) = Here(c)
-// Result: Ok(c_path)
-```
-
-### C → B — give B the function `Up` / `Err`
-
-```text
-f_B = |x| f_C(Up(x)) = Up    // since f_C = id
-complete = f_B(Here(b)) = Up(Here(b))
-// Result: Err(Ok(b_path))
-```
-
-### B → A — compose another `Up` / `Err`
-
-```text
-f_A = |x| f_B(Up(x)) = Up ∘ Up
-complete = f_A(Here(a)) = Up(Up(Here(a)))
-// Result: Err(Err(Ok(a)))  if Out = Result<C, Result<B, Result<A, !>>>
-// Result: Err(Err(a))      if Out = Result<C, Result<B, A>>  (A terminal in Err)
-```
-
-So “A is given `Err(Err(…))`” means **`f` is the composition of two lifts**, and complete always does `f(Here(a))` first.
-
-One-level lift type (Result language):
-
-```text
-lift : Result<BPath, T> → Result<CPath, Result<BPath, T>>   // = Err
-// general:  LocalDoll → OuterDoll  = Up / Err
-```
-
-Compose with the stop at the new focus:
-
-```text
-// at B after peel from C:
-//   local stop: BPath → Result<BPath, T> = Ok / Here
-//   f_B = lift_C ∘ Ok = Err ∘ Ok  →  |b| Err(Ok(b))
-
-// at A:
-//   f_A = lift_C ∘ lift_B ∘ Ok → |a| Err(Err(Ok(a))) or Err(Err(a))
-```
-
-## Either
-
-Yes. Each layer is stop vs went further:
-
-| Doll | Result |
-| --- | --- |
-| Here(p) | Ok(p) |
-| Up(rest) | Err(rest) |
-
-`Ok` / Here is **not** `!` at C or B: you can stop there. `!` only if you add an explicit “cannot go past A” layer (`Result<APath, !>`), optional.
-
-## Data structures
-
-```rust
-pub enum Doll<H, U> {
-    Here(H), // Ok
-    Up(U),   // Err
-}
-
-/// f = identity. complete = Here(focus).
-pub struct Id<Rest>(core::marker::PhantomData<Rest>);
-
-/// f = |x| outer(Up(x)). Skipped path type is phantom on the layer.
-pub struct ComposeUp<Skipped, Outer> {
-    outer: Outer,
-    _skipped: core::marker::PhantomData<Skipped>,
-}
-
-pub struct LeavePath<P, F> {
-    focus: P,
-    /// Type-state for f: LocalDoll-at-P → Out (via complete = f(Here(focus))).
-    f: F,
-}
-```
-
-### `complete` = `f(Here(focus))`
-
-```rust
-impl<P, Rest> LeavePath<P, Id<Rest>> {
-    pub fn complete(self) -> Doll<P, Rest> {
-        // f = id
-        Doll::Here(self.focus)
-    }
-}
-
-impl<P, Sk, Rest> LeavePath<P, ComposeUp<Sk, Id<Rest>>> {
-    pub fn complete(self) -> Doll<Sk, Doll<P, Rest>> {
-        // f = Up ∘ id  →  Up(Here(focus))
-        Doll::Up(Doll::Here(self.focus))
-    }
-}
-
-impl<P, Sk1, Sk2, Rest> LeavePath<P, ComposeUp<Sk1, ComposeUp<Sk2, Id<Rest>>>> {
-    pub fn complete(self) -> Doll<Sk1, Doll<Sk2, Doll<P, Rest>>> {
-        // f = Up ∘ Up ∘ id
-        Doll::Up(Doll::Up(Doll::Here(self.focus)))
-    }
-}
-```
-
-Same monomorphization as before; meaning is composition of `Up` after `Here(focus)`.
-
-### `into_parent` = peel + `f := |x| f(Up(x))`
-
-```rust
-use laserbeam::PathMut;
-
-// At C-equivalent: focus PathMut<C, B>, f = Id<Doll<B, Rest>>
-// After peel: focus B, f = ComposeUp<PathMut<C,B>, Id<Rest>>
-//   complete = Up(Here(b)) : Doll<PathMut<C,B>, Doll<B, Rest>>
-//
-// Wait — Out for leave at C is Doll<CPath, …> where CPath = PathMut<C,B>.
-// Here(c) uses CPath. After peel, Up(Here(b)) has type Doll<CPath, Doll<B, Rest>>. Yes.
-
-impl<N, P, Rest> LeavePath<PathMut<N, P>, Id<Doll<P, Rest>>> {
-    pub fn into_parent(self) -> LeavePath<P, ComposeUp<PathMut<N, P>, Id<Rest>>> {
-        LeavePath {
-            focus: self.focus.into_parent(),
-            f: ComposeUp {
-                outer: Id(core::marker::PhantomData),
-                _skipped: core::marker::PhantomData,
-            },
-        }
-    }
-}
-
-// Already composed once; another peel composes another Up inside / outside
-impl<N, P, Sk, Rest> LeavePath<PathMut<N, P>, ComposeUp<Sk, Id<Doll<P, Rest>>>> {
-    pub fn into_parent(
-        self,
-    ) -> LeavePath<P, ComposeUp<Sk, ComposeUp<PathMut<N, P>, Id<Rest>>>> {
-        LeavePath {
-            focus: self.focus.into_parent(),
-            f: ComposeUp {
-                outer: ComposeUp {
-                    outer: Id(core::marker::PhantomData),
-                    _skipped: core::marker::PhantomData,
-                },
-                _skipped: core::marker::PhantomData, // Sk preserved — structure as in working harness
-            },
-        }
-    }
-}
-```
-
-### Start at C (identity, **no** peel yet)
-
-```rust
-pub fn leave_at<N, P, Rest>(path: PathMut<N, P>) -> LeavePath<PathMut<N, P>, Id<Doll<P, Rest>>> {
-    LeavePath {
-        focus: path,
-        f: Id(core::marker::PhantomData),
-    }
-}
-
-// complete → Here(c) : Doll<CPath, Doll<P, Rest>>
-// into_parent → at P with f = Up∘id → complete Up(Here(p))
-```
-
-If the first API peels immediately (`after_first_peel`), that is `leave_at(path).into_parent()` and Out for that leave no longer offers `Here(c)` — only use `leave_at` when the origin nest includes C.
-
-## Result / Doll spelling (A = root)
-
-Two concrete shapes. Prefer **no `!`**.
-
-### Preferred: root path is bare terminal (no `!`)
-
-Spine: C → B → A with `APath = &mut Root` (real root `Place::Path`).
+Leave started at **C**. Origin type **includes C**:
 
 ```text
 Out = Doll<CPath, Doll<BPath, APath>>
 // = Result<CPath, Result<BPath, APath>>
+// APath = root path (&mut Root). Bare terminal — no Result<APath, !>.
 ```
 
 | stop | value | Result |
 | --- | --- | --- |
 | C | `Here(c)` | `Ok(c)` |
 | B | `Up(Here(b))` | `Err(Ok(b))` |
-| A (root) | `Up(Up(a))` | `Err(Err(a))` |
+| A | `Up(Up(a))` | `Err(Err(a))` — **a bare**, not `Here(a)` |
 
-Innermost type is **`APath`**, not `Doll<APath, something>`. So at root you never need `Here(a)` / `Ok(a)` as a layer — the last `Up`/`Err` **holds the root path**.
-
-That is the concrete meaning of “avoid the bang”: bottom out the nest on the root path type.
+Every leave path holds a function `f` (as type-state). Always:
 
 ```text
-complete at C:  f = id                 →  Here(c)
-complete at B:  f = Up                 →  Up(Here(b))
-complete at A:  f = Up∘Up              →  Up(Up(a))     // not Up(Up(Here(a)))
+non-root focus:  complete = f(Here(focus))
+root focus:      complete = f_bare(focus)     // last Up holds APath; no Here
 ```
 
-So `complete = f(Here(focus))` holds for **non-root** foci. At root focus, `complete = f_root(focus)` where the last lift is bare `Up(path)` (Terminal), not `Up(Here(path))`.
+Start at C: `f = identity`.
+
+```text
+complete at C = id(Here(c)) = Here(c)
+```
+
+Each `into_parent`: laserbeam peel, then `f := |x| f(Up(x))` (compose one `Err`/`Up`).
+
+```text
+at B: f = Up
+      complete = Up(Here(b))           // wrap Ok(b), then Err → Err(Ok(b))
+
+at A: f = Up ∘ Up
+      complete = Up(Up(a))             // bare root
+```
+
+One-level lift (Result language):
+
+```text
+lift : Result<BPath, T> → Result<CPath, Result<BPath, T>>   // = Err
+// general:  Local → Outer  = Up
+```
+
+```text
+f_B = lift_C ∘ Here = Err ∘ Ok     →  |b| Err(Ok(b))
+f_A = lift_C ∘ lift_B              →  |a| Err(Err(a))   // bare A
+```
+
+Either: yes (`Here`/`Up` ≡ Ok/Err). Ok is inhabited where you can stop. Root bottoms out as bare `APath` inside the last `Up` — **no `!`**.
+
+Root **as leave origin** (dispatch on `&mut Root` only): no doll leave machine; root only builds child paths with `from_fn` and matches the child’s `Doll`. Root **as terminal focus** of a deeper leave: `Terminal` wrap, `Up(…(root))`.
+
+## Existing machinery
 
 ```rust
-// Non-root stop (still a PathMut in the nest as Here)
-impl LeavePath</* BPath */, ComposeUp</*C*/, Id</* rest */>>> {
-    fn complete(self) -> Doll<CPath, Doll<BPath, APath>> {
-        Doll::Up(Doll::Here(self.focus)) // Up(Here(b))
+// laserbeam
+pub struct PathMut<Node, Parent> { /* … */ }
+impl<Node, Parent> PathMut<Node, Parent> {
+    pub fn into_parent(self) -> Parent { self.parent }
+    pub fn from_fn(parent, proj_mut, proj_ref) -> Self { /* … */ }
+    pub fn get(&self) -> &Node { /* … */ }
+    pub fn get_mut(&mut self) -> &mut Node { /* … */ }
+}
+
+// bind
+impl<N, P> HasParent for PathMut<N, P> {
+    type Parent = P;
+    fn into_parent(self) -> P { PathMut::into_parent(self) }
+}
+
+// Place::Path for root is &mut Self; for a child, PathMut<Self, Parent::Path>
+```
+
+## Types and full impls (origin C)
+
+Spine types (tests use stand-ins; production uses real `from_fn` aliases):
+
+```rust
+use core::marker::PhantomData;
+use laserbeam::PathMut;
+
+pub enum Doll<H, U> {
+    Here(H),
+    Up(U),
+}
+
+// Production:
+// type APath<'a> = &'a mut Root;
+// type BPath<'a> = PathMut<B, APath<'a>>;
+// type CPath<'a> = PathMut<C, BPath<'a>>;
+// type COut<'a>  = Doll<CPath<'a>, Doll<BPath<'a>, APath<'a>>>;
+
+// Harness stand-ins (same structure):
+pub struct Root;
+pub struct BNode;
+pub struct CNode;
+pub type APath = Root;
+pub type BPath = PathMut<BNode, APath>;
+pub type CPath = PathMut<CNode, BPath>;
+pub type COut = Doll<CPath, Doll<BPath, APath>>;
+```
+
+### Wrap type-state (= the function `f`)
+
+```rust
+/// f = identity. complete = Here(focus).
+pub struct Id<Rest>(PhantomData<Rest>);
+
+impl<Rest> Id<Rest> {
+    pub const fn new() -> Self {
+        Self(PhantomData)
     }
 }
 
-// Root stop — derive/impl for focus = APath = &mut Root only
-impl LeavePath<APath, ComposeUp<CPath, ComposeUp<BPath, Terminal>>> {
-    fn complete(self) -> Doll<CPath, Doll<BPath, APath>> {
-        Doll::Up(Doll::Up(self.focus)) // Up(Up(a)) — bare a
+/// f = |x| outer(Up(x)). `Skipped` is the PathMut type peeled past (phantom).
+pub struct ComposeUp<Skipped, Inner> {
+    inner: Inner,
+    _skipped: PhantomData<Skipped>,
+}
+
+impl<Skipped, Inner> ComposeUp<Skipped, Inner> {
+    pub const fn new(inner: Inner) -> Self {
+        Self {
+            inner,
+            _skipped: PhantomData,
+        }
+    }
+}
+
+/// Innermost at root: complete uses bare focus inside Up (no Here).
+pub struct Terminal;
+```
+
+### LeavePath
+
+```rust
+pub struct LeavePath<P, F> {
+    focus: P,
+    f: F,
+}
+```
+
+### Start at C (`f = id`)
+
+```rust
+pub fn leave_at_c(path: CPath) -> LeavePath<CPath, Id<Doll<BPath, APath>>> {
+    LeavePath {
+        focus: path,
+        f: Id::new(),
     }
 }
 ```
 
-`into_parent` into root installs `Terminal` instead of `Id`/`NoWrap` as the innermost wrap:
+### At C: complete + into_parent
 
 ```rust
-// peel B → A when A is &mut Root (bare rest of B’s doll layer)
-// Before: LeavePath<BPath, ComposeUp<C, Id<APath>>>  or NoWrap with Rest = APath
-// After:  LeavePath<APath, ComposeUp<C, ComposeUp<B, Terminal>>>
+impl LeavePath<CPath, Id<Doll<BPath, APath>>> {
+    /// f = id; complete = Here(c) = Ok(c)
+    pub fn complete(self) -> COut {
+        Doll::Here(self.focus)
+    }
 
-impl LeavePath<PathMut<BNode, APath>, ComposeUp<CPath, Id<APath>>> {
-    fn into_parent(self) -> LeavePath<APath, ComposeUp<CPath, ComposeUp<BPath, Terminal>>> {
+    /// peel C→B; f := Up ∘ id
+    pub fn into_parent(self) -> LeavePath<BPath, ComposeUp<CPath, Id<APath>>> {
         LeavePath {
-            focus: self.focus.into_parent(), // &mut Root
-            f: /* compose Terminal as innermost */,
+            focus: self.focus.into_parent(),
+            f: ComposeUp::new(Id::new()),
         }
     }
 }
 ```
 
-How we know “parent is root”: `Parent = &mut T` (or whatever the root `Place::Path` is), not `PathMut<_, _>`. One `into_parent` impl for `PathMut<_, &mut T>` ends in `Terminal`; impls for `PathMut<_, PathMut<_, _>>` keep nesting `Id`/`Here`.
-
-### Optional: `Result<APath, !>`
-
-```text
-Out = Result<CPath, Result<BPath, Result<APath, !>>>
-```
-
-Then every layer is uniform `complete = f(Ok(focus))` / `f(Here(focus))`, and at A:
-
-```text
-Ok(a) : Result<APath, !>   // Err is uninhabited
-f(Ok(a)) = Err(Err(Ok(a)))
-```
-
-Works, but:
-
-- Rust `!` / `Infallible` in public aliases is noisy.
-- Root `&mut T` is not naturally `Result<&mut T, !>`.
-
-Prefer bare terminal unless a later generic forces uniform layer shape. Derive for root already treats root specially (`Path = &mut Self`, no `from_fn` parent); bare `APath` in the nest matches that.
-
-### Root as leave origin
-
-Leave **started at root** (dispatch only on `&mut Root`): nest is not a Doll — Out is `()` or unused; root only peels into children via `from_fn`, does not `leave_at(root)` through the same machine. Child returns `Doll<ChildPath, RootPath>` / `Result<ChildPath, RootPath>`; root matches `Here`/`Up` and is done.
-
-## Existing peel
+### At B: complete + into_parent
 
 ```rust
-PathMut::into_parent(self) -> Parent
+impl LeavePath<BPath, ComposeUp<CPath, Id<APath>>> {
+    /// f(Here(b)) = Up(Here(b)) = Err(Ok(b))
+    pub fn complete(self) -> COut {
+        Doll::Up(Doll::Here(self.focus))
+    }
+
+    /// peel B→A (A root); f := Up ∘ Up with Terminal innermost
+    pub fn into_parent(self) -> LeavePath<APath, ComposeUp<CPath, ComposeUp<BPath, Terminal>>> {
+        LeavePath {
+            focus: self.focus.into_parent(),
+            f: ComposeUp::new(ComposeUp::new(Terminal)),
+        }
+    }
+}
 ```
 
-## Tests (when implemented)
+### At A (root): complete only
 
-| Start | complete | value |
+```rust
+impl LeavePath<APath, ComposeUp<CPath, ComposeUp<BPath, Terminal>>> {
+    /// f bare: Up(Up(a)) = Err(Err(a)) — no Here on root
+    pub fn complete(self) -> COut {
+        Doll::Up(Doll::Up(self.focus))
+    }
+}
+```
+
+No `into_parent` on root focus.
+
+## Full impls (origin B — child of root)
+
+When leave starts at B (e.g. `Outer` with parent root only):
+
+```text
+BOut = Doll<BPath, APath>
+// Here(b) | Up(a)
+```
+
+```rust
+pub type BOut = Doll<BPath, APath>;
+
+pub fn leave_at_b(path: BPath) -> LeavePath<BPath, Id<APath>> {
+    LeavePath {
+        focus: path,
+        f: Id::new(),
+    }
+}
+
+impl LeavePath<BPath, Id<APath>> {
+    pub fn complete(self) -> BOut {
+        Doll::Here(self.focus)
+    }
+
+    pub fn into_parent(self) -> LeavePath<APath, ComposeUp<BPath, Terminal>> {
+        LeavePath {
+            focus: self.focus.into_parent(),
+            f: ComposeUp::new(Terminal),
+        }
+    }
+}
+
+impl LeavePath<APath, ComposeUp<BPath, Terminal>> {
+    pub fn complete(self) -> BOut {
+        Doll::Up(self.focus)
+    }
+}
+```
+
+## Walk (origin C)
+
+```text
+leave_at_c(c)
+  focus = c, f = Id
+  complete → Here(c)
+
+.into_parent()
+  focus = b, f = ComposeUp<C, Id>
+  complete → Up(Here(b))
+
+.into_parent()
+  focus = a (root), f = ComposeUp<C, ComposeUp<B, Terminal>>
+  complete → Up(Up(a))
+```
+
+## Composition (function view)
+
+```text
+Out fixed: Doll<C, Doll<B, A>>
+
+at C:  f_C = id
+       complete = f_C(Here(c)) = Here(c)
+
+into_parent: f_B = |x| f_C(Up(x)) = Up
+at B:  complete = f_B(Here(b)) = Up(Here(b))
+
+into_parent: f_A = |x| f_B(Up(x)) = Up∘Up
+             but root uses Terminal so last step is bare Up(a) not Up(Here(a))
+at A:  complete = Up(Up(a))
+```
+
+`Id` / `ComposeUp` / `Terminal` **are** those functions as types. `complete` bodies are the monomorphized applications. No `Option<fn>` at runtime.
+
+## How root is special (concrete)
+
+| | Non-root focus (`PathMut`) | Root focus (`&mut Root` / `APath`) |
 | --- | --- | --- |
-| `leave_at(c)` | | `Here(c)` |
-| `leave_at(c).into_parent()` | | `Up(Here(b))` |
-| `leave_at(c).into_parent().into_parent()` | | `Up(Up(a))` bare root |
-| type of last | | `Doll<CPath, Doll<BPath, APath>>` with `APath = &mut Root` |
+| In nest | can be `Here(path)` | only appears inside last `Up` |
+| `complete` | `…Here(focus)` or as above | `…Up(focus)` via `Terminal` |
+| `into_parent` | yes | no |
+| Detect | `Parent` is `PathMut<_,_>` | `Parent` is `&mut T` (root `Place::Path`) |
+
+Derive already treats root specially (`Path = &mut Self`). Same split here: `into_parent` impls that peel to `&mut T` install `Terminal`; peels between `PathMut`s install `Id` / nested `ComposeUp` with `Here` at the next stop.
+
+Optional uniform `Result<APath, !>` would make every layer `f(Here(focus))` including A; not required. Prefer bare `APath`.
+
+## Production aliases (bind / mercury style)
+
+```rust
+// Example only — real names from Place
+type AppPath<'a> = &'a mut App;
+type LayerPath<'a> = PathMut<Layer, AppPath<'a>>;
+type NavPath<'a> = PathMut<Nav, LayerPath<'a>>;
+
+// Leave started at NavPath — same shape as COut
+type NavAscent<'a> = Doll<NavPath<'a>, Doll<LayerPath<'a>, AppPath<'a>>>;
+
+// Leave started at LayerPath — same shape as BOut
+type LayerAscent<'a> = Doll<LayerPath<'a>, AppPath<'a>>;
+```
+
+`leave_at` / `complete` / `into_parent` for those aliases are the same impl pattern as `leave_at_c` / `leave_at_b` with the corresponding type parameters. Derive emits one family per node path depth, or a small macro over depth.
+
+## Naming
+
+```rust
+// Prefer path-keyed or node-keyed alias as needed — not the expanded Doll nest in APIs
+type AscentOfNav<'a> = NavAscent<'a>;
+// Dispatch: type Ascent<'a> = NavAscent<'a>;  // for Nav node
+```
+
+Match: `Doll::Here` / `Doll::Up` only.
+
+## Tests (deliverable)
+
+```rust
+#[test]
+fn c_stop_at_c() {
+    let c = PathMut::new(PathMut::new(Root));
+    assert!(matches!(leave_at_c(c).complete(), Doll::Here(_)));
+}
+
+#[test]
+fn c_stop_at_b() {
+    let c = PathMut::new(PathMut::new(Root));
+    assert!(matches!(
+        leave_at_c(c).into_parent().complete(),
+        Doll::Up(Doll::Here(_))
+    ));
+}
+
+#[test]
+fn c_stop_at_root() {
+    let c = PathMut::new(PathMut::new(Root));
+    assert!(matches!(
+        leave_at_c(c).into_parent().into_parent().complete(),
+        Doll::Up(Doll::Up(Root))
+    ));
+}
+
+#[test]
+fn b_stop_at_b() {
+    let b = PathMut::new(Root);
+    assert!(matches!(leave_at_b(b).complete(), Doll::Here(_)));
+}
+
+#[test]
+fn b_stop_at_root() {
+    let b = PathMut::new(Root);
+    assert!(matches!(leave_at_b(b).into_parent().complete(), Doll::Up(Root)));
+}
+
+#[test]
+fn cout_type() {
+    let c = PathMut::new(PathMut::new(Root));
+    let _: COut = leave_at_c(c).into_parent().into_parent().complete();
+}
+```
+
+All five behavioral tests + type assignment: must pass in the implementation crate.
+
+## Ordered changes
+
+### 1 — `Doll`, `Id`, `ComposeUp`, `Terminal`, `LeavePath`
+
+### 2 — Full `leave_at_c` family (three `complete`, two `into_parent`) + tests for origin C
+
+### 3 — Full `leave_at_b` family + tests for origin B
+
+### 4 — Same pattern on real `PathMut::from_fn` + `&mut` root (bind test fixtures)
+
+### 5 — Wire invalidation leave/kill to this; derive emits path-depth-specific impls or macro
 
 ## Rules
 
-1. `complete = f(Here(focus))` on non-root foci; at root focus `complete = … Up(…(focus))` bare (Terminal).
-2. Start: `f = id`.
-3. `into_parent`: laserbeam peel; `f := |x| f(Up(x))` (one layer); peel to root installs Terminal innermost.
-4. Out = `Doll<C, Doll<B, A>>` with A root path type — **no `!`**.
-5. Either per non-terminal layer; public Here/Up.
+1. Origin nest includes start path: `Doll<C, Doll<B, A>>` with A root path bare.
+2. Start `f = id`; `complete` at C is `Here(c)`.
+3. Each `into_parent`: `PathMut::into_parent` + compose one `Up` into `f`.
+4. At root focus: `Terminal`; `complete` is `Up(…(a))` without `Here(a)`.
+5. Public `Here`/`Up` only; Result Ok/Err optional private synonym.
+6. No `!` unless a later change forces uniform layers.
+7. Every listed `complete` / `into_parent` has a full body; add depth only with a new impl + test.
 
 ## Relation to invalidation
 
-Child leave returns origin `Out` for the child’s path type. Parent matches `Here` / `Up`. Claim/posts separate.
+Child returns `COut` / path-specific ascent. Parent matches `Here`/`Up`. Claim and posts separate. Root dispatch does not use `leave_at` on `&mut Root`; it only consumes the child’s doll.
