@@ -1,6 +1,6 @@
 # Mercury: one thing per handler
 
-Once `invalidation.md` finishes (change 5: linear body + signature migration + `#[post]` / `#[pre_post]` parsing + derived levels per `derived-levels.md`; change 6: demo + walks), every mercury behavior is a scheduled item. The schedule is how composition works: several small handlers on one trigger, not one fat handler that does several jobs.
+Once `completed-ancestors.md` (which ships first) and `invalidation.md` finish (change 5: linear body + signature migration + `#[post]` / `#[pre_post]` parsing + derived levels per `derived-levels.md`; change 6: demo + walks), every mercury behavior is a scheduled item. The schedule is how composition works: several small handlers on one trigger, not one fat handler that does several jobs. The state-level `into_ancestor` / `try_into_ancestor` from completed-ancestors are assumed throughout: they are what let a unit that touches the root be branch-free.
 
 ## Rule
 
@@ -27,11 +27,25 @@ FnOnce(&Ev, Snap, AscendState<'a, P>) -> (Vec<E>, Completed<P>)
 
 Leave is data (`Invalidated`); every later item still runs and sees it. That is why a leave and a cancel can be two handlers: the leave peels, the cancel post matches `Invalidated`.
 
+What a unit touches decides its reach, and its reach decides its shape:
+
+```text
+pure effect            (vec![eff], st.complete())                    branch-free, any state
+its own node           match: NotInvalidated => get_mut(); Invalidated => forward `c`
+the root               st.state.into_ancestor::<MercuryPath>(),      branch-free
+                       one mutation, root.complete()                 (completed-ancestors)
+a mid-level ancestor   st.state.try_into_ancestor::<..>():           Ok ends at the target,
+                                                                     Err forwards the leave
+```
+
+`foreground`, `windows`, `typing_state.held`, and `set_layer` all live on the root, so "mutate the root and stay in the layer" does not exist as a shape: a root-touching unit consumes to the root and completes there, which flips the state to `Invalidated` for everything scheduled after it. That is harmless, because every later unit on such a key is effect-only or root-level itself, and the return-home `pre_post` is scheduled first, so the deadline still reads the descent's answer. The layer is left by `set_layer`, never by the peel.
+
 Mutation methods on the root (`set_layer`, `placing`, `hide_overlay`) stay methods: each is one state write and returns the effects that write implies. Handlers call at most one of them. A handler that calls `set_layer` and also builds a `Foreground` effect, or places and also goes home, is two things.
 
 ## Downstream
 
 ```text
+completed-ancestors.md  ships first: state-level into_ancestor / try_into_ancestor
 invalidation change 5   Completed body; handler signature; #[post]/#[pre_post]; derived levels (derived-levels.md)
 invalidation change 6   demo tree + full walks
 timed-layer-wrapper.md  one timer owner; one pre_post; leaves the four copies
@@ -56,11 +70,11 @@ enter_inapp        set_layer(InApp); leave
 enter_site         set_layer(Site); leave
 ```
 
-`set_layer` is the one mutation: hide overlay, reset jk, open/close modifiers, `ShowLayer`. The handler's one job is "enter this layer" (or home). It does not also foreground an app or emit a key.
+`set_layer` is the one mutation: hide overlay, reset jk, open/close modifiers, `ShowLayer`. The handler's one job is "enter this layer" (or home). It does not also foreground an app or emit a key. Each takes the root-consuming shape: `st.state.into_ancestor::<MercuryPath>()`, one `set_layer`, `root.complete()`.
 
 ### Foreground
 
-Nav's app keys today do navigating + enter inapp + Foreground in one body. Three units, one key. Posts that need the path stay put and are scheduled before the leave bind.
+Nav's app keys today do navigating + enter inapp + Foreground in one body. Three units, one key. `mark_navigating` mutates `foreground`, which lives on the root, so it takes the root-consuming shape (a stay-put version cannot exist: `ancestor()` reads by shared reference, and mutating an ancestor from a standing path has no reach); `foreground_chrome` is effect-only and runs on any state.
 
 ```rust
 fn mark_navigating<'a, E, P>(
@@ -69,16 +83,14 @@ fn mark_navigating<'a, E, P>(
     st: AscendState<'_, P>,
 ) -> (Vec<MercuryEffect>, Completed<P>)
 where
-    P: HasAncestor<MercuryPath<'a>> + HasStop + Complete<P>,
+    P: HasStop,
+    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    MercuryPath<'a>: Complete<P>,
 {
-    match st.state {
-        MaybeInvalidated::NotInvalidated(p) => {
-            // one job: watcher has not confirmed the new front app yet
-            p.ancestor().foreground.start_navigating();
-            (vec![], p.complete())
-        }
-        MaybeInvalidated::Invalidated(c) => (vec![], c),
-    }
+    // one job: the watcher has not confirmed the new front app yet
+    let root: MercuryPath<'a> = st.state.into_ancestor();
+    root.foreground.start_navigating();
+    (vec![], root.complete())
 }
 
 fn foreground_chrome<E, P: HasStop + Complete<P>>(
@@ -139,11 +151,11 @@ Today: `place` + `and_go_home`. Split:
 
 ```text
 // Resize LeftArrow
-#[post(Key::LeftArrow.down() => left_half)]   // only SetFrame + pending timer; stay
+#[post(Key::LeftArrow.down() => left_half)]   // SetFrame + pending timer; completes at the root
 #[bind(Key::LeftArrow.down() => go_home)]     // claim + leave home
 ```
 
-`left_half` / `right_half` / `maximize` / `restore_window` each only touch `windows`. They do not leave. `go_home` only leaves. Same for Ghostty digits:
+`left_half` / `right_half` / `maximize` / `restore_window` each only touch `windows`, which lives on the root, so each takes the root-consuming shape and completes there; none calls `set_layer`. `go_home` only leaves. Same for Ghostty digits:
 
 ```text
 #[post(Key::Num1.down() => tmux_window_1)]
@@ -223,22 +235,20 @@ Today `maybe_pass_through` does four jobs. Split by concern; claim stays on the 
 `track_held_modifiers` must run for keys a deeper layer claimed too (a modifier pressed in nav). That is exactly a post: no claim, runs on match, deepest claim still works. Today's bug-shaped coupling — tracking only on miss — goes away.
 
 ```rust
-fn track_held_modifiers(
+fn track_held_modifiers<'x>(
     ev: &KeyEvent,
     _snap: (),
-    st: AscendState<'_, MercuryPath<'_>>,
-) -> (Vec<MercuryEffect>, Completed<MercuryPath<'_>>) {
-    match st.state {
-        MaybeInvalidated::NotInvalidated(root) => {
-            if ev.key.is_modifier() {
-                root.typing_state.held.apply(ev);
-            }
-            (vec![], root.complete())
-        }
-        MaybeInvalidated::Invalidated(c) => (vec![], c),
+    st: AscendState<'_, MercuryPath<'x>>,
+) -> (Vec<MercuryEffect>, Completed<MercuryPath<'x>>) {
+    let root: MercuryPath<'x> = st.state.into_ancestor();
+    if ev.key.is_modifier() {
+        root.typing_state.held.apply(ev);
     }
+    (vec![], root.complete())
 }
 ```
+
+(Named lifetime, because the elided return with two input lifetimes does not resolve; branch-free, because a leave from the root's own descent still holds the root and `into_ancestor` on the state is total there.)
 
 `pass_or_swallow` still owns jk advance, emit, and enter home on Completed — that is still three outcomes of one policy ("what does an unbound key do in this layer"). Further splitting jk into its own post is optional: the run is one state machine, one handler is fine.
 
@@ -375,6 +385,8 @@ windows.placing / restoring
 ---
 
 ## Order of work (mercury, after change 6)
+
+completed-ancestors lands before invalidation change 5, so the change-5 migration puts the root units in the branch-free shape directly; nothing below re-migrates.
 
 ```text
 1. Unit handlers + schedule composition for leave/enter/tap/place
