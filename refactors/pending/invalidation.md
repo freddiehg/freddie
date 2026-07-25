@@ -2,7 +2,7 @@
 
 Not done. Standalone.
 
-Descent schedules which pre/posts/binds will run. That set is final. Ascent runs every scheduled post leaf to root; mutation is free. **`AscentState` is bind (freddie) machinery** — not a consumer type. It is constructed at the leaf turnaround (not during descent) and one `&mut AscentState` is threaded up the ascent and mutated in place. It holds `invalidation_depth` (remaining `into_parent` hops still inside a destroyed region) and **claim** (exclusive try-take). Posts read validity through the getter **`validity()`** — not a stored field; pure view of `invalidation_depth == 0`. `#[bind]` is a post with no pre, gated by `ctx.claim()`.
+Descent schedules which pre/posts/binds will run. That set is final. Ascent runs every scheduled post leaf to root; mutation is free. **`AscentState` is bind (freddie) machinery** — not a consumer type. It is constructed at the leaf turnaround (not during descent) and one `&mut AscentState` is threaded up the ascent and mutated in place. It holds `invalidation_depth` (remaining `into_parent` hops still inside a destroyed region) and **claim** (exclusive try-take). Posts read structure change through the getter **`mutation()`** — not a stored field; Unchanged iff `invalidation_depth == 0`, else HasBeenMutated. `#[bind]` is a post with no pre, gated by `ctx.claim()`.
 
 **Generate stays thin.** The derive only schedules `opt_N` and calls helpers (`run_post`, `run_exclusive`, `into_parent`). Invalidation-depth math, claim try-take, and sink extension live in ordinary functions in `bind` / laserbeam — not hand-rolled in every expanded `Dispatch` impl.
 
@@ -24,7 +24,7 @@ To thread ownership through several posts at one level, each post returns the pa
 #[node(parent = RootPath)]
 #[binds(M)]
 #[pre_post(AnyKey => (snap_child_id, after_child))]
-#[post(AnyKey => only_if_valid(|p| &mut p.get_mut().return_home, rearm))]
+#[post(AnyKey => only_if_unchanged(|p| &mut p.get_mut().return_home, rearm))]
 #[bind(KeyA => outer_handler)]
 struct Outer {
     #[resolve_into]
@@ -48,19 +48,19 @@ fn snap_child_id(ev: &KeyEvent, node: Node<&OuterPath, ()>) -> ChildId {
 }
 
 // post: owned path; first arg is pre's return. Must not call ctx.claim().
-// Pre carriage exists so Invalidated still has the id after the child field is gone.
+// Pre carriage exists so HasBeenMutated still has the id after the child field is gone.
 fn after_child(
     id: ChildId,
     node: Node<OuterPath, ()>,
     ctx: &mut AscentState,
 ) -> (Vec<M::Effect>, OuterPath) {
-    match ctx.validity() {
-        Validity::Valid => {
+    match ctx.mutation() {
+        Mutation::Unchanged => {
             // child field still Inner; id should match live value
             let _ = (id, node.parent.get().inner.id);
             (vec![], node.parent)
         }
-        Validity::Invalidated => {
+        Mutation::HasBeenMutated => {
             // field no longer Inner; only the pre snapshot remains
             (vec![log_destroyed(id)], node.parent)
         }
@@ -68,7 +68,7 @@ fn after_child(
 }
 
 // #[post] alone: (noop_pre, body). User post is (node, ctx) — not ((), node, ctx).
-// sugar: project + act only when validity is Valid
+// sugar: project + act only when mutation is Unchanged
 fn rearm(child: &mut AndReturnHome) -> Vec<MercuryEffect> {
     let (guard, schedule) = arm_return_home();
     child.guard = guard;
@@ -130,7 +130,7 @@ Leaf to root. **AscentState is constructed when the ascent begins** (leaf turnar
 | `invalidation_depth: u32` | Remaining hops inside a destroyed region. Lives **on AscentState**. A kill that climbs N `into_parent`s does `invalidation_depth = invalidation_depth.max(N)`; each later framework `into_parent` on the ascent calls `step_up` (decrement). `0` means valid. |
 | `claim: Option<Claimed>` | Ascent-global, monotone. `claim()` try-takes. Once taken, every shallower exclusive fails. |
 
-There is no stored `Validity` flag and no per-level context. The binary read is a getter: `fn validity(&self) -> Validity` over `invalidation_depth == 0`. Binary `set_validity(Valid|Invalidated)` per level is wrong: not every level is invalidated, and a flag does not track how far destruction reaches.
+There is no stored `Mutation` flag and no per-level context. The binary read is a getter: `fn mutation(&self) -> Mutation` over `invalidation_depth == 0`. Binary `set_mutation(Unchanged|HasBeenMutated)` per level is wrong: not every level is invalidated, and a flag does not track how far destruction reaches.
 
 Descent has no AscentState — it is not constructed yet. Only the ascent has one, and mutates it.
 
@@ -154,22 +154,22 @@ ctx.invalidation_depth = ctx.invalidation_depth.max(2); // invalidate(2)
 At each level of the **framework** ascent (after the handler returns):
 
 1. Apply reshape if scheduled for this level (may already have raised invalidation_depth via the hop rule above).
-2. Run scheduled posts (`&mut ctx`); they see **current** `ctx.invalidation_depth()` / `validity()`.
+2. Run scheduled posts (`&mut ctx`); they see **current** `ctx.invalidation_depth()` / `mutation()`.
 3. Exclusive: `match ctx.claim() { None => skip; Some(Claimed) => body }` — try-take, not a separate getter + set.
 4. `step_up` when leaving the level (framework `into_parent` after this level's posts).
 
 ```rust
 #[derive(Clone, Copy)]
-enum Validity {
-    Valid,
-    Invalidated,
+enum Mutation {
+    Unchanged,
+    HasBeenMutated,
 }
 
 #[derive(Clone, Copy)]
 struct Claimed;
 
 struct AscentState {
-    /// Remaining into_parent hops still inside the destroyed region. 0 = valid.
+    /// Remaining into_parent hops still inside the destroyed region. 0 = Unchanged.
     invalidation_depth: u32,
     claim: Option<Claimed>,
 }
@@ -179,12 +179,12 @@ impl AscentState {
         self.invalidation_depth
     }
 
-    /// Getter. Valid iff invalidation_depth == 0. Not a stored field.
-    fn validity(&self) -> Validity {
+    /// Getter. Unchanged iff invalidation_depth == 0; else HasBeenMutated. Not a stored field.
+    fn mutation(&self) -> Mutation {
         if self.invalidation_depth == 0 {
-            Validity::Valid
+            Mutation::Unchanged
         } else {
-            Validity::Invalidated
+            Mutation::HasBeenMutated
         }
     }
 
@@ -225,7 +225,7 @@ ASCENT begins at leaf:
   exclusive kills spine with N× into_parent → invalidation_depth = invalidation_depth.max(N)
   at each level leaf → root:
     reshape if any (same hop rule if applied here)
-    posts: read ctx.invalidation_depth() / validity()
+    posts: read ctx.invalidation_depth() / mutation()
     exclusive: match ctx.claim() { None => skip; Some(_) => h(...) }
     step_up: invalidation_depth = invalidation_depth.saturating_sub(1)
 ```
@@ -233,12 +233,12 @@ ASCENT begins at leaf:
 Example: exclusive two levels below the owner does `into_parent().into_parent()` → `invalidation_depth.max(2)`.
 
 ```text
-level +1 posts: invalidation_depth 2 → Invalidated; step_up → 1
-level +2 owner: invalidation_depth 1 → Invalidated; step_up → 0
-above:          invalidation_depth 0 → Valid
+level +1 posts: invalidation_depth 2 → HasBeenMutated; step_up → 1
+level +2 owner: invalidation_depth 1 → HasBeenMutated; step_up → 0
+above:          invalidation_depth 0 → Unchanged
 ```
 
-Three-hop climb (`into_parent`×3) → `invalidation_depth.max(3)`, same pattern for three levels then Valid above.
+Three-hop climb (`into_parent`×3) → `invalidation_depth.max(3)`, same pattern for three levels then Unchanged above.
 
 `claim` never decrements. Invalidation depth only moves via `invalidate` (`max` with hop count) / `step_up`, and the counter lives on AscentState for the whole ascent.
 
@@ -305,7 +305,7 @@ if let Some(id) = opt_0 {
 // #[post] — macro filled noop_pre; user body does not take ()
 if let Some(()) = opt_1 {
     let (path, effects) = run_post(path, ctx, |node, ctx| {
-        only_if_valid(|p| &mut p.get_mut().return_home, rearm)(node, ctx)
+        only_if_unchanged(|p| &mut p.get_mut().return_home, rearm)(node, ctx)
     });
     Extend::extend(effs, effects);
 }
@@ -313,17 +313,17 @@ if let Some(()) = opt_1 {
 
 Sibling posts never call `claim()`. Order at a level: pre_post / post attrs first (index order), then bind.
 
-### `only_if_valid`
+### `only_if_unchanged`
 
 ```rust
-fn only_if_valid<P, N>(
+fn only_if_unchanged<P, N>(
     project: impl Fn(&mut P) -> &mut N,
     f: impl FnOnce(&mut N) -> Vec<Effect>,
 ) -> impl FnOnce(Node<P, ()>, &mut AscentState) -> (Vec<Effect>, P) {
     move |mut node, ctx| {
-        let effects = match ctx.validity() {
-            Validity::Valid => f(project(&mut node.parent)),
-            Validity::Invalidated => Vec::new(),
+        let effects = match ctx.mutation() {
+            Mutation::Unchanged => f(project(&mut node.parent)),
+            Mutation::HasBeenMutated => Vec::new(),
         };
         (effects, node.parent)
     }
@@ -340,9 +340,9 @@ pub trait Bindings {
 }
 
 #[derive(Clone, Copy)]
-pub enum Validity {
-    Valid,
-    Invalidated,
+pub enum Mutation {
+    Unchanged,
+    HasBeenMutated,
 }
 
 pub struct Claimed;
@@ -358,12 +358,12 @@ impl AscentState {
         self.invalidation_depth
     }
 
-    /// Getter. Valid iff invalidation_depth == 0. Not a stored field.
-    pub fn validity(&self) -> Validity {
+    /// Getter. Unchanged iff invalidation_depth == 0; else HasBeenMutated. Not a stored field.
+    pub fn mutation(&self) -> Mutation {
         if self.invalidation_depth == 0 {
-            Validity::Valid
+            Mutation::Unchanged
         } else {
-            Validity::Invalidated
+            Mutation::HasBeenMutated
         }
     }
 
@@ -557,7 +557,7 @@ impl Dispatch<M> for Outer {
             ::core::option::Option::None
         };
 
-        // opt_1: #[post(AnyKey => only_if_valid(..., rearm))] via noop_pre
+        // opt_1: #[post(AnyKey => only_if_unchanged(..., rearm))] via noop_pre
         let opt_1 = if let ::core::option::Option::Some(ev) =
             ::core::convert::TryFrom::try_from(event).ok()
         {
@@ -611,7 +611,7 @@ impl Dispatch<M> for Outer {
                 }
                 if let ::core::option::Option::Some(()) = opt_1 {
                     let (p, e) = run_post(path, ctx, |node, ctx| {
-                        only_if_valid(|p| &mut p.get_mut().return_home, rearm)(node, ctx)
+                        only_if_unchanged(|p| &mut p.get_mut().return_home, rearm)(node, ctx)
                     });
                     path = p;
                     ::core::iter::Extend::extend(&mut local, e);
@@ -651,7 +651,7 @@ DESCENT  (no AscentState)
 
 ASCENT  leaf constructs AscentState { invalidation_depth: 0, claim: None }
   Inner bind: may invalidate(d); run_exclusive via claim()
-  Outer into_parent: posts see validity() from invalidation_depth; step_up
+  Outer into_parent: posts see mutation() from invalidation_depth; step_up
   Outer bind: run_exclusive via claim()
 ```
 
@@ -661,24 +661,24 @@ ASCENT  leaf constructs AscentState { invalidation_depth: 0, claim: None }
 DESCENT: snap_child_id; schedule rearm post; schedule outer bind
 Inner claim() succeeds; may invalidate(d) and kill Inner
 ASCENT Outer into_parent:
-  after_child(id): Invalidated → log_destroyed(id) from pre snapshot
-  only_if_valid rearm: skipped (Invalidated); Drop cancels old guard
+  after_child(id): HasBeenMutated → log_destroyed(id) from pre snapshot
+  only_if_unchanged rearm: skipped (HasBeenMutated); Drop cancels old guard
 Outer exclusive: claim already taken → skip
 ```
 
 ### `KeyB` (AnyKey only; no bind)
 
 ```text
-after_child: Valid → child still live
-rearm: Valid → new guard + schedule
+after_child: Unchanged → child still live
+rearm: Unchanged → new guard + schedule
 never claim()
 ```
 
 ## Rearm
 
-`#[post(AnyKey => only_if_valid(|p| &mut p.get_mut().return_home, rearm))]` — see DX above.
+`#[post(AnyKey => only_if_unchanged(|p| &mut p.get_mut().return_home, rearm))]` — see DX above.
 
-`validity() == Valid`: rearm. `Invalidated` (invalidation_depth > 0): skip; `Drop` of the guard cancels. Does not call `claim()`.
+`mutation() == Unchanged`: rearm. `HasBeenMutated` (invalidation_depth > 0): skip; `Drop` of the guard cancels. Does not call `claim()`.
 
 ## Prefactors (ordered, each shippable alone)
 
@@ -711,7 +711,7 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 ### Feature steps (after P0–P4)
 
 1. `#[post]`
-2. `invalidate` / `step_up` / derived `validity()` (reshape may still be empty)
+2. `invalidate` / `step_up` / derived `mutation()` (reshape may still be empty)
 3. `exclusive` sugar naming settled (`exclusive` preferred over `if_unclaimed`)
 4. `#[pre_post]`
 5. mercury rearm; drop handle discriminant rearm
@@ -731,7 +731,7 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 3. Pre: shared path. Post: owned path, return `(Vec<Effect>, P)`.
 4. `AscentState` is bind/freddie (not a consumer type). Constructed at the leaf turnaround; none during descent. One object for the ascent; posts take `&mut AscentState`.
 5. `claim(&mut self) -> Option<Claimed>` try-takes. Not a getter. Not a parallel flag.
-6. `AscentState` holds `invalidation_depth: u32`. A kill's N× `into_parent` does `invalidation_depth = invalidation_depth.max(N)`. Framework ascent `step_up` decrements. Getter `validity(&self) -> Validity` is `invalidation_depth == 0`.
+6. `AscentState` holds `invalidation_depth: u32`. A kill's N× `into_parent` does `invalidation_depth = invalidation_depth.max(N)`. Framework ascent `step_up` decrements. Getter `mutation(&self) -> Mutation`: `invalidation_depth == 0` → Unchanged, else HasBeenMutated.
 7. Logging never calls `claim()`. Only exclusive does.
 8. Every pre/post attr is a pre_post pair. Missing pre is well-known `noop_pre` (macro drops it in).
 9. No `#[pre]` alone. A pre exists only as the first half of `#[pre_post]`.
@@ -742,15 +742,15 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 
 ## Tests
 
-- scheduled post runs after deep bind, including when invalidation_depth > 0 (`Invalidated`)
+- scheduled post runs after deep bind, including when invalidation_depth > 0 (`HasBeenMutated`)
 - logging pre_post never calls `claim()`
 - deepest bind wins; parent bind skips after child `claim()`
 - path threaded through two posts at one level
 - pre return value consumed once
 - pre miss: no post
 - `#[post]` alone: expands to `(noop_pre, post)`; body is `(node, ctx)`
-- `only_if_valid` / expression post
-- invalidation_depth: N× `into_parent` kill → `invalidation_depth.max(N)`; N levels Invalidated then Valid above (after step_ups)
+- `only_if_unchanged` / expression post
+- invalidation_depth: N× `into_parent` kill → `invalidation_depth.max(N)`; N levels HasBeenMutated then Unchanged above (after step_ups)
 - `into_parent().into_parent()` → `invalidation_depth.max(2)`
 
 ## Open
