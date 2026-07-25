@@ -1,6 +1,6 @@
 # Mercury: one thing per handler
 
-Once `invalidation.md` finishes (change 5: linear body + signature migration; change 6: `#[post]` / `#[pre_post]`), every mercury behavior is a scheduled item. The schedule is how composition works: several small handlers on one trigger, not one fat handler that does several jobs.
+Once `invalidation.md` finishes (change 5: linear body + signature migration + `#[post]` / `#[pre_post]` parsing + derived levels per `derived-levels.md`; change 6: demo + walks), every mercury behavior is a scheduled item. The schedule is how composition works: several small handlers on one trigger, not one fat handler that does several jobs.
 
 ## Rule
 
@@ -32,8 +32,8 @@ Mutation methods on the root (`set_layer`, `placing`, `hide_overlay`) stay metho
 ## Downstream
 
 ```text
-invalidation change 5   Completed body; handler signature; derived levels
-invalidation change 6   #[post] / #[pre_post]
+invalidation change 5   Completed body; handler signature; #[post]/#[pre_post]; derived levels (derived-levels.md)
+invalidation change 6   demo tree + full walks
 timed-layer-wrapper.md  one timer owner; one pre_post; leaves the four copies
 multiple-children.md    needs posts-run-regardless
 also-binds / handler-kinds / exclusive-as-post   history; schedule replaces them
@@ -385,6 +385,6 @@ windows.placing / restoring
 5. multiple-children when designed
 ```
 
-Step 1 does not need pre_post if every split is post+bind on the same key; posts need change 6. Until then, fat handlers stay, signatures only migrate under change 5.
+Step 1 does not need pre_post if every split is post+bind on the same key; posts parse at change 5. Until the split work starts, fat handlers keep their bodies; only their signatures migrate under change 5.
 
 The acceptance test for the whole migration: no handler in `crates/mercury/src/handlers/` both changes layer and emits a chord; no handler both places a window and goes home; no rearm outside a pre_post; `and_go_home` does not exist.
