@@ -2,45 +2,53 @@
 
 Not done. Standalone.
 
-Descent schedules which pre/posts/binds run. That set is final. Ascent runs every scheduled post leaf to root. Live hop state is internal; posts receive a frozen snapshot.
+Descent schedules which pre/posts/binds run. That set is final. Ascent runs every scheduled post leaf to root.
 
-## End state (what ships)
+- **`AscentState`**: live hop counter + claim. Owned by the dispatch machine. Constructed at the leaf. Threaded as `&mut AscentState` through framework code and into exclusive bodies (`run_exclusive`). **Not** an argument to posts.
+- **`AscentStateSnapshot`**: frozen at `state.snapshot()` on entry to framework `into_parent`. **This is what posts receive** (`&AscentStateSnapshot`). `snap.mutation() -> Intact | MaybeDropped`.
 
-### Types (`crates/bind`)
+## Types (`crates/bind`)
 
 ```rust
 #[derive(Clone, Copy)]
 pub enum Mutation {
-    /// Live depth was 0 when this snapshot was taken.
+    /// Live `invalidation_depth` was 0 when this snapshot was taken.
     Intact,
-    /// Live depth was > 0 when this snapshot was taken. A deeper exclusive
-    /// called `invalidate(N)` covering this hop. Child fields in that zone may
-    /// already be gone. Prefer pre carriage over reading the child field.
+    /// Live `invalidation_depth` was > 0 when this snapshot was taken.
+    /// A deeper exclusive called `invalidate(N)` covering this hop.
+    /// Child fields in that zone may already be gone; prefer pre carriage.
     MaybeDropped,
 }
 
+/// Token from successful `claim`. Not public API.
 struct Claimed;
 
-/// Internal to bind dispatch. Not passed to user posts.
-pub(crate) struct AscentState {
+/// Live ascent machine state.
+///
+/// Public so exclusive handlers in app crates can take `&mut AscentState` and call
+/// `invalidate`. Fields are private. Posts never receive this type — they get
+/// `AscentStateSnapshot` only.
+pub struct AscentState {
     invalidation_depth: u32,
     claim: Option<Claimed>,
 }
 
-/// Passed to user post functions.
+/// Frozen view passed to user post functions.
 pub struct AscentStateSnapshot {
     mutation: Mutation,
 }
 
 impl AscentState {
-    pub(crate) fn new() -> Self {
+    /// Leaf turnaround only (framework).
+    pub fn new() -> Self {
         Self {
             invalidation_depth: 0,
             claim: None,
         }
     }
 
-    pub(crate) fn snapshot(&self) -> AscentStateSnapshot {
+    /// Framework `into_parent`, before posts.
+    pub fn snapshot(&self) -> AscentStateSnapshot {
         AscentStateSnapshot {
             mutation: if self.invalidation_depth == 0 {
                 Mutation::Intact
@@ -50,17 +58,20 @@ impl AscentState {
         }
     }
 
-    /// `depth = depth.max(d)`. Exclusive / kill helper.
-    pub(crate) fn invalidate(&mut self, d: u32) {
+    /// Exclusive kill: `invalidation_depth = invalidation_depth.max(d)`.
+    /// `d` = number of framework `into_parent` hops from this exclusive's level
+    /// up through the reshape owner (inclusive).
+    pub fn invalidate(&mut self, d: u32) {
         self.invalidation_depth = self.invalidation_depth.max(d);
     }
 
-    /// Framework `into_parent` only, after posts.
-    pub(crate) fn step_up(&mut self) {
+    /// Framework `into_parent` only, after posts at this level.
+    pub fn step_up(&mut self) {
         self.invalidation_depth = self.invalidation_depth.saturating_sub(1);
     }
 
-    pub(crate) fn claim(&mut self) -> Option<Claimed> {
+    /// `run_exclusive` only. Try-take. Not a getter.
+    pub fn claim(&mut self) -> Option<Claimed> {
         match self.claim {
             Some(_) => None,
             None => {
@@ -70,7 +81,8 @@ impl AscentState {
         }
     }
 
-    pub(crate) fn claimed(&self) -> bool {
+    /// Top-level `dispatch` only. Observe without try-taking.
+    pub fn claimed(&self) -> bool {
         self.claim.is_some()
     }
 }
@@ -82,39 +94,51 @@ impl AscentStateSnapshot {
 }
 ```
 
-### User signatures
+## User function signatures
 
 ```rust
-// pre
-fn pre(ev: &E, node: Node<&P, D>) -> T;
+// pre — descent, shared path
+fn pre(ev: &SourceEvent, node: Node<&P, D>) -> T;
 
-// post (pre_post threads T; post alone has no T)
-fn post(t: T, node: Node<P, D>, snap: &AscentStateSnapshot) -> (Vec<Effect>, P);
-fn post(node: Node<P, D>, snap: &AscentStateSnapshot) -> (Vec<Effect>, P);
+// post — ascent; snapshot only (no &mut AscentState)
+fn post(
+    pre_return: T,
+    node: Node<P, D>,
+    snap: &AscentStateSnapshot,
+) -> (Vec<M::Effect>, P);
 
-// exclusive — schedule token like post; body through run_exclusive
-fn exclusive(ev: &E, node: Node<P, D>, state: &mut AscentState) -> (Vec<Effect>, P);
+// post alone (noop_pre): no pre_return arg
+fn post(
+    node: Node<P, D>,
+    snap: &AscentStateSnapshot,
+) -> (Vec<M::Effect>, P);
+
+// exclusive — run_exclusive; live state for claim + invalidate
+fn exclusive(
+    ev: &SourceEvent,
+    node: Node<P, D>,
+    state: &mut AscentState,
+) -> (Vec<M::Effect>, P);
 ```
 
-`#[bind(t => h)]` schedules like `#[post]` (`noop_pre` token) and runs `run_exclusive(h)`. Not the same signature as a post.
+Return path is always the **same level** `P` the handler received.
 
-### Attr desugar
+## Attr → schedule
 
 ```rust
-#[pre_post(t => (pre, post))]  // (pre, post)
-#[post(t => post)]             // (noop_pre, post)
-#[bind(t => h)]                // schedule Some(()); ascent: run_exclusive(h)
-#[pre(...)]                    // does not exist
+#[pre_post(trig => (pre, post))]  // opt = Some(pre(...))
+#[post(trig => post)]             // opt = Some(noop_pre(...)) i.e. Some(())
+#[bind(trig => handler)]          // opt = Some(noop_pre(...)); ascent: run_exclusive(handler)
 ```
 
 ```rust
 fn noop_pre<E, P, D>(_ev: &E, _node: Node<&P, D>) {}
 ```
 
-### Helpers
+## Framework helpers (`crates/bind`, not generated per node)
 
 ```rust
-fn run_post<P>(
+pub fn run_post<P, Effect>(
     path: P,
     snap: &AscentStateSnapshot,
     body: impl FnOnce(Node<P, ()>, &AscentStateSnapshot) -> (Vec<Effect>, P),
@@ -122,7 +146,7 @@ fn run_post<P>(
     body(Node { parent: path, data: () }, snap)
 }
 
-fn run_exclusive<P>(
+pub fn run_exclusive<P, Effect>(
     path: P,
     state: &mut AscentState,
     body: impl FnOnce(Node<P, ()>, &mut AscentState) -> (Vec<Effect>, P),
@@ -133,7 +157,7 @@ fn run_exclusive<P>(
     }
 }
 
-fn only_if_intact<P, N>(
+pub fn only_if_intact<P, N, Effect>(
     project: impl Fn(&mut P) -> &mut N,
     f: impl FnOnce(&mut N) -> Vec<Effect>,
 ) -> impl FnOnce(Node<P, ()>, &AscentStateSnapshot) -> (Vec<Effect>, P) {
@@ -147,9 +171,9 @@ fn only_if_intact<P, N>(
 }
 ```
 
-### `into_parent`
+## `PathMut::into_parent`
 
-Before:
+Before (threaded sink, empty posts — after P1):
 
 ```rust
 pub fn into_parent(self, sink: &mut Vec<Effect>) -> P {
@@ -157,7 +181,7 @@ pub fn into_parent(self, sink: &mut Vec<Effect>) -> P {
     Extend::extend(sink, post_effs);
     parent
 }
-// on_into_parent: FnOnce(P) -> (P, Vec<Effect>)
+// F: FnOnce(P) -> (P, Vec<Effect>)
 ```
 
 After:
@@ -170,18 +194,21 @@ pub fn into_parent(self, sink: &mut Vec<Effect>, state: &mut AscentState) -> P {
     state.step_up();
     parent
 }
-// on_into_parent: FnOnce(P, &AscentStateSnapshot) -> (P, Vec<Effect>)
+// F: FnOnce(P, &AscentStateSnapshot) -> (P, Vec<Effect>)
 ```
 
 ```rust
-fn empty_on_into_parent<P>(parent: P, _snap: &AscentStateSnapshot) -> (P, Vec<Effect>) {
+fn empty_on_into_parent<P, Effect>(
+    parent: P,
+    _snap: &AscentStateSnapshot,
+) -> (P, Vec<Effect>) {
     (parent, Vec::new())
 }
 ```
 
-### `Dispatch`
+## `Dispatch` / top-level
 
-Before (after P0 batch thread; adjust to whatever is on master when implementing):
+Before (batch threaded, `Break` still — after P0):
 
 ```rust
 pub trait Dispatch<M: Bindings>: Place {
@@ -208,7 +235,10 @@ pub trait Dispatch<M: Bindings>: Place {
         Self: 'a;
 }
 
-pub fn dispatch<'a, M, N>(path: N::Path<'a>, event: &M::Event) -> Option<Vec<M::Effect>>
+pub fn dispatch<'a, M, N>(
+    path: N::Path<'a>,
+    event: &M::Event,
+) -> Option<Vec<M::Effect>>
 where
     M: Bindings,
     N: Dispatch<M> + 'a,
@@ -223,20 +253,32 @@ where
 }
 ```
 
-### Level order
+## Level order
 
 ```text
-descent: schedule opt_N
-from_fn child; child dispatch → (child_path, state)
-into_parent: snap = snapshot(); posts(&snap); step_up()
-exclusive if scheduled: run_exclusive (claim; body &mut AscentState)
+DESCENT
+  for each attr i: if trigger matches, opt_i = Some(pre_or_noop_pre(...)) else None
+
+  if has resolve_into child:
+    child_path = from_fn(path, project, on_into_parent capturing opts)
+    (child_path, state) = Child::dispatch(child_path, event, effs)
+    path = child_path.into_parent(effs, &mut state)
+      // inside into_parent:
+      //   snap = state.snapshot()
+      //   (path, post_effs) = on_into_parent(path, &snap)  // all posts for this node
+      //   extend effs
+      //   state.step_up()
+
+  if leaf (no child):
+    state = AscentState::new()
+
+  if exclusive scheduled (opt for bind is Some):
+    re-TryFrom event; run_exclusive(path, &mut state, |node, state| handler(ev, node, state))
+
+  return (path, state)
 ```
 
-Leaf: `AscentState::new()`; exclusive if any; return `(path, state)`.
-
-### Kill
-
-Exclusive body (same-level path return):
+## Kill
 
 ```rust
 fn inner_handler(
@@ -244,15 +286,16 @@ fn inner_handler(
     node: Node<InnerPath, ()>,
     state: &mut AscentState,
 ) -> (Vec<M::Effect>, InnerPath) {
-    state.invalidate(2); // N = hops leaf → reshape owner inclusive
-    // reshape carrier schedules field replace at owner
+    // N = framework into_parent hops from this level through reshape owner
+    state.invalidate(2);
+    // reshape carrier (F5) schedules field replace at owner
     (vec![], node.parent)
 }
 ```
 
-Framework stack still walks. Posts at each hop see `snap.mutation()` from depth at snapshot time.
+Same-level path return. Framework `PathMut` stack still walks and still runs ancestor posts.
 
-### DX example
+## DX example (the tree the expand is for)
 
 ```rust
 #[derive(Bind)]
@@ -303,13 +346,17 @@ fn outer_handler(
     ev: &KeyEvent,
     node: Node<OuterPath, ()>,
     state: &mut AscentState,
-) -> (Vec<M::Effect>, OuterPath) { ... }
+) -> (Vec<M::Effect>, OuterPath) {
+    let _ = (ev, state);
+    (vec![], node.parent)
+}
 
 fn inner_handler(
     ev: &KeyEvent,
     node: Node<InnerPath, ()>,
     state: &mut AscentState,
 ) -> (Vec<M::Effect>, InnerPath) {
+    let _ = ev;
     state.invalidate(2);
     (vec![], node.parent)
 }
@@ -591,38 +638,73 @@ pub fn only_if_intact<P, N>(
 }
 ```
 
-### Walk (Root ⊃ Outer ⊃ Inner; KeyA; Inner `invalidate(2)`)
+### Walk: KeyA, Inner `invalidate(2)`
+
+Tree: Root contains Outer contains Inner.
 
 ```text
-DESCENT Outer: opt_0 after_child, opt_1 rearm, opt_2 outer bind
-DESCENT Inner: opt_0 inner bind
+DESCENT Outer
+  opt_0 = Some(snap_child_id(...))     // AnyKey pre_post
+  opt_1 = Some(())                     // AnyKey post (noop_pre)
+  opt_2 = Some(())                     // KeyA bind (noop_pre)
+  from_fn → InnerPath
 
-LEAF Inner:
-  state = AscentState::new()
-  claim() ok; invalidate(2); return (InnerPath, state)
+DESCENT Inner
+  opt_0 = Some(())                     // KeyA bind
 
-Outer into_parent:
-  snap = snapshot()        // MaybeDropped, depth 2
-  after_child(&snap)
-  only_if_intact → skip
-  step_up()                // depth 1
+ASCENT Inner (leaf)
+  state = AscentState::new()             // depth 0, claim None
+  run_exclusive:
+    claim() → Some(Claimed)
+    inner_handler: invalidate(2)         // depth = 2
+  return (InnerPath, state)
 
-Outer exclusive: claim fails
+ASCENT Outer into_parent
+  snap = state.snapshot()                // MaybeDropped (depth 2)
+  on_into_parent(&snap):
+    after_child(id, node, snap)          // MaybeDropped branch
+    only_if_intact(rearm)                // skip; Drop cancels guard
+  state.step_up()                        // depth 2 → 1
+  run_exclusive outer_handler:
+    claim() → None                       // already taken; skip body
 
-Root into_parent (if posts):
-  snap = snapshot()        // MaybeDropped, depth 1
-  step_up()                // depth 0
+ASCENT Root into_parent (if Root has posts)
+  snap = state.snapshot()                // MaybeDropped (depth 1)
+  posts…
+  state.step_up()                        // depth 1 → 0
 ```
 
----
+### Walk: KeyB (AnyKey only; no KeyA bind)
+
+```text
+DESCENT Outer: opt_0 Some, opt_1 Some, opt_2 None
+DESCENT Inner: opt_0 None
+
+ASCENT Inner: state = new(); no exclusive
+ASCENT Outer into_parent:
+  snap = Intact (depth 0)
+  after_child Intact branch
+  only_if_intact → rearm runs
+  step_up (still 0)
+  no outer exclusive
+```
 
 ## Ordered changes
 
-Each step ships alone. Behavior-identical until a step says otherwise.
+Each ships alone. Behavior-identical until a step says otherwise.
 
 ### P0 — `Bindings::Effect` + threaded batch (keep `Break`)
 
-Before: `type Output`; `Break(output)`.
+Before:
+
+```rust
+pub trait Bindings {
+    type Trigger: Eq + Hash;
+    type Event;
+    type Output;
+}
+// dispatch(path, event) -> ControlFlow<M::Output, Path>
+```
 
 After:
 
@@ -632,54 +714,46 @@ pub trait Bindings {
     type Event;
     type Effect;
 }
-
-// dispatch(..., effs: &mut Vec<M::Effect>) -> ControlFlow<(), Path>
+// dispatch(path, event, effs: &mut Vec<M::Effect>) -> ControlFlow<(), Path>
 // exclusive pushes onto effs, Break(())
 // top-level Some(effs) / None
 ```
 
 ### P1 — `on_into_parent` + sink together
 
-Before: `into_parent(self) -> P` (or current master shape).
+Before: `into_parent(self) -> P` (or master equivalent).
 
-After: `F` on `PathMut`; `into_parent` runs `F` and extends sink. All call sites pass `empty_on_into_parent` (no posts yet). No unused sink alone.
-
-```rust
-fn empty_on_into_parent<P>(parent: P) -> (P, Vec<Effect>) {
-    (parent, Vec::new())
-}
-```
-
-(Signature gains `&AscentStateSnapshot` in P3 when state exists; until then match the `F` of that step.)
+After: `F` on `PathMut`; `into_parent` runs `F` and extends sink. Every call site passes empty posts (no unused sink alone).
 
 ### P2 — `from_fn` framework-only
 
 Crate-private / sealed.
 
-### P3 — `AscentState` internal + `into_parent` snapshot/step_up
+### P3 — `AscentState` + `into_parent` snapshot / step_up
 
-- Leaf: `AscentState::new()`; return `(Path, AscentState)` always (drop `Break`).
-- `into_parent(self, sink, state: &mut AscentState)`: `snapshot` → `on_into_parent(..., &snap)` → `step_up`.
-- `on_into_parent: FnOnce(P, &AscentStateSnapshot) -> (P, Vec<Effect>)`.
-- Exclusive: `run_exclusive` via `claim`; body `(ev, node, &mut AscentState) -> (Vec, P)`; same-level path.
+- Drop `Break`. Always `(Path, AscentState)`.
+- Leaf: `AscentState::new()`.
+- `into_parent(self, sink, state)`: `snapshot` → `on_into_parent(..., &snap)` → `step_up`.
+- `on_into_parent: FnOnce(P, &AscentStateSnapshot) -> (P, Vec<Effect>)` (may be empty).
+- Exclusive via `run_exclusive` / `claim`.
 - Top-level: `claimed() || !effs.is_empty()`.
-- No user posts yet; posts empty.
+- No user `#[post]` yet.
 
 ### P4 — `#[bind]` only through `run_exclusive`
 
-Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
+Handlers return `(Vec<Effect>, P)` at the same level. Behavior-identical to P3.
 
 ### F1 — `#[post]`
 
-User post `(node, &AscentStateSnapshot) -> (Vec, P)` (or expression form). Generate runs posts inside `on_into_parent` with the snap from `into_parent`.
+User posts take `&AscentStateSnapshot`. Generate runs them in `on_into_parent` with the snap from `into_parent`.
 
-### F2 — `invalidate(N)` on kill
+### F2 — `invalidate(N)`
 
-Exclusive kill helpers call `state.invalidate(N)`. `N` = framework hops from exclusive level to reshape owner (inclusive). Reshape carrier may still be empty; counter + snapshot behavior is testable alone.
+Exclusive kill calls `state.invalidate(N)`. Counter + snapshot behavior testable without reshape carrier.
 
-### F3 — `#[pre_post]` / `noop_pre`
+### F3 — `#[pre_post]` + `noop_pre`
 
-`#[post]` alone = `(noop_pre, post)`. `#[pre_post]` threads pre return into post first arg.
+`#[post]` alone = `(noop_pre, post)`. `#[pre_post]` threads pre return as post's first arg.
 
 ### F4 — `only_if_intact` + mercury rearm
 
@@ -689,16 +763,26 @@ Exclusive kill helpers call `state.invalidate(N)`. `N` = framework hops from exc
 
 ### F5 — reshape carrier
 
-Schedule field replace at owner without exclusive consuming `PathMut` / changing return path type. Exclusive still returns same-level `P`.
-
----
+Schedule field replace at owner. Exclusive still returns same-level `P`. Framework stack still walks.
 
 ## Rules
 
 1. Descent schedules `opt_0`… only; set is final.
 2. Ascent runs every scheduled post.
-3. `AscentState` is `pub(crate)`. Posts take `&AscentStateSnapshot` only.
+3. Posts: `&AscentStateSnapshot` only. Exclusive: `&mut AscentState`.
 4. `into_parent` = `snapshot` → posts → `step_up`.
 5. Kill = `invalidate(N)` on live state; same-level path return; stack still walks.
-6. `claim` only in `run_exclusive`.
-7. Generate stays thin: schedule + call helpers. Full expand above is the template.
+6. `claim` only inside `run_exclusive`.
+7. Generate stays thin: schedule + call helpers. The expand for the DX tree above is the template.
+
+## Tests (implement after the matching feature step)
+
+- post after deep bind sees `MaybeDropped` when `invalidate(N)` set depth > 0
+- post sees `Intact` when no invalidate
+- snapshot is pre-`step_up` for that hop
+- each framework hop calls `step_up` once
+- deepest exclusive wins claim; parent exclusive skips
+- exclusive returns same path type it received
+- pre return consumed once; pre miss → no post
+- `only_if_intact` skips on `MaybeDropped`
+- KeyA walk and KeyB walk match the traces above
