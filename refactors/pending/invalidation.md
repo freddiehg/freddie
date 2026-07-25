@@ -190,7 +190,7 @@ where
 
 ## Landed baseline
 
-`bind/src/lib.rs` already holds `Claim` (which gains only `reborrow`, in change 3), the final `Dispatch` and `DispatchIntoParent` signatures, and the free `dispatch` (whose return is open question 1 below).
+`bind/src/lib.rs` already holds `Claim` (which gains only `reborrow`, in change 2), the final `Dispatch` and `DispatchIntoParent` signatures, and the free `dispatch` (whose return changes in change 2: the `!effs.is_empty()` half of its condition was never asked for and is wrong, since posts emit effects on unclaimed keys).
 
 ```rust
 /// One exclusive bind handler per dispatch: the first to `try_take` wins.
@@ -468,9 +468,81 @@ where
 
 The same body serves every node: only the `state` construction differs (leaf: `NotInvalidated(path)`; parent: the child call chained through `to_maybe_invalidated`), and that difference is one expression, not a shape.
 
-## bind_macro (before / after)
+## bind and bind_macro (before / after)
 
-### Change 1 — emit `Completed`; the linear body
+What changes where: the free `dispatch` return in `bind/src/lib.rs` (change 2); opts emission in `dispatch_impl` (change 3); `dispatch_impl`, `dispatch_body`, `dispatch_into_parent_impl`, `derived_node_impl`, and `derived_enum_node_impl` (change 4); attribute registration and parsing (change 5).
+
+### Change 2 — free `dispatch`: the claim alone means handled
+
+Before (landed):
+
+```rust
+let _completed = <N as Dispatch<M>>::dispatch(path, event, &mut effs, &mut claim);
+if claim.is_taken() || !effs.is_empty() {
+    Some(effs)
+} else {
+    None
+}
+```
+
+After — effects are always returned and always performed; whether the key was handled is the claim's answer and nothing else's, so an unclaimed key with post effects (rearm) still passes through to the OS:
+
+```rust
+pub fn dispatch<'a, M, N, E>(path: N::Path<'a>, event: &M::Event) -> (Vec<E>, bool)
+where
+    M: Bindings<Output = Vec<E>>,
+    N: Dispatch<M> + 'a,
+    N::Path<'a>: ::laserbeam::HasStop,
+{
+    let mut effs: Vec<E> = Vec::new();
+    let mut claim_slot = None;
+    let mut claim = Claim::new(&mut claim_slot);
+    let _completed = <N as Dispatch<M>>::dispatch(path, event, &mut effs, &mut claim);
+    (effs, claim.is_taken())
+}
+```
+
+Consumers (mercury's loop, `SimpleRunner`, tests) perform the effects unconditionally and use the bool for pass-through.
+
+### Change 3 — opts before descent, source order
+
+Before, each check builds its trigger inline, after the recursion, inside `dispatch_impl`'s `checks`:
+
+```rust
+if let ::core::option::Option::Some(ev) =
+    ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
+{
+    let trigger = #trigger;
+    if ::bind::EventTrigger::is_matching(&trigger, ev) {
+        if let ::core::option::Option::Some(()) = claim.try_take() {
+            *effs = ::core::iter::Iterator::collect(
+                ::core::iter::IntoIterator::into_iter(
+                    #handler(ev, ::bind::Node { parent: path, data: () }),
+                ),
+            );
+            return ::core::option::Option::None;
+        }
+    }
+}
+```
+
+After: one opt local per scheduled attribute, emitted before the descent, numbered in source order across all kinds; the checks consume the opts but keep their current firing form, so this change is behavior-visible only in when triggers and pres read state (pre-descent, which is the point):
+
+```rust
+let opt_N = match ::core::convert::TryFrom::try_from(event) {
+    ::core::result::Result::Ok(ev) => {
+        let trigger = #trigger;
+        if ::bind::EventTrigger::is_matching(&trigger, ev) {
+            ::core::option::Option::Some((ev, (#pre)(ev, &path))) // #pre: written, or synthesized |_, _| ()
+        } else {
+            ::core::option::Option::None
+        }
+    }
+    ::core::result::Result::Err(_) => ::core::option::Option::None,
+};
+```
+
+### Change 4 — the linear `Completed` body
 
 `dispatch_impl`, emitted signature and shape, before:
 
@@ -517,13 +589,23 @@ let child = <#child as ::bind::Dispatch<#marker>>::dispatch(#child_path, event, 
 path = #recover;
 ```
 
-After (the root/non-root split lives in laserbeam's two `to_maybe_invalidated` impls, not here; `Edge::recover_parent` is subsumed by the method's `into_parent`; the enum-child case emits the same per variant arm):
+After (the root/non-root split lives in laserbeam's two `Stop::to_maybe_invalidated` impls, not here; `Edge::recover_parent` is subsumed by the method's `into_parent`; the enum-child case emits the same expression per variant arm, the whole match being `#state`):
 
 ```rust
 ::laserbeam::Completed::into_inner(
     <#child as ::bind::Dispatch<#marker>>::dispatch(#child_path, event, effs, claim),
 )
 .to_maybe_invalidated()
+```
+
+One scheduled block per item, kind-blind; `#rhs` is `::bind::exclusive(#tokens)` for `#[bind]` and the raw tokens otherwise, and the macro looks inside neither:
+
+```rust
+if let ::core::option::Option::Some((ev, snap)) = opt_N {
+    let (e, completed) = (#rhs)(ev, snap, ::bind::AscendState::new(state, ::bind::Claim::reborrow(claim)));
+    ::core::iter::Extend::extend(effs, e);
+    state = ::laserbeam::Completed::to_maybe_invalidated(completed);
+}
 ```
 
 `dispatch_into_parent_impl`, before:
@@ -537,7 +619,7 @@ match <#name as ::bind::Dispatch<#marker>>::dispatch(self, event, effs, claim) {
 }
 ```
 
-After (`Into::into` covers both parent shapes via the laserbeam `From` impl; `derived_node_impl`'s fallthrough becomes `::laserbeam::Complete::complete(::bind::HasParent::into_parent(node))` the same way):
+After (`Into::into` covers both parent shapes via the laserbeam `From` impl):
 
 ```rust
 match ::laserbeam::Completed::into_inner(
@@ -550,39 +632,19 @@ match ::laserbeam::Completed::into_inner(
 }
 ```
 
-### Change 2 — opts before descent, source order
-
-Before: each check builds its trigger inline, after the recursion. After: one opt local per scheduled attribute, emitted before the descent, numbered in source order; a `#[pre_post]` opt runs its pre here, so the snap reads pre-descent state:
+`derived_node_impl` / `derived_enum_node_impl` get the interim migration (their full story is change 6). The fallthrough, before / after:
 
 ```rust
-let opt_N = match ::core::convert::TryFrom::try_from(event) {
-    ::core::result::Result::Ok(ev) => {
-        let trigger = #trigger;
-        if ::bind::EventTrigger::is_matching(&trigger, ev) {
-            ::core::option::Option::Some((ev, (#pre)(ev, &path))) // #pre: written, or synthesized |_, _| ()
-        } else {
-            ::core::option::Option::None
-        }
-    }
-    ::core::result::Result::Err(_) => ::core::option::Option::None,
-};
+::core::option::Option::Some(::bind::HasParent::into_parent(node))
+// →
+::laserbeam::Complete::complete(::bind::HasParent::into_parent(node))
 ```
 
-### Change 3 — `AscendState` threading; one scheduled block
+and their checks keep the old firing form but end with that same `Complete::complete` instead of `return None`.
 
-bind gains `AscendState` and `exclusive`; laserbeam gains `MaybeInvalidated` (+ `complete`) and the `to_maybe_invalidated` conversions (code above). The check emission, before: the change-1 `*effs = collect(..)` form. After, one kind-blind block per scheduled item, ending in the fold the generated code owns; `#rhs` is `::bind::exclusive(#tokens)` for `#[bind]` and the raw tokens for `#[post]`/`#[pre_post]`, and the macro looks inside neither:
+Handler migration, in the same workspace change: every bind handler in mercury and the bind tests goes from `(ev, Node<P, ()>) -> impl IntoIterator<Item = E>` to `(ev, _snap: (), AscendState<P>) -> (Vec<E>, Completed<P>)`, with `st.complete()` where the body stays put.
 
-```rust
-if let ::core::option::Option::Some((ev, snap)) = opt_N {
-    let (e, completed) = (#rhs)(ev, snap, ::bind::AscendState::new(state, ::bind::Claim::reborrow(claim)));
-    ::core::iter::Extend::extend(effs, e);
-    state = ::laserbeam::Completed::to_maybe_invalidated(completed);
-}
-```
-
-Every bind handler in mercury and the bind tests migrates: `(ev, Node<P, ()>) -> impl IntoIterator<Item = E>` becomes `(ev, _snap: (), AscendState<P>) -> (Vec<E>, Completed<P>)`, with `st.complete()` where the body stays put.
-
-### Change 4 — `#[post]` / `#[pre_post]` parsing
+### Change 5 — `#[post]` / `#[pre_post]` parsing
 
 Registration, before / after:
 
@@ -598,7 +660,7 @@ Registration, before / after:
 )]
 ```
 
-Like `#[bind]` today, every kind takes multiple comma-separated pairs (`#[post(a => b, c => d)]`), parsed as a `Punctuated` list and scheduled in source order within the attribute. Parsing, beside `Binding` (whose `Parse` the plain `#[post]` form reuses):
+Like `#[bind]` today, every kind takes multiple comma-separated pairs (`#[post(a => b, c => d)]`), parsed as a `Punctuated` list and scheduled in source order within the attribute. Parsing, beside `Binding` (whose `Parse` the plain `#[post]` form reuses), plus collectors `posts(attrs)` / `pre_posts(attrs)` mirroring `binds()`:
 
 ```rust
 /// One `trigger => (pre, post)` pair from `#[pre_post(..)]`.
@@ -624,7 +686,7 @@ impl syn::parse::Parse for PrePost {
 
 All three attribute kinds feed one scheduled list in source order; the differences are confined to parse time (which tokens fill `#pre`, written or synthesized, and whether the rhs gets the `exclusive` wrap). `claimed_triggers` does not change: only `#[bind]` triggers claim, so posts are exempt from the duplicate-trigger check.
 
-### Change 5 — derived levels
+### Change 6 — derived levels
 
 Derived-level binds migrate to the scheduled shape over `AscendState<Self::Parent>`, and posts across derived-child edges get a story; `DispatchIntoParent`'s `Here` collapse currently hides child-alive from the caller.
 
@@ -677,21 +739,34 @@ Posts run whether or not anything claimed: they are scheduled by their trigger, 
 
 ## Open questions
 
-1. The free `dispatch` conflates "handled" with "produced effects": it returns `Some(effs)` when `claim.is_taken() || !effs.is_empty()`, and mercury uses `None` to pass unhandled keys to the OS. Under this design the rearm post emits effects on every key in the layer, which would mark every key handled and swallow it. The claim alone is the "handled" signal; the return likely needs to carry effects and handled-ness separately (e.g. `(Vec<E>, bool)`), with the consumer performing effects either way and passing the key through when unclaimed.
-2. The duplicate-trigger check still rejects the same trigger bound at two depths of the active path, while the claim makes that combination well-defined (deepest claimant wins). Keep the ban, or relax it to same-node duplicates only? The demo dodges by using distinct keys.
-3. `#[post]` and `#[pre_post]` are now the same thing modulo the synthesized pre. Keep both spellings, or collapse to `#[post]` with an optional `(pre, f)` rhs?
-4. `TimerId::fresh()` is demo filler; real ids mint from root state per `timer-ids-on-root.md`.
+1. The duplicate-trigger check still rejects the same trigger bound at two depths of the active path, while the claim makes that combination well-defined (deepest claimant wins). Keep the ban, or relax it to same-node duplicates only? The demo dodges by using distinct keys.
+2. `#[post]` and `#[pre_post]` are now the same thing modulo the synthesized pre. Keep both spellings, or collapse to `#[post]` with an optional `(pre, f)` rhs?
+3. `TimerId::fresh()` is demo filler; real ids mint from root state per `timer-ids-on-root.md`.
 
 ## Ordered changes
 
-Prefactors first, each independently shippable. The macro deltas per change are in "bind_macro (before / after)".
+Each change compiles and passes tests against only its predecessors; per-change landability is noted. The code deltas live in "bind and bind_macro (before / after)" and the additions sections.
 
-### 1 — macro emits `Completed`: signature, linear body, `dispatch_into_parent_impl`/`derived_node_impl`; laserbeam `From<&mut R> for Completed<&mut R>`
+### 0 — the standalone `DispatchIntoParent` rename (section above; in flight)
 
-### 2 — opts before descent, source order
+### 1 — laserbeam: `MaybeInvalidated` (+ `complete`), the `to_maybe_invalidated` conversions, `From<&mut R> for Completed<&mut R>`
 
-### 3 — laserbeam `MaybeInvalidated` (+ `complete`) and the `to_maybe_invalidated` conversions; bind `AscendState`, `exclusive`; one scheduled block per item with the fold in generated code; handler migration
+Pure additions with unit tests; nothing consumes them yet.
 
-### 4 — `#[post]` / `#[pre_post]`: registration, parsing, payload capture
+### 2 — bind: `AscendState`, `exclusive`, `Claim::reborrow`; free `dispatch` returns `(Vec<E>, bool)`
 
-### 5 — derived levels: binds to the scheduled shape; derived-edge posts
+Additions plus one signature change; consumers of the free `dispatch` (mercury's loop, `SimpleRunner`, tests) migrate mechanically in the same change.
+
+### 3 — bind_macro: opts before descent, source order, synthesized `|_, _| ()` pre
+
+Behavior change confined to when triggers and pres read state; checks keep their firing form, so it lands alone.
+
+### 4 — bind_macro: the linear `Completed` body, scheduled blocks, `dispatch_into_parent_impl`, derived interim; handler migration in mercury and tests
+
+The one big change; it cannot split further because the handler signature change is workspace-global.
+
+### 5 — `#[post]` / `#[pre_post]`: registration, parsing, collectors
+
+Additive; until it lands, only `#[bind]` items populate the schedule.
+
+### 6 — derived levels: binds to the scheduled shape; derived-edge posts
