@@ -21,7 +21,6 @@ pub(crate) const OVERLAY: &str = include_str!("overlays/resize.txt");
     // Only this layer's own timer: a firing from a layer already left matches nothing.
     |path| path.get().home_timeout.trigger() => go_home,
     Key::Escape.down() => go_home,
-    Key::KeyO.down() => toggle_overlay,
     Key::KeyT.down() => enter_typing,
     Key::UpArrow.down() => and!(maximize, go_home),
     Key::LeftArrow.down() => and!(left_half, go_home),

@@ -86,8 +86,15 @@ pub(crate) fn arm_jk_timeout(window: Duration) -> (TimerGuard, MercuryEffect) {
     |mercury_path| mercury_path.overlay_timer().map(TimerGuard::trigger) => hide_overlay,
     // Only the placement still outstanding: a firing from one already landed matches nothing.
     |mercury_path| mercury_path.windows.pending_timer().map(TimerGuard::trigger) => placement_settled,
-    AnyKey => maybe_pass_through,
 )]
+// `o` binds once, here, because the overlay is the root's own field. The typing gate rides the
+// trigger rather than the handler: in typing an `o` is an `o`, so the trigger is absent there and
+// the key falls through to the passthrough bind below.
+#[bind(
+    |mercury_path| (!matches!(mercury_path.layer, Layer::Typing(_))).then(|| Key::KeyO.down())
+        => toggle_overlay,
+)]
+#[bind(AnyKey => maybe_pass_through)]
 pub struct Mercury {
     /// The frontmost app and whether a nav is in flight. See [`Foreground`].
     pub foreground: Foreground,

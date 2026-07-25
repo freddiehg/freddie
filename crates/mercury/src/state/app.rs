@@ -37,7 +37,6 @@ pub(crate) const fn overlay_for(app: App) -> &'static str {
 #[bind(
     |path| path.get().home_timeout.trigger() => go_home,
     Key::Escape.down() => go_home,
-    Key::KeyO.down() => toggle_overlay,
     Key::KeyN.down() => enter_nav,
     Key::KeyS.down() => enter_site,
     Key::KeyT.down() => enter_typing,

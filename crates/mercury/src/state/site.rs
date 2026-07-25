@@ -35,7 +35,6 @@ pub(crate) const fn overlay_for(site: Option<Site>) -> &'static str {
 #[bind(
     |path| path.get().home_timeout.trigger() => go_home,
     Key::Escape.down() => go_home,
-    Key::KeyO.down() => toggle_overlay,
     Key::KeyT.down() => enter_typing,
 )]
 pub struct SiteLayer {

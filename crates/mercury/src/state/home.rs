@@ -16,7 +16,6 @@ pub(crate) const OVERLAY: &str = include_str!("overlays/home.txt");
 #[binds(MercuryStruct)]
 #[bind(
     Key::Escape.down() => go_home,
-    Key::KeyO.down() => toggle_overlay,
     Key::KeyN.down() => enter_nav,
     Key::KeyR.down() => enter_resize,
     Key::KeyT.down() => enter_typing,
