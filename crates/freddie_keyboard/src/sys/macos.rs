@@ -208,15 +208,18 @@ fn press_of(kind: CGEventType, event: &CGEvent) -> Option<PressType> {
     }
 }
 
-/// A keyboard event for `key`, carrying exactly `flags`, built from a source of its own.
+/// A keyboard event for `key`, carrying exactly `flags`, built from a long-lived private source.
 ///
-/// The source is created here and dropped with the event, and is deliberately not stored
-/// anywhere. Posting through a source mutates it: an arrow key leaves `NumericPad` in its
-/// state, every event built from that source afterwards is born carrying that bit, and posting
-/// one writes the bit back, which reaffirms it. One arrow key would otherwise stop `cmd`-`space`
-/// from being the Spotlight hotkey for the rest of the run. A source with no history has nothing
-/// to leak, so the event is born with exactly the flags its own key carries, and `untouched`
-/// keeps only those.
+/// `source` is the caller's private source for its thread: the emitter's, or the tap's remap
+/// source. Each `CGEventSourceCreate(Private)` maps about 16KB of shared memory that `CFRelease`
+/// never unmaps and no API reclaims, so a source per event grows the process by 16KB per
+/// keystroke for the life of the run. The source is passed in rather than built here.
+///
+/// The flags on the wire are `to_cg(flags) | intrinsic_flags(code)` and nothing else. The bits
+/// the event is born with are ignored, because posting through a source mutates it: an arrow
+/// leaves `NumericPad` in the source's state, and every event built from it afterwards is born
+/// carrying that bit. Reading those birth flags back would put `NumericPad` on a later
+/// `cmd`-`space`, which stops matching Spotlight's hotkey for the rest of the run.
 ///
 /// Not a `NULL` source, which means the shared session state rather than no state, and so
 /// inherits bits other processes have left there.
@@ -224,23 +227,29 @@ fn press_of(kind: CGEventType, event: &CGEvent) -> Option<PressType> {
 /// # Errors
 ///
 /// Returns [`EmitError::Unmappable`] if the key has no code on this OS, and [`EmitError::Post`]
-/// if the OS refused to build the source or the event.
-fn keyboard_event(key: Key, press: PressType, flags: ModifierFlags) -> Result<CGEvent, EmitError> {
+/// if the OS refused to build the event.
+fn keyboard_event(
+    source: &CGEventSource,
+    key: Key,
+    press: PressType,
+    flags: ModifierFlags,
+) -> Result<CGEvent, EmitError> {
     let code = to_code(key).ok_or(EmitError::Unmappable(key))?;
-    let source = CGEventSource::new(CGEventSourceStateID::Private).map_err(|_| EmitError::Post)?;
-    let event = CGEvent::new_keyboard_event(source, code, press == PressType::Down)
+    // `new_keyboard_event` takes the source by value; the clone is a `CFRetain` of the same
+    // source, not a second mapping.
+    let event = CGEvent::new_keyboard_event(source.clone(), code, press == PressType::Down)
         .map_err(|_| EmitError::Post)?;
-    let untouched = event.get_flags() & !MODIFIERS;
-    event.set_flags(untouched | to_cg(flags));
+    let intrinsic = intrinsic_flags(code);
+    event.set_flags(to_cg(flags) | intrinsic);
     // What actually goes on the wire, which the portable `KeyEvent` cannot show: the raw flag
-    // bits, what the source supplied, and the type the OS chose from the keycode
+    // bits, the bits the keycode itself carries, and the type the OS chose from the keycode
     // (`FlagsChanged` for a modifier, `KeyDown`/`KeyUp` otherwise). At `debug` so the log file
     // keeps it, since two presses that dispatch identically can still post differently.
     tracing::debug!(
         ?key,
         ?press,
         raw_flags = %format!("{:#010x}", event.get_flags().bits()),
-        kept_from_source = %format!("{:#010x}", untouched.bits()),
+        intrinsic = %format!("{:#010x}", intrinsic.bits()),
         kind = ?event.get_type(),
         "post"
     );
@@ -340,13 +349,19 @@ fn run_tap(
                 match decide(&input, on_key.borrow_mut()(input.clone(), event)) {
                     Decision::Pass => CallbackResult::Keep,
                     Decision::Drop => CallbackResult::Drop,
-                    Decision::Remap(out) => match keyboard_event(out.key, out.press, out.flags) {
-                        Ok(event) => CallbackResult::Replace(event),
-                        Err(e) => {
-                            tracing::warn!(key = ?out.key, error = %e, "dropped a remapped key");
-                            CallbackResult::Drop
+                    Decision::Remap(out) => {
+                        let Ok(source) = CGEventSource::new(CGEventSourceStateID::Private) else {
+                            tracing::warn!(key = ?out.key, "dropped a remapped key; no event source");
+                            return CallbackResult::Drop;
+                        };
+                        match keyboard_event(&source, out.key, out.press, out.flags) {
+                            Ok(event) => CallbackResult::Replace(event),
+                            Err(e) => {
+                                tracing::warn!(key = ?out.key, error = %e, "dropped a remapped key");
+                                CallbackResult::Drop
+                            }
                         }
-                    },
+                    }
                 }
             },
             || {
@@ -416,16 +431,53 @@ impl Drop for TapThread {
     }
 }
 
-/// The device-independent modifier bits. Everything else the OS puts in an event's
-/// flags is left as it found it.
-const MODIFIERS: CGEventFlags = CGEventFlags::from_bits_truncate(
-    CGEventFlags::CGEventFlagAlphaShift.bits()
-        | CGEventFlags::CGEventFlagShift.bits()
-        | CGEventFlags::CGEventFlagControl.bits()
-        | CGEventFlags::CGEventFlagAlternate.bits()
-        | CGEventFlags::CGEventFlagCommand.bits()
-        | CGEventFlags::CGEventFlagSecondaryFn.bits(),
-);
+/// The keycodes a clean private source puts `NumericPad` on: the four arrows, and the keypad
+/// apart from `ANSI_KEYPAD_CLEAR` and `JIS_KEYPAD_COMMA`.
+///
+/// Measured, by building an event for every code from 0 to 127 on a clean private source and
+/// reading the bit back. `HOME`, `END`, `PAGE_UP` and `PAGE_DOWN` read like the arrows and are
+/// not in it.
+///
+/// By keycode rather than by [`Key`], because the keypad has no `Key` variant: those keys reach
+/// the emitter as `Key::Raw(code)`, so a table of variants would drop the bit for exactly the
+/// keys whose name says they carry it.
+const NUMERIC_PAD_CODES: &[CGKeyCode] = &[
+    KeyCode::LEFT_ARROW,
+    KeyCode::RIGHT_ARROW,
+    KeyCode::DOWN_ARROW,
+    KeyCode::UP_ARROW,
+    KeyCode::ANSI_KEYPAD_DECIMAL,
+    KeyCode::ANSI_KEYPAD_MULTIPLY,
+    KeyCode::ANSI_KEYPAD_PLUS,
+    KeyCode::ANSI_KEYPAD_DIVIDE,
+    KeyCode::ANSI_KEYPAD_ENTER,
+    KeyCode::ANSI_KEYPAD_MINUS,
+    KeyCode::ANSI_KEYPAD_EQUAL,
+    KeyCode::ANSI_KEYPAD_0,
+    KeyCode::ANSI_KEYPAD_1,
+    KeyCode::ANSI_KEYPAD_2,
+    KeyCode::ANSI_KEYPAD_3,
+    KeyCode::ANSI_KEYPAD_4,
+    KeyCode::ANSI_KEYPAD_5,
+    KeyCode::ANSI_KEYPAD_6,
+    KeyCode::ANSI_KEYPAD_7,
+    KeyCode::ANSI_KEYPAD_8,
+    KeyCode::ANSI_KEYPAD_9,
+];
+
+/// The non-modifier flag bits `code` carries of its own accord.
+///
+/// [`keyboard_event`] names the bits it emits rather than subtracting the ones it does not, so
+/// what a key posts is a function of the key and the caller's modifiers, and never of what an
+/// earlier post left in the source. `SecondaryFn` is not here: it is a portable [`ModifierFlags`]
+/// bit and arrives through `to_cg`.
+fn intrinsic_flags(code: CGKeyCode) -> CGEventFlags {
+    if NUMERIC_PAD_CODES.contains(&code) {
+        CGEventFlags::CGEventFlagNumericPad
+    } else {
+        CGEventFlags::empty()
+    }
+}
 
 /// The portable/native flag pairs this backend maps between, both ways.
 const FLAG_PAIRS: [(ModifierFlags, CGEventFlags); 5] = [
@@ -466,7 +518,9 @@ impl Emitter {
     /// The event states its own modifiers rather than trusting a source: whoever built it said
     /// what it carries, and we apply exactly that. See [`keyboard_event`].
     fn post(&self, key: Key, press: PressType, flags: ModifierFlags) -> Result<(), EmitError> {
-        let event = keyboard_event(key, press, flags)?;
+        let source =
+            CGEventSource::new(CGEventSourceStateID::Private).map_err(|_| EmitError::Post)?;
+        let event = keyboard_event(&source, key, press, flags)?;
         self.tag.stamp(&event);
         event.post(CGEventTapLocation::Session);
         Ok(())
@@ -497,7 +551,8 @@ impl Emitter {
 #[cfg(test)]
 mod tests {
     use super::{
-        Decision, EmitError, MODIFIERS, Tag, decide, flag_for, from_code, keyboard_event, to_code,
+        Decision, EmitError, Tag, decide, flag_for, from_code, intrinsic_flags, keyboard_event,
+        to_cg, to_code,
     };
     use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, KeyCode};
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
@@ -567,12 +622,88 @@ mod tests {
         assert_eq!(decide(&down, Some(up.clone())), Decision::Remap(up));
     }
 
-    // A source per event carries only this event's flags: an arrow must not leave NumericPad on a
-    // later `cmd`-`space`, or Spotlight's hotkey posts 0x00300000 instead of 0x00100000.
+    // The six device-independent modifier bits. Only the tests name them now: production names
+    // the bits it emits, in `to_cg` and `intrinsic_flags`, rather than subtracting the rest.
+    const MODIFIERS: CGEventFlags = CGEventFlags::from_bits_truncate(
+        CGEventFlags::CGEventFlagAlphaShift.bits()
+            | CGEventFlags::CGEventFlagShift.bits()
+            | CGEventFlags::CGEventFlagControl.bits()
+            | CGEventFlags::CGEventFlagAlternate.bits()
+            | CGEventFlags::CGEventFlagCommand.bits()
+            | CGEventFlags::CGEventFlagSecondaryFn.bits(),
+    );
+
+    fn private_source() -> CGEventSource {
+        CGEventSource::new(CGEventSourceStateID::Private).expect("a private source")
+    }
+
+    // Only the arrows and the keypad are born carrying NumericPad, measured against a clean
+    // private source. The second list is the trap: those keys read like the arrows and do not
+    // carry it, so naming them would put a bit on the wire that the key does not have.
+    #[test]
+    fn only_the_arrows_and_the_keypad_are_intrinsically_numeric_pad() {
+        for code in [
+            KeyCode::UP_ARROW,
+            KeyCode::LEFT_ARROW,
+            KeyCode::ANSI_KEYPAD_ENTER,
+            KeyCode::ANSI_KEYPAD_7,
+        ] {
+            assert_eq!(
+                intrinsic_flags(code),
+                CGEventFlags::CGEventFlagNumericPad,
+                "keycode {code} carries NumericPad on a clean source"
+            );
+        }
+        for code in [
+            KeyCode::HOME,
+            KeyCode::END,
+            KeyCode::PAGE_UP,
+            KeyCode::PAGE_DOWN,
+            KeyCode::ANSI_KEYPAD_CLEAR,
+            KeyCode::SPACE,
+            KeyCode::ANSI_A,
+        ] {
+            assert_eq!(
+                intrinsic_flags(code),
+                CGEventFlags::empty(),
+                "keycode {code} carries nothing outside MODIFIERS"
+            );
+        }
+    }
+
+    // The whole point of the change: what goes on the wire is a function of the key and the
+    // portable flags, and of nothing the source is holding. Exact equality, so a reintroduced
+    // `| (get_flags() & !MODIFIERS)` fails here rather than in Spotlight six hours later.
+    #[test]
+    fn the_wire_flags_are_the_portable_ones_plus_the_intrinsic_ones() {
+        let source = private_source();
+        for (key, code, flags) in [
+            (Key::Space, KeyCode::SPACE, ModifierFlags::COMMAND),
+            (Key::UpArrow, KeyCode::UP_ARROW, ModifierFlags::empty()),
+            (Key::UpArrow, KeyCode::UP_ARROW, ModifierFlags::COMMAND),
+            (Key::KeyR, KeyCode::ANSI_R, ModifierFlags::CONTROL),
+        ] {
+            let event =
+                keyboard_event(&source, key, PressType::Down, flags).expect("an event for the key");
+            assert_eq!(
+                event.get_flags(),
+                to_cg(flags) | intrinsic_flags(code),
+                "{key:?} with {flags:?}"
+            );
+        }
+    }
+
+    // A chord carries only its own modifier: an arrow must not leave NumericPad on a later
+    // `cmd`-`space`, or Spotlight's hotkey posts 0x00300000 instead of 0x00100000.
     #[test]
     fn a_chord_carries_its_modifier_and_nothing_else() {
-        let space =
-            keyboard_event(Key::Space, PressType::Down, ModifierFlags::COMMAND).expect("a space");
+        let space = keyboard_event(
+            &private_source(),
+            Key::Space,
+            PressType::Down,
+            ModifierFlags::COMMAND,
+        )
+        .expect("a space");
         assert_eq!(
             space.get_flags() & MODIFIERS,
             CGEventFlags::CGEventFlagCommand
@@ -584,14 +715,20 @@ mod tests {
         );
     }
 
-    // A key's own flags survive: `MODIFIERS` deliberately does not name NumericPad, so an arrow
+    // A key's own flags survive: `intrinsic_flags` names NumericPad for the arrows, so an arrow
     // keeps the bit it is born with while a space never gains one.
     #[test]
     fn a_keys_own_flags_survive_and_others_do_not_appear() {
-        let arrow = keyboard_event(Key::UpArrow, PressType::Down, ModifierFlags::empty())
-            .expect("an arrow");
-        let space =
-            keyboard_event(Key::Space, PressType::Down, ModifierFlags::empty()).expect("a space");
+        let source = private_source();
+        let arrow = keyboard_event(
+            &source,
+            Key::UpArrow,
+            PressType::Down,
+            ModifierFlags::empty(),
+        )
+        .expect("an arrow");
+        let space = keyboard_event(&source, Key::Space, PressType::Down, ModifierFlags::empty())
+            .expect("a space");
         assert!(
             arrow
                 .get_flags()
@@ -604,21 +741,46 @@ mod tests {
         );
     }
 
+    // A keypad key has no `Key` variant and arrives as `Key::Raw`, which is the case a table of
+    // variants would miss: it must still post the NumericPad bit it is born with.
+    #[test]
+    fn a_raw_keypad_key_keeps_its_numeric_pad_bit() {
+        let event = keyboard_event(
+            &private_source(),
+            Key::Raw(KeyCode::ANSI_KEYPAD_ENTER),
+            PressType::Down,
+            ModifierFlags::empty(),
+        )
+        .expect("a keypad enter");
+        assert_eq!(event.get_flags(), CGEventFlags::CGEventFlagNumericPad);
+    }
+
     // A remapped key carries the flags it was given, not whatever a shared source baked in.
     #[test]
     fn a_remapped_key_carries_the_flags_it_was_given() {
-        let event =
-            keyboard_event(Key::KeyR, PressType::Down, ModifierFlags::COMMAND).expect("a key");
+        let event = keyboard_event(
+            &private_source(),
+            Key::KeyR,
+            PressType::Down,
+            ModifierFlags::COMMAND,
+        )
+        .expect("a key");
         assert!(event.get_flags().contains(CGEventFlags::CGEventFlagCommand));
     }
 
     // The OS picks the type from the keycode: a modifier is FlagsChanged, anything else KeyDown/Up.
     #[test]
     fn a_modifier_is_a_flags_changed_and_a_key_is_not() {
-        let cmd =
-            keyboard_event(Key::MetaLeft, PressType::Down, ModifierFlags::COMMAND).expect("cmd");
-        let space =
-            keyboard_event(Key::Space, PressType::Down, ModifierFlags::empty()).expect("a space");
+        let source = private_source();
+        let cmd = keyboard_event(
+            &source,
+            Key::MetaLeft,
+            PressType::Down,
+            ModifierFlags::COMMAND,
+        )
+        .expect("cmd");
+        let space = keyboard_event(&source, Key::Space, PressType::Down, ModifierFlags::empty())
+            .expect("a space");
         assert!(matches!(cmd.get_type(), CGEventType::FlagsChanged));
         assert!(matches!(space.get_type(), CGEventType::KeyDown));
     }
@@ -626,7 +788,12 @@ mod tests {
     #[test]
     fn a_key_with_no_code_is_unmappable() {
         assert!(matches!(
-            keyboard_event(Key::F24, PressType::Down, ModifierFlags::empty()),
+            keyboard_event(
+                &private_source(),
+                Key::F24,
+                PressType::Down,
+                ModifierFlags::empty()
+            ),
             Err(EmitError::Unmappable(Key::F24))
         ));
     }
