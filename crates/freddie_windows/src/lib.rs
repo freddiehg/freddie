@@ -135,13 +135,25 @@ impl Element {
     }
 }
 
-/// Every window that can be addressed, and the element to address it through.
+/// A window being watched: the element to address it through, and where it was last reported to
+/// be.
 ///
-/// A `Mutex` and not an `RwLock`: a window opening and a key being pressed are both rare,
-/// so there is nothing for concurrent readers to win. It is held for a lookup and an
-/// `Arc::clone`, never across an `AXUIElement` call.
+/// The frame is kept because a placement needs the size the window currently has in order to order
+/// its writes, and it is already computed for every report. It is the same mirror of external truth
+/// as the rest of the table: seeded at construction, then replaced by whatever the moved and resized
+/// notifications say.
+struct Watched {
+    element: Arc<Element>,
+    frame: Frame,
+}
+
+/// Every window that can be addressed, the element to address it through, and where it is.
+///
+/// A `Mutex` and not an `RwLock`: a window opening and a key being pressed are both rare, so there
+/// is nothing for concurrent readers to win. It is held for a lookup and a clone, never across an
+/// `AXUIElement` call.
 #[derive(Default)]
-struct Elements(Mutex<HashMap<WindowId, Arc<Element>>>);
+struct Elements(Mutex<HashMap<WindowId, Watched>>);
 
 /// The handle a placement is performed through.
 ///
@@ -174,16 +186,13 @@ impl WindowSink {
         // Cloned out so the lock is released before the writes: those take tens of
         // milliseconds, and the main thread takes this lock every time a window opens or
         // closes.
-        let element = {
+        let (element, from) = {
             let table = elements.0.lock().map_err(|_| WindowError::UnknownWindow)?;
-            Arc::clone(
-                table
-                    .get(&target.window)
-                    .ok_or(WindowError::UnknownWindow)?,
-            )
+            let watched = table.get(&target.window).ok_or(WindowError::UnknownWindow)?;
+            (Arc::clone(&watched.element), watched.frame)
         };
         set_frame(element.raw(), target.frame);
-        tracing::debug!(?target, "set a window's frame");
+        tracing::debug!(?target, ?from, "set a window's frame");
         Ok(())
     }
 }
@@ -615,6 +624,20 @@ impl WatcherState {
             .is_ok_and(|mut table| table.remove(&window).is_some())
     }
 
+    /// Replace where `window` is understood to be. Idempotent, like every report of external truth:
+    /// it assigns and never accumulates.
+    ///
+    /// A window not in the table is not added, because a frame without an element cannot be placed
+    /// through.
+    fn record(&self, window: WindowId, frame: Frame) {
+        let Ok(mut table) = self.elements.0.lock() else {
+            return;
+        };
+        if let Some(watched) = table.get_mut(&window) {
+            watched.frame = frame;
+        }
+    }
+
     /// Forget whichever window `element` names, and say which it was.
     ///
     /// By identity rather than by id: `kAXUIElementDestroyed` arrives for an element the app has
@@ -629,7 +652,7 @@ impl WatcherState {
         #[expect(unsafe_code)]
         let found = table
             .iter()
-            .find(|(_, held)| unsafe { CFEqual(held.raw().cast(), element.cast()) != 0 })
+            .find(|(_, held)| unsafe { CFEqual(held.element.raw().cast(), element.cast()) != 0 })
             .map(|(id, _)| *id)?;
         table.remove(&found);
         drop(table);
@@ -722,6 +745,7 @@ unsafe extern "C" fn on_notification(
         report_open(&state, element);
     } else if name == kAXWindowMovedNotification || name == kAXWindowResizedNotification {
         if let (Some(window), Some(frame)) = (window_id(element), window_frame(element)) {
+            state.record(window, frame);
             let moved = WindowFrame { window, frame };
             state.report(if name == kAXWindowMovedNotification {
                 WindowChange::Moved(moved)
@@ -787,8 +811,21 @@ fn observe_window(
         add_notification(observer, element, notification, refcon);
     }
 
+    // Read here rather than carried from `report_open`, which reads it again for the event: the two
+    // are one call apart and the element is live for both. A frame that cannot be read has no
+    // default worth inventing, since a placement would then order its writes from a lie, so the
+    // window is not recorded at all.
+    let Some(frame) = window_frame(element) else {
+        return;
+    };
     if let Ok(mut table) = state.elements.0.lock() {
-        table.insert(window, Arc::new(Element(owned)));
+        table.insert(
+            window,
+            Watched {
+                element: Arc::new(Element(owned)),
+                frame,
+            },
+        );
     }
 }
 
@@ -1140,16 +1177,14 @@ pub fn watch(
     }
 
     let screens = read_monitors(mtm);
-    let windows = state.elements.0.lock().map_or_else(
+    let windows: Vec<WindowFrame> = state.elements.0.lock().map_or_else(
         |_| Vec::new(),
         |table| {
             table
                 .iter()
-                .filter_map(|(window, element)| {
-                    window_frame(element.raw()).map(|frame| WindowFrame {
-                        window: *window,
-                        frame,
-                    })
+                .map(|(window, watched)| WindowFrame {
+                    window: *window,
+                    frame: watched.frame,
                 })
                 .collect()
         },
