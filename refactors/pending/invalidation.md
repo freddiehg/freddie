@@ -154,7 +154,7 @@ ctx.invalidation_depth = ctx.invalidation_depth.max(2); // invalidate(2)
 At each level of the **framework** ascent (after the handler returns):
 
 1. Apply reshape if scheduled for this level (may already have raised invalidation_depth via the hop rule above).
-2. Run scheduled posts (`&mut ctx`); they see **current** `ctx.invalidation_depth()` / `mutation()`.
+2. Run scheduled posts (`&mut ctx`); they see **current** `ctx.mutation()`.
 3. Exclusive: `match ctx.claim() { None => skip; Some(Claimed) => body }` — try-take, not a separate getter + set.
 4. `step_up` when leaving the level (framework `into_parent` after this level's posts).
 
@@ -179,10 +179,6 @@ struct AscentState {
 }
 
 impl AscentState {
-    fn invalidation_depth(&self) -> u32 {
-        self.invalidation_depth
-    }
-
     /// Intact iff `invalidation_depth == 0`; else MaybeDropped.
     /// Not a stored field. If something deeper called `into_parent` through this
     /// level, posts here see `MaybeDropped`.
@@ -231,7 +227,7 @@ ASCENT begins at leaf:
   exclusive kills spine with N× into_parent → invalidation_depth = invalidation_depth.max(N)
   at each level leaf → root:
     reshape if any (same hop rule if applied here)
-    posts: read ctx.invalidation_depth() / mutation()
+    posts: read ctx.mutation()
     exclusive: match ctx.claim() { None => skip; Some(_) => h(...) }
     step_up: invalidation_depth = invalidation_depth.saturating_sub(1)
 ```
@@ -364,9 +360,8 @@ pub struct AscentState {
 }
 
 impl AscentState {
-    pub fn invalidation_depth(&self) -> u32 {
-        self.invalidation_depth
-    }
+    // invalidation_depth is a private field. Posts use mutation(); framework
+    // uses invalidate / step_up. No pub getter for the raw integer.
 
     /// Intact iff `invalidation_depth == 0`; else MaybeDropped.
     /// Not a stored field. If something deeper called `into_parent` through this
