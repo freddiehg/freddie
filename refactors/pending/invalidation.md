@@ -6,45 +6,55 @@ Descent schedules which pre/posts/binds run. That set is final. Ascent runs ever
 
 ## Model
 
-After a kill, scheduled posts still run. At that point the live tree may already be gone, so the framework cannot mint a fresh `PathMut` for the post. The path that descent built and ascent recovered is therefore a field on the same value that carries invalidation: posts read path and `mutation()` from one struct.
+Spine `A → B → C`. Descent builds one path all the way to `C`:
+
+```text
+PathMut<C, PathMut<B, A>>
+```
+
+Each `into_parent` peels one owned layer. Two hops and the only path you still own is `A`. You do not still hold a path to `B` or to `C`. Those values were moved out by `into_parent` and are gone.
+
+B's post still runs (it was scheduled). It does not receive a path to B. It receives the path you still own (A) plus the fact that the peeled segment may have been killed. That pair is what "potentially invalidated" is for: you have to pass it, because the live path alone is only A.
+
+```text
+at C:  path = PathMut<C, PathMut<B, A>>
+       exclusive may invalidate (coverage over some prefix of the spine)
+
+into_parent → path = PathMut<B, A>     // C ownership gone
+into_parent → path = A                 // B ownership gone
+
+B's post: live path is A only.
+          must also be told about the B segment: Intact vs MaybeDropped
+          (and any pre-snapped data from descent — ChildId, etc.)
+```
+
+Ideal meaning of `invalidate`: that section of the path is no longer owned. `into_parent` is the only move; you cannot get that segment back. No re-projection down from A into a "B" that might be a different value after the kill.
+
+Stopgap (acceptable for now): after `into_parent`, the framework still hands posts a `PathMut` at the level that just became current (B after one hop from C). That is not recovering ownership of a killed segment from nothing; it is keeping the parent half of the path that `into_parent` returned. After a kill, that path is only usable as potentially invalidated: `get` re-derives from the live tree, so it may not be the same B, and the doc does not pretend it is. `mutation()` is how posts are told. Posts that need identity after a kill use pre-snapped descent data, not "the path is still the old node."
+
+Claim is a separate carrier (exclusive trap door). It is not part of the path/invalidation value.
 
 ```rust
-// Top-level dispatch owns the claim slot only:
-//   let mut claim_slot: Option<()> = None;
-//   let mut claim = Claim::new(&mut claim_slot);
-
-/// Path + hop counters. One value. Path is not rebuilt after invalidate.
+// Live path you still own, plus hop coverage for peeled/killed segments.
 pub struct Ascent<P> {
     path: P,
     invalidation_depth: u32,
     ascent_hops: u32,
 }
 
-/// Exclusive trap door. Separate carrier; not a field of Ascent.
+// Exclusive only. Root owns the slot; this reborrows it.
 pub struct Claim<'c> {
     slot: &'c mut Option<()>,
 }
 ```
 
-Two carriers, different jobs:
-
-- `Ascent<P>` owns the path and the depth counters. `invalidate` writes `invalidation_depth`. `into_parent_ascent` moves the path through `into_parent`, bumps `ascent_hops`, rebuilds `Ascent<Parent>` with the same counters. Posts receive `&mut Ascent<P>` and already have the path that was recovered for this level — including when `mutation()` is `MaybeDropped`.
-- `Claim<'c>` closes over the root claim slot. Exclusive is `claim.with_exclusive(&mut ascent, body)`. Claim never sits on `Ascent`, so path's interior `&mut Root` and the claim reborrow are different places.
-
 ```text
 mutation() = if ascent_hops < invalidation_depth { MaybeDropped } else { Intact }
 ```
 
-Depth is live on `Ascent`. After `invalidate(d)` or a hop bumps `ascent_hops`, the next `mutation()` sees the new numbers.
+`ascent_hops` = how many `into_parent` recoveries since the leaf. `invalidation_depth` = kill coverage set by `invalidate(d)` only. Live: the next `mutation()` after either changes sees the new numbers.
 
-laserbeam `PathMut::into_parent` recovers parent only (path value already held; no new path from the live tree).
-
-Kill: `ascent.invalidate(d)` with `d` = kill path hop count. Posts still run; they use this `Ascent`'s path field.
-
-Methods:
-
-- on `Ascent`: `path` / `path_mut`, `mutation`, `invalidate`, `into_parent_ascent` (framework)
-- on `Claim`: `try_take`, `is_taken`, `with_exclusive`
+Framework hop (`into_parent_ascent`): consume path → parent, bump `ascent_hops`, run this level's posts on `Ascent<Parent>`, return that `Ascent`. Claim is not in this type.
 
 ## Types (`crates/bind`)
 
@@ -55,7 +65,6 @@ pub enum Mutation {
     MaybeDropped,
 }
 
-/// Path is part of this value. After invalidate, posts still hold it here.
 pub struct Ascent<P> {
     path: P,
     invalidation_depth: u32,
@@ -87,16 +96,15 @@ impl<P> Ascent<P> {
         }
     }
 
-    /// Kill coverage. d = path hops of the kill climb.
-    /// Does not drop the path. Posts still run against this Ascent.
+    /// Kill coverage. d = how many hops of path from the leaf are covered.
+    /// Does not by itself drop the path value; ownership loss is into_parent.
     pub fn invalidate(&mut self, d: u32) {
         self.invalidation_depth = self.invalidation_depth.max(d);
     }
 }
 
 impl<Node, Parent> Ascent<laserbeam::PathMut<Node, Parent>> {
-    /// Framework hop: consume path → parent, bump hops, run posts on Ascent<Parent>.
-    /// Claim is not involved. Path is the recovered parent, not a new mint from the live tree.
+    /// Peel one path layer, bump hops, run posts at the parent path.
     pub fn into_parent_ascent<E>(
         self,
         sink: &mut Vec<E>,
@@ -120,7 +128,6 @@ impl<Node, Parent> Ascent<laserbeam::PathMut<Node, Parent>> {
     }
 }
 
-/// Closes over the root claim slot. Not on Ascent.
 pub struct Claim<'c> {
     slot: &'c mut Option<()>,
 }
@@ -134,7 +141,6 @@ impl<'c> Claim<'c> {
         self.slot.is_some()
     }
 
-    /// One-way trap door. Some(()) if this call took it.
     pub fn try_take(&mut self) -> Option<()> {
         if self.slot.is_some() {
             None
@@ -144,7 +150,6 @@ impl<'c> Claim<'c> {
         }
     }
 
-    /// Exclusive gate on the claim side; body gets Ascent (path + depth).
     pub fn with_exclusive<P, E>(
         &mut self,
         ascent: &mut Ascent<P>,
@@ -158,32 +163,38 @@ impl<'c> Claim<'c> {
 }
 ```
 
-Hop accounting (worked `invalidate(2)` from the leaf):
+Hop accounting, leaf called `invalidate(2)`:
 
 ```text
-leaf:     hops=0 inv=2  →  0 < 2  MaybeDropped
-+1 hop:   hops=1 inv=2  →  1 < 2  MaybeDropped   // Outer posts here; path is OuterPath on Ascent
-+2 hops:  hops=2 inv=2  →  2 < 2  Intact
+leaf C:   hops=0 inv=2  →  MaybeDropped
+after 1 into_parent (path is B):  hops=1 inv=2  →  MaybeDropped   // B's posts
+after 2 into_parent (path is A):  hops=2 inv=2  →  Intact           // A's posts
 ```
 
-Order invariant inside `into_parent_ascent`: bump before posts. Framework never writes `invalidation_depth`; only `invalidate` does.
+Bump before posts. Framework never writes `invalidation_depth`.
+
+Stopgap note: at "path is B", B's posts receive `Ascent<PathMut<B, A>>` — the parent half returned by `into_parent` from C, not a new mint from the live tree at post time. After kill, treat it as potentially invalidated (`mutation()`), not as proof it is the same B.
 
 ## User signatures
 
 ```rust
-// pre — descent; no Ascent yet
+// pre — descent; path still owned down the spine; shared borrow only
 fn pre(ev: &SourceEvent, node: Node<&P, D>) -> T;
 
-// post — always runs if scheduled, including after invalidate.
-// Path is ascent.path(); it was recovered on the way up, not minted here.
+// post — scheduled set is final; runs even when mutation is MaybeDropped.
+// `ascent.path()` is the path still owned at this hop (parent after into_parent).
+// It is not a re-created path into a killed child. Pre-snapped T carries identity
+// that must survive kill; do not assume path.get() is the pre-kill node when MaybeDropped.
 fn post(pre_return: T, ascent: &mut Ascent<P>) -> Vec<M::Effect>;
 fn post(ascent: &mut Ascent<P>) -> Vec<M::Effect>;
 
-// exclusive — body sees Ascent; claim gate is Claim::with_exclusive
+// exclusive — claim gate is Claim::with_exclusive; body sees Ascent
 fn exclusive(ev: &SourceEvent, ascent: &mut Ascent<P>) -> Vec<M::Effect>;
 ```
 
 ## PathMut (laserbeam)
+
+Unchanged. `into_parent` consumes and returns parent only. `get` / `get_mut` re-derive from the parent each time (not a frozen node snapshot).
 
 ```rust
 pub struct PathMut<Node, Parent> {
@@ -229,6 +240,7 @@ pub fn run_post<P, E>(
     body(ascent)
 }
 
+/// Path mutation only when this hop is still Intact.
 pub fn only_if_intact<P, N, E>(
     project: impl Fn(&mut P) -> &mut N,
     f: impl FnOnce(&mut N) -> Vec<E>,
@@ -241,8 +253,6 @@ pub fn only_if_intact<P, N, E>(
 ```
 
 ## Dispatch
-
-Root owns the claim slot. `Ascent` is built at the leaf with the path and zero counters, returned up the spine. `Claim` is threaded down for exclusive only.
 
 ```rust
 pub trait Bindings {
@@ -285,24 +295,26 @@ where
 ## Level order
 
 ```text
-DESCENT: schedule opts
+DESCENT: schedule opts (pre runs here; may snap identity)
 
 if child:
-  child_path = PathMut::from_fn(path, proj_mut, proj_ref)
+  child_path = PathMut::from_fn(path, proj_mut, proj_ref)   // own path one level deeper
   ascent = Child::dispatch(child_path, event, effs, claim)
-  ascent = ascent.into_parent_ascent(effs, |ascent| { /* posts */ })
+  // peel child path; posts at this level see parent path + mutation from hops/inv
+  ascent = ascent.into_parent_ascent(effs, |ascent| { /* this level's posts */ })
 
 if leaf:
   ascent = Ascent::new(path)
 
 if exclusive scheduled:
-  effs2 = claim.with_exclusive(&mut ascent, |ascent| handler(ev, ascent))
-  extend effs
+  claim.with_exclusive(&mut ascent, |ascent| handler(ev, ascent))
 
 return ascent
 ```
 
 ## DX example
+
+A = root path, B = Outer, C = Inner.
 
 ```rust
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -369,6 +381,8 @@ fn snap_child_id(_ev: &KeyEvent, node: Node<&OuterPath, ()>) -> ChildId {
     node.parent.get().inner.id
 }
 
+// B's post: ascent.path is OuterPath (parent after into_parent from Inner).
+// When MaybeDropped, do not treat path.get() as the pre-kill child; use snapped id.
 fn after_child(id: ChildId, ascent: &mut Ascent<OuterPath>) -> Vec<DemoEffect> {
     match ascent.mutation() {
         Mutation::Intact => {
@@ -507,6 +521,8 @@ where
         let ascent =
             <Inner as ::bind::Dispatch<M>>::dispatch(inner_path, event, effs, claim);
 
+        // Peel Inner → path is Outer (B). B's posts run here with Ascent<OuterPath>
+        // and mutation from hops/inv. Not a path re-minted into a killed C.
         let mut ascent = ascent.into_parent_ascent(effs, move |ascent| {
             let mut local =
                 ::std::vec::Vec::<<M as ::bind::Bindings>::Effect>::new();
@@ -549,40 +565,31 @@ where
 ## Walk: KeyA, Inner `invalidate(2)`
 
 ```text
-dispatch entry
-  claim_slot = None
-  claim = Claim { slot: &mut claim_slot }
+path at C = PathMut<Inner, OuterPath>
 
-ASCENT Inner
-  ascent = Ascent::new(path)                 // path is a field; counters 0
-  claim.with_exclusive(&mut ascent, ...):
-    try_take → Some(())
-    ascent.invalidate(2)                     // inv=2; path still on ascent
-  return ascent                              // path + inv=2 travel together
+ASCENT Inner (C)
+  Ascent::new(path_to_C)
+  claim.with_exclusive: take claim, invalidate(2)
+  return Ascent { path_to_C, inv=2, hops=0 }
 
 ASCENT Outer into_parent_ascent
-  move path out of ascent (the PathMut held since descent)
-  path.into_parent()                         // recover OuterPath — not a new mint
-  hops = 1; inv stays 2
-  rebuild Ascent { path: OuterPath, inv=2, hops=1 }
-  run_posts:                                 // 1 < 2 → MaybeDropped
-    after_child: uses pre-snapped id; path is still on ascent
+  into_parent → path_to_B (OuterPath); C layer ownership gone
+  hops=1
+  B posts on Ascent { path_to_B, inv=2, hops=1 } → MaybeDropped
+    after_child: snapped id, not path.get() as pre-kill proof
     only_if_intact: skip
-  return ascent
+  return that Ascent
 
-ASCENT Outer
-  claim.with_exclusive → None
-  outer_handler not run
+  (further into_parent would yield A only; B layer ownership gone)
+
+ASCENT Outer exclusive: claim already taken → skip
 ```
 
 ## Walk: KeyB
 
 ```text
-ASCENT Inner: Ascent::new(path); no exclusive
-ASCENT Outer into_parent_ascent:
-  hops=1, inv=0 → Intact
-  rearm runs (path on ascent is live)
-  no exclusive
+no invalidate; hops=1 inv=0 → Intact at B posts
+rearm may use path
 ```
 
 ## Ordered changes
@@ -593,9 +600,9 @@ ASCENT Outer into_parent_ascent:
 
 ### P2 — from_fn framework-only
 
-### P3 — `Ascent<P>` (path + counters owned) + `Claim<'c>` + `into_parent_ascent` + `Claim::with_exclusive`
+### P3 — `Ascent<P>` + `Claim<'c>` + `into_parent_ascent` + `Claim::with_exclusive`
 
-Path is a field of `Ascent`. Invalidate does not remove it. Free-function `dispatch` owns the claim slot.
+Path ownership peels with `into_parent`. Posts get the path still owned at that hop plus `mutation()`.
 
 ### P4 — bind via `claim.with_exclusive`
 
@@ -603,31 +610,30 @@ Path is a field of `Ascent`. Invalidate does not remove it. Free-function `dispa
 
 ### F2 — invalidate(d)
 
-### F3 — pre_post
+### F3 — pre_post (snap identity before the child can die)
 
 ### F4 — only_if_intact + rearm
 
 ### F5 — reshape carrier
 
-Reshape replaces the path field on `Ascent` with a new path value already in hand. Counters stay. Claim is uninvolved. No post-time mint from the live tree.
+Ideal later: invalidate drops ownership of the covered segment for real (no path value for that segment remains). Stopgap: keep parent half after `into_parent`, flag MaybeDropped; sameness after kill is unknown.
 
 ## Rules
 
-1. Descent schedules; set final.
-2. Ascent runs every scheduled post, including after invalidate.
-3. `Ascent<P>` owns path and depth counters together. Path is not reconstructed at post time after a kill; it is the field already on `Ascent`.
-4. `Claim<'c>` closes over the root claim slot only. Exclusive is `claim.with_exclusive(&mut ascent, body)`.
-5. laserbeam `into_parent`: parent only; consumes the path value already held.
-6. `into_parent_ascent` hops path, bumps hops, posts after the bump; claim is not in that type.
-7. Kill: `ascent.invalidate(d)`; path remains on `Ascent`; later posts read `mutation()` against that same value.
-8. `mutation()` = MaybeDropped iff `ascent_hops < invalidation_depth` (live, not frozen).
-9. Generate matches expand above.
+1. Descent schedules; set final. Ascent runs every scheduled post.
+2. Path is owned and nested. `into_parent` peels one layer; that layer is no longer in the owned path.
+3. After hops up to A, the owned path is only A. Intermediate posts do not still hold a path to C; they hold whatever parent half the last `into_parent` returned, plus `mutation()`.
+4. Ideal invalidate: covered path section is unowned forever. Stopgap: parent half remains as `PathMut` but is only potentially invalidated; `get` re-derives and is not a sameness proof.
+5. `Ascent<P>` = path still owned + hop counters. `Claim` is separate.
+6. `mutation()` = MaybeDropped iff `ascent_hops < invalidation_depth`.
+7. Pre-snap for identity that must survive kill. `only_if_intact` for path mutation posts.
+8. Generate matches expand above.
 
 ## Tests
 
-- `invalidate(2)`: after one framework hop MaybeDropped; after two Intact
-- after invalidate, post still receives `Ascent` whose path field is the recovered path (not freshly minted)
-- framework hop does not change `invalidation_depth`
-- claim trap door is on `Claim`; path hops do not touch it
+- A→B→C: after two `into_parent`s owned path is A
+- `invalidate(2)`: B posts see MaybeDropped; A posts see Intact
+- after invalidate, MaybeDropped post uses pre-snap, not path identity
+- `only_if_intact` skips when MaybeDropped
+- claim trap door on `Claim`
 - KeyA / KeyB walks match above
-- `into_parent_ascent` compiles with `PathMut<_, &mut Root>` while a live `Claim` exists in the same stack frame
