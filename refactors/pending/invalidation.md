@@ -8,42 +8,28 @@ Leave peels on **`Place::Path`** (`PathMut` vs root `&mut Self` as the bind macr
 
 ## Model
 
-Spine `A → B → C`. `C::dispatch` always returns `C`’s ascent type (`AscentOf` / node `Ascent` around the doll).
+Each non-root node returns `Ascent(self) = Doll<Self::Path, Ascent(parent)>` (root path bare). Child returns `Ascent(child)`; parent matches `Here`/`Up` and returns `Ascent(self)`. App only ever sees `LayerAscent`, not `NavAscent`.
 
 ```text
-after_first_peel(c_path).complete()                 // Here(b)
-after_first_peel(c_path).into_parent().complete()   // Up(Here(a)) or Up(a)
+leave_at_nav(nav).complete()                              // Here(nav)
+leave_at_nav(nav).into_parent().complete()                // Up(Here(layer))
+leave_at_nav(nav).into_parent().into_parent().complete()  // Up(Up(app))
 ```
 
-Public match arms are `Here` / `Up` only (not `Ok`/`Err`, not `ControlFlow`).
+Public arms: `Here` / `Up` only. LeavePath is `LeavePath<Focus, Origin>` — see path-peel-complete.
 
 ## Types (dispatch layer)
 
 ```rust
-// Pack / Path / PeelPack / Doll / after_first_peel / complete / AscentOf:
+// Doll, LeavePath<Focus, Origin>, ascent aliases, leave_at_*, complete:
 // see path-peel-complete.md
 //
-// Doll<H, U> { Here(H), Up(U) }  — public arms
-// AscentOf<P> = <P as AscentOut>::Out
-
-// Optional opaque wrapper if we hide the nest further:
-pub struct Ascent<P: AscentOut> {
-    doll: P::Out,
-}
-
-impl<P: AscentOut> Ascent<P> {
-    pub fn new(doll: P::Out) -> Self {
-        Self { doll }
-    }
-
-    pub fn into_inner(self) -> P::Out {
-        self.doll
-    }
-}
-
-// Match child leave (same as matching Doll):
+// Ascent(root) = &mut Root
+// Ascent(node) = Doll<Node::Path, Ascent(parent)>
+// e.g. LayerAscent, NavAscent = Doll<NavPath, LayerAscent>
+//
 // match child_ascent { Doll::Here(path) | Doll::Up(rest) => ... }
-// If wrapped: match ascent.into_inner() { ... }
+// Up(rest) already has type Ascent(this); return rest upward unchanged
 
 // ---------------------------------------------------------------------------
 // Claim
@@ -88,13 +74,7 @@ laserbeam `PathMut::into_parent(self) -> Parent` unchanged.
 
 ### Worked peels
 
-See path-peel-complete. In Here/Up:
-
-```text
-after_first_peel(c).complete()                              Here(b)
-after_first_peel(c).into_parent().complete()                Up(Here(root))  // typical nest
-after_first_peel(inner).into_parent().complete()            Up(root)        // bare rest
-```
+See path-peel-complete (`leave_at_nav` / `leave_at_layer` on real Place paths).
 
 ## Dispatch
 
@@ -121,7 +101,7 @@ pub trait Dispatch<M: Bindings>: Place {
 }
 ```
 
-`Place::Path<'a>` stays the laserbeam path (`PathMut<…>` or `&mut Root`). `LeavePath` (focus + pack) is only for leave/kill after `after_first_peel`.
+`Place::Path<'a>` is unchanged. `LeavePath<Focus, Origin>` for leave/kill; `into_parent` generic on `PathMut`.
 
 ## DX types
 
@@ -209,7 +189,7 @@ fn inner_handler<'a>(
     _ev: &KeyEvent,
     path: InnerPath<'a>,
 ) -> (Vec<DemoEffect>, AscentOf<InnerPath<'a>>) {
-    let ascent = after_first_peel(path).into_parent().complete();
+    let ascent = leave_at_inner(path).into_parent().complete()  // see path-peel-complete naming;
     (vec![], ascent)
 }
 ```
@@ -250,7 +230,7 @@ impl Dispatch<M> for Inner {
             }
         }
 
-        after_first_peel(path).complete() // Here(outer)
+        /* leave complete at this path — Here */
     }
 }
 ```
@@ -335,7 +315,7 @@ where
 }
 ```
 
-Why Outer does not use `after_first_peel`: `Outer::Ascent` is bare `RootPath`, not a `Doll` layer. One laserbeam `into_parent` yields root. Pack/`complete` apply when the node’s leave doll is a `Doll` (still has a parent layer).
+Outer/Layer with parent root: `LayerAscent = Doll<LayerPath, AppPath>`. App matches that only — never NavAscent.
 
 ## Generated: Root (struct with one `#[resolve_into]` child)
 
@@ -402,9 +382,8 @@ where
 ```text
 Inner exclusive:
   claim take
-  after_first_peel(inner).into_parent().complete()
-  → Up(root)
-Outer match Up(root):
+  leave from inner → Up(…) : LayerAscent payload toward outer
+Outer match:
   after_child_dropped(snap)
   return root
 Root: ()
@@ -413,10 +392,8 @@ Root: ()
 ### KeyB, no kill
 
 ```text
-Inner: after_first_peel.complete() → Here(outer)
-Outer match Here(outer):
-  after_child_ok, rearm, maybe exclusive
-  outer.into_parent() → root
+Child Here(path) / Up(ascent_of_this_node); this node returns Ascent(self) to parent.
+App receives only LayerAscent.
 ```
 
 ## Ordered changes
@@ -439,13 +416,13 @@ fn dispatch(path, event, effs: &mut M::Output, claim: &mut Claim) -> Self::Ascen
 
 Free `dispatch` builds `effs` + `claim`, returns `Option<M::Output>`.
 
-### P1 — path-peel-complete (`Doll` Here/Up, Pack, Path, tests)
+### P1 — path-peel-complete (`Doll`, `LeavePath<Focus, Origin>`, recursive ascent aliases, tests)
 
-Unit tests: one/two/three peels; bare-root second peel `Up(root)`.
+trybuild over-peel; multi-depth unify to `NavAscent`; mut through recovered paths.
 
 ### P2 — Dispatch::Ascent + Claim; Inner/Outer/Root expands as above
 
-### P3 — bind_macro emits schedule opts, unpack, after_first_peel, claim exclusive
+### P3 — bind_macro emits schedule opts, leave_at/complete, claim exclusive
 
 ### F1 — `#[post]` on Here and Up
 
@@ -459,13 +436,13 @@ Unit tests: one/two/three peels; bare-root second peel `Up(root)`.
 
 1. No stubs.
 2. Public doll arms are `Here` / `Up` only.
-3. Leave/kill: `after_first_peel` / `into_parent` / `complete`; `Out = AscentOf<OriginPath>`.
-4. Node whose ascent is bare path (Outer → Root): laserbeam `into_parent` only.
-5. Claim separate.
+3. Leave/kill: `LeavePath<Focus, Origin>`; `Ascent(node) = Doll<path, Ascent(parent)>`.
+4. Each node receives `Ascent(child)`, returns `Ascent(self)`. App sees only child-of-root ascent.
+5. Posts on `Up` deferred (invalidation policy). Claim separate.
 6. path-peel-complete ships first.
 
 ## Tests
 
-- path-peel-complete nest tests (`Here` / `Up(Here)` / `Up`)
-- KeyA / KeyB walks on Outer/Inner expand
+- path-peel-complete tests (smoke, over-peel fail, unify depths, usable paths)
+- KeyA / KeyB walks; App only matches LayerAscent
 - claim trap door
