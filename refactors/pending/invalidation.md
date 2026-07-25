@@ -6,165 +6,221 @@ Descent schedules which pre/posts/binds run. That set is final. Ascent runs ever
 
 ## Model
 
-Spine `0 → A → B → C`. Descent builds a path to `C`:
+Spine `A → B → C`. Descent builds a path to `C`.
+
+`C::dispatch` **always** returns `C`’s ascent type (same type on every exit). That type is a private nested doll inside bind. App code never names the `Result` nest.
 
 ```text
-PathMut<C, PathMut<B, PathMut<A, 0Path>>>
+// bind-private doll for C (illustration)
+Result<BPath, Result<APath, …>>
+
+// after peels + complete, same return type every time:
+Ok(b)              stopped at B
+Err(Ok(a))         stopped at A
+Err(Err(…))        stopped further up
 ```
 
-Internally (bind only), ascent is a nested doll:
+### The bug with `Return<P>`
+
+`Return<P>` / “marker that is just the path” is the wrong return type. After two peels you hold `PathA`, but `C::dispatch` must still return **C’s ascent**, not `Return<PathA>`. Those are different types. The path at the stop level has to be **wrapped back up** to the origin node’s ascent type.
+
+### `into_parent` installs a wrap; `complete` runs the stack
+
+Leaving a node is a climb: each `into_parent` peels the path **and** pushes a pack callback for that level. `complete()` packages the path you still hold by running those callbacks from the stop level back to the origin. The result type is always the origin’s ascent.
 
 ```text
-// C’s internal doll
-Result<BPath, Result<APath, 0Path>>
+A → B → C
+start at C (origin; return type = C’s ascent)
 
-Ok(b)           still own B
-Err(Ok(a))      B gone; own A
-Err(Err(z))     own 0 only
+into_parent  →  path = B, stack = [C’s wrap]
+into_parent  →  path = A, stack = [C’s wrap, B’s wrap]
+
+complete at A  (apply wraps back to C):
+  base at A, then B’s wrap, then C’s wrap
 ```
 
-That `Result` nest is **private to the bind crate**. User code and expand outside bind never name it, never construct `Ok`/`Err` for it.
+What each wrap does (private doll = nested `Result`):
 
-Public surface:
-
-1. `path.into_parent()` — peel (laserbeam). Returns the parent path by value.
-2. `parent.complete()` — package that path into a **marker that must be returned**. The marker holds the private doll (or the path that bind will pack into the doll).
-3. Dispatch returns the marker type (`Ascent` / `Return`). Caller recovers a path only by bind-private unpack of that marker.
-
-```rust
-// normal leave C: peel once, complete, return marker to caller
-path.into_parent().complete()
-
-// kill to 0: peel to 0, complete, return marker
-path.into_parent().into_parent().into_parent().complete()
+```text
+// Stop at this level’s path → Ok(path) for this layer
+// Stop further up (got rest from below) → Err(rest) for this layer
 ```
 
-Path recovery is only through that return. After `into_parent`, the child layer is gone locally. Drop the marker and the path is dropped. No side channel.
+Worked with path value `PathA` after two peels from `C`:
 
-### `complete()`
+```text
+// conceptual: complete running the stack upward
 
-```rust
-// On any path value you still own after peels (ParentPath, RootPath, …):
-fn complete(self) -> Return<Self>;
+// after applying only the wrap that sits at A (terminal stop as Err payload
+// in the illustration the user cares about for a jump):
+complete through A  →  Err(PathA)
+
+// then B’s wrap adds another Err:
+complete through B  →  Err(Err(PathA))
+
+// C’s wrap would add another layer if the origin were above C, etc.
 ```
 
-`Return<P>` is `#[must_use]`. It is the only thing a leave/kill path is allowed to return into the ascent machinery. Fields private. No public accessor for the path except through bind’s match helpers used by the derive.
+Same climb, stop at `B` instead (one peel only):
 
-What is inside:
+```text
+into_parent  →  path = B, stack = [C’s wrap]
+complete at B  →  Ok(PathB)   // C’s ascent: Here at B
+```
+
+So:
 
 ```rust
-// crates/bind — public newtype, private payload
-pub struct Return<P> {
-    path: P, // private
+// always returns C’s ascent type (opaque public type; Result private)
+path_c
+    .into_parent()   // Climb at B, pack stack includes C
+    .into_parent()   // Climb at A, pack stack includes C then B
+    .complete()      // PathA wrapped back to C’s ascent
+```
+
+Not:
+
+```rust
+// WRONG — different type depending on stop path; does not wrap back to C
+path.into_parent().into_parent().complete()  // as Return<PathA>
+```
+
+### Public API shape
+
+```rust
+// Climb is tied to origin ascent type Out (the type dispatch must return).
+struct Climb<P, Out> { /* path + pack stack; fields private */ }
+
+// Peel one level: new path is parent; push this level’s wrap into the stack.
+impl<Node, Parent, Out> Climb<PathMut<Node, Parent>, Out> {
+    fn into_parent(self) -> Climb<Parent, Out>;
 }
 
-impl<P> Return<P> {
-    pub fn complete(path: P) -> Self {
-        Self { path }
-    }
-}
-
-// path.complete() is sugar for Return::complete(path)
-```
-
-Bind packs `Return<P>` into the node’s private doll when the return type of `dispatch` demands it (type inference + crate-private trait, or derive-emitted `bind::pack_*` calls). User never writes `Err(Ok(a))`.
-
-### One level up (bind-private match)
-
-Parent derive does not match `Result` in user-visible code. It calls bind helpers that unpack the private doll:
-
-```rust
-// conceptual — only bind can see Result
-// got: Ascent of child = private Result<ThisPath, Rest>
-
-match bind::unpack(got) {
-    bind::Step::Here(path) => {
-        // posts + exclusive with path
-        path.into_parent().complete() // or pack into parent Ascent
-    }
-    bind::Step::Up(rest) => {
-        // posts dropped (pre-snap only)
-        rest // already parent’s remaining ascent
-    }
+// Stop here: run pack stack → Out (always origin ascent).
+impl<P, Out> Climb<P, Out> {
+    fn complete(self) -> Out;
 }
 ```
 
-Public names for the step enum can be `Here`/`Up` in bind; they are not the raw `Result`. The recursive doll layout stays an implementation detail of `Ascent`’s type parameter or a private type alias.
-
-Root boundary: parent ascent is bare `0Path` (or `Return<0Path>`). Last peel completes to that; no extra `Ok` layer. No `Infallible`, no `Result<0Path, !>`.
-
-### Kill vs normal leave
-
-Both end the same way: peels then `complete()`, return the marker.
+Starting a climb from the path `dispatch` holds (origin = this node’s ascent):
 
 ```rust
-// Normal leave Inner (framework or handler):
-path.into_parent().complete()
-// packs as Here(OuterPath) inside Inner’s ascent
-
-// Kill to root:
-path.into_parent().into_parent().complete()
-// packs as Up(RootPath) inside Inner’s ascent
+// bind, used by derive / handlers that leave or kill
+fn climb<P, Out>(path: P) -> Climb<P, Out>
+where
+    // P packs into Out when completed at P, etc.
+;
 ```
 
-How many peels chooses the stop level. Bind’s pack maps `Return<P>` → the private nest for `Self::Ascent` where `P` is that stop path type. Pack impls live in bind (and/or are emitted next to the derive for that node’s spine). Users do not construct the nest.
+Handler / leaf leave:
+
+```rust
+// Normal leave C: one peel, complete → Ok(b) inside Out
+climb(path).into_parent().complete()
+
+// Jump to A: two peels, complete → Err(…) inside same Out
+climb(path).into_parent().into_parent().complete()
+```
+
+`Out` is inferred as `Self::Ascent` from the return position of `dispatch`. Same type every branch.
+
+### Pack stack (bind-private)
+
+Each `into_parent` from a `PathMut` level pushes: “if the stop path is my parent path, this layer is `Ok(parent)`; if the stop is further up, this layer is `Err(rest)`.”
+
+```text
+// illustration only — Result is private to bind
+
+// Layer for C (C::Ascent = Result<BPath, B::Ascent>):
+//   complete at B:  Ok(b)
+//   complete above: Err(b_ascent)
+
+// Layer for B (B::Ascent = Result<APath, A::Ascent>):
+//   complete at A:  Ok(a)
+//   complete above: Err(a_ascent)
+
+// Climb C → B → A, complete at A:
+//   base: a
+//   B layer: Ok(a)
+//   C layer: Err(Ok(a))
+```
+
+User-facing picture of the jump (Err nest growing as wraps apply upward), with stop path `PathA`:
+
+```text
+after A’s layer   Err(PathA)           // or Ok(PathA) if A is Here of that layer
+after B’s layer   Err(Err(PathA))      // one more Err from B when jump skipped B’s Here
+```
+
+Exact `Ok` vs `Err` at the terminal layer follows the private doll (`Ok` when the stop path **is** that layer’s Here path). The important mechanical fact: **wraps run on the way back up; return type is always origin `Out`.**
+
+### One level up (parent)
+
+Parent does not build a climb from the child’s deep path. Child already returned `Child::Ascent` (fully wrapped to the child origin). Parent unpacks one private layer:
+
+```rust
+match unpack(child_ascent) {
+    Here(mut path) => {
+        // posts + exclusive at this path
+        climb(path).into_parent().complete() // Out = Parent::Ascent
+        // or equivalent: pack Here peel without a multi-stack
+    }
+    Up(rest) => {
+        // posts dropped; rest already Parent::Ascent’s Up payload
+        rest
+    }
+}
+```
+
+`unpack` / `Here` / `Up` live in bind. App code does not match `Result`.
 
 ### Claim
 
-Separate carrier, root-owned slot. Not part of the path doll.
-
-```rust
-pub struct Claim<'c> {
-    slot: &'c mut Option<()>,
-}
-```
+Separate root-owned slot. Not part of the climb / doll.
 
 ### Posts
 
-Scheduled set is final; posts run on both arms of the unpack.
-
-- Here: posts get `&mut path`.
-- Up: no path at this level; pre-snap only.
+- `Here`: posts get `&mut path`.
+- `Up`: pre-snap only; no path at this level.
 
 ## Types (`crates/bind`)
 
 ```rust
-/// Marker: path recovered for the caller. Must be returned. Payload private.
-#[must_use]
-pub struct Return<P> {
+/// Opaque ascent out of a node. Always the same type for that node.
+/// Contains the private doll. No public Result.
+pub struct Ascent<D> {
+    doll: D, // private; D is the nested Result (or equivalent) layout
+}
+
+/// Climb: current path + pack stack back to origin ascent Out.
+pub struct Climb<P, Out> {
     path: P,
+    // pack stack: private; type-state or private trait object internal
+    _out: core::marker::PhantomData<fn() -> Out>,
 }
 
-impl<P> Return<P> {
-    pub const fn new(path: P) -> Self {
-        Self { path }
-    }
-
-    pub fn complete(path: P) -> Self {
-        Self::new(path)
-    }
+impl<Node, Parent, Out> Climb<laserbeam::PathMut<Node, Parent>, Out> {
+    /// Peel one path layer; push this level’s wrap for complete().
+    pub fn into_parent(self) -> Climb<Parent, Out>;
 }
 
-/// Extension on path values after into_parent.
-pub trait Complete: Sized {
-    fn complete(self) -> Return<Self>;
+impl<P, Out> Climb<P, Out> {
+    /// Run the pack stack. Type is always Out (origin ascent).
+    pub fn complete(self) -> Out;
 }
 
-impl<P> Complete for P {
-    fn complete(self) -> Return<Self> {
-        Return::new(self)
-    }
-}
+/// Start a climb whose complete() type is Out (usually Self::Ascent).
+pub fn climb<P, Out>(path: P) -> Climb<P, Out>;
 
-/// One unpack step for the derive. Not a public Result.
+/// One unpack step for the derive (not public Result).
 pub enum Step<Here, Up> {
     Here(Here),
     Up(Up),
 }
 
-// Private doll layout (crate-private type alias or newtype chain).
-// type Doll<H, U> = Result<H, U>;  // only referenced inside bind
-// pub struct Ascent<D>(D);         // D is Doll; field private
+// bind-private:
+// fn unpack_step(...) -> Step<...>;
+// pack stack: Here = Ok(path), Up = Err(rest) for each Result layer
 
 pub struct Claim<'c> {
     slot: &'c mut Option<()>,
@@ -199,18 +255,13 @@ impl<'c> Claim<'c> {
         }
     }
 }
-
-// Crate-private (or pub for derive via bind:: paths only — not for app code):
-// fn unpack<H, U>(ascent: Ascent<Result<H, U>>) -> Step<H, Ascent<U>>;
-// fn pack_here<H, U>(r: Return<H>) -> Ascent<Result<H, U>>;
-// fn pack_up from Return at deeper path — per spine / sealed trait in bind.
 ```
 
 Dispatch:
 
 ```rust
 pub trait Dispatch<M: Bindings>: Place {
-    /// Opaque ascent out of this node. Contains private doll.
+    /// Opaque. Same type on every exit from this node.
     type Ascent<'a>
     where
         Self: 'a;
@@ -226,41 +277,27 @@ pub trait Dispatch<M: Bindings>: Place {
 }
 ```
 
-`type Ascent<'a>` is a bind newtype over the private nest, not a public `Result`.
+Derive sets `type Ascent<'a> = Ascent</* private doll type for this node */>`.
 
 ## User signatures
 
 ```rust
-// pre — descent
 fn pre(ev: &SourceEvent, node: Node<&P, D>) -> T;
 
-// post Here arm
-fn post(pre_return: T, path: &mut P) -> Vec<M::Effect>;
+fn post_here(pre_return: T, path: &mut P) -> Vec<M::Effect>;
+fn post_up(pre_return: T) -> Vec<M::Effect>;
 
-// post Up arm — pre-snap only
-fn post_dropped(pre_return: T) -> Vec<M::Effect>;
-
-// exclusive that leaves or kills: takes path by value, returns Return<_>
-fn exclusive(ev: &SourceEvent, path: P) -> (Vec<M::Effect>, Return<SomeAncestorPath>);
-
-// exclusive that only mutates and leaves path with framework: still &mut P
-// kill/leave that peels: by value + complete()
+// Leave or kill: climb peels + complete → node’s Ascent (same type always)
+fn exclusive_leave(ev: &SourceEvent, path: P) -> (Vec<M::Effect>, NodeAscent);
 ```
-
-Leave/kill path:
 
 ```rust
-fn inner_handler(_ev: &KeyEvent, path: InnerPath) -> (Vec<DemoEffect>, Return<RootPath>) {
-    let root = path.into_parent().into_parent();
-    (vec![], root.complete())
+// Inner kill to root — return type is Inner::Ascent, not Return<RootPath>
+fn inner_handler(ev: &KeyEvent, path: InnerPath) -> (Vec<DemoEffect>, <Inner as Dispatch<M>>::Ascent<'_>) {
+    let ascent = climb(path).into_parent().into_parent().complete();
+    (vec![], ascent)
 }
 ```
-
-Framework packs `Return<RootPath>` into `Inner::Ascent` (private `Err(root)`). User never types `Result`.
-
-## PathMut (laserbeam)
-
-Unchanged. `into_parent(self) -> Parent` only. `complete` is on bind’s `Complete` trait (or a bind wrapper), not necessarily on laserbeam.
 
 ## Level order
 
@@ -269,242 +306,119 @@ DESCENT: schedule opts
 
 if child:
   child_path = PathMut::from_fn(path, ...)
-  match bind::unpack(Child::dispatch(child_path, event, effs, claim)) {
+  match unpack(Child::dispatch(child_path, event, effs, claim)) {
     Here(path) => {
       // posts + exclusive
-      path.into_parent().complete()   // pack to Self::Ascent
+      climb(path).into_parent().complete()   // Parent::Ascent
     }
     Up(rest) => {
       // posts dropped
-      rest                            // already Self::Ascent shape
+      rest
     }
   }
 
 if leaf:
-  exclusive may return Return<_> after peels + complete()
-  else path.into_parent().complete()
+  exclusive may climb(path).into_parent()…complete()
+  else climb(path).into_parent().complete()
 ```
 
 ## DX example
 
 ```rust
-// Inner::Ascent — opaque; internally Result<OuterPath, RootPath>
-// Outer::Ascent — opaque; internally RootPath (bare at boundary)
+// Inner::Ascent — always the same opaque type (doll: Result<OuterPath, RootPath>)
+// Outer::Ascent — always RootPath (boundary bare / opaque wrap)
 
-#[derive(Bind)]
-#[node(parent = RootPath)]
-#[binds(M)]
-#[pre_post(AnyKey => (snap_child_id, after_child))]
-#[post(AnyKey => only_if_intact(rearm))]
-#[bind(KeyA => outer_handler)]
-struct Outer {
-    #[resolve_into]
-    inner: Inner,
-    return_home: AndReturnHome,
+fn inner_handler(
+    _ev: &KeyEvent,
+    path: InnerPath,
+) -> (Vec<DemoEffect>, <Inner as Dispatch<M>>::Ascent<'_>) {
+    // two peels to root; complete wraps back to Inner::Ascent (Err(root) private)
+    (vec![], climb(path).into_parent().into_parent().complete())
 }
 
-#[derive(Bind)]
-#[node(parent = OuterPath)]
-#[binds(M)]
-#[bind(KeyA => inner_handler)]
-struct Inner {
-    id: ChildId,
-}
-
-fn snap_child_id(_ev: &KeyEvent, node: Node<&OuterPath, ()>) -> ChildId {
-    node.parent.get().inner.id
-}
-
-fn after_child_ok(id: ChildId, path: &mut OuterPath) -> Vec<DemoEffect> {
-    let live = path.get().inner.id;
-    debug_assert_eq!(live, id);
-    vec![]
-}
-
-fn after_child_dropped(id: ChildId) -> Vec<DemoEffect> {
-    vec![log_destroyed(id)]
-}
-
-fn rearm(path: &mut OuterPath) -> Vec<DemoEffect> {
-    let (guard, schedule) = arm_return_home();
-    path.get_mut().return_home.guard = guard;
-    vec![schedule]
-}
-
-fn outer_handler(_ev: &KeyEvent, _path: &mut OuterPath) -> Vec<DemoEffect> {
-    vec![DemoEffect::SetLayerHome]
-}
-
-// Peels + complete. Returns marker. Bind packs into Inner::Ascent.
-fn inner_handler(_ev: &KeyEvent, path: InnerPath) -> (Vec<DemoEffect>, Return<RootPath>) {
-    (vec![], path.into_parent().into_parent().complete())
-}
+// normal leave (generated if no exclusive kill):
+// climb(path).into_parent().complete()  → Here(outer) inside Inner::Ascent
 ```
 
-Supporting types (`ChildId`, `DemoEffect`, …) as before in earlier drafts.
-
-## Generated: Inner (leaf)
+Outer unpack child:
 
 ```rust
-#[automatically_derived]
-impl ::bind::Dispatch<M> for Inner {
-    type Ascent<'a> = /* opaque bind::Ascent newtype over private Result<OuterPath, RootPath> */
-    where
-        Self: 'a;
-
-    fn dispatch<'a, 'c>(
-        path: <Inner as ::bind::Place>::Path<'a>,
-        event: &<M as ::bind::Bindings>::Event,
-        effs: &mut ::std::vec::Vec<<M as ::bind::Bindings>::Effect>,
-        claim: &mut ::bind::Claim<'c>,
-    ) -> Self::Ascent<'a>
-    where
-        Self: 'a,
-    {
-        let opt_0: ::core::option::Option<&KeyEvent> = /* match KeyA */;
-
-        if let ::core::option::Option::Some(ev) = opt_0 {
-            if let ::core::option::Option::Some(()) = claim.try_take() {
-                let (e, ret) = inner_handler(ev, path);
-                ::core::iter::Extend::extend(effs, e);
-                // pack Return<RootPath> -> Inner::Ascent (private Err(root))
-                return ::bind::pack(ret);
-            }
-        }
-
-        // normal leave
-        ::bind::pack(path.into_parent().complete())
+match unpack(Inner::dispatch(...)) {
+    Step::Here(mut outer_path) => {
+        // after_child_ok, rearm, exclusive…
+        climb(outer_path).into_parent().complete() // Outer::Ascent
+    }
+    Step::Up(rest) => {
+        // after_child_dropped
+        rest
     }
 }
 ```
 
-`pack` is bind-public for the derive (`::bind::pack`) but only accepts `Return<_>` and only produces `Ascent`; it does not expose `Result` to the app.
-
-## Generated: Outer
-
-```rust
-#[automatically_derived]
-impl ::bind::Dispatch<M> for Outer
-where
-    Inner: ::bind::Dispatch<M>,
-{
-    type Ascent<'a> = /* opaque; internally RootPath */
-    where
-        Self: 'a;
-
-    fn dispatch<'a, 'c>(
-        path: <Outer as ::bind::Place>::Path<'a>,
-        event: &<M as ::bind::Bindings>::Event,
-        effs: &mut ::std::vec::Vec<<M as ::bind::Bindings>::Effect>,
-        claim: &mut ::bind::Claim<'c>,
-    ) -> Self::Ascent<'a>
-    where
-        Self: 'a,
-    {
-        let opt_0 = /* pre snap ChildId */;
-        let opt_1 = /* post rearm scheduled? */;
-        let opt_2 = /* exclusive KeyA */;
-
-        let inner_path = ::laserbeam::PathMut::from_fn(
-            path,
-            |p| &mut p.get_mut().inner,
-            |p| &p.get().inner,
-        );
-
-        match ::bind::unpack(<Inner as ::bind::Dispatch<M>>::dispatch(
-            inner_path, event, effs, claim,
-        )) {
-            ::bind::Step::Here(mut path) => {
-                if let ::core::option::Option::Some(id) = opt_0 {
-                    ::core::iter::Extend::extend(effs, after_child_ok(id, &mut path));
-                }
-                if opt_1 {
-                    ::core::iter::Extend::extend(effs, rearm(&mut path));
-                }
-                if let ::core::option::Option::Some(ev) = opt_2 {
-                    let e = claim.with_exclusive(&mut path, |path| outer_handler(ev, path));
-                    ::core::iter::Extend::extend(effs, e);
-                }
-                ::bind::pack(path.into_parent().complete())
-            }
-            ::bind::Step::Up(rest) => {
-                if let ::core::option::Option::Some(id) = opt_0 {
-                    ::core::iter::Extend::extend(effs, after_child_dropped(id));
-                }
-                rest
-            }
-        }
-    }
-}
-```
-
-## Walk: KeyA, Inner jumps to root
+## Walk: A→B→C, kill to A
 
 ```text
-Inner exclusive:
-  claim take
-  path.into_parent().into_parent().complete()  // Return<RootPath>
-  pack → private Err(root)
-  return Ascent
+C exclusive:
+  climb(path_c)
+    .into_parent()    // path B; C wrap pushed
+    .into_parent()    // path A; B wrap pushed
+    .complete()       // wrap back to C::Ascent
+                      // private: Err(Ok(a)) or Err-nest as per doll
+  return that (type C::Ascent)
 
-Outer unpack:
-  Up(root):
-    after_child_dropped
-    return rest (root ascent)
+B unpack:
+  Up(...): no B path; dropped posts; pass rest (type B::Ascent)
+
+A unpack:
+  Here or Up depending on doll; …
 ```
 
-## Walk: KeyB
+## Walk: normal leave C
 
 ```text
-Inner: pack(path.into_parent().complete())  // Here(outer)
-Outer unpack Here(outer):
-  after_child_ok, rearm, …
-  pack(outer.into_parent().complete()) → root
+climb(path_c).into_parent().complete()  // Ok(b) inside C::Ascent
+B unpack Here(b): posts; climb(b).into_parent().complete()
 ```
 
 ## Ordered changes
 
-### P0 — Sink; drop ControlFlow for effects
+### P0 — Sink; drop ControlFlow
 
-### P1 — `Return` + `complete` + private doll + `pack`/`unpack`/`Step`
+### P1 — `Climb<P, Out>` + `into_parent` pack stack + `complete() -> Out` + private doll + `unpack`/`Step`
 
-No public `Result` ascent. No hop counters.
+No `Return<P>` as dispatch return. No hop counters. No public `Result`.
 
-### P2 — Exclusive via claim; leave/kill return `Return<_>` after peels
+### P2 — Exclusive / leave via climb peels + complete
 
-### F1 — `#[post]` on Here arm
+### F1 — posts on Here / Up
 
-### F2 — kill = multi-peel + `complete()`; pack chooses Up nest
+### F2 — multi-peel kill = more `into_parent` before `complete`
 
-### F3 — `#[pre_post]`; Up arm uses pre-snap
+### F3 — pre_post pre-snap for Up
 
-### F4 — `only_if_intact` = Here-arm-only post
-
-### F5 — reshape carrier if needed
+### F4 — only_if_intact = Here only
 
 ## Rules
 
 1. Descent schedules; set final. Ascent runs every scheduled post.
-2. Owned path position is the ascent return value (private doll), not counters.
-3. User peels with `into_parent`, then `complete()` → `Return<P>` marker that must be returned.
-4. Private `Result` nest lives only in bind. App code never constructs or matches it.
-5. Derive uses `bind::pack` / `bind::unpack` / `Step::Here|Up`.
-6. One level up: Here → posts → `into_parent().complete()`; Up → posts dropped → pass rest.
-7. Kill = multi-peel + `complete()`; pack maps stop path into Up nest.
-8. `Claim` separate. laserbeam `into_parent` is the only peel.
-9. No `Infallible`, no `Result<Path, !>`. Root ascent is bare path / `Return` of path.
+2. Each node’s `dispatch` always returns that node’s `Ascent` type.
+3. Climb: `into_parent` peels path and pushes a wrap; `complete` runs wraps back to origin `Out`.
+4. Private doll (`Result` nest) only inside bind. App never constructs or matches it.
+5. Parent: `unpack` → Here (posts + climb peel complete) / Up (posts dropped + pass rest).
+6. `Claim` separate. laserbeam peels the path; bind owns the pack stack.
+7. No `Return<P>` as the ascent type. No `Infallible`. No hop counters.
 
 ## Tests
 
-- Normal walk: Here all the way; posts see paths
-- Jump to root: Outer Up arm; no OuterPath
-- `Return` is `#[must_use]`; complete after peels
-- App crate cannot match ascent as `Result`
+- Normal leave: Here chain; complete type equals `Self::Ascent`
+- Two peels + complete: still `Self::Ascent`, not `Return<PathA>`
+- Up arm has no path at skipped level
+- App cannot match ascent as `Result`
 - Claim trap door
 
 ## Open
 
-- Exact packing trait vs derive-emitted `pack` specializations for each node spine
-- Whether `complete` lives on laserbeam paths or only via bind `Complete` trait
+- Type-state pack stack vs private sealed trait `Pack<Out>` per spine level (must compile; no coherence dodge)
+- Whether `Climb::into_parent` is only for `PathMut` or also other `HasParent` paths
 - Derived / enum nodes
-- Exclusive on Up arm (usually skip; claim often already taken)
+- Root boundary: `Out` bare path vs `Ascent` newtype around path
