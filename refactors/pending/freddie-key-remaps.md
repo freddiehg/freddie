@@ -2,8 +2,8 @@
 
 ## What this builds
 
-1. `freddie_key_remaps`: pure key state machines / remaps over `freddie_keys` only. First export: caps dual-role (alone → Escape, with other keys → Control).
-2. Figaro: `TypingState.caps` is that struct; root / number handlers call it instead of free functions + a bare enum.
+1. `freddie_key_remaps`: shareable pure key remaps over `freddie_keys` only. First export: caps dual-role (alone → Escape, with other keys → Control). README states purpose and the common pieces that belong here.
+2. Figaro: `TypingState.caps` is that struct; **every** BuiltIn key while caps is held goes through it (not only the root catch-all), then root / number handlers stop carrying free caps fns.
 3. Figaro: `NumberRemaps` binds only the number row (`1`..`0` bare/shift invert → `!@#$%^&*()`). Brackets and backslash move to `SymbolRemaps`.
 
 ## Stack after
@@ -18,11 +18,15 @@ Figaro
 
 `TypingState` holds `caps: CapsAsControl` (from `freddie_key_remaps`) and still holds `shift_alone` (figaro-local for now; same shape, later move if wanted).
 
+## Already elsewhere (do not move into this crate)
+
+- `KeySequence` (`jk` chord, and any ordered bare-key run) lives in `freddie` (`crates/freddie/src/sequence.rs`). It needs optional `TimerGuard` for the inter-key window, so it stays with the timer primitives. Document that in the README; do not duplicate it under `freddie_key_remaps`.
+
 ---
 
 # Step 1 — `freddie_key_remaps` crate
 
-Independently shippable: crate + unit tests. No figaro.
+Independently shippable: crate + unit tests + README. No figaro.
 
 ## Cargo
 
@@ -31,7 +35,7 @@ Independently shippable: crate + unit tests. No figaro.
 ```toml
 [package]
 name = "freddie_key_remaps"
-description = "Pure key remaps and dual-role state machines over freddie_keys."
+description = "Shareable pure key remaps and dual-role state machines over freddie_keys."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -46,15 +50,71 @@ workspace = true
 
 Workspace `Cargo.toml` members: add `"crates/freddie_key_remaps"`.
 
+## README
+
+`crates/freddie_key_remaps/README.md` — written when the crate is created, not a stub. Shape:
+
+```markdown
+# freddie_key_remaps
+
+Shareable, pure keyboard remaps for freddie consumers (mercury, figaro, anything else on
+`freddie_keys`). No effects, no timers, no bind, no OS. You own a small state machine on
+your model, feed it `KeyEvent`s, and emit what it returns.
+
+## Why this crate
+
+Dual-role caps, shift-alone parens, number-row invert, and similar policies show up in every
+remapper. Putting them behind a pure API means each app does not re-implement the state
+machine, and tests of the policy do not need a full dispatch tree.
+
+## What belongs here
+
+- Dual-role / alone-vs-held keys (`CapsAsControl`, later shift-alone → paren, etc.)
+- Stateless pure rewrites (`KeyEvent` in → optional `KeyEvent` out): number-row invert,
+  bracket ↔ cmd+bracket, layout letter maps, …
+- Anything whose whole contract is "keys and flags in, keys and flags out," with state only
+  on a small owned struct.
+
+## What does not
+
+- Ordered chords with a timeout (`jk` → leave typing): that is `freddie::KeySequence`
+  (it needs `TimerGuard`).
+- Emitting, grabbing, or posting keys: `freddie_keyboard`.
+- Bindings and the state tree: `bind` / `laserbeam` / the app.
+
+## Current exports
+
+- `CapsAsControl` — CapsLock alone → Escape; held with another key → Control.
+
+## Consumer sketch
+
+```rust
+// field on your root typing state
+caps: CapsAsControl,
+
+// CapsLock event
+for ev in caps.on_caps(press) { emit(ev); }
+
+// any other key you are about to emit (or that should promote control)
+for ev in caps.promote_if_pending() { emit(ev); }
+let flags = caps.stamp(key.flags);
+emit(KeyEvent { flags, ..key });
+```
+```
+
+Keep the README short and concrete. As exports land, list them under "Current exports"; as common candidates sit unbuilt, a one-line "Candidates" list is fine (shift-alone paren, number-row invert) without designing them.
+
 ## Types
 
 `crates/freddie_key_remaps/src/lib.rs`:
 
 ```rust
-//! Pure keyboard remaps: dual-role state machines and flag rewrites over [`freddie_keys`].
+//! Shareable pure keyboard remaps: dual-role state machines and flag rewrites over [`freddie_keys`].
 //!
 //! No effects, no timers, no bind. A consumer feeds [`KeyEvent`]s, gets back events to emit
 //! and flags to stamp. State lives in the struct the consumer owns on its root model.
+//!
+//! Ordered timed chords (`jk`) live in [`freddie::KeySequence`], not here.
 
 mod caps;
 
@@ -247,6 +307,17 @@ mod tests {
 
 Independently shippable after step 1.
 
+## Live gap this step closes
+
+Today promote runs only in the root catch-all and the number leaf. A Home binding (`t` → typing) while caps is Pending never hits those paths: caps stays Pending, the layer changes, and promote fires on a later unbound up. That is wrong for "held with anything else → control."
+
+Contract while `caps` is Pending or AsControl on BuiltIn:
+
+- CapsLock itself: `on_caps` only (never re-emitted).
+- Any other key: promote if needed, then **emit that key with CONTROL stamped** — do not run the layer binding as a mode command. Holding caps+`t` is ctrl+t, not "enter typing."
+
+So dual-role must sit in front of layer dispatch for BuiltIn keys, not only on unbound fallthrough.
+
 ## Dependency
 
 `figaro/Cargo.toml`:
@@ -295,10 +366,7 @@ Re-exports: drop `CapsRole` from `lib.rs` / `state/mod.rs` pubs.
 
 ## Helper: KeyEvent → effect + held
 
-Figaro turns crate output into effects and keeps `held` in sync for synthetic control:
-
 ```rust
-// handlers/root.rs (or a small private helper next to emit)
 fn emit_key_events(root: &mut Figaro, events: Vec<KeyEvent>) -> Vec<FigaroEffect> {
     events
         .into_iter()
@@ -312,81 +380,106 @@ fn emit_key_events(root: &mut Figaro, events: Vec<KeyEvent>) -> Vec<FigaroEffect
 }
 ```
 
-## Caps path
+## Where dual-role runs (before layer binds)
 
-Before:
+Figaro must see BuiltIn keys for dual-role **before** Home/Nav/etc. claim them. Two equivalent shapes; pick the one that matches existing bind hooks when implementing:
 
-```rust
-if ev.device == DeviceClass::BuiltIn && key.key == Key::CapsLock {
-    return caps_event(key, root);
-}
-// ...
-out.extend(caps_promote_if_pending(root));
-// ...
-let flags = stamp_dual_role_flags(root, key.flags, ev.device);
-```
+### Shape A — gate at the start of `Figaro` / root key handling
 
-After:
+Whatever path every `DeviceKey` already enters (root catch-all is not enough; need something that runs for bound keys too). If dispatch has no "always" hook, add a single root bind that matches more broadly, or a thin wrapper in the daemon→dispatch site that is still pure `(state, event) → effects` by calling a method on `Figaro`:
 
 ```rust
-if ev.device == DeviceClass::BuiltIn && key.key == Key::CapsLock {
-    return emit_key_events(root, root.typing_state.caps.on_caps(key.press));
-}
-// non-modifier BuiltIn:
-out.extend(emit_key_events(
-    root,
-    root.typing_state.caps.promote_if_pending(),
-));
-// stamp:
-let mut flags = key.flags;
-if ev.device == DeviceClass::BuiltIn {
-    flags = root.typing_state.caps.stamp(flags);
-    // shift dual-role stamp stays local for now
-    if matches!(
-        root.typing_state.shift_alone,
-        ShiftAlone::HoldingLeft | ShiftAlone::HoldingRight
-    ) {
-        flags = flags | ModifierFlags::SHIFT;
+// On Figaro, called from the same place every Key is dispatched (e.g. before bind::dispatch,
+// or as the first thing a root-level DeviceKey handler does when it can short-circuit).
+impl Figaro {
+    /// BuiltIn dual-role gate. `Some(effects)` means the key is fully handled (caps swallowed,
+    /// or control-chord emitted); `None` means leave the event to normal bind dispatch.
+    pub fn dual_role_gate(&mut self, ev: &DeviceKey) -> Option<Vec<FigaroEffect>> {
+        if ev.device != DeviceClass::BuiltIn {
+            return None;
+        }
+        if ev.key.key == Key::CapsLock {
+            return Some(emit_key_events(self, self.typing_state.caps.on_caps(ev.key.press)));
+        }
+        // While control is live or about to promote: do not let layer bindings steal the key.
+        if self.typing_state.caps.is_control()
+            || /* pending will promote */ true && matches pending
+        {
+            // Only short-circuit when Pending or AsControl; Idle falls through.
+        }
+        ...
     }
 }
 ```
 
-Delete `caps_event`, `caps_promote_if_pending`, and the caps half of `stamp_dual_role_flags`. Rename `stamp_dual_role_flags` to only shift, or inline shift stamp at the two call sites.
-
-## Number / symbol leaf handler
-
-Before (`handlers/laptop.rs`):
+Concrete body when Pending or AsControl:
 
 ```rust
-let mut effects = caps_promote_if_pending(root);
-let remapped = laptop::remap(physical).unwrap_or(...);
-let flags = stamp_dual_role_flags(root, remapped.flags, DeviceClass::BuiltIn);
-effects.push(emit(remapped.key, remapped.press, flags));
+if ev.key.key == Key::CapsLock {
+    return Some(emit_key_events(self, self.typing_state.caps.on_caps(ev.key.press)));
+}
+if ev.device == DeviceClass::BuiltIn && !ev.key.key.is_modifier() {
+    let pending_or_ctrl = self.typing_state.caps.is_control()
+        || /* need a pending predicate on CapsAsControl */ self.typing_state.caps.is_pending();
+    if pending_or_ctrl {
+        let mut out = emit_key_events(self, self.typing_state.caps.promote_if_pending());
+        let flags = self.typing_state.caps.stamp(ev.key.flags);
+        // still apply number/symbol pure remap if desired, or emit raw with CONTROL
+        out.push(emit(ev.key.key, ev.key.press, flags));
+        return Some(out);
+    }
+}
+None // normal dispatch
 ```
 
-After:
+Add to `CapsAsControl`:
 
 ```rust
-let mut effects = emit_key_events(root, root.typing_state.caps.promote_if_pending());
-// shift promote still needed if shift dual-role can be pending under a claimed digit
-// (existing shift_promote call pattern — keep until shift moves)
-let remapped = /* number or symbol remap */;
-let mut flags = remapped.flags;
-flags = root.typing_state.caps.stamp(flags);
-// shift stamp if Holding*
-effects.push(emit(remapped.key, remapped.press, flags));
+#[must_use]
+pub const fn is_pending(self) -> bool {
+    matches!(self.role, Role::Pending)
+}
 ```
+
+Number/symbol invert while caps is control: either the gate calls `laptop::remap` / `symbols::remap` before emit, or those layers never see the key and the gate owns invert for that path. Prefer the gate calling the pure `remap` fns so digits still invert under control.
+
+### Shape B — keep promote in every leaf (rejected)
+
+Does not scale; Home/Nav/every new bind would have to remember. Do not do this.
+
+## Idle path (caps not held)
+
+Unchanged: layer binds and root catch-all as today. Shift dual-role stays in root catch-all / local promote until it moves.
+
+## Delete
+
+`caps_event`, `caps_promote_if_pending`, caps half of `stamp_dual_role_flags`, `CapsRole`.
 
 ## Tests
 
-Existing transitions tests stay:
+Keep:
 
 - `builtin_caps_down_is_noop`
 - `builtin_caps_alone_is_escape`
 - `builtin_caps_with_another_key_is_control`
 - `builtin_caps_with_digit_is_control_and_inverts`
 
-No new cases required if behavior is identical. Crate unit tests cover the machine; figaro tests cover wiring + held + number path.
+Add:
+
+```rust
+#[test]
+fn builtin_caps_plus_home_key_is_control_not_layer() {
+    // On Home, caps down then `t` must not enter Typing; must emit ControlLeft down + ctrl+t.
+    let mut m = home(); // or boot layer that binds t → typing
+    assert_eq!(m.handle(&key(Key::CapsLock)), Some(vec![]));
+    let fx = m.handle(&key(Key::KeyT)).expect("effects");
+    assert!(fx.iter().any(|e| matches!(e, Emit(KeyEvent { key: Key::ControlLeft, press: Down, .. }))));
+    assert!(fx.iter().any(|e| matches!(e, Emit(KeyEvent { key: Key::KeyT, press: Down, flags, .. }) if flags.contains(CONTROL))));
+    assert!(matches!(m.layer(), Layer::Home(_))); // still home
+}
+```
+
+Crate unit tests cover the machine; figaro tests cover gate + held + number path.
 
 ---
 
