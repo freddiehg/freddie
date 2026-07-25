@@ -203,6 +203,11 @@ struct Boot {
 ///
 /// `intercept` is called from here rather than from `main` because the tap and the effect loop
 /// belong with the state they drive, not because anything it returns is pinned to a thread.
+///
+/// The future is `!Send` because it owns the [`Emitter`], whose `CGEventSource` is: posting
+/// through a source mutates it, so it stays on the thread that posts. Nothing moves this future
+/// anywhere, since the worker drives it with `block_on` on a current-thread runtime.
+#[expect(clippy::future_not_send)]
 async fn serve(
     boot: Boot,
     event_tx: UnboundedSender<MercuryEvent>,
@@ -323,6 +328,10 @@ fn dispatch_event(
 ///
 /// Runs on the worker thread, the one consumer of the effect channel, so effects are performed
 /// in the order dispatch produced them.
+///
+/// `!Send` for the reason [`serve`] is: it owns the [`Emitter`], and the `CGEventSource` inside it
+/// stays on the thread that posts through it.
+#[expect(clippy::future_not_send)]
 async fn run_effect_loop(
     mut effect_rx: UnboundedReceiver<MercuryEffect>,
     emitter: Emitter,

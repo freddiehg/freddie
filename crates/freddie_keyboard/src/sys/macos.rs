@@ -312,6 +312,13 @@ fn run_tap(
     let on_key = RefCell::new(on_key);
 
     let thread = std::thread::spawn(move || {
+        // The remap source, created once on this thread and borrowed by every remap. A source per
+        // remapped key would map 16KB of shared memory per key that nothing ever unmaps, and this
+        // one is never touched from another thread, which is what posting through a source needs.
+        let Ok(remap_source) = CGEventSource::new(CGEventSourceStateID::Private) else {
+            let _ = signal.send(Err(()));
+            return;
+        };
         let outcome = CGEventTap::with_enabled(
             CGEventTapLocation::Session,
             CGEventTapPlacement::TailAppendEventTap,
@@ -350,11 +357,7 @@ fn run_tap(
                     Decision::Pass => CallbackResult::Keep,
                     Decision::Drop => CallbackResult::Drop,
                     Decision::Remap(out) => {
-                        let Ok(source) = CGEventSource::new(CGEventSourceStateID::Private) else {
-                            tracing::warn!(key = ?out.key, "dropped a remapped key; no event source");
-                            return CallbackResult::Drop;
-                        };
-                        match keyboard_event(&source, out.key, out.press, out.flags) {
+                        match keyboard_event(&remap_source, out.key, out.press, out.flags) {
                             Ok(event) => CallbackResult::Replace(event),
                             Err(e) => {
                                 tracing::warn!(key = ?out.key, error = %e, "dropped a remapped key");
@@ -383,7 +386,11 @@ fn run_tap(
             thread: Some(thread),
         },
     };
-    let emitter = Emitter { tag };
+    // The emitter's own source, on the thread that will post through it. A failure here is a
+    // `CaptureError` like a tap that will not install: an emitter that cannot build an event has
+    // no working `emit`, and `run_tap` hands back both halves or neither.
+    let source = CGEventSource::new(CGEventSourceStateID::Private).map_err(|()| CaptureError)?;
+    let emitter = Emitter { tag, source };
     Ok((interceptor, emitter))
 }
 
@@ -508,8 +515,16 @@ fn from_cg(flags: CGEventFlags) -> ModifierFlags {
 }
 
 /// Synthesizes keys through the interceptor's tag, so they are not re-handled.
+///
+/// `!Send`, because a `CGEventSource` is: it stays on the thread that built it, which is the one
+/// that posts through it. Posting mutates a source, so one per posting thread is what this is.
 pub struct Emitter {
     tag: Tag,
+    /// The one source every event this emitter posts is built from, created in [`run_tap`]. A
+    /// source per event would map 16KB of shared memory per keystroke that nothing unmaps;
+    /// [`keyboard_event`] ignores the birth flags this one accumulates, so reusing it cannot
+    /// reach the wire.
+    source: CGEventSource,
 }
 
 impl Emitter {
@@ -518,9 +533,7 @@ impl Emitter {
     /// The event states its own modifiers rather than trusting a source: whoever built it said
     /// what it carries, and we apply exactly that. See [`keyboard_event`].
     fn post(&self, key: Key, press: PressType, flags: ModifierFlags) -> Result<(), EmitError> {
-        let source =
-            CGEventSource::new(CGEventSourceStateID::Private).map_err(|_| EmitError::Post)?;
-        let event = keyboard_event(&source, key, press, flags)?;
+        let event = keyboard_event(&self.source, key, press, flags)?;
         self.tag.stamp(&event);
         event.post(CGEventTapLocation::Session);
         Ok(())
