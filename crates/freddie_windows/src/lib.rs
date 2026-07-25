@@ -191,7 +191,7 @@ impl WindowSink {
             let watched = table.get(&target.window).ok_or(WindowError::UnknownWindow)?;
             (Arc::clone(&watched.element), watched.frame)
         };
-        set_frame(element.raw(), target.frame);
+        set_frame(element.raw(), from, target.frame);
         tracing::debug!(?target, ?from, "set a window's frame");
         Ok(())
     }
@@ -479,41 +479,71 @@ fn set_attribute<A: AxAttribute>(element: AXUIElementRef, value: A::Value) {
     }
 }
 
-/// Set the window's position and size, twice.
+/// A width and a height.
 ///
-/// Position and size are two separate attribute writes, and an app validates each against the
-/// value the other one currently holds. Moving a 600-wide window at x=1000 to x=0 at 1600 wide
-/// writes the position while the window is still 600 wide, so an app that keeps its window on
-/// screen, or against a minimum size or an aspect ratio, clamps the move and lands short of 0.
-/// The size write then widens it to 1600 around the origin it was left at, and the window ends
-/// up in a frame nobody asked for.
-///
-/// The second pass runs with the other attribute already correct: the position is applied again
-/// with the width at 1600, so whatever clamped it the first time no longer applies.
-///
-/// Which write is safe to do first depends on the direction of the change, which is why this
-/// iterates rather than picking an order. The write that gets clamped is the one whose
-/// intermediate state, itself new and the other attribute still old, covers more than either the
-/// start or the target: position first clamps when a window grows into the right edge, and size
-/// first clamps when the origin it is growing from is already far right. Two passes needs neither
-/// comparison, because after the first one the remaining write's intermediate state is the target.
-///
-/// Two passes is what apps in practice converge in. It is also where the cost of a placement
-/// comes from: four attribute writes, each an IPC round trip into the app that owns the window,
-/// which is the tens of milliseconds a caller must keep off a latency-sensitive loop.
-fn set_frame(window: AXUIElementRef, frame: Frame) {
-    let origin = CGPoint::new(frame.x, frame.y);
-    let size = CGSize::new(frame.width, frame.height);
+/// Not `CGSize`, which does not implement `PartialEq`, and deliberately without CoreGraphics in it
+/// so the write ordering is arithmetic a test can table.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Extent {
+    width: f64,
+    height: f64,
+}
 
-    for _ in 0..2 {
-        set_attribute::<Position>(window, origin);
-        set_attribute::<Size>(window, size);
+/// The size writes one placement performs, around the move that sits between them.
+///
+/// The move is unconditional and always goes to the target's origin, so it is not named here.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Writes {
+    /// The size to shrink to before moving, when either axis shrinks.
+    shrink: Option<Extent>,
+    /// The size to grow to after moving, when either axis grows.
+    grow: Option<Extent>,
+}
+
+/// Shrink, move, grow.
+///
+/// Position and size are separate writes and an app validates each against the value the other one
+/// holds, so the intermediate between two writes has to fit as well as the endpoints do. Shrinking
+/// first keeps the intermediate inside `from`, which the window already occupies. Moving at the
+/// shrunk size keeps it inside `to` on both axes. Growing happens once the origin is already right,
+/// so the last write is `to` itself. Nothing here consults a screen, because containment in `from`
+/// or `to` is what makes each step safe and both of those fit by construction.
+fn writes_for(from: Frame, to: Frame) -> Writes {
+    let shrunk = Extent {
+        width: from.width.min(to.width),
+        height: from.height.min(to.height),
+    };
+    let target = Extent {
+        width: to.width,
+        height: to.height,
+    };
+    Writes {
+        shrink: (shrunk.width < from.width || shrunk.height < from.height).then_some(shrunk),
+        grow: (target.width > shrunk.width || target.height > shrunk.height).then_some(target),
+    }
+}
+
+/// Move and resize one window, in an order that cannot be clamped. See [`writes_for`].
+///
+/// Two writes for a pure shrink or a pure grow, three when one axis goes each way. A stale `from`
+/// cannot break it: too small under-shrinks and every later step is still bounded by `to`, and too
+/// large makes the first write a grow that an app may clamp, which only leaves the window smaller
+/// than asked. The two writes that must not be clamped, the move and the final size, are bounded by
+/// `to` either way.
+fn set_frame(window: AXUIElementRef, from: Frame, to: Frame) {
+    let Writes { shrink, grow } = writes_for(from, to);
+    if let Some(extent) = shrink {
+        set_attribute::<Size>(window, CGSize::new(extent.width, extent.height));
+    }
+    set_attribute::<Position>(window, CGPoint::new(to.x, to.y));
+    if let Some(extent) = grow {
+        set_attribute::<Size>(window, CGSize::new(extent.width, extent.height));
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Frame;
+    use super::{Extent, Frame, Writes, writes_for};
 
     #[test]
     fn contains_is_half_open() {
@@ -552,6 +582,128 @@ mod tests {
         assert_eq!(pick(10.0, 10.0), Some(0));
         assert_eq!(pick(1700.0, 10.0), Some(1));
         assert_eq!(pick(3000.0, 10.0), None, "off both monitors");
+    }
+
+    const FROM: Frame = Frame {
+        x: 1000.0,
+        y: 100.0,
+        width: 600.0,
+        height: 400.0,
+    };
+
+    const fn extent(width: f64, height: f64) -> Extent {
+        Extent { width, height }
+    }
+
+    // Growing while moving left: nothing to shrink, so the move goes first at the old size and the
+    // grow lands at the target origin.
+    #[test]
+    fn a_pure_grow_moves_before_it_grows() {
+        let to = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 1600.0,
+            height: 900.0,
+        };
+        assert_eq!(
+            writes_for(FROM, to),
+            Writes {
+                shrink: None,
+                grow: Some(extent(1600.0, 900.0))
+            }
+        );
+    }
+
+    // Shrinking while moving right: the shrink goes first, so the intermediate never reaches past
+    // the target's right edge.
+    #[test]
+    fn a_pure_shrink_shrinks_before_it_moves() {
+        let to = Frame {
+            x: 1400.0,
+            y: 100.0,
+            width: 400.0,
+            height: 300.0,
+        };
+        assert_eq!(
+            writes_for(FROM, to),
+            Writes {
+                shrink: Some(extent(400.0, 300.0)),
+                grow: None
+            }
+        );
+    }
+
+    // One axis each way: both size writes happen, and the first shrinks only the axis that shrinks.
+    #[test]
+    fn a_mixed_change_shrinks_then_grows() {
+        let to = Frame {
+            x: 500.0,
+            y: 100.0,
+            width: 400.0,
+            height: 900.0,
+        };
+        assert_eq!(
+            writes_for(FROM, to),
+            Writes {
+                shrink: Some(extent(400.0, 400.0)),
+                grow: Some(extent(400.0, 900.0)),
+            }
+        );
+    }
+
+    // A frame that is already the right size is one write, and it is the move.
+    #[test]
+    fn an_unchanged_size_is_only_a_move() {
+        let to = Frame {
+            x: 0.0,
+            y: 0.0,
+            ..FROM
+        };
+        assert_eq!(
+            writes_for(FROM, to),
+            Writes {
+                shrink: None,
+                grow: None
+            }
+        );
+    }
+
+    // The invariant the order rests on: the shrink never exceeds `from` and the size the move
+    // happens at never exceeds `to`, on both axes, which is why no screen is consulted.
+    #[test]
+    fn no_intermediate_exceeds_its_endpoint() {
+        for to in [
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 1600.0,
+                height: 900.0,
+            },
+            Frame {
+                x: 1400.0,
+                y: 100.0,
+                width: 400.0,
+                height: 300.0,
+            },
+            Frame {
+                x: 500.0,
+                y: 100.0,
+                width: 400.0,
+                height: 900.0,
+            },
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                ..FROM
+            },
+        ] {
+            let writes = writes_for(FROM, to);
+            if let Some(shrink) = writes.shrink {
+                assert!(shrink.width <= FROM.width && shrink.height <= FROM.height);
+            }
+            let moved = writes.shrink.unwrap_or(extent(FROM.width, FROM.height));
+            assert!(moved.width <= to.width && moved.height <= to.height);
+        }
     }
 }
 
