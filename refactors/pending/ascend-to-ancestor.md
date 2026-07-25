@@ -150,4 +150,4 @@ One shippable change; the workspace renames atomically or it does not compile.
 
 1. Pure rename plus the `path_nest!` terminal widening (`ident` → `ty`); no signatures change shape, no impls are added or removed.
 2. One level: `parent` / `into_parent`. Many levels: `ancestor` / `into_ancestor`. `mut` means borrow, `into_` means consume, everywhere.
-3. The verb "ascend" no longer appears in laserbeam or its consumers; "ascent" (the noun) is reserved for `path-peel-complete.md`.
+3. The verb "ascend" no longer appears in laserbeam or its consumers.
