@@ -96,65 +96,127 @@ match <C as Dispatch<M>>::dispatch(child_path, event, effs, claim) {
 
 Normal walk is a chain of `Ok` peels. A jump past B is `Err` from C; B never invents a B path.
 
-### Kill
+### Kill vs one level up (mechanics)
 
-No `invalidate(d)` counter. Kill peels with `into_parent`, then wraps the stopped path into the doll.
+These are different. Do not mix them.
 
-Two constructors for one `Result` layer:
+#### 1. Parent one level up (always the same)
 
-```rust
-// Result<P, E>
-fn here<P, E>(path: P) -> Result<P, E> {
-    Ok(path)
-}
-
-fn up<P, E>(rest: E) -> Result<P, E> {
-    Err(rest)
-}
-```
-
-Peel first, then wrap outside-in. Each extra level above the stop is one `up`.
+Child already returned `Self::Ascent` for the child node. Parent only matches. No multi-wrap.
 
 ```rust
-// C::Ascent = Result<BPath, Result<APath, 0Path>>
+// B received from C: Result<BPath, Result<APath, 0Path>>
+// B must return:       Result<APath, 0Path>
 
-// Stop at B (normal leave C): one peel, here
-let b = c_path.into_parent();
-here(b)                    // Ok(b)
-
-// Stop at A: two peels, up(here(a))
-let b = c_path.into_parent();
-let a = b.into_parent();
-up(here(a))                // Err(Ok(a))
-
-// Stop at 0: three peels; innermost Ascent is bare 0Path, so last wrap is up only
-let b = c_path.into_parent();
-let a = b.into_parent();
-let z = a.into_parent();
-up(up(z))                  // Err(Err(z))
-// not up(here(z)) — 0Path is not Result<0Path, _>
-```
-
-```text
-peels  stop   wrap (C’s doll)
-1      B      here(b)           Ok(b)
-2      A      up(here(a))       Err(Ok(a))
-3      0      up(up(z))         Err(Err(z))
-```
-
-Same pattern from any node: peel until the path type you want to keep, then `here` if that type is the `Ok` of the remaining doll, else nest `up` until the doll type matches `Self::Ascent`.
-
-At the root boundary, parent `Ascent` is bare `0Path` (not `Result`). One level up is not wrapped in `Ok`:
-
-```rust
-// Outer::Ascent = RootPath  (bare)
-match inner_result {
-    Ok(outer_path) => outer_path.into_parent(), // RootPath, not Ok(...)
-    Err(z) => z,
+match c_result {
+    Ok(b_path) => Ok(b_path.into_parent()), // one peel, one Ok
+    Err(e) => e,                            // zero peels, pass through
 }
 ```
 
-`here` / `up` are the library helpers so user/kill code does not write `Err(Ok(...))` by hand. A blanket `FromPath` trait hits coherence (`Result<P,E>: FromPath<P>` vs inject-into-Err); two functions plus peels stay coherent. Derive/sugar can emit the peel+wrap sequence for a named ancestor.
+Generated code is exactly that `match` (plus posts on each arm). Nothing else.
+
+Root boundary: parent `Ascent` is bare `0Path`, so Ok arm is `path.into_parent()` not `Ok(path.into_parent())`.
+
+#### 2. Kill at the node that still owns the deep path
+
+Only the node that still holds `PathMut<…>` down to the leaf can multi-peel. That is the exclusive handler (or leaf code after claim) **before** it returns from that node’s `dispatch`.
+
+Concrete types (demo depth 2):
+
+```rust
+// path in hand:
+//   InnerPath = PathMut<Inner, OuterPath>
+//   OuterPath = PathMut<Outer, RootPath>
+//   RootPath  = &mut Root
+
+// Inner::Ascent = Result<OuterPath, RootPath>
+```
+
+Normal leave Inner (no kill) — framework, not user:
+
+```rust
+// end of Inner::dispatch when exclusive did not consume path
+Ok(path.into_parent())
+// type: Result<OuterPath, RootPath>
+```
+
+Kill to root — user handler returns the **finished doll**. Framework only `return`s it.
+
+```rust
+fn inner_handler(
+    _ev: &KeyEvent,
+    path: InnerPath,
+) -> (Vec<DemoEffect>, Result<OuterPath, RootPath>) {
+    // peel 1: InnerPath -> OuterPath
+    let outer = path.into_parent();
+    // peel 2: OuterPath -> RootPath
+    let root = outer.into_parent();
+    // wrap into Inner::Ascent: skipped Outer Ok, stop at Root
+    (vec![], Err(root))
+}
+```
+
+Generated leaf after claim:
+
+```rust
+let (e, ascent) = inner_handler(ev, path);
+effs.extend(e);
+return ascent; // already Result<OuterPath, RootPath>
+```
+
+No second wrap in the derive. Handler (or a helper it calls) peels and builds `Ok`/`Err`.
+
+Depth 3 for the same idea (`C::Ascent = Result<BPath, Result<APath, 0Path>>`):
+
+```rust
+fn kill_to_a(path: CPath) -> Result<BPath, Result<APath, 0Path>> {
+    let b = path.into_parent(); // CPath -> BPath
+    let a = b.into_parent();    // BPath -> APath
+    Err(Ok(a))
+}
+
+fn kill_to_0(path: CPath) -> Result<BPath, Result<APath, 0Path>> {
+    let b = path.into_parent();
+    let a = b.into_parent();
+    let z = a.into_parent();
+    Err(Err(z))
+}
+
+fn leave_normal(path: CPath) -> Result<BPath, Result<APath, 0Path>> {
+    Ok(path.into_parent())
+}
+```
+
+That is the entire mechanical story for wrapping: **literals `Ok`/`Err` (or `here`/`up` aliases) around the path value after N× `into_parent`.** The type of `Self::Ascent` forces the nest shape; rustc checks it.
+
+#### 3. Optional sugar (not required for the model)
+
+Users should not hand-write deep nests. Options that do not need a coherence-broken trait:
+
+- **Macro / derive helper** that knows the spine types for this node (Outer, Root, …) and emits the peels + `Ok`/`Err` nest for a target ancestor.
+- **Explicit helpers per depth** the derive could emit, e.g. `Inner::jump_to_root(path) -> Inner::Ascent`.
+
+```rust
+// what the derive could emit for Inner
+fn jump_to_root(path: InnerPath) -> Result<OuterPath, RootPath> {
+    let outer = path.into_parent();
+    let root = outer.into_parent();
+    Err(root)
+}
+
+fn leave(path: InnerPath) -> Result<OuterPath, RootPath> {
+    Ok(path.into_parent())
+}
+```
+
+A single generic `fn wrap(path: P) -> Ascent` for all ancestors is what hits trait coherence; we do not need it. Per-node functions or a macro with the type list are enough.
+
+#### 4. What we will not do
+
+- Runtime hop counters, then “re-encode” into a path.
+- Framework peels after the handler returns a bare path without a typed stop: without a type-level stop marker, wrap depth is unknown.
+- Holding a path to a skipped level and tagging it MaybeDropped.
 
 ### Claim
 
