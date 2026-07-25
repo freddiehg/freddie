@@ -384,7 +384,7 @@ impl Dispatch<M> for B {
     where
         Self: 'a,
     {
-        let opt_0: Option<(&KeyEvent, ())> = if let Ok(ev) = TryFrom::try_from(event) {
+        let opt_0 = if let Ok(ev) = TryFrom::try_from(event) {
             let trigger = KeyH;
             if EventTrigger::is_matching(&trigger, ev) {
                 Some((ev, ()))
@@ -425,7 +425,7 @@ where
         Self: 'a,
     {
         // Snapped before descent: the schedule is final.
-        let opt_0: Option<(&KeyEvent, TimerId)> = if let Ok(ev) = TryFrom::try_from(event) {
+        let opt_0 = if let Ok(ev) = TryFrom::try_from(event) {
             let trigger = AnyKey;
             if EventTrigger::is_matching(&trigger, ev) {
                 Some((ev, snap_return_home(ev, &path)))
@@ -436,7 +436,7 @@ where
             None
         };
 
-        let opt_1: Option<(&KeyEvent, ())> = if let Ok(ev) = TryFrom::try_from(event) {
+        let opt_1 = if let Ok(ev) = TryFrom::try_from(event) {
             let trigger = KeyEsc;
             if EventTrigger::is_matching(&trigger, ev) {
                 Some((ev, ()))
