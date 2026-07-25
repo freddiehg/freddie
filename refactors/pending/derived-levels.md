@@ -81,9 +81,13 @@ let mut state = match app_data(&path) {
             claim,
         ),
     ),
-    ::core::option::Option::None => ::laserbeam::MaybeInvalidated::NotInvalidated(path),
+    ::core::option::Option::None => ::laserbeam::MaybeInvalidated::NotInvalidated(
+        ::bind::HasPlace::into_place(path),
+    ),
 };
 ```
+
+One template serves both sides of the edge: the `None` arm is always `NotInvalidated(into_place(..))`, which is the identity for a place.
 
 A derived level with its own derived child — `AppData`:
 
@@ -152,7 +156,17 @@ impl<'a> ::bind::DispatchIntoPlace<Demo> for ::bind::Node<AppNode<'a>, TabData> 
     ) -> ::laserbeam::Completed<ShellPath<'a>> {
         let node = self;
 
-        let opt_0 = /* Keyboard("g"), pre = snap_tab_thread, same opt shape */;
+        let opt_0 = match ::core::convert::TryFrom::try_from(event) {
+            ::core::result::Result::Ok(ev) => {
+                let trigger = Keyboard("g");
+                if ::bind::EventTrigger::is_matching(&trigger, ev) {
+                    ::core::option::Option::Some((ev, (snap_tab_thread)(ev, &node)))
+                } else {
+                    ::core::option::Option::None
+                }
+            }
+            ::core::result::Result::Err(_) => ::core::option::Option::None,
+        };
 
         let mut state = ::laserbeam::MaybeInvalidated::NotInvalidated(
             ::bind::HasPlace::into_place(node),
@@ -173,7 +187,7 @@ impl<'a> ::bind::DispatchIntoPlace<Demo> for ::bind::Node<AppNode<'a>, TabData> 
 }
 ```
 
-The enum level — mercury's `AppData`; every arm returns the same `Completed<AppLayerPath>`, so the match is total with no dead arms:
+The enum level — mercury's `AppData`; every arm returns the same `Completed<AppLayerPath>`, so the match is total with no dead arms. The existing rule stands: an enum of derived levels binds nothing itself (the derive keeps its error), so the enum impl has no opts or scheduled items of its own, only the arms:
 
 ```rust
 impl<'a> ::bind::DispatchIntoPlace<MercuryStruct> for ::bind::Node<AppLayerPath<'a>, AppData> {
@@ -223,9 +237,31 @@ let #place = match #f(&#place) {
 };
 ```
 
-After: the `#state` fold shown under Generated, emitted identically for a place's `#[derived_child]` (over `path`) and a derived level's own descent (over `node`, with the `None` arm flattening through `into_place`).
+After: the `#state` fold shown under Generated, one template for a place's `#[derived_child]` (over `path`) and a derived level's own descent (over `node`); the `None` arm is always `NotInvalidated(into_place(..))`, the identity for a place.
 
-`derived_node_impl`, before: `impl DispatchIntoParent`, old-form checks (claim, collect, `return None`), fallthrough `Some(into_parent(node))`. After: `impl DispatchIntoPlace` with the linear body — opts over `&node`, `#state`, one scheduled block per item, `state.complete()` — exactly `dispatch_impl`'s shape with `#state`'s leaf case replaced by the `into_place` flatten.
+`derived_node_impl`, before: `impl DispatchIntoParent`, old-form checks (claim, collect, `return None`), fallthrough `Some(into_parent(node))`. After, the emitted template — `dispatch_impl`'s linear shape over `node`:
+
+```rust
+#[automatically_derived]
+impl<'a> ::bind::DispatchIntoPlace<#marker> for ::bind::Node<#parent<'a>, #name> {
+    fn dispatch_into_place(
+        self,
+        event: &<#marker as ::bind::Bindings>::Event,
+        effs: &mut <#marker as ::bind::Bindings>::Output,
+        claim: &mut ::bind::Claim<'_>,
+    ) -> ::laserbeam::Completed<
+        <::bind::Node<#parent<'a>, #name> as ::bind::HasPlace>::Place,
+    > {
+        let node = self;
+        #(#opts)*
+        let mut state = #state;
+        #(#scheduled)*
+        state.complete()
+    }
+}
+```
+
+The derive cannot name the place path (`TabData`'s attribute names only `AppNode`), so the return type spells it through the `HasPlace` projection, which resolves because `#parent` is concrete at the impl. Opts, trigger closures, and pres emit over `&node` where a place emits over `&path`; the scheduled list is the same source-ordered list across `#[bind]` / `#[post]` / `#[pre_post]` that a place assembles; `#state` is the `into_place` flatten for a level with no derived child, or the fold above for one with a `#[derived_child]`.
 
 `derived_enum_node_impl`, before/after: the arms call `dispatch_into_place` and the impl returns `Completed<Place>`; otherwise unchanged.
 
@@ -294,7 +330,55 @@ fn on_g<'x>(
 
 `on_esc` (Shell's, a place bind) migrates under invalidation change 5's global migration and is not listed here.
 
-Mercury: no derived handler reads `data` (`ChromeApp` and `GhosttyApp` are units; the site levels match), so every derived-level handler migrates exactly like a place handler — the `Node<P, D>` parameter disappears, the bounds move onto the place path `P`, and the bodies keep their `IntoAncestor` / `HasAncestor` walks. Affected: `refresh`, `focus_address_bar`, `copy_url`, `copy_host`, the tmux window handlers in `handlers/app.rs`, their site-side counterparts, and the layer handlers (`to_home`, `to_nav`, `to_site`, `to_typing`, `toggle_overlay`) where bound on derived levels.
+Mercury: no derived handler reads `data` (`ChromeApp` and `GhosttyApp` are units; `ClaudeAiSite` matches), so every derived-level handler migrates exactly like a place handler — the `Node<P, D>` parameter disappears and the bounds move onto the place path `P`. Affected: `refresh`, `focus_address_bar`, `copy_url`, `copy_host`, the tmux window handlers in `handlers/app.rs`, `new_chat` on the site side, and the layer handlers (`to_home`, `to_nav`, `to_site`, `to_typing`, `toggle_overlay`) where bound on derived levels.
+
+Two conventions the migration applies uniformly:
+
+- A stayer that reads the tree reads through `HasAncestor::ancestor` and completes where it stands; only a leaver consumes through `IntoAncestor`. `copy` therefore takes the root by shared reference instead of consuming a path; `focus_address_bar`, which leaves into typing, keeps its `IntoAncestor` walk.
+- A handler whose effect needs the path emits nothing on `Invalidated` and forwards `c`. On a derived leaf the arm cannot fire in practice, since a leaf's `#state` starts `NotInvalidated`, but the match is total.
+
+`copy_url` is the model for mercury's stayers. Before:
+
+```rust
+pub(crate) fn copy_url<'a, E, P: IntoAncestor<MercuryPath<'a>>, D>(
+    _ev: &E,
+    node: Node<P, D>,
+) -> Vec<MercuryEffect> {
+    copy(node.parent, UrlPart::Whole)
+}
+
+fn copy<'a, P: IntoAncestor<MercuryPath<'a>>>(path: P, part: UrlPart) -> Vec<MercuryEffect> {
+    let root: MercuryPath<'_> = path.into_ancestor();
+    // ... reads root.foreground ...
+}
+```
+
+After — `copy` takes `&MercuryStruct` and its body loses only the `into_ancestor` line:
+
+```rust
+pub(crate) fn copy_url<'a, E, P>(
+    _ev: &E,
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>)
+where
+    P: HasAncestor<MercuryPath<'a>> + HasStop + Complete<P>,
+{
+    match st.state {
+        MaybeInvalidated::NotInvalidated(path) => {
+            let effs = copy(path.ancestor(), UrlPart::Whole);
+            (effs, path.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![], c),
+    }
+}
+
+fn copy(root: &MercuryStruct, part: UrlPart) -> Vec<MercuryEffect> {
+    // ... reads root.foreground, unchanged ...
+}
+```
+
+`copy_host` follows it with `UrlPart::Host`; `refresh` and the tmux handlers are pure effects and need no match at all (`(vec![tap(..)], st.complete())`).
 
 ## Tests
 
