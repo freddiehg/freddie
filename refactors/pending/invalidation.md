@@ -293,24 +293,34 @@ DESCENT
 
 ## Kill
 
-```rust
-fn inner_handler(
-    ev: &KeyEvent,
-    node: Node<InnerPath, ()>,
-    state: &mut AscentState,
-) -> (Vec<M::Effect>, InnerPath) {
-    // N = framework into_parent hops from this level through reshape owner
-    state.invalidate(2);
-    // reshape carrier (F5) schedules field replace at owner
-    (vec![], node.parent)
-}
-```
-
-Same-level path return. Framework `PathMut` stack still walks and still runs ancestor posts.
+Same-level path return. Framework `PathMut` stack still walks and still runs ancestor posts. `invalidate(N)` is on the live `AscentState` the exclusive receives. Reshape scheduling is F5; until then `invalidate` alone is enough for snapshot/post behavior.
 
 ## DX example (the tree the expand is for)
 
 ```rust
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ChildId(u64);
+
+struct AndReturnHome {
+    guard: TimerGuard,
+}
+
+// demo effect item; M::Effect in real bind
+enum DemoEffect {
+    LogDestroyed(ChildId),
+    ScheduleTimer(TimerId),
+    SetLayerHome,
+}
+
+fn log_destroyed(id: ChildId) -> DemoEffect {
+    DemoEffect::LogDestroyed(id)
+}
+
+fn arm_return_home() -> (TimerGuard, DemoEffect) {
+    let id = TimerId::fresh();
+    (TimerGuard::armed(id), DemoEffect::ScheduleTimer(id))
+}
+
 #[derive(Bind)]
 #[node(parent = RootPath)]
 #[binds(M)]
@@ -331,7 +341,7 @@ struct Inner {
     id: ChildId,
 }
 
-fn snap_child_id(ev: &KeyEvent, node: Node<&OuterPath, ()>) -> ChildId {
+fn snap_child_id(_ev: &KeyEvent, node: Node<&OuterPath, ()>) -> ChildId {
     node.parent.get().inner.id
 }
 
@@ -339,37 +349,40 @@ fn after_child(
     id: ChildId,
     node: Node<OuterPath, ()>,
     snap: &AscentStateSnapshot,
-) -> (Vec<M::Effect>, OuterPath) {
+) -> (Vec<DemoEffect>, OuterPath) {
     match snap.mutation() {
         Mutation::Intact => {
-            let _ = (id, node.parent.get().inner.id);
+            let _live = node.parent.get().inner.id;
+            debug_assert_eq!(_live, id);
             (vec![], node.parent)
         }
         Mutation::MaybeDropped => (vec![log_destroyed(id)], node.parent),
     }
 }
 
-fn rearm(child: &mut AndReturnHome) -> Vec<MercuryEffect> {
+fn rearm(child: &mut AndReturnHome) -> Vec<DemoEffect> {
     let (guard, schedule) = arm_return_home();
     child.guard = guard;
     vec![schedule]
 }
 
+/// Parent exclusive: only runs if Inner did not claim (run_exclusive gate).
+/// Uses live `state` only if it needs invalidate; this handler does not kill.
 fn outer_handler(
-    ev: &KeyEvent,
+    _ev: &KeyEvent,
     node: Node<OuterPath, ()>,
-    state: &mut AscentState,
-) -> (Vec<M::Effect>, OuterPath) {
-    let _ = (ev, state);
-    (vec![], node.parent)
+    _state: &mut AscentState,
+) -> (Vec<DemoEffect>, OuterPath) {
+    (vec![DemoEffect::SetLayerHome], node.parent)
 }
 
+/// Child exclusive: claims via run_exclusive, then invalidates a 2-hop spine.
+/// Path return is still InnerPath — stack walks Outer (and above) afterward.
 fn inner_handler(
-    ev: &KeyEvent,
+    _ev: &KeyEvent,
     node: Node<InnerPath, ()>,
     state: &mut AscentState,
-) -> (Vec<M::Effect>, InnerPath) {
-    let _ = ev;
+) -> (Vec<DemoEffect>, InnerPath) {
     state.invalidate(2);
     (vec![], node.parent)
 }
@@ -566,12 +579,7 @@ where
         let (inner_path, mut state) =
             <Inner as ::bind::Dispatch<M>>::dispatch(inner_path, event, effs);
 
-        // ----- into_parent: snapshot → posts(&snap) → step_up -----
-        // expands to:
-        //   let snap = state.snapshot();
-        //   let (path, post_effs) = on_into_parent(inner_path.parent, &snap);
-        //   Extend::extend(effs, post_effs);
-        //   state.step_up();
+        // ----- into_parent: see library body above (snapshot → posts → step_up) -----
         let mut path = inner_path.into_parent(effs, &mut state);
 
         // ----- exclusive for attr 2 -----
@@ -591,6 +599,7 @@ where
     }
 }
 ```
+
 
 #### Helpers those expands call (bind library, not generated per node)
 
@@ -672,35 +681,47 @@ ASCENT Inner (leaf)
     inner_handler: invalidate(2)         // depth = 2
   return (InnerPath, state)
 
-ASCENT Outer into_parent
-  snap = state.snapshot()                // mutation MaybeDropped (depth 2); claimed true
-  on_into_parent(&snap):
-    after_child(id, node, snap)          // MaybeDropped branch
-    only_if_intact(rearm)                // skip; Drop cancels guard
-    // posts may also read snap.claimed() == true
+ASCENT Outer into_parent (inlined)
+  snap = state.snapshot()
+    // mutation: MaybeDropped (depth 2)
+    // claimed: true
+  after_child(id, node, snap)
+    // match MaybeDropped → vec![LogDestroyed(id)], return OuterPath
+  only_if_intact(rearm)
+    // MaybeDropped → vec![], guard Drop cancels old timer
   state.step_up()                        // depth 2 → 1
-  run_exclusive outer_handler:
-    claim() → None                       // already taken; skip body
 
-ASCENT Root into_parent (if Root has posts)
-  snap = state.snapshot()                // MaybeDropped (depth 1)
-  posts…
-  state.step_up()                        // depth 1 → 0
+ASCENT Outer exclusive
+  run_exclusive:
+    claim() → None                       // Inner already took it
+    outer_handler not called
+    effs unchanged
+
+return (OuterPath, state) with depth 1, claim Some
+// further ancestors (Root) each into_parent: snapshot, their posts, step_up
+// until depth reaches 0
 ```
 
 ### Walk: KeyB (AnyKey only; no KeyA bind)
 
 ```text
-DESCENT Outer: opt_0 Some, opt_1 Some, opt_2 None
+DESCENT Outer: opt_0 Some(id), opt_1 Some(()), opt_2 None
 DESCENT Inner: opt_0 None
 
-ASCENT Inner: state = new(); no exclusive
+ASCENT Inner:
+  state = AscentState::new()             // depth 0, claim None
+  no exclusive
+  return (InnerPath, state)
+
 ASCENT Outer into_parent:
-  snap = Intact (depth 0); claimed false
-  after_child Intact branch
-  only_if_intact → rearm runs
-  step_up (still 0)
-  no outer exclusive
+  snap = Intact; claimed false
+  after_child Intact → assert id matches live .inner.id; no effects
+  only_if_intact → rearm:
+    arm_return_home(); child.guard = guard; vec![ScheduleTimer(id)]
+  step_up (depth stays 0)
+  no outer exclusive (opt_2 None)
+
+return (OuterPath, state) claim None, depth 0
 ```
 
 ## Ordered changes
@@ -735,49 +756,76 @@ pub trait Bindings {
 
 ### P1 — `on_into_parent` + sink together
 
-Before: `into_parent(self) -> P` (or master equivalent).
+Before (master today):
 
-After: `F` on `PathMut`; `into_parent` runs `F` and extends sink. Every call site passes empty posts (no unused sink alone).
+```rust
+pub fn into_parent(self) -> Parent { /* project up */ }
+```
+
+After:
+
+```rust
+pub fn into_parent(self, sink: &mut Vec<Effect>) -> Parent {
+    let (parent, post_effs) = (self.on_into_parent)(self.parent);
+    Extend::extend(sink, post_effs);
+    parent
+}
+// every site: on_into_parent = empty_on_into_parent
+fn empty_on_into_parent<P>(parent: P) -> (P, Vec<Effect>) {
+    (parent, Vec::new())
+}
+```
 
 ### P2 — `from_fn` framework-only
 
-Crate-private / sealed.
+Crate-private / sealed. No user call sites outside laserbeam/bind.
 
 ### P3 — `AscentState` + `into_parent` snapshot / step_up
 
-- Drop `Break`. Always `(Path, AscentState)`.
-- Leaf: `AscentState::new()`.
-- `into_parent(self, sink, state)`: `snapshot` → `on_into_parent(..., &snap)` → `step_up`.
-- `on_into_parent: FnOnce(P, &AscentStateSnapshot) -> (P, Vec<Effect>)` (may be empty).
-- Exclusive via `run_exclusive` / `claim`.
-- Top-level: `claimed() || !effs.is_empty()`.
-- No user `#[post]` yet.
+Before: P1 `into_parent` + `ControlFlow` dispatch.
+
+After: full `AscentState` / `AscentStateSnapshot` types (see Types). Dispatch returns `(Path, AscentState)`. Leaf `AscentState::new()`. `into_parent(self, sink, state)` as in Types section. Exclusive through `run_exclusive`. Top-level `claimed() || !effs.is_empty()`. No user `#[post]` yet (`on_into_parent` still empty).
 
 ### P4 — `#[bind]` only through `run_exclusive`
 
-Handlers return `(Vec<Effect>, P)` at the same level. Behavior-identical to P3.
+Before: today's immediate exclusive `Break` path.
+
+After: schedule on descent; `run_exclusive` on ascent; handler `fn(ev, node, &mut AscentState) -> (Vec<Effect>, P)` with same-level `P`. Behavior-identical to P3 for non-kill handlers.
 
 ### F1 — `#[post]`
 
-User posts take `&AscentStateSnapshot`. Generate runs them in `on_into_parent` with the snap from `into_parent`.
+Before: empty `on_into_parent`.
+
+After: user post `fn(node, &AscentStateSnapshot) -> (Vec, P)` (and expression form). Generate fills `on_into_parent` as in Outer expand attrs 0/1.
 
 ### F2 — `invalidate(N)`
 
-Exclusive kill calls `state.invalidate(N)`. Counter + snapshot behavior testable without reshape carrier.
+Before: exclusive cannot mark spine depth.
+
+After: exclusive body calls `state.invalidate(N)`; ancestor posts see `MaybeDropped` via snapshot. Expand: `inner_handler` as in DX.
 
 ### F3 — `#[pre_post]` + `noop_pre`
 
-`#[post]` alone = `(noop_pre, post)`. `#[pre_post]` threads pre return as post's first arg.
+Before: post alone has no pre half helper.
+
+After: `noop_pre`; `#[post]` = `(noop_pre, post)`; `#[pre_post]` threads pre return into post first arg. Expand: Outer `opt_0` / `after_child`.
 
 ### F4 — `only_if_intact` + mercury rearm
 
+Before: rearm via other means (handle discriminant, etc.).
+
+After:
+
 ```rust
 #[post(AnyKey => only_if_intact(|p| &mut p.get_mut().return_home, rearm))]
+fn rearm(child: &mut AndReturnHome) -> Vec<DemoEffect> { /* as DX */ }
 ```
 
 ### F5 — reshape carrier
 
-Schedule field replace at owner. Exclusive still returns same-level `P`. Framework stack still walks.
+Before: exclusive `invalidate` only; child field value still whatever was there.
+
+After: exclusive still returns same-level `P` and still only `invalidate(N)` for hop depth. Field replace at owner is a separate effect / model write already expressible today (`set_layer` via `ascend` after posts), or a later carrier — not required for snapshot/post correctness. When a dedicated carrier is designed, add full types and expand here as F5b; do not invent it mid-implement.
 
 ## Rules
 
