@@ -120,13 +120,12 @@ Same `P` in and out. Posts and exclusive both take `&mut AscentState`.
 #[bind(trig => handler)]          // opt = Some(&SourceEvent) captured at match
 ```
 
-## PathMut (laserbeam) — posts take `&mut S`
+## PathMut (laserbeam)
 
-laserbeam does not name `AscentState`. State type is a parameter of `F`.
-
-### Before (master)
+`AscentState` is **not** a type parameter. laserbeam stays free of bind types. `PathMut` keeps master shape: parent + projections. `into_parent` only recovers the parent.
 
 ```rust
+// master — unchanged shape
 pub struct PathMut<Node, Parent> {
     parent: Parent,
     projection: ProjMut<Node, Parent>,
@@ -146,37 +145,6 @@ impl<Node, Parent> PathMut<Node, Parent> {
         }
     }
 
-    pub fn into_parent(self) -> Parent {
-        self.parent
-    }
-}
-```
-
-### After
-
-```rust
-pub struct PathMut<Node, Parent, F> {
-    parent: Parent,
-    projection: ProjMut<Node, Parent>,
-    shared: ProjRef<Node, Parent>,
-    on_into_parent: F,
-}
-
-impl<Node, Parent, F> PathMut<Node, Parent, F> {
-    pub fn from_fn(
-        parent: Parent,
-        projection: fn(&mut Parent) -> &mut Node,
-        shared: fn(&Parent) -> &Node,
-        on_into_parent: F,
-    ) -> Self {
-        Self {
-            parent,
-            projection: ProjMut::Bare(projection),
-            shared: ProjRef::Bare(shared),
-            on_into_parent,
-        }
-    }
-
     pub fn get(&self) -> &Node {
         self.shared.apply(&self.parent)
     }
@@ -185,37 +153,29 @@ impl<Node, Parent, F> PathMut<Node, Parent, F> {
         self.projection.apply(&mut self.parent)
     }
 
-    /// Runs posts; extends sink; returns parent. No freeze/step_up here.
-    pub fn into_parent<S, E>(self, state: &mut S, sink: &mut Vec<E>) -> Parent
-    where
-        F: FnOnce(Parent, &mut S) -> (Parent, Vec<E>),
-    {
-        let (parent, post_effs) = (self.on_into_parent)(self.parent, state);
-        sink.extend(post_effs);
-        parent
+    pub fn into_parent(self) -> Parent {
+        self.parent
     }
 }
 ```
 
 ## `into_parent_ascent` (bind) — freeze, posts, step_up
 
+Posts run here, with concrete `&mut AscentState` (not a generic `S`). Closure is passed at call time so it can capture descent `opt_*` and take `state` now that the leaf has built it.
+
 ```rust
-pub fn into_parent_ascent<Node, Parent, F, E>(
-    path: laserbeam::PathMut<Node, Parent, F>,
+pub fn into_parent_ascent<Node, Parent, E>(
+    path: laserbeam::PathMut<Node, Parent>,
     sink: &mut Vec<E>,
     state: &mut AscentState,
-) -> Parent
-where
-    F: FnOnce(Parent, &mut AscentState) -> (Parent, Vec<E>),
-{
+    run_posts: impl FnOnce(Parent, &mut AscentState) -> (Parent, Vec<E>),
+) -> Parent {
     state.freeze_mutation();
-    let parent = path.into_parent(state, sink);
+    let parent = path.into_parent();
+    let (parent, post_effs) = run_posts(parent, state);
+    sink.extend(post_effs);
     state.step_up();
     parent
-}
-
-pub fn empty_on_into_parent<P, S, E>(parent: P, _state: &mut S) -> (P, Vec<E>) {
-    (parent, Vec::new())
 }
 ```
 
@@ -339,12 +299,13 @@ DESCENT
   schedule opts (pre values / exclusive &Event / post bool)
 
   if child:
-    path = from_fn(..., on_into_parent capturing opts)
+    path = PathMut::from_fn(path, proj_mut, proj_ref)   // 3-arg, no F
     (path, state) = Child::dispatch(path, event, effs)
-    path = into_parent_ascent(path, effs, &mut state)
-      freeze_mutation()
-      on_into_parent(parent, &mut state)  // posts
-      step_up()
+    path = into_parent_ascent(path, effs, &mut state, |parent, state| {
+      // posts; opts captured from descent
+      (parent, local_effs)
+    })
+      // freeze_mutation(); parent = path.into_parent(); run_posts; step_up()
 
   if leaf:
     state = AscentState::new()
@@ -578,14 +539,22 @@ where
                 ::core::option::Option::None
             };
 
+        // 3-arg from_fn — no generic state on PathMut
         let inner_path = ::laserbeam::PathMut::from_fn(
             path,
             |p: &mut <Outer as ::bind::Place>::Path<'a>| &mut p.get_mut().inner,
             |p: &<Outer as ::bind::Place>::Path<'a>| &p.get().inner,
-            move |
-                parent: <Outer as ::bind::Place>::Path<'a>,
-                state: &mut ::bind::AscentState,
-            | {
+        );
+
+        let (inner_path, mut state) =
+            <Inner as ::bind::Dispatch<M>>::dispatch(inner_path, event, effs);
+
+        // opts captured here; concrete &mut AscentState, not a type param
+        let mut path = ::bind::into_parent_ascent(
+            inner_path,
+            effs,
+            &mut state,
+            move |parent, state| {
                 let mut local =
                     ::std::vec::Vec::<<M as ::bind::Bindings>::Effect>::new();
                 let mut path = parent;
@@ -614,11 +583,6 @@ where
                 (path, local)
             },
         );
-
-        let (inner_path, mut state) =
-            <Inner as ::bind::Dispatch<M>>::dispatch(inner_path, event, effs);
-
-        let mut path = ::bind::into_parent_ascent(inner_path, effs, &mut state);
 
         if let ::core::option::Option::Some(ev) = opt_2 {
             let (p, e) = ::bind::run_exclusive(path, &mut state, |node, state| {
@@ -691,20 +655,22 @@ Before: `type Output`; `Break(output)`.
 
 After: `type Effect`; `effs: &mut Vec<Effect>`; `Break(())`; top-level `Some(effs)` / `None`.
 
-### P1 — `on_into_parent` + sink
+### P1 — sink only (optional prefactor)
 
-Before: `into_parent(self) -> Parent`.
-
-After: `PathMut<_,_,F>` with `from_fn(..., F)` and `into_parent(state, sink)` where `F: FnOnce(Parent, &mut S) -> (Parent, Vec<E>)`. Sites use `empty_on_into_parent` until posts exist. (P1 can use a dummy `S = ()`.)
+If posts need a sink before ascent state: thread `effs` through dispatch. PathMut shape unchanged.
 
 ### P2 — `from_fn` framework-only
 
 ### P3 — `AscentState` + `into_parent_ascent`
 
-- Types above.
+- Concrete `AscentState` (not a type parameter).
 - Dispatch returns `(Path, AscentState)`.
 - Leaf `AscentState::new()`.
-- `into_parent_ascent` = `freeze_mutation` + laserbeam `into_parent` + `step_up`.
+- `into_parent_ascent(path, sink, state, run_posts)`:
+  - `freeze_mutation()`
+  - `parent = path.into_parent()` (laserbeam, no state)
+  - `run_posts(parent, state)`
+  - `step_up()`
 - Exclusive via `run_exclusive` / trap-door `claim`.
 - Top-level `claimed() || !effs.is_empty()`.
 
@@ -714,7 +680,7 @@ Handlers `(ev, node, &mut AscentState) -> (Vec, P)`. Same-level path.
 
 ### F1 — `#[post]` with `&mut AscentState`
 
-Posts read `state.mutation()` (frozen for this hop).
+Posts read `state.mutation()` (frozen for this hop). `run_posts` closure is the generate site (Outer expand).
 
 ### F2 — `invalidate(N)`
 
@@ -739,11 +705,12 @@ Exclusive still returns same-level `P`. Field replace at owner is a later carrie
 1. Descent schedules; set final.
 2. Ascent runs every scheduled post.
 3. One `AscentState`. Posts and exclusive take `&mut AscentState`.
-4. `mutation()` is frozen at `freeze_mutation` (into_parent_ascent entry).
-5. `claim()` is a one-way trap door; `claimed()` reads it.
-6. `into_parent_ascent` = freeze → posts → step_up.
-7. Kill = `invalidate(N)` on live depth; path type unchanged.
-8. Generate: schedule + helpers. Expand above is the template.
+4. `AscentState` is a concrete type. Not a type parameter of PathMut or Dispatch.
+5. `mutation()` is frozen at `freeze_mutation` (into_parent_ascent entry).
+6. `claim()` is a one-way trap door; `claimed()` reads it.
+7. `into_parent_ascent` = freeze → laserbeam `into_parent` → run_posts(`&mut AscentState`) → step_up.
+8. Kill = `invalidate(N)` on live depth; path type unchanged.
+9. Generate: schedule + helpers. Expand above is the template.
 
 ## Tests
 
