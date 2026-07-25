@@ -510,6 +510,6 @@ windows.placing / restoring
 4. multiple-children when designed
 ```
 
-Until step 1 starts, fat handlers keep their bodies; only their signatures migrate under change 5.
+The change-5 migration already landed the signatures; fat handlers keep their bodies until step 1.
 
 The acceptance test for the whole migration: every multi-part gesture in `crates/mercury/src/handlers/` is one `and(..)` bind and no gesture is split across schedule slots; exactly one `TimerGuard` for return-home exists, on `AndReturnHome`, and no rearm exists outside its `pre_post`; `and_go_home` does not exist; `Mercury::handle` is only dispatch.
