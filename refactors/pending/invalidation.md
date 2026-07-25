@@ -6,49 +6,40 @@ Descent schedules which pre/posts/binds run. That set is final. Ascent runs ever
 
 ## Model
 
-Two carriers. They close over different root slots. They never share a field.
+After a kill, scheduled posts still run. At that point the live tree may already be gone, so the framework cannot mint a fresh `PathMut` for the post. The path that descent built and ascent recovered is therefore a field on the same value that carries invalidation: posts read path and `mutation()` from one struct.
 
 ```rust
-// Top-level dispatch owns both slots:
-//   let mut depth = Depth::new();
+// Top-level dispatch owns the claim slot only:
 //   let mut claim_slot: Option<()> = None;
 //   let mut claim = Claim::new(&mut claim_slot);
 
-/// Hop counters. Owned at dispatch entry. Reborrowed by Ascent.
-pub struct Depth {
+/// Path + hop counters. One value. Path is not rebuilt after invalidate.
+pub struct Ascent<P> {
+    path: P,
     invalidation_depth: u32,
     ascent_hops: u32,
 }
 
-/// Path closes over `&mut Depth`. No claim here.
-pub struct Ascent<'d, P> {
-    path: P,
-    depth: &'d mut Depth,
-}
-
-/// Something else closes over `&mut Option<()>` — the exclusive trap door.
+/// Exclusive trap door. Separate carrier; not a field of Ascent.
 pub struct Claim<'c> {
     slot: &'c mut Option<()>,
 }
 ```
 
-Why this compiles:
+Two carriers, different jobs:
 
-- `P` may be `PathMut<N, Parent>` ending in `&mut Root`. Hopping is `path.into_parent()`, which consumes `path` by value. The interior `&mut` moves with it.
-- `Ascent` only reborrows `Depth`. After the hop, rebuild `Ascent { path: parent, depth }` with the same `&mut Depth`. `invalidate` and the hop bump write through that reborrow; the next `mutation()` reads it.
-- `Claim` is a separate value. Exclusive gating goes through `claim.with_exclusive(&mut ascent, body)`. Path surgery and claim never live in one struct, so their exclusive refs cannot be forced to alias.
-
-`into_parent_ascent` only sees `Ascent`: move path → `into_parent` → bump hops on `depth` → rebuild `Ascent` with the same depth reborrow → run posts. Claim is not in that type.
+- `Ascent<P>` owns the path and the depth counters. `invalidate` writes `invalidation_depth`. `into_parent_ascent` moves the path through `into_parent`, bumps `ascent_hops`, rebuilds `Ascent<Parent>` with the same counters. Posts receive `&mut Ascent<P>` and already have the path that was recovered for this level — including when `mutation()` is `MaybeDropped`.
+- `Claim<'c>` closes over the root claim slot. Exclusive is `claim.with_exclusive(&mut ascent, body)`. Claim never sits on `Ascent`, so path's interior `&mut Root` and the claim reborrow are different places.
 
 ```text
 mutation() = if ascent_hops < invalidation_depth { MaybeDropped } else { Intact }
 ```
 
-Depth is live. After `invalidate(d)` or a hop bumps `ascent_hops`, the next `mutation()` sees the new numbers.
+Depth is live on `Ascent`. After `invalidate(d)` or a hop bumps `ascent_hops`, the next `mutation()` sees the new numbers.
 
-laserbeam `PathMut::into_parent` recovers parent only.
+laserbeam `PathMut::into_parent` recovers parent only (path value already held; no new path from the live tree).
 
-Kill: `ascent.invalidate(d)` with `d` = kill path hop count.
+Kill: `ascent.invalidate(d)` with `d` = kill path hop count. Posts still run; they use this `Ascent`'s path field.
 
 Methods:
 
@@ -64,45 +55,20 @@ pub enum Mutation {
     MaybeDropped,
 }
 
-pub struct Depth {
+/// Path is part of this value. After invalidate, posts still hold it here.
+pub struct Ascent<P> {
+    path: P,
     invalidation_depth: u32,
     ascent_hops: u32,
 }
 
-impl Depth {
-    pub fn new() -> Self {
+impl<P> Ascent<P> {
+    pub fn new(path: P) -> Self {
         Self {
+            path,
             invalidation_depth: 0,
             ascent_hops: 0,
         }
-    }
-
-    fn mutation(&self) -> Mutation {
-        if self.ascent_hops < self.invalidation_depth {
-            Mutation::MaybeDropped
-        } else {
-            Mutation::Intact
-        }
-    }
-
-    fn bump_ascent_hop(&mut self) {
-        self.ascent_hops = self.ascent_hops.saturating_add(1);
-    }
-
-    fn invalidate(&mut self, d: u32) {
-        self.invalidation_depth = self.invalidation_depth.max(d);
-    }
-}
-
-/// Path closes over `&mut Depth`.
-pub struct Ascent<'d, P> {
-    path: P,
-    depth: &'d mut Depth,
-}
-
-impl<'d, P> Ascent<'d, P> {
-    pub fn new(path: P, depth: &'d mut Depth) -> Self {
-        Self { path, depth }
     }
 
     pub fn path(&self) -> &P {
@@ -114,29 +80,39 @@ impl<'d, P> Ascent<'d, P> {
     }
 
     pub fn mutation(&self) -> Mutation {
-        self.depth.mutation()
+        if self.ascent_hops < self.invalidation_depth {
+            Mutation::MaybeDropped
+        } else {
+            Mutation::Intact
+        }
     }
 
     /// Kill coverage. d = path hops of the kill climb.
+    /// Does not drop the path. Posts still run against this Ascent.
     pub fn invalidate(&mut self, d: u32) {
-        self.depth.invalidate(d);
+        self.invalidation_depth = self.invalidation_depth.max(d);
     }
 }
 
-impl<'d, Node, Parent> Ascent<'d, laserbeam::PathMut<Node, Parent>> {
-    /// Framework hop: consume path → parent, bump hops on depth, run posts.
-    /// Same `&mut Depth` reborrow; claim is not involved.
+impl<Node, Parent> Ascent<laserbeam::PathMut<Node, Parent>> {
+    /// Framework hop: consume path → parent, bump hops, run posts on Ascent<Parent>.
+    /// Claim is not involved. Path is the recovered parent, not a new mint from the live tree.
     pub fn into_parent_ascent<E>(
         self,
         sink: &mut Vec<E>,
-        run_posts: impl FnOnce(&mut Ascent<'d, Parent>) -> Vec<E>,
-    ) -> Ascent<'d, Parent> {
-        let Ascent { path, depth } = self;
+        run_posts: impl FnOnce(&mut Ascent<Parent>) -> Vec<E>,
+    ) -> Ascent<Parent> {
+        let Ascent {
+            path,
+            invalidation_depth,
+            mut ascent_hops,
+        } = self;
         let parent = path.into_parent();
-        depth.bump_ascent_hop();
+        ascent_hops = ascent_hops.saturating_add(1);
         let mut ascent = Ascent {
             path: parent,
-            depth,
+            invalidation_depth,
+            ascent_hops,
         };
         let post_effs = run_posts(&mut ascent);
         sink.extend(post_effs);
@@ -168,11 +144,11 @@ impl<'c> Claim<'c> {
         }
     }
 
-    /// Exclusive gate on the claim side; body gets the path/depth side.
-    pub fn with_exclusive<'d, P, E>(
+    /// Exclusive gate on the claim side; body gets Ascent (path + depth).
+    pub fn with_exclusive<P, E>(
         &mut self,
-        ascent: &mut Ascent<'d, P>,
-        body: impl FnOnce(&mut Ascent<'d, P>) -> Vec<E>,
+        ascent: &mut Ascent<P>,
+        body: impl FnOnce(&mut Ascent<P>) -> Vec<E>,
     ) -> Vec<E> {
         match self.try_take() {
             None => Vec::new(),
@@ -186,7 +162,7 @@ Hop accounting (worked `invalidate(2)` from the leaf):
 
 ```text
 leaf:     hops=0 inv=2  →  0 < 2  MaybeDropped
-+1 hop:   hops=1 inv=2  →  1 < 2  MaybeDropped   // Outer posts here
++1 hop:   hops=1 inv=2  →  1 < 2  MaybeDropped   // Outer posts here; path is OuterPath on Ascent
 +2 hops:  hops=2 inv=2  →  2 < 2  Intact
 ```
 
@@ -198,15 +174,14 @@ Order invariant inside `into_parent_ascent`: bump before posts. Framework never 
 // pre — descent; no Ascent yet
 fn pre(ev: &SourceEvent, node: Node<&P, D>) -> T;
 
-// post — ascent; path closes over &mut Depth
+// post — always runs if scheduled, including after invalidate.
+// Path is ascent.path(); it was recovered on the way up, not minted here.
 fn post(pre_return: T, ascent: &mut Ascent<P>) -> Vec<M::Effect>;
 fn post(ascent: &mut Ascent<P>) -> Vec<M::Effect>;
 
-// exclusive — body sees Ascent only; claim gate is Claim::with_exclusive
+// exclusive — body sees Ascent; claim gate is Claim::with_exclusive
 fn exclusive(ev: &SourceEvent, ascent: &mut Ascent<P>) -> Vec<M::Effect>;
 ```
-
-Path is `ascent.path()` / `ascent.path_mut()`. Mutation / invalidate are on `ascent`. Claim is never a method on `Ascent`.
 
 ## PathMut (laserbeam)
 
@@ -247,17 +222,17 @@ impl<Node, Parent> PathMut<Node, Parent> {
 ## Helpers (bind)
 
 ```rust
-pub fn run_post<'d, P, E>(
-    ascent: &mut Ascent<'d, P>,
-    body: impl FnOnce(&mut Ascent<'d, P>) -> Vec<E>,
+pub fn run_post<P, E>(
+    ascent: &mut Ascent<P>,
+    body: impl FnOnce(&mut Ascent<P>) -> Vec<E>,
 ) -> Vec<E> {
     body(ascent)
 }
 
-pub fn only_if_intact<'d, P, N, E>(
+pub fn only_if_intact<P, N, E>(
     project: impl Fn(&mut P) -> &mut N,
     f: impl FnOnce(&mut N) -> Vec<E>,
-) -> impl FnOnce(&mut Ascent<'d, P>) -> Vec<E> {
+) -> impl FnOnce(&mut Ascent<P>) -> Vec<E> {
     move |ascent| match ascent.mutation() {
         Mutation::Intact => f(project(ascent.path_mut())),
         Mutation::MaybeDropped => Vec::new(),
@@ -267,7 +242,7 @@ pub fn only_if_intact<'d, P, N, E>(
 
 ## Dispatch
 
-Root owns `Depth` and the claim slot. `Ascent` reborrows depth. `Claim` reborrows the slot. Both are threaded down; only `Ascent` is returned up the spine.
+Root owns the claim slot. `Ascent` is built at the leaf with the path and zero counters, returned up the spine. `Claim` is threaded down for exclusive only.
 
 ```rust
 pub trait Bindings {
@@ -277,13 +252,12 @@ pub trait Bindings {
 }
 
 pub trait Dispatch<M: Bindings>: Place {
-    fn dispatch<'a, 'd, 'c>(
+    fn dispatch<'a, 'c>(
         path: Self::Path<'a>,
         event: &M::Event,
         effs: &mut Vec<M::Effect>,
-        depth: &'d mut Depth,
         claim: &mut Claim<'c>,
-    ) -> Ascent<'d, Self::Path<'a>>
+    ) -> Ascent<Self::Path<'a>>
     where
         Self: 'a;
 }
@@ -297,11 +271,9 @@ where
     N: Dispatch<M> + 'a,
 {
     let mut effs = Vec::new();
-    let mut depth = Depth::new();
     let mut claim_slot = None;
     let mut claim = Claim::new(&mut claim_slot);
-    let _ascent =
-        <N as Dispatch<M>>::dispatch(path, event, &mut effs, &mut depth, &mut claim);
+    let _ascent = <N as Dispatch<M>>::dispatch(path, event, &mut effs, &mut claim);
     if claim.is_taken() || !effs.is_empty() {
         Some(effs)
     } else {
@@ -317,11 +289,11 @@ DESCENT: schedule opts
 
 if child:
   child_path = PathMut::from_fn(path, proj_mut, proj_ref)
-  ascent = Child::dispatch(child_path, event, effs, depth, claim)
+  ascent = Child::dispatch(child_path, event, effs, claim)
   ascent = ascent.into_parent_ascent(effs, |ascent| { /* posts */ })
 
 if leaf:
-  ascent = Ascent::new(path, depth)
+  ascent = Ascent::new(path)
 
 if exclusive scheduled:
   effs2 = claim.with_exclusive(&mut ascent, |ascent| handler(ev, ascent))
@@ -429,13 +401,12 @@ fn inner_handler(_ev: &KeyEvent, ascent: &mut Ascent<InnerPath>) -> Vec<DemoEffe
 ```rust
 #[automatically_derived]
 impl ::bind::Dispatch<M> for Inner {
-    fn dispatch<'a, 'd, 'c>(
+    fn dispatch<'a, 'c>(
         path: <Inner as ::bind::Place>::Path<'a>,
         event: &<M as ::bind::Bindings>::Event,
         effs: &mut ::std::vec::Vec<<M as ::bind::Bindings>::Effect>,
-        depth: &'d mut ::bind::Depth,
         claim: &mut ::bind::Claim<'c>,
-    ) -> ::bind::Ascent<'d, <Inner as ::bind::Place>::Path<'a>>
+    ) -> ::bind::Ascent<<Inner as ::bind::Place>::Path<'a>>
     where
         Self: 'a,
     {
@@ -453,7 +424,7 @@ impl ::bind::Dispatch<M> for Inner {
                 ::core::option::Option::None
             };
 
-        let mut ascent = ::bind::Ascent::new(path, depth);
+        let mut ascent = ::bind::Ascent::new(path);
 
         if let ::core::option::Option::Some(ev) = opt_0 {
             let out_effs =
@@ -474,13 +445,12 @@ impl ::bind::Dispatch<M> for Outer
 where
     Inner: ::bind::Dispatch<M>,
 {
-    fn dispatch<'a, 'd, 'c>(
+    fn dispatch<'a, 'c>(
         mut path: <Outer as ::bind::Place>::Path<'a>,
         event: &<M as ::bind::Bindings>::Event,
         effs: &mut ::std::vec::Vec<<M as ::bind::Bindings>::Effect>,
-        depth: &'d mut ::bind::Depth,
         claim: &mut ::bind::Claim<'c>,
-    ) -> ::bind::Ascent<'d, <Outer as ::bind::Place>::Path<'a>>
+    ) -> ::bind::Ascent<<Outer as ::bind::Place>::Path<'a>>
     where
         Self: 'a,
     {
@@ -534,9 +504,8 @@ where
             |p: &<Outer as ::bind::Place>::Path<'a>| &p.get().inner,
         );
 
-        let ascent = <Inner as ::bind::Dispatch<M>>::dispatch(
-            inner_path, event, effs, depth, claim,
-        );
+        let ascent =
+            <Inner as ::bind::Dispatch<M>>::dispatch(inner_path, event, effs, claim);
 
         let mut ascent = ascent.into_parent_ascent(effs, move |ascent| {
             let mut local =
@@ -581,40 +550,38 @@ where
 
 ```text
 dispatch entry
-  depth = Depth { inv: 0, hops: 0 }
   claim_slot = None
   claim = Claim { slot: &mut claim_slot }
 
 ASCENT Inner
-  ascent = Ascent::new(path, &mut depth)     // path closes over &mut depth
+  ascent = Ascent::new(path)                 // path is a field; counters 0
   claim.with_exclusive(&mut ascent, ...):
-    try_take → Some(())                      // claim side only
-    ascent.invalidate(2)                     // writes depth through ascent
-  return ascent                              // still closes over &mut depth
+    try_take → Some(())
+    ascent.invalidate(2)                     // inv=2; path still on ascent
+  return ascent                              // path + inv=2 travel together
 
-ASCENT Outer into_parent_ascent              // claim not in this type
-  move path out
-  path.into_parent()
-  depth.bump_ascent_hop → hops=1             // same Depth cell
-  rebuild Ascent { parent, depth }
+ASCENT Outer into_parent_ascent
+  move path out of ascent (the PathMut held since descent)
+  path.into_parent()                         // recover OuterPath — not a new mint
+  hops = 1; inv stays 2
+  rebuild Ascent { path: OuterPath, inv=2, hops=1 }
   run_posts:                                 // 1 < 2 → MaybeDropped
-    after_child: MaybeDropped → LogDestroyed
+    after_child: uses pre-snapped id; path is still on ascent
     only_if_intact: skip
   return ascent
 
 ASCENT Outer
-  claim.with_exclusive(&mut ascent, ...):
-    try_take → None                          // slot already Some
+  claim.with_exclusive → None
   outer_handler not run
 ```
 
 ## Walk: KeyB
 
 ```text
-ASCENT Inner: Ascent::new(path, depth); no exclusive
+ASCENT Inner: Ascent::new(path); no exclusive
 ASCENT Outer into_parent_ascent:
   hops=1, inv=0 → Intact
-  rearm runs
+  rearm runs (path on ascent is live)
   no exclusive
 ```
 
@@ -626,9 +593,9 @@ ASCENT Outer into_parent_ascent:
 
 ### P2 — from_fn framework-only
 
-### P3 — `Depth` + `Ascent<'d, P>` + `Claim<'c>` + `into_parent_ascent` + `Claim::with_exclusive`
+### P3 — `Ascent<P>` (path + counters owned) + `Claim<'c>` + `into_parent_ascent` + `Claim::with_exclusive`
 
-Path closes over `&mut Depth`. Claim closes over `&mut Option<()>`. Free-function `dispatch` owns both slots.
+Path is a field of `Ascent`. Invalidate does not remove it. Free-function `dispatch` owns the claim slot.
 
 ### P4 — bind via `claim.with_exclusive`
 
@@ -642,23 +609,24 @@ Path closes over `&mut Depth`. Claim closes over `&mut Option<()>`. Free-functio
 
 ### F5 — reshape carrier
 
-Reshape hands a new path value. Reconstruct `Ascent { path: new_path, depth }` with the same depth reborrow. Claim is untouched and uninvolved.
+Reshape replaces the path field on `Ascent` with a new path value already in hand. Counters stay. Claim is uninvolved. No post-time mint from the live tree.
 
 ## Rules
 
 1. Descent schedules; set final.
-2. Ascent runs every scheduled post.
-3. Root owns `Depth` and `claim_slot`. `Ascent<'d, P>` closes over `&mut Depth` only. `Claim<'c>` closes over `&mut Option<()>` only.
-4. laserbeam `into_parent`: parent only; consumes path by value.
-5. `into_parent_ascent` is path+depth only: hop path, bump hops on depth, posts after the bump.
-6. Kill: `ascent.invalidate(d)`; later hops/posts read the new depth through the same cell.
-7. `mutation()` = MaybeDropped iff `ascent_hops < invalidation_depth` (live, not frozen).
-8. Exclusive is `claim.with_exclusive(&mut ascent, body)`. Trap door is on `Claim`, not on `Ascent`.
+2. Ascent runs every scheduled post, including after invalidate.
+3. `Ascent<P>` owns path and depth counters together. Path is not reconstructed at post time after a kill; it is the field already on `Ascent`.
+4. `Claim<'c>` closes over the root claim slot only. Exclusive is `claim.with_exclusive(&mut ascent, body)`.
+5. laserbeam `into_parent`: parent only; consumes the path value already held.
+6. `into_parent_ascent` hops path, bumps hops, posts after the bump; claim is not in that type.
+7. Kill: `ascent.invalidate(d)`; path remains on `Ascent`; later posts read `mutation()` against that same value.
+8. `mutation()` = MaybeDropped iff `ascent_hops < invalidation_depth` (live, not frozen).
 9. Generate matches expand above.
 
 ## Tests
 
 - `invalidate(2)`: after one framework hop MaybeDropped; after two Intact
+- after invalidate, post still receives `Ascent` whose path field is the recovered path (not freshly minted)
 - framework hop does not change `invalidation_depth`
 - claim trap door is on `Claim`; path hops do not touch it
 - KeyA / KeyB walks match above
