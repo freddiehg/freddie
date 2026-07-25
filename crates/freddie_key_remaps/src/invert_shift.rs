@@ -7,7 +7,7 @@ use freddie_keys::{KeyEvent, ModifierFlags};
 ///
 /// Used for number-row invert (`1` ↔ `!`), backslash ↔ pipe, and similar.
 #[must_use]
-pub fn shift_reverse(ev: &KeyEvent) -> Option<KeyEvent> {
+pub fn invert_shift(ev: &KeyEvent) -> Option<KeyEvent> {
     let out_flags = if ev.flags == ModifierFlags::empty() {
         ModifierFlags::SHIFT
     } else if ev.flags == ModifierFlags::SHIFT {
@@ -37,23 +37,23 @@ mod tests {
 
     #[test]
     fn bare_gains_shift() {
-        let got = shift_reverse(&ev(Key::Num1, ModifierFlags::empty())).expect("bare");
+        let got = invert_shift(&ev(Key::Num1, ModifierFlags::empty())).expect("bare");
         assert_eq!(got.key, Key::Num1);
         assert!(got.flags.contains(ModifierFlags::SHIFT));
     }
 
     #[test]
     fn shift_only_drops_shift() {
-        let got = shift_reverse(&ev(Key::Num1, ModifierFlags::SHIFT)).expect("shift");
+        let got = invert_shift(&ev(Key::Num1, ModifierFlags::SHIFT)).expect("shift");
         assert_eq!(got.key, Key::Num1);
         assert!(got.flags.is_empty());
     }
 
     #[test]
     fn other_flags_skip() {
-        assert!(shift_reverse(&ev(Key::Num1, ModifierFlags::COMMAND)).is_none());
+        assert!(invert_shift(&ev(Key::Num1, ModifierFlags::COMMAND)).is_none());
         assert!(
-            shift_reverse(&ev(
+            invert_shift(&ev(
                 Key::Num1,
                 ModifierFlags::SHIFT | ModifierFlags::COMMAND
             ))

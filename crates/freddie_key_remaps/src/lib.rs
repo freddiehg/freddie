@@ -6,7 +6,7 @@
 //! Ordered timed chords (`jk`) live in `freddie::KeySequence`, not here.
 
 mod alone_or_modifier;
-mod shift_reverse;
+mod invert_shift;
 
 pub use alone_or_modifier::AloneOrModifier;
-pub use shift_reverse::shift_reverse;
+pub use invert_shift::invert_shift;
