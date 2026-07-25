@@ -47,7 +47,7 @@ match st.state {
 
 "Invalidated" means off the active path: focus left it. Whether state was also replaced is the handler's business (an enum layer usually swaps; a struct field persists).
 
-## laserbeam additions
+## laserbeam additions (all of change 1)
 
 `MaybeInvalidated` is active-path semantics, meaningful in a tree with no bindings, so it lives beside `Stop`:
 
@@ -137,7 +137,7 @@ impl<'a, R> From<&'a mut R> for Completed<&'a mut R> {
 }
 ```
 
-## bind additions
+## bind additions (change 2, with the free `dispatch` delta in the macro section)
 
 ```rust
 /// What every scheduled handler receives beside the event. One lifetime: the
@@ -263,6 +263,8 @@ where
 The check (`EventHandler` / `DerivedHandler` / `accumulate`) is ignored by this design: it is increasingly at odds with it and is expected to be retired rather than migrated. Same-trigger-at-two-depths needs no static ban; the claim resolves it, deepest first.
 
 ## The demo: `A → B`, everything the user writes
+
+The demo is the acceptance surface, not a change of its own: the handlers and generated bodies are change 4's target, and the tree as declared compiles only after change 5 (`A` uses `#[pre_post]`). Through change 4, its `#[bind]`-only subset stands in.
 
 `A` is the root and holds the layer `B`. `B` arms a return-home timer; every key while `B` is up pushes the deadline out; a leave must cancel the timer, because the OS timer outlives the active path and `Drop` cannot emit the cancel. One post owns the whole deadline story by matching the state.
 
@@ -727,6 +729,8 @@ Posts run whether or not anything claimed: they are scheduled by their trigger, 
 7. Generated code spells laserbeam and bind items fully qualified; handwritten handlers `use laserbeam::{Complete, MaybeInvalidated};` and `use bind::AscendState;`.
 
 ## Tests
+
+Unit tests on the laserbeam items land with change 1; the rest land with the change that makes them expressible (the full A/B walks: change 5).
 
 - KeyH / any-key walks on the A/B expansion, asserting the exact effect
   sequences above
