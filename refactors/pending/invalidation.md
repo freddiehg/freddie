@@ -15,37 +15,39 @@ pub struct Ascent<P> {
 }
 ```
 
-Dispatch threads `Ascent<P>`, not `(P, AscentState)`. Parent recovery is a method on `Ascent` when `P` is a `PathMut`, so hop accounting lives next to the path.
+Dispatch threads `Ascent<P>`. Hop counting is ownership-based: recovering a parent yields a **`Complete`** that must be consumed to update counters. No interior mutability; no runtime borrow checker.
 
-**`AscentState` (inside `Ascent`, not given bare to user code):**
+**`Complete`** — sealed proof one `into_parent` hop happened. Only produced by `Ascent::into_parent`. Only consumed by:
 
-- **`invalidation_depth`** — kill coverage (hops from exclusive level upward). Set only by kill (`invalidate` / kill path climbs). Framework post hops do **not** change it.
-- **`ascent_hops`** — framework parent recoveries since leaf. Bumped only in `Ascent::into_parent_ascent` (once per hop, before parent posts).
+- `complete_ascent_hop` — framework hop (bumps `ascent_hops`)
+- `complete_kill_hop` — kill climb (raises `invalidation_depth` by one, via max with running kill hops)
+
+Dropping `Complete` without consuming it is a bug (`#[must_use]`).
+
+**`AscentState` (inside `Ascent`, not bare to user code):**
+
+- **`invalidation_depth`** — kill coverage. Only via consumed kill `Complete`s / `invalidate`.
+- **`ascent_hops`** — framework hops since leaf. Only via consumed ascent `Complete`s.
 - **`claim`** — `Option<()>`, one-way trap door.
 
 ```text
 mutation() = if ascent_hops < invalidation_depth { MaybeDropped } else { Intact }
 ```
 
-Example: leaf `invalidate(2)`. hop 0 = leaf, hop 1 = Outer, hop 2 = Root.
+**laserbeam `PathMut::into_parent`** recovers parent path only.
 
-- Leave leaf → `ascent_hops = 1` → Outer posts: `1 < 2` → MaybeDropped
-- Leave Outer → `ascent_hops = 2` → Root posts: `2 < 2` → Intact
+**Framework hop:** `into_parent` → `Complete` → `complete_ascent_hop` → posts → `Ascent<Parent>`.
 
-**laserbeam `PathMut::into_parent`** recovers parent path only. No counters.
+**Kill climb:** each path `into_parent` → `Complete` → `complete_kill_hop` (or batch into `invalidate(n)` after n completes).
 
-**`Ascent::into_parent_ascent`**: laserbeam recover → `bump_ascent_hop` → run posts → `Ascent { parent, state }`. Does **not** call `invalidate`.
-
-**Kill** raises `invalidation_depth` via `ExclusiveCtx::invalidate` (d = kill path hop count).
-
-User handlers get **capability views** into `state`, not bare `&mut AscentState`:
+User handlers get **capability views**:
 
 | | `PostCtx` | `ExclusiveCtx` |
 |---|---|---|
 | `mutation()` | yes | yes |
 | `claimed()` | yes | yes |
 | `claim()` | no | yes |
-| `invalidate(d)` | no | yes |
+| `invalidate` / kill completes | no | yes |
 
 ## Types (`crates/bind`)
 
@@ -92,16 +94,33 @@ impl AscentState {
         }
     }
 
+    /// Framework hop: must consume `Complete` from `Ascent::into_parent`.
+    fn complete_ascent_hop(&mut self, _hop: Complete) {
+        self.ascent_hops = self.ascent_hops.saturating_add(1);
+    }
+
+    /// Kill hop: each consumed `Complete` counts one unit of kill coverage.
+    fn complete_kill_hop(&mut self, _hop: Complete) {
+        let next = self.invalidation_depth.saturating_add(1);
+        self.invalidation_depth = self.invalidation_depth.max(next);
+        // equivalent: invalidation_depth += 1 when starting from 0 per-kill;
+        // max keeps concurrent kills monotone.
+    }
+
+    /// Record kill coverage of exactly `d` hops (after d kill completes, or directly).
     fn invalidate(&mut self, d: u32) {
         self.invalidation_depth = self.invalidation_depth.max(d);
     }
-
-    fn bump_ascent_hop(&mut self) {
-        self.ascent_hops = self.ascent_hops.saturating_add(1);
-    }
 }
 
-/// Path + state. This is what dispatch threads.
+/// Proof one parent recovery happened. Only from `Ascent::into_parent`.
+/// Must be fed to `complete_ascent_hop` or `complete_kill_hop` (or equivalent).
+#[must_use]
+pub struct Complete {
+    _seal: (),
+}
+
+/// Path + state. Dispatch threads this.
 pub struct Ascent<P> {
     path: P,
     state: AscentState,
@@ -142,10 +161,7 @@ impl<P> Ascent<P> {
             state: &mut state,
         };
         match ctx.claim() {
-            None => (
-                Ascent { path, state },
-                Vec::new(),
-            ),
+            None => (Ascent { path, state }, Vec::new()),
             Some(()) => {
                 let (path, effs) = body(
                     Node {
@@ -161,26 +177,37 @@ impl<P> Ascent<P> {
 }
 
 impl<Node, Parent> Ascent<laserbeam::PathMut<Node, Parent>> {
-    /// Framework hop. Does not change invalidation_depth.
+    /// Recover parent path. Returns `Complete` that **must** be used to count the hop.
+    pub fn into_parent(self) -> (Ascent<Parent>, Complete) {
+        let Ascent { path, state } = self;
+        let parent = path.into_parent();
+        (
+            Ascent {
+                path: parent,
+                state,
+            },
+            Complete { _seal: () },
+        )
+    }
+
+    /// Framework hop: into_parent → complete_ascent_hop → posts.
+    /// Does not change invalidation_depth.
     pub fn into_parent_ascent<E>(
         self,
         sink: &mut Vec<E>,
         run_posts: impl FnOnce(Parent, PostCtx<'_>) -> (Parent, Vec<E>),
     ) -> Ascent<Parent> {
-        let Ascent { path, mut state } = self;
-        let parent = path.into_parent();
-        state.bump_ascent_hop();
-        let (parent, post_effs) = run_posts(
-            parent,
+        let (mut ascent, hop) = self.into_parent();
+        ascent.state.complete_ascent_hop(hop);
+        let Ascent { path, mut state } = ascent;
+        let (path, post_effs) = run_posts(
+            path,
             PostCtx {
                 state: &mut state,
             },
         );
         sink.extend(post_effs);
-        Ascent {
-            path: parent,
-            state,
-        }
+        Ascent { path, state }
     }
 }
 
@@ -215,9 +242,14 @@ impl<'a> ExclusiveCtx<'a> {
         self.state.claim()
     }
 
-    /// Kill coverage. d = path hops of the kill climb.
+    /// Record kill coverage of `d` hops (after climbing d times and completing each hop).
     pub fn invalidate(&mut self, d: u32) {
         self.state.invalidate(d);
+    }
+
+    /// One kill hop: consume `Complete` from `Ascent::into_parent` during a kill climb.
+    pub fn complete_kill_hop(&mut self, hop: Complete) {
+        self.state.complete_kill_hop(hop);
     }
 }
 ```
@@ -472,7 +504,9 @@ fn inner_handler(
     node: Node<InnerPath, ()>,
     mut ctx: ExclusiveCtx<'_>,
 ) -> (Vec<DemoEffect>, InnerPath) {
-    // d = kill path hop count (coverage of two hops above this exclusive)
+    // Kill coverage of two hops. Either:
+    //   climb with Ascent::into_parent twice, complete_kill_hop each Complete, or
+    //   invalidate(2) once the hop count is known.
     ctx.invalidate(2);
     (vec![], node.parent)
 }
@@ -644,8 +678,8 @@ ASCENT Inner
   return Ascent { InnerPath, state }
 
 ASCENT Outer into_parent_ascent
-  path.into_parent()                     // laserbeam; inv still 2
-  bump_ascent_hop()                      // hops = 1
+  (ascent, hop) = into_parent()          // Complete must be returned
+  complete_ascent_hop(hop)               // hops = 1; inv still 2
   posts PostCtx:
     mutation: 1 < 2 → MaybeDropped
     after_child → LogDestroyed
@@ -701,10 +735,11 @@ Dispatch returns `Ascent<Path>`. Framework bumps `ascent_hops` only. Kill uses `
 3. Thread `Ascent<P>` (path + state together).
 4. User code: `PostCtx` / `ExclusiveCtx` only.
 5. laserbeam `into_parent`: parent only.
-6. Kill sets `invalidation_depth`; framework hop sets `ascent_hops`.
-7. `mutation()` = MaybeDropped iff `ascent_hops < invalidation_depth`.
-8. `claim()` is `Option<()>` trap door.
-9. Generate matches expand above.
+6. `Ascent::into_parent` returns `Complete`; hop counts only when `Complete` is consumed (`complete_ascent_hop` / `complete_kill_hop` / `invalidate`).
+7. No interior mutability; ownership of `Complete` is the check.
+8. `mutation()` = MaybeDropped iff `ascent_hops < invalidation_depth`.
+9. `claim()` is `Option<()>` trap door.
+10. Generate matches expand above.
 
 ## Tests
 
