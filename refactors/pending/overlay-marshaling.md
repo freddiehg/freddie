@@ -21,13 +21,81 @@ pub fn show(&self, text: String) {
 
 The table, the id it is keyed by, and the `Cell` that mints the id are all there to route a `Send` block back to a non-`Send` panel. `freddie_main_loop::MainLoop::run` already gives the main thread an `on_wake` callback for exactly this kind of work, and `daemon.rs` already drains the menu-bar title channel there. Sending over a channel drained on `on_wake` lets the `Overlay` own its panel directly, which deletes the `thread_local!`, the id, and the table.
 
-The channel is a `WakingSender`, so a `show` wakes the main run loop and `pump` runs at once rather than at the next slice — the promptness GCD gave for free. This change builds on `refactors/past/wake-the-main-loop.md`, which lands first.
+The channel is a `WakingSender`, so a `show` wakes the main run loop and `pump` runs at once — the promptness GCD gave for free. This change depends on `refactors/past/wake-the-main-loop.md`, which has already landed.
 
 ## The shape
 
-Each `Overlay` owns its `Panel` and the receiving end of a channel. `OverlaySink` holds the sending end, which is `Send` and `Clone`. `show`/`hide` send a message; the main thread drains it and mutates the panel it owns. There is no shared table, so there is no id and no lookup.
+Each `Overlay` owns its `Panel` and the receiving end of a channel. `OverlaySink` holds the sending end, which is `Send` and `Clone`. `show`/`hide` send a message; the main thread drains it and mutates the panel it owns. There is no shared table, so there is no id and no lookup. Drain every queued message in order (not `.last()` the way the title does): a `Hide` after a `Show` in the same wake must still hide.
 
-`crates/freddie_overlay/src/lib.rs`. The `thread_local!` block and `OverlayId` are deleted, along with the `dispatch2` and `Cell`/`RefCell` imports. A message type replaces them:
+### Cargo
+
+`crates/freddie_overlay/Cargo.toml`. before:
+
+```toml
+[dependencies]
+dispatch2 = "0.3"
+objc2 = "0.6"
+# ...
+```
+
+after:
+
+```toml
+[dependencies]
+freddie_main_loop = { path = "../freddie_main_loop", version = "0.0.1" }
+objc2 = "0.6"
+# ... (no dispatch2)
+```
+
+### Imports and crate docs
+
+`crates/freddie_overlay/src/lib.rs`. Module docs, before:
+
+```rust
+//! [`overlay`] builds one on the main thread and returns the [`Overlay`] that owns it. Dropping
+//! that closes the panel and gives it back. [`Overlay::sink`] hands out an [`OverlaySink`], which
+//! is `Send`: [`OverlaySink::show`] and [`OverlaySink::hide`] are callable from any thread and
+//! marshal to the main thread, where `AppKit` lives, by dispatching onto the main queue. It is
+//! serviced by the main run loop, so this needs `freddie_main_loop` running and `NSApp`
+//! initialized, the same as the menu bar.
+```
+
+after:
+
+```rust
+//! [`overlay`] builds one on the main thread and returns the [`Overlay`] that owns the panel
+//! beside the first [`OverlaySink`]. Dropping the overlay closes the panel. The sink is `Send`
+//! and `Clone`: [`OverlaySink::show`] and [`OverlaySink::hide`] are callable from any thread and
+//! send over a [`freddie_main_loop::WakingSender`], which wakes the main run loop so
+//! [`Overlay::pump`] (called from `on_wake`) applies the change. Needs `freddie_main_loop`
+//! running and `NSApp` initialized, the same as the menu bar.
+```
+
+Imports, before:
+
+```rust
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::marker::PhantomData;
+
+use dispatch2::DispatchQueue;
+use objc2::MainThreadMarker;
+// ...
+```
+
+after:
+
+```rust
+use std::sync::mpsc::Receiver;
+
+use freddie_main_loop::{MainWaker, WakingSender};
+use objc2::MainThreadMarker;
+// ...
+```
+
+### Types
+
+A message type replaces the table and id:
 
 ```rust
 /// What a sink asks its overlay to do. Sent over the channel, drained on the main thread.
@@ -70,7 +138,7 @@ pub struct OverlaySink {
 }
 ```
 
-after:
+after (`WakingSender` has no `Debug`, so hand-write a non-exhaustive one rather than deriving or adding `Debug` up the main-loop stack):
 
 ```rust
 /// The handle showing and hiding go through. `Send` and `Clone`, so any thread can hold one; the
@@ -78,11 +146,19 @@ after:
 ///
 /// Safe to keep past its [`Overlay`]: once the overlay is dropped the receiver is gone, and a send
 /// is a harmless error, which is what hiding an already-gone overlay would have been.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct OverlaySink {
     message_sender: WakingSender<OverlayMsg>,
 }
+
+impl std::fmt::Debug for OverlaySink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OverlaySink").finish_non_exhaustive()
+    }
+}
 ```
+
+### Construction
 
 `overlay()` takes the main-loop waker, builds the panel and a waking channel, and hands back the panel-owning `Overlay` beside the first `OverlaySink`. before:
 
@@ -99,6 +175,12 @@ pub fn overlay() -> Overlay {
     Overlay {
         id,
         _main_thread_only: PhantomData,
+    }
+}
+
+impl Overlay {
+    pub const fn sink(&self) -> OverlaySink {
+        OverlaySink { id: self.id }
     }
 }
 ```
@@ -122,12 +204,14 @@ pub fn overlay(waker: &MainWaker) -> (Overlay, OverlaySink) {
 
 Each end lives on its own side: the receiver on the `Overlay`, which drains it, and the sender on the `OverlaySink`. There is no `Overlay::sink()` — a caller that wants another producer clones the sink it was handed, since `OverlaySink` is `Clone`.
 
+### show / hide / pump / Drop
+
 `show`/`hide` become sends, off any thread, with no libdispatch:
 
 ```rust
 impl OverlaySink {
     /// Show the overlay with `text`, from any thread. The send wakes the main loop, so `pump` runs
-    /// and the panel updates at once rather than at the next slice.
+    /// and the panel updates at once.
     pub fn show(&self, text: String) {
         let _ = self.message_sender.send(OverlayMsg::Show(text));
     }
@@ -182,28 +266,182 @@ impl Drop for Overlay {
 }
 ```
 
-`daemon.rs` builds the overlay with the same `waker` the title channel uses (`refactors/past/wake-the-main-loop.md` creates it), keeps the `Overlay` for the panel's life, and hands the sink to `Boot`. It drains the overlay on each wake, beside the title:
+## daemon.rs
+
+`daemon.rs` builds the overlay with the same `waker` the title channel uses, keeps the `Overlay` for the panel's life, and hands the sink to `Boot`. It drains the overlay on each wake, beside the title.
+
+Construction, before:
+
+```rust
+    let overlay = freddie_overlay::overlay();
+    // ...
+    let boot = Boot {
+        // ...
+        overlay: overlay.sink(),
+    };
+    // ...
+    main_loop.run(|| {
+        if let Some(name) = title_rx.try_iter().last() {
+            menu_bar.set_title(Some(&format!(" {name}")));
+        }
+    });
+    // ...
+    drop(overlay);
+```
+
+after:
 
 ```rust
     let (overlay, overlay_sink) = freddie_overlay::overlay(&waker);
-    // ... `Boot { overlay: overlay_sink, .. }`; the `Overlay` is held here, like `menu_bar` ...
+    // ...
+    let boot = Boot {
+        // ...
+        overlay: overlay_sink,
+    };
+    // ...
     main_loop.run(|| {
         if let Some(name) = title_rx.try_iter().last() {
             menu_bar.set_title(Some(&format!(" {name}")));
         }
         overlay.pump();
     });
+    // ...
+    drop(overlay);
+```
+
+`OverlaySink` stops being `Copy` (a `Sender` is not `Copy`); it stays `Clone`. Today `perform_effect` takes the sink by value and the effect loop passes it every iteration, which only compiles because of `Copy`. After the change it takes a shared ref, matching `title_tx`:
+
+`run_effect_loop` / `perform_effect`, before:
+
+```rust
+async fn run_effect_loop(
+    // ...
+    overlay: OverlaySink,
+) {
+    while let Some(effect) = effect_rx.recv().await {
+        if perform_effect(
+            effect,
+            &emitter,
+            &event_tx,
+            &title_tx,
+            windows.as_ref(),
+            overlay,
+        )
+        .is_break()
+        {
+            break;
+        }
+    }
+}
+
+fn perform_effect(
+    // ...
+    title_tx: &freddie_main_loop::WakingSender<&'static str>,
+    windows: Option<&WindowSink>,
+    overlay: OverlaySink,
+) -> ControlFlow<()> {
+    // ...
+    MercuryEffect::ShowOverlay(text) => overlay.show(text.to_owned()),
+    MercuryEffect::HideOverlay => overlay.hide(),
+    // ...
+}
+```
+
+after:
+
+```rust
+async fn run_effect_loop(
+    // ...
+    overlay: OverlaySink,
+) {
+    while let Some(effect) = effect_rx.recv().await {
+        if perform_effect(
+            effect,
+            &emitter,
+            &event_tx,
+            &title_tx,
+            windows.as_ref(),
+            &overlay,
+        )
+        .is_break()
+        {
+            break;
+        }
+    }
+}
+
+fn perform_effect(
+    // ...
+    title_tx: &freddie_main_loop::WakingSender<&'static str>,
+    windows: Option<&WindowSink>,
+    overlay: &OverlaySink,
+) -> ControlFlow<()> {
+    // ...
+    MercuryEffect::ShowOverlay(text) => overlay.show(text.to_owned()),
+    MercuryEffect::HideOverlay => overlay.hide(),
+    // ...
+}
 ```
 
 ## Delivery is prompt
 
-`show`/`hide` send on a `WakingSender`, which wakes the main run loop after the send. So `nextEventMatchingMask` returns at once, `on_wake` runs `pump`, and the panel changes without waiting for the slice — what the GCD dispatch delivered, now with no `thread_local`. This is why the change depends on `refactors/past/wake-the-main-loop.md` landing first; on a bare channel the overlay would lag up to the slice on the exact keystroke that summons it.
+`show`/`hide` send on a `WakingSender`, which wakes the main run loop after the send. So `nextEventMatchingMask` returns at once, `on_wake` runs `pump`, and the panel changes without waiting — what the GCD dispatch delivered, now with no `thread_local`. On a bare channel the overlay would lag until the next real event on the exact keystroke that summons it; the waking channel is why that does not happen.
+
+## Docs that still describe the old path
+
+### `docs/platform-apis.md`
+
+The main-thread section still names two routes and says a channel drained in `on_wake` waits for a slice. After `wake-the-main-loop` and this change, the waking channel is the route. Replace the paragraph:
+
+before:
+
+```markdown
+Work that must happen on main, from a thread that is not main, has two routes. `DispatchQueue::main().exec_async` runs a block promptly, because the main queue is drained from inside the run loop, but the block must be `'static` and `Send`, so it cannot carry a thread-bound value and has to find one already there. A channel drained in `freddie_main_loop`'s `on_wake` can carry anything, but waits for the current slice to end.
+```
+
+after:
+
+```markdown
+Work that must happen on main, from a thread that is not main, goes through a channel drained in `freddie_main_loop`'s `on_wake`. Build the channel with [`MainWaker::channel`](../crates/freddie_main_loop): the sender wakes the run loop on each send, so the value is applied at once rather than when the next real event arrives. The receiver stays on main with whatever non-`Send` handle it mutates (an `NSStatusItem` title, an `NSPanel`). That is how the menu-bar title and the overlay reach main from the worker.
+```
+
+(If the relative link form does not match how other `docs/` pages cite crates, name the types in prose the same way neighboring paragraphs do and skip the link.)
+
+### `docs-website/docs/interacting-with-macos/the-menu-bar-and-the-overlay.md`
+
+before:
+
+```markdown
+Building and moving the overlay panel is main-thread-only too, but the callers are not. `freddie_overlay::show` and `hide` are callable from any thread and marshal themselves with `DispatchQueue::main().exec_async`, so the effect loop calls them directly from the worker.
+```
+
+and the `main_loop.run` snippet plus the paragraph that still mentions a 100ms slice and the main queue.
+
+after:
+
+```markdown
+Building and moving the overlay panel is main-thread-only too, but the callers are not. `OverlaySink::show` and `hide` are callable from any thread: they send on a waking channel, and `Overlay::pump` on main applies the change, so the effect loop calls the sink directly from the worker.
+```
+
+```rust
+main_loop.run(|| {
+    if let Some(name) = title_rx.try_iter().last() {
+        menu_bar.set_title(Some(&format!(" {name}")));
+    }
+    overlay.pump();
+});
+```
+
+```markdown
+`run` pumps `NSApplication` events, `nextEventMatchingMask` then `sendEvent`, rather than a bare `CFRunLoop`. A bare `CFRunLoop` services run-loop sources, which covers the `NSWorkspace` notifications, but it never dispatches the window-server events that a status item's clicks and menu tracking need. The same pump runs `on_wake`, which drains the title and overlay channels. It sleeps until a real event or a posted wake, so an idle process costs nothing.
+```
 
 ## What is deleted
 
 - The `thread_local! { PANELS, NEXT_ID }` block.
 - `OverlayId` and every use of it.
-- The `dispatch2::DispatchQueue` dependency and import, and the `std::cell::{Cell, RefCell}` import.
+- `Overlay::sink`.
+- The `dispatch2` dependency and import.
+- The `std::cell::{Cell, RefCell}`, `std::collections::HashMap`, and `std::marker::PhantomData` imports.
 - The `PhantomData` marker on `Overlay`; the owned `Panel` (`!Send`) keeps it on its thread.
-
-`OverlaySink` stops being `Copy` (a `Sender` is not `Copy`); it stays `Clone`. Its one holder, `daemon.rs`'s `Boot { overlay: overlay_sink, .. }`, takes the sink `overlay()` returns, so nothing depends on the `Copy`.
+- GCD / main-queue wording in the crate module docs, `docs/platform-apis.md`, and the website overlay page.
