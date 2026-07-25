@@ -23,10 +23,10 @@ Invalidated(Completed<P>)  yes — the completed leave, ready to forward;
                            Here inside it: the leave stopped at this path
 ```
 
-Every handler, bind or post, has the same shape, and it returns the call to `.complete()`: whatever its opt captured, as separate parameters, then the state. A bind is `(ev, st)`; a pre-snapped post is `(ev, snap, st)`; the generated code destructures its own opt, and no handler ever takes a tuple:
+Every scheduled item is a pre_post; `#[bind]` and `#[post]` are the ones whose pre is `|_, _| ()`. So every handler has literally one signature, separate parameters, never a tuple, returning the call to `.complete()`:
 
 ```rust
-FnOnce(…opt captures…, AscendState<'a, P>) -> (Vec<E>, Completed<P>)
+FnOnce(&Ev, Snap, AscendState<'a, P>) -> (Vec<E>, Completed<P>)  // Snap = () without a pre
 ```
 
 A handler matches the state totally, no helpers, `into_parent` the only way up; staying put is `st.complete()`:
@@ -43,7 +43,7 @@ match st.state {
 
 `Invalidated` is unforgeable, since `Completed` has no public constructor; `NotInvalidated` accepts only a path of exactly type `P`. The generated code folds every returned `Completed` back into the state, separately, after each item (`completed.to_maybe_invalidated()`: `Here` re-establishes the path as `NotInvalidated`, `Up` stays a forwarded leave), so the state evolves through the schedule — with `#[post(a => b, c => d)]`, `b` can receive `NotInvalidated`, leave, and `d` then receives `Invalidated`. Every scheduled item runs; a leave is data, not control flow, and nothing early-returns. A consequence of the fold: after any item runs, the state reflects that item's answer, not the descent's, so a post keyed on what the descent did (the return-home cancel) is scheduled before any bind.
 
-`#[bind(X => foo)]` desugars to `#[post(X => exclusive(foo))]`; a `#[post]` rhs is taken raw, and the macro looks inside neither. `exclusive` is shape-preserving and means not claimed: it calls `foo` iff the claim is won and otherwise completes the state where it stands, so its output is the same scheduled shape as everything else. The claim's win is not part of any signature, because winning the claim does not imply `NotInvalidated` (a post can leave without claiming); what each state branch means is the handler's business.
+`#[bind(X => foo)]` desugars to `#[pre_post(X => (|_, _| (), exclusive(foo)))]` and `#[post(X => f)]` to `#[pre_post(X => (|_, _| (), f))]`; the macro looks inside no rhs. `exclusive` is shape-preserving and means not claimed: it calls `foo` iff the claim is won and otherwise completes the state where it stands, so its output is the same scheduled shape as everything else. The claim's win is not part of any signature, because winning the claim does not imply `NotInvalidated` (a post can leave without claiming); what each state branch means is the handler's business.
 
 "Invalidated" means off the active path: focus left it. Whether state was also replaced is the handler's business (an enum layer usually swaps; a struct field persists).
 
@@ -176,15 +176,15 @@ impl<'a, P: ::laserbeam::HasStop> AscendState<'a, P> {
 ///
 /// The claim gate, shape-preserving: the handler runs iff the claim is won;
 /// otherwise it completes the state where it stands.
-pub fn exclusive<Payload, P, E, H>(
+pub fn exclusive<Ev, Snap, P, E, H>(
     handler: H,
-) -> impl for<'a> FnOnce(Payload, AscendState<'a, P>) -> (Vec<E>, ::laserbeam::Completed<P>)
+) -> impl for<'a> FnOnce(Ev, Snap, AscendState<'a, P>) -> (Vec<E>, ::laserbeam::Completed<P>)
 where
     P: ::laserbeam::HasStop + ::laserbeam::Complete<P>,
-    H: for<'a> FnOnce(Payload, AscendState<'a, P>) -> (Vec<E>, ::laserbeam::Completed<P>),
+    H: for<'a> FnOnce(Ev, Snap, AscendState<'a, P>) -> (Vec<E>, ::laserbeam::Completed<P>),
 {
-    move |payload, mut st| match st.claim() {
-        Some(()) => handler(payload, st),
+    move |ev, snap, mut st| match st.claim() {
+        Some(()) => handler(ev, snap, st),
         None => (Vec::new(), st.complete()),
     }
 }
@@ -323,6 +323,7 @@ The handlers, all user-written:
 /// B's bind: go home.
 fn go_home<'x>(
     _ev: &KeyEvent,
+    _snap: (),
     st: AscendState<'_, BPath<'x>>,
 ) -> (Vec<DemoEffect>, Completed<BPath<'x>>) {
     match st.state {
@@ -334,6 +335,7 @@ fn go_home<'x>(
 /// A's bind.
 fn flash<'x>(
     _ev: &KeyEvent,
+    _snap: (),
     st: AscendState<'_, APath<'x>>,
 ) -> (Vec<DemoEffect>, Completed<APath<'x>>) {
     (vec![DemoEffect::FlashOverlay], st.complete())
@@ -382,10 +384,10 @@ impl Dispatch<M> for B {
     where
         Self: 'a,
     {
-        let opt_0: Option<&KeyEvent> = if let Ok(ev) = TryFrom::try_from(event) {
+        let opt_0: Option<(&KeyEvent, ())> = if let Ok(ev) = TryFrom::try_from(event) {
             let trigger = KeyH;
             if EventTrigger::is_matching(&trigger, ev) {
-                Some(ev)
+                Some((ev, ()))
             } else {
                 None
             }
@@ -395,8 +397,8 @@ impl Dispatch<M> for B {
 
         let mut state = MaybeInvalidated::NotInvalidated(path);
 
-        if let Some(ev) = opt_0 {
-            let (e, completed) = (::bind::exclusive(go_home))(ev, AscendState::new(state, claim.reborrow()));
+        if let Some((ev, snap)) = opt_0 {
+            let (e, completed) = (::bind::exclusive(go_home))(ev, snap, AscendState::new(state, claim.reborrow()));
             effs.extend(e);
             state = completed.to_maybe_invalidated();
         }
@@ -434,10 +436,10 @@ where
             None
         };
 
-        let opt_1: Option<&KeyEvent> = if let Ok(ev) = TryFrom::try_from(event) {
+        let opt_1: Option<(&KeyEvent, ())> = if let Ok(ev) = TryFrom::try_from(event) {
             let trigger = KeyEsc;
             if EventTrigger::is_matching(&trigger, ev) {
-                Some(ev)
+                Some((ev, ()))
             } else {
                 None
             }
@@ -455,8 +457,8 @@ where
             state = completed.to_maybe_invalidated();
         }
 
-        if let Some(ev) = opt_1 {
-            let (e, completed) = (::bind::exclusive(flash))(ev, AscendState::new(state, claim.reborrow()));
+        if let Some((ev, snap)) = opt_1 {
+            let (e, completed) = (::bind::exclusive(flash))(ev, snap, AscendState::new(state, claim.reborrow()));
             effs.extend(e);
             state = completed.to_maybe_invalidated();
         }
