@@ -94,7 +94,8 @@ pub(crate) fn arm_jk_timeout(window: Duration) -> (TimerGuard, MercuryEffect) {
     |mercury_path| (!matches!(mercury_path.layer, Layer::Typing(_))).then(|| Key::KeyO.down())
         => toggle_overlay,
 )]
-#[bind(AnyKey => maybe_pass_through)]
+#[post(AnyKey => track_held_modifiers)]
+#[bind(AnyKey => pass_or_swallow)]
 pub struct Mercury {
     /// The frontmost app and whether a nav is in flight. See [`Foreground`].
     pub foreground: Foreground,

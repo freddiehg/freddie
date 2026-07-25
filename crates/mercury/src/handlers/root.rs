@@ -1,5 +1,9 @@
-//! The root's key catch-all: modifier tracking and passthrough, the last resort a key reaches
-//! when no layer bound it.
+//! The root's two `AnyKey` items: tracking the held modifiers, and what an unbound key does.
+//!
+//! They are split because they answer to different things. Tracking is a concern: the sweeps need
+//! `held` to be true for every key, including the ones a deeper layer claimed, so it is a post and
+//! takes no claim. Passthrough is the policy for a key nothing else wanted, so it is the bind, and
+//! it is the last one on the root's schedule.
 
 use bind::AscendState;
 use freddie::KeySequenceOutcome;
@@ -12,17 +16,35 @@ use crate::MercuryEffect;
 use crate::effect::{emit, replay};
 use crate::state::{HomeLayer, Mercury, MercuryPath, arm_jk_timeout};
 
-/// Any key the active layer did not bind.
+/// Every key, claimed or not: keep `held` true.
 ///
-/// A modifier is recorded in `held` (which feeds the open/close sync sweeps) first; its flags are
-/// authoritative, and `held` is for the sweeps, not for stamping this. Outside a passthrough layer
-/// the key is swallowed and that is all.
+/// `held` feeds the open and close sweeps a layer change runs, so it has to see a modifier
+/// pressed in a command layer, where a deeper binding claimed the key and the passthrough bind
+/// below never runs. That is what makes this a post: it is scheduled by the trigger alone.
 ///
-/// In a passthrough layer the key goes to the `jk` run first, which either takes it, hands back
-/// what it had swallowed for a key that broke it, or completes and leaves for home. A key the run
-/// does not want is passed through carrying exactly the flags it arrived with, so a baked-on
-/// modifier (an injected `cmd`-`v`, or `fn`) rides along.
-pub(crate) fn maybe_pass_through<'x>(
+/// The flags on the event stay authoritative for what a key carries; `held` is for the sweeps.
+pub(crate) fn track_held_modifiers<'x>(
+    ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, MercuryPath<'x>>,
+) -> (Vec<MercuryEffect>, Completed<MercuryPath<'x>>) {
+    let root: MercuryPath<'x> = st.state.into_ancestor();
+    if ev.key.is_modifier() {
+        root.typing_state.held.apply(ev);
+    }
+    (vec![], root.complete())
+}
+
+/// What a key nothing else bound does in this layer.
+///
+/// Outside a passthrough layer it is swallowed and that is all. In a passthrough layer it goes to
+/// the `jk` run first, which either takes it, hands back what it had swallowed for a key that
+/// broke it, or completes and leaves for home. A key the run does not want is passed through
+/// carrying exactly the flags it arrived with, so a baked-on modifier (an injected `cmd`-`v`, or
+/// `fn`) rides along.
+///
+/// Three outcomes of the one policy, so one handler.
+pub(crate) fn pass_or_swallow<'x>(
     ev: &KeyEvent,
     _snap: (),
     st: AscendState<'_, MercuryPath<'x>>,
@@ -33,9 +55,6 @@ pub(crate) fn maybe_pass_through<'x>(
 
 /// The key's own effects, with the root in hand.
 fn pass_through(ev: &KeyEvent, root: &mut Mercury) -> Vec<MercuryEffect> {
-    if ev.key.is_modifier() {
-        root.typing_state.held.apply(ev);
-    }
     if !root.layer().is_passthrough() {
         return Vec::new();
     }
