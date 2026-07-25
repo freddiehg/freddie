@@ -62,8 +62,12 @@ impl<'c> Claim<'c> {
     /// The per-item reborrow the generated code hands to each [`AscendState`].
     ///
     /// One claim serves every scheduled item of every node on the path, and each
-    /// item gets its own [`AscendState`] by value, so what rides in that state is
-    /// a shorter-lived borrow of the same slot.
+    /// item's [`AscendState`] takes a `Claim` by value, which its handler
+    /// consumes. Dispatch holds only `&mut Claim` and cannot move out of it, and
+    /// lifetime coercion cannot substitute (`Claim` is covariant in `'c`, but a
+    /// shorter `Claim` is still one consumable value), so this mints a fresh
+    /// `Claim` over the same slot per item: borrowck suspends the original while
+    /// the mint lives, and the mint dies with its item, freeing the next.
     pub const fn reborrow(&mut self) -> Claim<'_> {
         Claim {
             slot: &mut *self.slot,
