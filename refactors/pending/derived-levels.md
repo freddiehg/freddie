@@ -267,6 +267,14 @@ The derive cannot name the place path (`TabData`'s attribute names only `AppNode
 
 `dispatch_into_parent_impl`: deleted, for every place. Nothing calls it, and its `Self::Parent: HasStop` bound is unsatisfiable for route-parented nodes; invalidation.md's route section loses the `#[node(parent = .., route)]` marker accordingly.
 
+`derived_node_impl` / `derived_enum_node_impl` also gain a rejection: a `#[resolve_into]` field on a derived level (struct field or enum variant payload) errors at derive time. Today the attribute is accepted and silently ignored — no descent, no diagnostic — and the descent is unimplementable here, since folding such a child's leave would need `Completed<PathMut<Sub, Node<..>>>` and hence `Node: Above`, which this design refuses. The error, which supersedes derived-child-persistence.md's "do not reject" stance (that doc is updated to match):
+
+```text
+a derived level cannot have a `#[resolve_into]` child: its `data` dies with the
+dispatch. Persist the state in the tree at a real place the derived level reads,
+or hang a fresh level with `#[derived_child]`.
+```
+
 ## Handlers
 
 One signature everywhere: `FnOnce(&Ev, Snap, AscendState<'a, Place>) -> (Vec<E>, Completed<Place>)`. A derived `#[bind]` synthesizes `|_, _| ()`, so it carries no data; a derived handler that reads data is a `#[pre_post]` whose pre snaps what it needs off `&Node`, with the rhs wrapped in `exclusive` when it claims. Handwritten claimers add `exclusive` to their `use bind::...;` line.
@@ -384,6 +392,7 @@ fn copy(root: &MercuryStruct, part: UrlPart) -> Vec<MercuryEffect> {
 
 - `tests/derived.rs`: the four dispatch tests and the accumulate test keep their exact assertions; the handlers migrate as above.
 - HasPlace units (change 1): `into_place` at each shape — root path, `PathMut`, `Node` one and two levels deep.
+- trybuild (change 2): `#[resolve_into]` on a `#[derived_node]` struct fails with the message above.
 - A derived leave invalidates for the place's later items (change 2): `AppData` gains `#[bind(Keyboard("q") => app_home)]`, Shell gains `#[post(Keyboard("q") => log_leave)]`; the walk asserts `(vec![9, 7], true)`:
 
 ```rust

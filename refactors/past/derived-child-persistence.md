@@ -51,20 +51,19 @@ Two options, and no third.
 
 The question "do you own the invalidation" is the only question, and it has exactly these two answers.
 
-## Projecting into `data` is allowed, because otherwise nothing composes
+## Projecting into `data`: superseded (2026-07-25); the derive errors
 
-A `#[resolve_into]` child of a derived level compiles, gets a real `Path` and a real `get_mut()`, and writes into `data`, which the derived child fn built and which dies with the dispatch.
+An earlier revision of this section permitted a `#[resolve_into]` child of a derived level (bindings on sub-structure of `data`, handlers writing the tree through `parent`) and told the derive not to reject it. That permission never shipped and is withdrawn.
 
-The derive could reject it: it sees `#[derived_node]` and `#[resolve_into]` on the same struct. Do not.
+- It never shipped: `derived_node_impl` builds its descent only from `#[derived_child]` and never consults `find_resolve_into`, so the attribute was accepted and silently ignored — no descent, no dispatch of the child's binds, no diagnostic, and the child's triggers invisible to accumulate. A silent "this is never reachable."
+- It is now unimplementable: under invalidation (`refactors/pending/derived-levels.md`), descending would mean folding the child's `Completed<PathMut<Sub, Node<..>>>`, which requires `Node: Above`, which the flattening design refuses. A `Node` is not a path, and everything below the last real place ascends at that place.
 
-Rejecting it would mean a node type can only be used in one position. A subtree that is legal under a place becomes illegal under a derived level, so every node has to know whether its ancestors are derived, and a subtree can no longer be lifted from one part of the tree to another. Composition is the point; a node should work wherever it is hung.
+So `derived_node_impl` and `derived_enum_node_impl` error on any `#[resolve_into]` field (`derived-levels.md`, change 5's macro deltas), and the error states the two-options rule above:
 
-It is also not a new rule. `data` is owned by the node and dies with the dispatch, at every level and through any number of projections into it. Saying that once covers this case. A derived level's `data` may have sub-structure with its own bindings, whose handlers read that sub-structure and write the tree through `parent`, and that is a legitimate program.
+```text
+a derived level cannot have a `#[resolve_into]` child: its `data` dies with the
+dispatch. Persist the state in the tree at a real place the derived level reads,
+or hang a fresh level with `#[derived_child]`.
+```
 
-### The same node in both positions
-
-The case a compile error would foreclose: `GmailTab` appearing TWICE in one tree, once as a real node in a persisted branch and once as the `data` of a derived level. Same struct, two positions, one set of bindings.
-
-Whether that works is open and not proven. It is multi-parent, which laserbeam already has route enums for (`crates/laserbeam/tests/root_enum_multi.rs`), but the two positions differ in more than the parent: a real node's handler is handed `Node<GmailTabPath, ()>` and a derived one's is handed `Node<Parent, GmailTab>`, so one handler cannot currently serve both.
-
-It is not a reason to allow the projection. It is a reason not to forbid it before knowing.
+The composition case the old permission protected — one struct hung both as a real node in a persisted branch and as a derived level's `data`, with one set of bindings — is foreclosed by the leave types regardless of the derive: the two positions' dispatches would return `Completed` of different shapes, and the derived position has none. The error costs nothing the permission was still buying.
