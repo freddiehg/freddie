@@ -737,10 +737,6 @@ Posts run whether or not anything claimed: they are scheduled by their trigger, 
 - a leaving item flips the state to `Invalidated` for later items; the fold
   after a staying item re-derives `NotInvalidated`
 
-## Open questions
-
-1. `TimerId::fresh()` is demo filler; real ids mint from root state per `timer-ids-on-root.md`.
-
 ## Ordered changes
 
 Each change compiles and passes tests against only its predecessors; per-change landability is noted. The code deltas live in "bind and bind_macro (before / after)" and the additions sections.
