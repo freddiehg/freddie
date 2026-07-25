@@ -225,7 +225,7 @@ path.into_parent().complete()                  // Up(app)
 path.complete()                                // the bare &mut App, wrapped
 ```
 
-`Complete` must be in scope at the call site; generated dispatch (invalidation) imports it. A `complete` outside return position needs an annotation.
+Handwritten handlers use method syntax, so their files need `use laserbeam::Complete;` (as they already need `IntoAncestor` for `.into_ancestor()`). Generated dispatch needs nothing in scope: it emits the fully qualified `::laserbeam::Complete::complete(path)`, like every other path in the macro's expansions. A `complete` outside return position needs an annotation.
 
 ## Parent match
 
