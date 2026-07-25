@@ -6,7 +6,7 @@
 #![expect(dead_code)]
 
 use bind::{Bind, Bindings, EventTrigger, Node};
-use laserbeam::PathMut;
+use laserbeam::{Above, Completed, PathMut};
 
 // Two sources: a keyboard and the foregrounded app.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -239,6 +239,22 @@ pub enum TitleParent<'a> {
     Album(AlbumPath<'a>),
     Song(SongPath<'a>),
 }
+
+/// What a leave from `Title` hands upward once it has peeled past the route: which route it
+/// took, and how far it went from there.
+///
+/// The consumer writes this half, as it writes the route enum itself. A route enum is the one
+/// parent slot laserbeam cannot build a path through, so it cannot build the `Up` payload
+/// either: only the consumer knows which parents the slot can hold.
+pub enum TitleParentUp<'a> {
+    Album(Completed<AlbumPath<'a>>),
+    Song(Completed<SongPath<'a>>),
+}
+
+impl<'a> Above for TitleParent<'a> {
+    type Up = TitleParentUp<'a>;
+}
+
 pub type TitlePath<'a> = PathMut<Title, TitleParent<'a>>;
 pub fn on_title(ev: &KeyEvent, mut node: Node<TitlePath, ()>) -> [usize; 1] {
     node.parent.get_mut().hits += 1;

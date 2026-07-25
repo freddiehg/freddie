@@ -4,8 +4,23 @@
 
 mod common;
 
-use common::{App, AppPath, Layer, LayerPath, Nav, NavPath};
+use common::{
+    AlbumPath, App, AppPath, Layer, LayerPath, MediaPath, Nav, NavPath, TitleParentUp, TitlePath,
+};
 use laserbeam::{Complete, Completed, PathMut, Stop};
+
+/// A route-parented path completes like any other, and its `Up` payload is the enum the
+/// consumer wrote: which route the leave took, carrying that parent's own leave.
+///
+/// Types only. Building a `TitlePath` needs the two projections the derive emits, and what
+/// this pins is the shape they would produce.
+#[expect(dead_code)]
+fn title_shapes<'a>(c: Completed<TitlePath<'a>>) {
+    let stop: Stop<TitlePath<'a>, TitleParentUp<'a>> = c.into_inner();
+    if let Stop::Up(TitleParentUp::Album(rest)) = stop {
+        let _: Stop<AlbumPath<'a>, MediaPath<'a>> = rest.into_inner();
+    }
+}
 
 const fn nav_app(nav_hits: u32, app_hits: u32) -> App {
     App {
