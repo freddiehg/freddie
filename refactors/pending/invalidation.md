@@ -122,10 +122,9 @@ Same `P` in and out. Posts and exclusive both take `&mut AscentState`.
 
 ## PathMut (laserbeam)
 
-`AscentState` is **not** a type parameter. laserbeam stays free of bind types. `PathMut` keeps master shape: parent + projections. `into_parent` only recovers the parent.
+Master shape. Parent + projections. `into_parent` returns the parent.
 
 ```rust
-// master — unchanged shape
 pub struct PathMut<Node, Parent> {
     parent: Parent,
     projection: ProjMut<Node, Parent>,
@@ -159,9 +158,7 @@ impl<Node, Parent> PathMut<Node, Parent> {
 }
 ```
 
-## `into_parent_ascent` (bind) — freeze, posts, step_up
-
-Posts run here, with concrete `&mut AscentState` (not a generic `S`). Closure is passed at call time so it can capture descent `opt_*` and take `state` now that the leaf has built it.
+## `into_parent_ascent` (bind)
 
 ```rust
 pub fn into_parent_ascent<Node, Parent, E>(
@@ -539,7 +536,6 @@ where
                 ::core::option::Option::None
             };
 
-        // 3-arg from_fn — no generic state on PathMut
         let inner_path = ::laserbeam::PathMut::from_fn(
             path,
             |p: &mut <Outer as ::bind::Place>::Path<'a>| &mut p.get_mut().inner,
@@ -549,7 +545,6 @@ where
         let (inner_path, mut state) =
             <Inner as ::bind::Dispatch<M>>::dispatch(inner_path, event, effs);
 
-        // opts captured here; concrete &mut AscentState, not a type param
         let mut path = ::bind::into_parent_ascent(
             inner_path,
             effs,
@@ -663,14 +658,9 @@ If posts need a sink before ascent state: thread `effs` through dispatch. PathMu
 
 ### P3 — `AscentState` + `into_parent_ascent`
 
-- Concrete `AscentState` (not a type parameter).
 - Dispatch returns `(Path, AscentState)`.
 - Leaf `AscentState::new()`.
-- `into_parent_ascent(path, sink, state, run_posts)`:
-  - `freeze_mutation()`
-  - `parent = path.into_parent()` (laserbeam, no state)
-  - `run_posts(parent, state)`
-  - `step_up()`
+- `into_parent_ascent(path, sink, state, run_posts)` as written above.
 - Exclusive via `run_exclusive` / trap-door `claim`.
 - Top-level `claimed() || !effs.is_empty()`.
 
@@ -705,12 +695,11 @@ Exclusive still returns same-level `P`. Field replace at owner is a later carrie
 1. Descent schedules; set final.
 2. Ascent runs every scheduled post.
 3. One `AscentState`. Posts and exclusive take `&mut AscentState`.
-4. `AscentState` is a concrete type. Not a type parameter of PathMut or Dispatch.
-5. `mutation()` is frozen at `freeze_mutation` (into_parent_ascent entry).
-6. `claim()` is a one-way trap door; `claimed()` reads it.
-7. `into_parent_ascent` = freeze → laserbeam `into_parent` → run_posts(`&mut AscentState`) → step_up.
-8. Kill = `invalidate(N)` on live depth; path type unchanged.
-9. Generate: schedule + helpers. Expand above is the template.
+4. `mutation()` is frozen at `freeze_mutation` (into_parent_ascent entry).
+5. `claim()` is a one-way trap door; `claimed()` reads it.
+6. `into_parent_ascent` = freeze → laserbeam `into_parent` → run_posts → step_up.
+7. Kill = `invalidate(N)` on live depth; path type unchanged.
+8. Generate: schedule + helpers. Expand above is the template.
 
 ## Tests
 
