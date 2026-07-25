@@ -15,6 +15,17 @@
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
+/// How the status-item PNG is drawn.
+///
+/// [`IconKind::Template`] is a monochrome glyph: macOS ignores RGB and paints the alpha
+/// mask in the menu bar's own color (white on a dark bar, black on a light one).
+/// [`IconKind::Color`] keeps the PNG's colors; the exterior should be transparent.
+#[derive(Clone, Copy)]
+pub enum IconKind<'a> {
+    Template(&'a [u8]),
+    Color(&'a [u8]),
+}
+
 /// A live status item. Holding it keeps the icon up; dropping it takes the icon down and
 /// clears the menu handler.
 pub struct MenuBar {
@@ -48,15 +59,14 @@ impl MenuBar {
 /// first one's and dropping either clears it. Build one and hold it.
 ///
 /// `on_quit` runs, on the main thread, when the user chooses Quit. The caller supplies
-/// its own branding: `tooltip` is the hover text, and `icon_png` is the raw PNG bytes of
-/// a black glyph on a transparent background, rendered as a template (see [`template_icon`]).
+/// its own branding: `tooltip` is the hover text, and `icon` is the PNG (see [`IconKind`]).
 ///
 /// # Errors
 ///
 /// Returns the underlying error if the icon, the menu, or the status item cannot be created.
 pub fn show(
     tooltip: &str,
-    icon_png: &[u8],
+    icon: IconKind<'_>,
     on_quit: impl Fn() + Send + Sync + 'static,
 ) -> Result<MenuBar, Box<dyn std::error::Error + Send + Sync>> {
     // The item and its id, so the handler can recognize it. `None` is the keyboard
@@ -67,13 +77,15 @@ pub fn show(
     let menu = Menu::new();
     menu.append(&quit)?;
 
+    let (png, as_template) = match icon {
+        IconKind::Template(png) => (png, true),
+        IconKind::Color(png) => (png, false),
+    };
+
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_icon(template_icon(icon_png)?)
-        // A template image: macOS ignores the RGB and renders the alpha mask in the
-        // menu bar's own color (white on a dark bar, black on a light one), so the
-        // black glyph shows correctly on either without inverting it.
-        .with_icon_as_template(true)
+        .with_icon(prepare_icon(png)?)
+        .with_icon_as_template(as_template)
         .with_tooltip(tooltip)
         .build()?;
 
@@ -89,18 +101,18 @@ pub fn show(
 }
 
 /// A status-item icon from `png`: the glyph, trimmed to its shape and sized for the
-/// menu bar, as a template (alpha mask, recolored by macOS).
+/// menu bar.
 ///
-/// `png` is expected to be a black glyph on a transparent background with wide margins.
-/// Trimming to the glyph's bounds and then scaling makes the glyph fill the bar rather
-/// than sit tiny inside the margins; a few pixels of padding keep it off the bar's top
-/// and bottom.
-fn template_icon(png: &[u8]) -> Result<Icon, Box<dyn std::error::Error + Send + Sync>> {
+/// For a template, `png` should be a black glyph on a transparent background; for a
+/// color icon, the exterior should be transparent and the RGB is kept. Trimming to the
+/// non-transparent bounds and then scaling makes the glyph fill the bar rather than sit
+/// tiny inside the margins; a few pixels of padding keep it off the bar's top and bottom.
+fn prepare_icon(png: &[u8]) -> Result<Icon, Box<dyn std::error::Error + Send + Sync>> {
     let img = image::load_from_memory(png)?.into_rgba8();
     let glyph = crop_to_alpha(&img);
 
     // tray-icon renders the icon at 18pt tall; a ~2x pixel height keeps it crisp on a
-    // Retina bar. The glyph is portrait, so width follows from its aspect.
+    // Retina bar. Width follows from the glyph's aspect.
     let glyph_h: u32 = 30;
     let glyph_w = (glyph.width() * glyph_h)
         .div_ceil(glyph.height().max(1))
