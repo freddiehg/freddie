@@ -1,6 +1,6 @@
 # a closing window reports itself
 
-`WindowChange::Closed` is never reported for a window that closes. The `kAXUIElementDestroyed` branch asks the destroyed element for its id, and a destroyed element does not answer, so the branch does nothing:
+`WindowChange::Closed` is not reported when a window closes. The destroy branch asks the destroyed element for its id, and a destroyed element does not answer:
 
 ```rust
 } else if name == kAXUIElementDestroyedNotification {
@@ -8,23 +8,16 @@
         state.forget(window);
         state.report(WindowChange::Closed(window));
     }
+}
 ```
 
 `window_id` calls `_AXUIElementGetWindow` on an element the app has already torn down. It returns non-zero, `window_id` gives `None`, and the window is neither forgotten nor reported.
 
-Measured across `~/Library/Logs/mercury/mercury.log`, ten daemon runs:
+`Elements` only shrinks when an observed app terminates, so it holds one retained `AXUIElement` per window ever opened, and `WindowSink::set_frame` writes through a dead element instead of answering `WindowError::UnknownWindow`.
 
-- `change: Opened`: 3886
-- `change: Closed`: 289
-- distinct `WindowId` reported: 1065
+`Windows::open` in mercury (`crates/mercury/src/state/mod.rs`) only shrinks on `Closed`, so it holds one `WindowState` per window ever opened, and `focused` keeps naming a window that is gone. `Windows`'s `Debug` prints its name and nothing else, so the log does not show the growth.
 
-The 289 all came from one run, in ten bursts of 1, 2, 3, 3, 4, 6, 8, 61, 85 and 116 reports inside 50ms of each other. That is `forget_app`, not the destroy notification: it sweeps the whole element table for entries whose id no longer reads, so one app quitting reports every window every earlier app left behind, attributed to the app that happened to quit. Nine of the ten runs reported zero. The current run has 861 `Opened` and no `Closed`.
-
-Two things follow from that, and both are what this fixes.
-
-`Elements` only ever shrinks when an observed app terminates, so it holds one retained `AXUIElement` per window ever opened, and `WindowSink::set_frame` writes through a dead element instead of answering `WindowError::UnknownWindow`.
-
-`Windows::open` in mercury (`crates/mercury/src/state/mod.rs:179`) only shrinks on `Closed`, so it holds one `WindowState` per window ever opened, and `focused` keeps naming a window that is gone. 861 entries this run. The logged state does not show this: `Windows`'s `Debug` prints its name and nothing else.
+`forget_app` is the only path that reports `Closed` today, and it is wrong: it sweeps the whole element table for entries whose id no longer reads, so one app quitting reports every window earlier apps left behind.
 
 Separately, `observe_app` abandons the observer it just created when the app element cannot be made:
 
@@ -88,9 +81,11 @@ struct AppObserver {
 }
 ```
 
-A `Registration` is 32 bytes and a `Vec` slot is 8, so a window costs 40 bytes for as long as its app runs: 34KB at this run's 861 opens. The three per-window notification registrations stay with the framework until the observer is released, which is what they do now.
+A `Registration` is 32 bytes and a `Vec` slot is 8, so a window costs 40 bytes for as long as its app runs. The three per-window notification registrations stay with the framework until the observer is released, which is what they do now.
 
 `Drop` is unchanged and still correct for both fields: the body removes the run loop source and releases the observer, and `_app` and `windows` drop after the body, so no box is freed while a source that could name it is still in the loop.
+
+`on_notification` copies every `Copy` field out of the `Registration` and ends that borrow before any work that touches `apps`. `observe_window` pushes into `AppObserver::windows`, which is a `borrow_mut` on the same `AppObserver` the app `refcon` points into; holding `&Registration` across that would alias.
 
 ## Change 0: `observe_app` creates the app element before the observer
 
@@ -222,48 +217,127 @@ After:
 
 ### `on_notification`
 
-Only two branches move. The created branch hands `observe_window` the pid instead of the app's `refcon`, because the window gets a `refcon` of its own. The destroyed branch reads the id it was registered under.
+Copies every `Copy` field out of the `Registration` and ends that borrow before any branch runs. The created branch then hands `observe_window` the pid instead of the app's `refcon`, because the window gets a `refcon` of its own. The destroyed branch reads the id it was registered under.
 
 Before:
 
 ```rust
+#[expect(unsafe_code)]
+unsafe extern "C" fn on_notification(
+    _observer: AXObserverRef,
+    element: AXUIElementRef,
+    notification: CFStringRef,
+    refcon: *mut c_void,
+) {
+    // SAFETY: `refcon` is the `Box<Registration>` this app's `AppObserver` still owns. The
+    // observer's source is removed before the box is dropped, so no notification can
+    // arrive after the pointer goes stale.
+    let registration = unsafe { &*refcon.cast::<Registration>() };
+
+    let Some(state) = registration.state.upgrade() else {
+        return;
+    };
+
+    // SAFETY: `notification` is a live string owned by the caller for this call.
+    let name = unsafe { CFString::wrap_under_get_rule(notification) }.to_string();
+
+    let name = name.as_str();
+    // Comparisons rather than match arms: these constants are lowercase, and a lowercase
+    // path in a pattern binds rather than matches the moment it stops resolving.
     if name == kAXWindowCreatedNotification {
         observe_window(&state, registration.observer, refcon, element);
         report_open(&state, element);
     } else if name == kAXWindowMovedNotification || name == kAXWindowResizedNotification {
-        // unchanged
+        if let (Some(window), Some(frame)) = (window_id(element), window_frame(element)) {
+            let moved = WindowFrame { window, frame };
+            state.report(if name == kAXWindowMovedNotification {
+                WindowChange::Moved(moved)
+            } else {
+                WindowChange::Resized(moved)
+            });
+        }
     } else if name == kAXUIElementDestroyedNotification {
         if let Some(window) = window_id(element) {
             state.forget(window);
             state.report(WindowChange::Closed(window));
         }
     } else if name == kAXFocusedWindowChangedNotification {
-        // unchanged
+        // Only the frontmost app's focused window is what a placement aims at; a background
+        // app changing its own focus is not the window the user is looking at.
+        if is_frontmost(registration.pid) {
+            state.report(WindowChange::Focused(window_id(element)));
+        }
     }
+}
 ```
 
 After:
 
 ```rust
+#[expect(unsafe_code)]
+unsafe extern "C" fn on_notification(
+    _observer: AXObserverRef,
+    element: AXUIElementRef,
+    notification: CFStringRef,
+    refcon: *mut c_void,
+) {
+    // Copy every `Copy` field out and end the `&Registration` borrow before any branch
+    // runs. `observe_window` does `apps.borrow_mut()` and pushes into the same
+    // `AppObserver` the app `refcon` points into; holding that reference across the push
+    // would alias.
+    let (state, observer, pid, subject) = {
+        // SAFETY: `refcon` is a `Box<Registration>` this app's `AppObserver` still owns
+        // (in `_app` or `windows`). The observer's source is removed before those boxes are
+        // dropped, so no notification can arrive after the pointer goes stale.
+        let registration = unsafe { &*refcon.cast::<Registration>() };
+        let Some(state) = registration.state.upgrade() else {
+            return;
+        };
+        (
+            state,
+            registration.observer,
+            registration.pid,
+            registration.subject,
+        )
+    };
+
+    // SAFETY: `notification` is a live string owned by the caller for this call.
+    let name = unsafe { CFString::wrap_under_get_rule(notification) }.to_string();
+
+    let name = name.as_str();
+    // Comparisons rather than match arms: these constants are lowercase, and a lowercase
+    // path in a pattern binds rather than matches the moment it stops resolving.
     if name == kAXWindowCreatedNotification {
-        observe_window(&state, registration.observer, registration.pid, element);
+        observe_window(&state, observer, pid, element);
         report_open(&state, element);
     } else if name == kAXWindowMovedNotification || name == kAXWindowResizedNotification {
-        // unchanged
+        if let (Some(window), Some(frame)) = (window_id(element), window_frame(element)) {
+            let moved = WindowFrame { window, frame };
+            state.report(if name == kAXWindowMovedNotification {
+                WindowChange::Moved(moved)
+            } else {
+                WindowChange::Resized(moved)
+            });
+        }
     } else if name == kAXUIElementDestroyedNotification {
         // The element is gone and cannot be asked what it was, so the id comes from this
         // registration, which is the window's own.
-        if let Subject::Window(window) = registration.subject
-            && state.forget(window)
-        {
-            state.report(WindowChange::Closed(window));
+        if let Subject::Window(window) = subject {
+            if state.forget(window) {
+                state.report(WindowChange::Closed(window));
+            }
         }
     } else if name == kAXFocusedWindowChangedNotification {
-        // unchanged
+        // Only the frontmost app's focused window is what a placement aims at; a background
+        // app changing its own focus is not the window the user is looking at.
+        if is_frontmost(pid) {
+            state.report(WindowChange::Focused(window_id(element)));
+        }
     }
+}
 ```
 
-`refcon` is no longer read after the deref at the top of the function that produces `registration`.
+`refcon` is not read after the block that produces the copied fields. `Subject` is `Copy`, so the destroy branch does not need the registration to stay borrowed.
 
 ### `observe_window`
 
@@ -435,7 +509,7 @@ After:
 
 ### `forget_app`
 
-Reports the quitting app's own windows, named by its own registrations, so nothing asks a dead element for an id and no other app's windows are swept up in it.
+Reports the quitting app's own windows, named by its own registrations, so nothing asks a dead element for an id and no other app's windows are swept up in it. Window ids are collected and the observer is dropped before any `Closed` is reported, so its run loop source is gone before `on_change` runs and cannot deliver a late notification into a map entry that is already gone.
 
 Before:
 
@@ -474,31 +548,39 @@ After:
 /// has open is not reported closed, and no dead element is asked for an id. A window whose own
 /// `AXUIElementDestroyed` already arrived was forgotten then, and `forget` returning false is
 /// what keeps it from being reported twice.
+///
+/// The observer is dropped before any `Closed` is reported: that removes its run loop source
+/// so a late notification cannot run against an `apps` map that no longer holds it.
 fn forget_app(state: &WatcherState, pid: Pid) {
     let Some(observer) = state.apps.borrow_mut().remove(&pid) else {
         return;
     };
-    for registration in &observer.windows {
-        if let Subject::Window(window) = registration.subject
-            && state.forget(window)
-        {
+    let windows: Vec<WindowId> = observer
+        .windows
+        .iter()
+        .filter_map(|registration| match registration.subject {
+            Subject::Window(window) => Some(window),
+            Subject::App => None,
+        })
+        .collect();
+    drop(observer);
+    for window in windows {
+        if state.forget(window) {
             state.report(WindowChange::Closed(window));
         }
     }
-    // `observer` drops here, which removes its run loop source and releases it before the
-    // registrations just read go with it.
 }
 ```
 
 `window_id` loses this call site and keeps the three it has in `on_notification`, `observe_window` and `report_open`, all on live elements.
 
-A window whose `kAXUIElementDestroyed` never arrives because `add_notification` refused it (198 of those are logged at `debug` across the ten runs) is still reported when its app quits, and held until then.
+A window whose `kAXUIElementDestroyed` never arrives because `add_notification` refused it is still reported when its app quits, and held until then.
 
 ## Call sites
 
 `freddie_windows`'s public surface does not change: `watch`, `Watcher`, `WindowSink`, `Snapshot` and `WindowChange` all keep their shapes, and every function this touches is private to the crate.
 
-`crates/mercury/src/state/mod.rs:302` already handles `WindowChange::Closed` by removing the window from `open` and clearing `focused` if it named it, so mercury needs no change. It starts receiving the event, which is the point: `Windows::open` tracks the windows that exist rather than every window the run ever saw, and a placement aimed at a closed window gets `WindowError::UnknownWindow` from `WindowSink::set_frame` instead of writing a frame through a retained dead element.
+`crates/mercury/src/state/mod.rs` already handles `WindowChange::Closed` by removing the window from `open` and clearing `focused` if it named it, so mercury needs no change. It starts receiving the event, which is the point: `Windows::open` tracks the windows that exist rather than every window the run ever saw, and a placement aimed at a closed window gets `WindowError::UnknownWindow` from `WindowSink::set_frame` instead of writing a frame through a retained dead element.
 
 ## Verification
 
@@ -526,4 +608,4 @@ The two counts differ by the windows that are still open.
 ## Ordered commits
 
 1. Change 0: `observe_app` creates the app element before the observer.
-2. Change 1: `Subject`; per-window `Registration` in `AppObserver::windows`; `forget` returns whether it removed; the destroy branch and `forget_app` report from registrations.
+2. Change 1: `Subject`; per-window `Registration` in `AppObserver::windows`; `forget` returns whether it removed; `on_notification` ends the registration borrow before any branch; the destroy branch and `forget_app` report from registrations.
