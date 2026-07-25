@@ -4,41 +4,43 @@ Not done. Standalone.
 
 Descent schedules which pre/posts/binds run. That set is final. Ascent runs every scheduled post.
 
-No stubs. If a type or function is named, it has a body that typechecks. A stub is how a broken pack stack was being hidden.
+Every type and function below has a body. No stubs.
 
 ## Model
 
-Spine `A → B → C`. `C::dispatch` always returns the same type: `C`’s ascent (private nested `Result` doll inside bind).
+Spine `A → B → C`. `C::dispatch` always returns `C`’s ascent type.
 
-Path is generic over the pack that builds that ascent. `complete()` returns `Pack::Out`. `into_parent` peels the focus and rewrites the pack so `Out` is unchanged.
-
-```text
-path at C, first peel installs AsHere  →  path at B, Out = Result<B, Rest>
-into_parent                            →  path at A, pack becomes AsUp, same Out
-complete()                             →  always Out
-```
-
-With stop at A after two peels from C (`Out = Result<BPath, Result<APath, …>>`):
+Path for leaving is focus + pack. `complete()` is `pack.pack(focus)` and returns `Pack::Out`. `into_parent` peels laserbeam focus and rewrites the pack so `Out` is unchanged.
 
 ```text
-complete at B  →  Ok(b)
-complete at A  →  Err(Ok(a))     // private nest; app sees opaque Ascent
-complete deeper → Err(Err(…))
+after_first_peel(c_path)  →  Path at B, pack AsHere, Out = Result<B, Rest>
+.into_parent()            →  Path at A, pack AsUp…, same Out
+.complete()               →  Out
 ```
 
-## Types (all real)
+```text
+complete at B       Ok(b)
+complete at A       Err(Ok(a))     // Rest still a Result layer
+complete at bare Z  Err(…Err(z))   // terminal rest is the path type itself
+```
+
+The nested `Result` doll is bind-internal. App-facing type is `Ascent<D>`.
+
+## Types
 
 ```rust
 use core::marker::PhantomData;
 
-// --- pack: stop path P → Out ---
+// ---------------------------------------------------------------------------
+// Pack: stop path P → Out
+// ---------------------------------------------------------------------------
 
 pub trait Pack<P> {
     type Out;
     fn pack(self, path: P) -> Self::Out;
 }
 
-/// This Result layer stops here: Ok(path).
+/// Result layer stops here: Ok(path).
 pub struct AsHere<E>(PhantomData<E>);
 
 impl<P, E> Pack<P> for AsHere<E> {
@@ -48,7 +50,7 @@ impl<P, E> Pack<P> for AsHere<E> {
     }
 }
 
-/// This Result layer was skipped: Err(inner.pack(path)).
+/// Result layer skipped: Err(inner.pack(path)).
 pub struct AsUp<Q, Inner>(Inner, PhantomData<Q>);
 
 impl<Q, Inner, P> Pack<P> for AsUp<Q, Inner>
@@ -61,17 +63,39 @@ where
     }
 }
 
-// --- rewrite pack when focus peels PathMut → Parent; Out unchanged ---
+/// Terminal stop: Out is the path itself (no Result wrapper).
+pub struct AsTerminal;
+
+impl<P> Pack<P> for AsTerminal {
+    type Out = P;
+    fn pack(self, path: P) -> P {
+        path
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PeelPack: PathMut → Parent, Out unchanged
+// ---------------------------------------------------------------------------
 
 pub trait PeelPack<Node, Parent>: Pack<laserbeam::PathMut<Node, Parent>> + Sized {
     type After: Pack<Parent, Out = Self::Out>;
     fn peel_pack(self) -> Self::After;
 }
 
+/// Rest is another Result layer: AsHere<Result<Parent, E>> → AsUp + AsHere<E>
 impl<Node, Parent, E> PeelPack<Node, Parent> for AsHere<Result<Parent, E>> {
     type After = AsUp<laserbeam::PathMut<Node, Parent>, AsHere<E>>;
     fn peel_pack(self) -> Self::After {
         AsUp(AsHere(PhantomData), PhantomData)
+    }
+}
+
+/// Rest is the bare parent path (root boundary): AsHere<Parent> → AsUp + AsTerminal
+/// complete() at Parent yields Err(parent): Result<PathMut, Parent>
+impl<Node, Parent> PeelPack<Node, Parent> for AsHere<Parent> {
+    type After = AsUp<laserbeam::PathMut<Node, Parent>, AsTerminal>;
+    fn peel_pack(self) -> Self::After {
+        AsUp(AsTerminal, PhantomData)
     }
 }
 
@@ -85,7 +109,9 @@ where
     }
 }
 
-// --- Path: focus + pack. complete() → Pack::Out (the Out generic is Pack::Out). ---
+// ---------------------------------------------------------------------------
+// Path
+// ---------------------------------------------------------------------------
 
 pub struct Path<P, Pk> {
     focus: P,
@@ -113,7 +139,6 @@ impl<Node, Parent, Pk> Path<laserbeam::PathMut<Node, Parent>, Pk>
 where
     Pk: PeelPack<Node, Parent>,
 {
-    /// Peel laserbeam focus; rewrite pack; Pack::Out unchanged.
     pub fn into_parent(self) -> Path<Parent, Pk::After> {
         Path {
             focus: self.focus.into_parent(),
@@ -122,8 +147,7 @@ where
     }
 }
 
-/// First peel from the node’s own PathMut: install AsHere for Result<Parent, Rest>.
-/// Out = Result<Parent, Rest> = this node’s ascent doll root.
+/// First peel off this node’s PathMut. Out = Result<Parent, Rest>.
 pub fn after_first_peel<Node, Parent, Rest>(
     path: laserbeam::PathMut<Node, Parent>,
 ) -> Path<Parent, AsHere<Rest>> {
@@ -133,7 +157,23 @@ pub fn after_first_peel<Node, Parent, Rest>(
     }
 }
 
-// --- unpack one doll layer for parent match (Result stays inside bind) ---
+// ---------------------------------------------------------------------------
+// Ascent (opaque) + unpack
+// ---------------------------------------------------------------------------
+
+pub struct Ascent<D> {
+    doll: D,
+}
+
+impl<D> Ascent<D> {
+    pub fn new(doll: D) -> Self {
+        Self { doll }
+    }
+
+    pub fn into_inner(self) -> D {
+        self.doll
+    }
+}
 
 pub enum Step<Here, Up> {
     Here(Here),
@@ -147,26 +187,13 @@ pub fn unpack<H, U>(doll: Result<H, U>) -> Step<H, U> {
     }
 }
 
-// Opaque newtype if we do not want app code to see Result in signatures:
-pub struct Ascent<D> {
-    doll: D,
-}
-
-impl<D> Ascent<D> {
-    pub(crate) fn new(doll: D) -> Self {
-        Self { doll }
-    }
-
-    pub(crate) fn into_doll(self) -> D {
-        self.doll
-    }
-}
-
 pub fn unpack_ascent<H, U>(ascent: Ascent<Result<H, U>>) -> Step<H, U> {
-    unpack(ascent.into_doll())
+    unpack(ascent.into_inner())
 }
 
-// --- Claim ---
+// ---------------------------------------------------------------------------
+// Claim
+// ---------------------------------------------------------------------------
 
 pub struct Claim<'c> {
     slot: &'c mut Option<()>,
@@ -203,49 +230,58 @@ impl<'c> Claim<'c> {
 }
 ```
 
-laserbeam `PathMut` unchanged: `into_parent(self) -> Parent` only. Bind’s `Path` owns pack + `Out`.
+laserbeam `PathMut::into_parent(self) -> Parent` unchanged.
 
-### Worked peels (same types as above)
+### Worked peels
 
 ```rust
-// CAscent = Result<BPath, Result<APath, Result<Z, ()>>>
 // BPath = PathMut<B, APath>, APath = PathMut<A, Z>
+// CAscent = Result<BPath, Result<APath, Result<Z, ()>>>
 
-// leave one peel (stop at B):
 let at_b = after_first_peel::<C, BPath, Result<APath, Result<Z, ()>>>(c_path);
-let out: CAscent = at_b.complete(); // Ok(b)
+let _: CAscent = at_b.complete(); // Ok(b)
 
-// leave two peels (stop at A):
-let at_a = after_first_peel::<C, BPath, Result<APath, Result<Z, ()>>>(c_path)
-    .into_parent();
-let out: CAscent = at_a.complete(); // Err(Ok(a))
+let at_a = after_first_peel::<C, BPath, Result<APath, Result<Z, ()>>>(c_path).into_parent();
+let _: CAscent = at_a.complete(); // Err(Ok(a))
 
-// leave three peels (stop at Z):
 let at_z = after_first_peel::<C, BPath, Result<APath, Result<Z, ()>>>(c_path)
     .into_parent()
     .into_parent();
-let out: CAscent = at_z.complete(); // Err(Err(Ok(z)))
+let _: CAscent = at_z.complete(); // Err(Err(Ok(z)))
 ```
 
-`PeelPack` for `AsHere` requires `Rest = Result<Parent, E>` so the next stop type is the `Ok` of `Rest`. That is exactly the nested doll shape. A bare non-`Result` rest cannot peel further — correct at the root boundary.
+Bare root rest (demo Inner → Outer → Root):
 
-### Why `Path<P, Out>` alone was a stub
+```rust
+// InnerAscent = Result<OuterPath, RootPath>
+// OuterPath = PathMut<Outer, RootPath>
 
-Writing `Path<P, Out> { complete(self) -> Out }` without a `Pack` type that **is** `Out` papers over the problem: you need a value that implements `P -> Out` and a law for how that value changes on `into_parent`. `Pk: Pack<P, Out = Out>` is that value. `Out` is not free; it is `Pk::Out`.
+let at_outer = after_first_peel::<Inner, OuterPath<'a>, RootPath<'a>>(inner_path);
+let _: Result<OuterPath<'a>, RootPath<'a>> = at_outer.complete(); // Ok(outer)
+
+let at_root = after_first_peel::<Inner, OuterPath<'a>, RootPath<'a>>(inner_path).into_parent();
+// PeelPack: AsHere<RootPath> → AsUp<OuterPath, AsTerminal>
+let _: Result<OuterPath<'a>, RootPath<'a>> = at_root.complete(); // Err(root)
+```
 
 ## Dispatch
 
 ```rust
+pub trait Bindings {
+    type Trigger: Eq + Hash;
+    type Event;
+    type Output;
+}
+
 pub trait Dispatch<M: Bindings>: Place {
-    /// Private doll wrapped in Ascent, or bare Result inside bind only.
     type Ascent<'a>
     where
         Self: 'a;
 
     fn dispatch<'a, 'c>(
-        path: laserbeam::PathMut</* node */, /* parent */>, // see leaf/parent expands
+        path: Self::Path<'a>,
         event: &M::Event,
-        effs: &mut Vec<M::Effect>,
+        effs: &mut M::Output,
         claim: &mut Claim<'c>,
     ) -> Self::Ascent<'a>
     where
@@ -253,62 +289,20 @@ pub trait Dispatch<M: Bindings>: Place {
 }
 ```
 
-For a place whose laserbeam path is `PathMut<Self, ParentFocus>` and whose ascent doll is `Result<ParentFocus, Parent::Ascent>`:
+`Place::Path<'a>` stays the laserbeam path (`PathMut<…>` or `&mut Root`). Bind `Path<_, pack>` is only for leave/kill peels after `after_first_peel`.
+
+## DX types
 
 ```rust
-type Ascent<'a> = Ascent<Result<ParentFocus<'a>, <Parent as Dispatch<M>>::Ascent<'a>>>;
-```
-
-Root: no `Result` layer; free `dispatch` owns `&mut Root` and only uses child ascent + effects.
-
-## Parent one level up
-
-```rust
-match unpack_ascent(child_ascent) {
-    Step::Here(parent_focus) => {
-        // parent_focus is the laserbeam parent path recovered from child Ok
-        // posts + exclusive using parent_focus
-        // leave: after_first_peel from a PathMut that wraps parent_focus, or
-        // if parent_focus is already the PathMut at this node, first peel toward grandparent:
-        let ascent = after_first_peel(this_node_path).complete(); // or more into_parent for kill
-        ascent
-    }
-    Step::Up(rest) => {
-        // posts dropped (pre-snap)
-        Ascent::new(rest) // if rest is already parent doll Err payload
-    }
-}
-```
-
-Exact parent expand for Outer/Inner is below with full types.
-
-## Claim / posts
-
-- Here: posts get focus path.
-- Up: pre-snap only.
-- Claim: separate slot; exclusive on Here when this level owns a path.
-
-## DX + full expand
-
-```rust
-// Focus types (aliases)
-// RootPath<'a> = &'a mut Root
+// RootPath<'a>  = &'a mut Root
 // OuterPath<'a> = laserbeam::PathMut<Outer, RootPath<'a>>
 // InnerPath<'a> = laserbeam::PathMut<Inner, OuterPath<'a>>
 
 // Inner::Ascent<'a> = Ascent<Result<OuterPath<'a>, RootPath<'a>>>
-// Outer::Ascent<'a> = Ascent<RootPath<'a>>  // boundary: bare root path inside Ascent
+// Outer::Ascent<'a> = Ascent<RootPath<'a>>
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct ChildId(u64);
-
-struct AndReturnHome {
-    guard: TimerGuard,
-}
-
-struct TimerGuard {
-    id: TimerId,
-}
 
 struct TimerId(u64);
 
@@ -318,11 +312,32 @@ impl TimerId {
     }
 }
 
+struct TimerGuard {
+    id: TimerId,
+}
+
+struct AndReturnHome {
+    guard: TimerGuard,
+}
+
+struct Outer {
+    inner: Inner,
+    return_home: AndReturnHome,
+}
+
+struct Inner {
+    id: ChildId,
+}
+
 enum DemoEffect {
     LogDestroyed(ChildId),
     ScheduleTimer(TimerId),
     SetLayerHome,
 }
+
+struct M;
+
+// In real code M: Bindings with Output = Vec<DemoEffect>
 
 fn log_destroyed(id: ChildId) -> DemoEffect {
     DemoEffect::LogDestroyed(id)
@@ -356,21 +371,18 @@ fn outer_handler(_ev: &KeyEvent, _outer: &mut OuterPath<'_>) -> Vec<DemoEffect> 
     vec![DemoEffect::SetLayerHome]
 }
 
-/// Kill to root. Returns Inner::Ascent: Err(root) private.
 fn inner_handler<'a>(
     _ev: &KeyEvent,
     path: InnerPath<'a>,
-) -> (
-    Vec<DemoEffect>,
-    Ascent<Result<OuterPath<'a>, RootPath<'a>>>,
-) {
-    let at_outer = after_first_peel::<Inner, OuterPath<'a>, RootPath<'a>>(path);
-    let at_root = at_outer.into_parent();
-    (vec![], Ascent::new(at_root.complete()))
+) -> (Vec<DemoEffect>, Ascent<Result<OuterPath<'a>, RootPath<'a>>>) {
+    let ascent = after_first_peel::<Inner, OuterPath<'a>, RootPath<'a>>(path)
+        .into_parent()
+        .complete();
+    (vec![], Ascent::new(ascent))
 }
 ```
 
-### Generated Inner
+## Generated: Inner
 
 ```rust
 impl Dispatch<M> for Inner {
@@ -381,23 +393,22 @@ impl Dispatch<M> for Inner {
     fn dispatch<'a, 'c>(
         path: InnerPath<'a>,
         event: &M::Event,
-        effs: &mut Vec<M::Effect>,
+        effs: &mut M::Output,
         claim: &mut Claim<'c>,
     ) -> Self::Ascent<'a>
     where
         Self: 'a,
     {
-        let opt_0: Option<&KeyEvent> =
-            if let Ok(ev) = TryFrom::try_from(event) {
-                let trigger = KeyA;
-                if EventTrigger::is_matching(&trigger, ev) {
-                    Some(ev)
-                } else {
-                    None
-                }
+        let opt_0: Option<&KeyEvent> = if let Ok(ev) = TryFrom::try_from(event) {
+            let trigger = KeyA;
+            if EventTrigger::is_matching(&trigger, ev) {
+                Some(ev)
             } else {
                 None
-            };
+            }
+        } else {
+            None
+        };
 
         if let Some(ev) = opt_0 {
             if let Some(()) = claim.try_take() {
@@ -407,14 +418,13 @@ impl Dispatch<M> for Inner {
             }
         }
 
-        // normal leave: one peel, complete → Ok(outer)
-        let at_outer = after_first_peel::<Inner, OuterPath<'a>, RootPath<'a>>(path);
-        Ascent::new(at_outer.complete())
+        let doll = after_first_peel::<Inner, OuterPath<'a>, RootPath<'a>>(path).complete();
+        Ascent::new(doll)
     }
 }
 ```
 
-### Generated Outer
+## Generated: Outer
 
 ```rust
 impl Dispatch<M> for Outer
@@ -428,42 +438,39 @@ where
     fn dispatch<'a, 'c>(
         path: OuterPath<'a>,
         event: &M::Event,
-        effs: &mut Vec<M::Effect>,
+        effs: &mut M::Output,
         claim: &mut Claim<'c>,
     ) -> Self::Ascent<'a>
     where
         Self: 'a,
     {
-        let opt_0: Option<ChildId> =
-            if let Ok(ev) = TryFrom::try_from(event) {
-                let trigger = AnyKey;
-                if EventTrigger::is_matching(&trigger, ev) {
-                    Some(snap_child_id(ev, &path))
-                } else {
-                    None
-                }
+        let opt_0: Option<ChildId> = if let Ok(ev) = TryFrom::try_from(event) {
+            let trigger = AnyKey;
+            if EventTrigger::is_matching(&trigger, ev) {
+                Some(snap_child_id(ev, &path))
             } else {
                 None
-            };
+            }
+        } else {
+            None
+        };
 
-        let opt_1: bool =
-            if let Ok(ev) = TryFrom::try_from(event) {
-                EventTrigger::is_matching(&AnyKey, ev)
-            } else {
-                false
-            };
+        let opt_1: bool = if let Ok(ev) = TryFrom::try_from(event) {
+            EventTrigger::is_matching(&AnyKey, ev)
+        } else {
+            false
+        };
 
-        let opt_2: Option<&KeyEvent> =
-            if let Ok(ev) = TryFrom::try_from(event) {
-                let trigger = KeyA;
-                if EventTrigger::is_matching(&trigger, ev) {
-                    Some(ev)
-                } else {
-                    None
-                }
+        let opt_2: Option<&KeyEvent> = if let Ok(ev) = TryFrom::try_from(event) {
+            let trigger = KeyA;
+            if EventTrigger::is_matching(&trigger, ev) {
+                Some(ev)
             } else {
                 None
-            };
+            }
+        } else {
+            None
+        };
 
         let inner_path = laserbeam::PathMut::from_fn(
             path,
@@ -483,6 +490,7 @@ where
                     let e = claim.with_exclusive(&mut outer_path, |p| outer_handler(ev, p));
                     effs.extend(e);
                 }
+                // Outer::Ascent has no Result layer: laserbeam peel is the whole leave.
                 Ascent::new(outer_path.into_parent())
             }
             Step::Up(root_path) => {
@@ -496,24 +504,61 @@ where
 }
 ```
 
-Outer’s ascent is bare `RootPath` inside `Ascent` (no extra `Result`). Child `Ok` gives `OuterPath`; peel with laserbeam `into_parent` only. Child `Err` already is `RootPath`.
+Why Outer does not use `after_first_peel`: `Outer::Ascent` is `Ascent<RootPath>`, not `Ascent<Result<_, _>>`. One laserbeam `into_parent` yields `RootPath`. Pack/`complete` apply only when the node’s ascent doll is a `Result` (child of something that still has a parent layer in the doll).
+
+## Generated: Root (struct with one `#[resolve_into]` child)
+
+```rust
+// Place::Path<'a> = &'a mut Root
+// Root::Ascent<'a> = ()  // nothing above root
+
+impl Dispatch<M> for Root
+where
+    Outer: Dispatch<M>,
+{
+    type Ascent<'a> = ()
+    where
+        Self: 'a;
+
+    fn dispatch<'a, 'c>(
+        path: &'a mut Root,
+        event: &M::Event,
+        effs: &mut M::Output,
+        claim: &mut Claim<'c>,
+    ) -> Self::Ascent<'a>
+    where
+        Self: 'a,
+    {
+        let outer_path = laserbeam::PathMut::from_fn(
+            path,
+            |r: &mut Root| &mut r.outer,
+            |r: &Root| &r.outer,
+        );
+
+        let ascent = Outer::dispatch(outer_path, event, effs, claim);
+        // Outer::Ascent = Ascent<RootPath>; recover root if needed, then done.
+        let _root_path = ascent.into_inner();
+        // _root_path: RootPath = &mut Root — same borrow ended when path dropped;
+        // free dispatch only needs effects + claim.
+        ()
+    }
+}
+```
 
 ## Free dispatch
 
+Repo convention: `Bindings::Output = Vec<E>`. Sink is `&mut M::Output`. Handlers `effs.extend(...)`.
+
 ```rust
-pub fn dispatch<'a, M, N>(
-    root: &'a mut N,
-    event: &M::Event,
-) -> Option<Vec<M::Effect>>
+pub fn dispatch<'a, M, N, E>(path: N::Path<'a>, event: &M::Event) -> Option<Vec<E>>
 where
-    M: Bindings,
-    N: Dispatch<M> + Place<Path<'a> = &'a mut N>,
+    M: Bindings<Output = Vec<E>>,
+    N: Dispatch<M> + 'a,
 {
-    let mut effs = Vec::new();
+    let mut effs: Vec<E> = Vec::new();
     let mut claim_slot = None;
     let mut claim = Claim::new(&mut claim_slot);
-    // root builds child path and calls child / self dispatch as today’s tree does
-    let _ascent = <N as Dispatch<M>>::dispatch(root, event, &mut effs, &mut claim);
+    let _ascent = <N as Dispatch<M>>::dispatch(path, event, &mut effs, &mut claim);
     if claim.is_taken() || !effs.is_empty() {
         Some(effs)
     } else {
@@ -522,45 +567,81 @@ where
 }
 ```
 
-Root’s concrete expand is the existing enum/struct derive with the new return type; same pattern as Outer matching child.
+## Walks
+
+### KeyA, inner kills to root
+
+```text
+Inner exclusive:
+  claim take
+  after_first_peel(inner).into_parent().complete()
+  → Err(root) inside Ascent
+Outer unpack Up(root):
+  after_child_dropped(snap)
+  return Ascent(root)
+Root:
+  into_inner, ()
+```
+
+### KeyB, no kill
+
+```text
+Inner: after_first_peel.complete() → Ok(outer)
+Outer unpack Here(outer):
+  after_child_ok, rearm, maybe exclusive
+  outer.into_parent() → Ascent(root)
+```
 
 ## Ordered changes
 
-### P0 — Effect sink; drop `ControlFlow::Break(Output)`
+### P0 — Sink; drop ControlFlow
 
-Before: `dispatch -> ControlFlow<Output, Path>`. After: `effs: &mut Vec<Effect>`, always return path-related ascent. Before/after on free `dispatch` and derive recurse as in current `bind` / `bind_macro` (child `?` removed; path always recovered).
+Before (`bind`):
 
-### P1 — `Pack` / `AsHere` / `AsUp` / `PeelPack` / `Path` / `after_first_peel` / `complete` / `unpack`
+```rust
+fn dispatch(path, event) -> ControlFlow<M::Output, Path>;
+// child: let child = Child::dispatch(...)?;  // Break propagates
+```
 
-Unit tests: one/two/three peels match nest shapes above (same as `/tmp` proof).
+After:
 
-### P2 — `Dispatch::Ascent` + `Claim`; leaf/parent expands as Inner/Outer above
+```rust
+fn dispatch(path, event, effs: &mut M::Output, claim: &mut Claim) -> Self::Ascent;
+// child always returns ascent; parent unpacks; no ?
+```
 
-Handlers that kill return `Ascent` via peels + complete. Handlers that only mutate take `&mut focus` on Here arm.
+Free `dispatch` builds `effs` + `claim`, returns `Option<M::Output>`.
 
-### P3 — Macro emits schedule opts + unpack + after_first_peel
+### P1 — Pack / Path / PeelPack / AsTerminal / after_first_peel / Ascent / unpack
 
-### F1 — `#[post]` Here / Up arms
+Unit tests: one/two/three peels; bare-root second peel `Err(root)`.
 
-### F2 — multi-peel kill in exclusive (more `into_parent` before `complete`)
+### P2 — Dispatch::Ascent + Claim; Inner/Outer/Root expands as above
 
-### F3 — `#[pre_post]` snap for Up arm
+### P3 — bind_macro emits schedule opts, unpack, after_first_peel, claim exclusive
+
+### F1 — `#[post]` Here and Up
+
+### F2 — kill = extra `into_parent` before `complete` in exclusive
+
+### F3 — `#[pre_post]` pre-snap for Up
 
 ### F4 — Here-only path mutation posts
 
 ## Rules
 
-1. No stubs: every named fn/type has a body.
-2. Path = focus + `Pack`. `complete() -> Pack::Out`.
-3. `into_parent` peels focus and `peel_pack`s; `Out` unchanged.
-4. Doll is nested `Result` inside bind; app uses `Ascent` + `Step`.
-5. Same ascent type on every exit from a node.
-6. Claim separate.
+1. No stubs.
+2. Leave/kill: `after_first_peel` / `into_parent` / `complete`; `Out = Pack::Out`.
+3. `AsHere<Parent>` peels to terminal with `AsTerminal` (bare root rest).
+4. `AsHere<Result<Parent, E>>` peels with nested `AsHere<E>`.
+5. Node whose ascent is bare path (Outer → Root): laserbeam `into_parent` only.
+6. Private doll in `Ascent`; unpack via `Step`.
+7. Claim separate.
 
 ## Tests
 
 - `after_first_peel` + `complete` → `Ok`
-- one `into_parent` + `complete` → `Err(Ok(_))`
-- two `into_parent` + `complete` → `Err(Err(Ok(_)))`
-- Outer expand KeyA kill / KeyB normal walks
-- Claim trap door
+- `after_first_peel` + `into_parent` + `complete` with `Rest = RootPath` → `Err(root)`
+- nested `Rest = Result<…>` three peels
+- KeyA / KeyB walks on Outer/Inner expand
+- claim trap door
