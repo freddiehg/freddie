@@ -27,12 +27,13 @@ Dispatch threads `Ascent<P>` by value across hops. Handlers receive **`&mut Asce
 mutation() = if ascent_hops < invalidation_depth { MaybeDropped } else { Intact }
 ```
 
+Depth is live on `Ascent`. After `invalidate(d)` or a framework hop bumps `ascent_hops`, the **next** read of `mutation()` (and the next framework decision that uses it) sees the new numbers. No freeze-at-entry; no deferred recompute.
+
 **laserbeam `PathMut::into_parent`** recovers parent only.
 
-**`Ascent::into_parent_ascent`:** recover parent → bump `ascent_hops` → `run_posts(&mut Ascent<Parent>)`.
+**`Ascent::into_parent_ascent`:** recover parent → bump `ascent_hops` → `run_posts(&mut Ascent<Parent>)` (posts see post-bump `mutation()`).
 
-**Kill:** `ascent.invalidate(d)` with d = kill path hop count.
-
+**Kill:** `ascent.invalidate(d)` with d = kill path hop count. Later `into_parent_ascent` hops / posts read that depth.
 User-facing methods on `&mut Ascent` / `&Ascent` (framework-only methods stay private on `AscentState`):
 
 | method | role |
@@ -546,13 +547,13 @@ ASCENT Inner
   ascent = Ascent::new(path)
   with_exclusive(&mut ascent):
     claim → Some(())
-    ascent.invalidate(2)
+    ascent.invalidate(2)                 // inv=2 now; any later mutation() sees it
   return ascent
 
 ASCENT Outer into_parent_ascent
   path.into_parent()
-  bump_ascent_hop → hops=1
-  run_posts(&mut Ascent<OuterPath>):
+  bump_ascent_hop → hops=1               // hops live; mutation() now 1 < 2
+  run_posts(&mut Ascent<OuterPath>):     // framework/posts read new depth here
     after_child: mutation MaybeDropped → LogDestroyed
     only_if_intact: skip
   return ascent
@@ -602,9 +603,9 @@ Handlers take `&mut Ascent<P>`.
 2. Ascent runs every scheduled post.
 3. Thread `Ascent<P>`. User code gets `&mut Ascent<P>`.
 4. laserbeam `into_parent`: parent only.
-5. `into_parent_ascent` bumps `ascent_hops` internally.
-6. Kill: `ascent.invalidate(d)`.
-7. `mutation()` = MaybeDropped iff `ascent_hops < invalidation_depth`.
+5. `into_parent_ascent` bumps `ascent_hops` internally; posts after the bump see the new `mutation()`.
+6. Kill: `ascent.invalidate(d)`; framework/posts afterward read the new depth.
+7. `mutation()` = MaybeDropped iff `ascent_hops < invalidation_depth` (live, not frozen).
 8. `claim()` is `Option<()>` trap door.
 9. Generate matches expand above.
 
