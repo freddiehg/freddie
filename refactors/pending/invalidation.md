@@ -260,7 +260,7 @@ where
 }
 ```
 
-The check (`EventHandler` / `DerivedHandler` / `accumulate`) is untouched by everything below.
+The check (`EventHandler` / `DerivedHandler` / `accumulate`) is ignored by this design: it is increasingly at odds with it and is expected to be retired rather than migrated. Same-trigger-at-two-depths needs no static ban; the claim resolves it, deepest first.
 
 ## The demo: `A → B`, everything the user writes
 
@@ -684,7 +684,7 @@ impl syn::parse::Parse for PrePost {
 }
 ```
 
-All three attribute kinds feed one scheduled list in source order; the differences are confined to parse time (which tokens fill `#pre`, written or synthesized, and whether the rhs gets the `exclusive` wrap). `claimed_triggers` does not change: only `#[bind]` triggers claim, so posts are exempt from the duplicate-trigger check.
+All three attribute kinds feed one scheduled list in source order; the differences are confined to parse time (which tokens fill `#pre`, written or synthesized, and whether the rhs gets the `exclusive` wrap). The check is ignored (see Landed baseline), so nothing here touches `claimed_triggers` or `accumulate`.
 
 ### Change 6 — derived levels
 
@@ -723,7 +723,7 @@ Posts run whether or not anything claimed: they are scheduled by their trigger, 
 3. Every dispatch returns `Completed<Self::Path>` (derived levels: `Completed<Self::Parent>`); no ascent associated type.
 4. Opts are snapped before descent, one per scheduled attribute, in source order. The schedule is final; every scheduled item runs, and its body decides what each state branch means.
 5. Every handler is `(ev, snap, AscendState<P>) -> (Vec<E>, Completed<P>)` (`snap = ()` under the synthesized pre) and returns the call to `.complete()`: staying put is `st.complete()`, leaving is `into_parent()` then `.complete()`, the invalidated arm forwards `c`. `exclusive` is shape-preserving and means not claimed: the claim gate and nothing else. The state a handler receives reflects the item before it, so a post keyed on the descent's outcome is scheduled before any bind.
-6. The claim lives inside `AscendState`; only binds claim, so posts are exempt from the duplicate-trigger check.
+6. The claim lives inside `AscendState`; only binds claim. The check is ignored by this design.
 7. Generated code spells laserbeam and bind items fully qualified; handwritten handlers `use laserbeam::{Complete, MaybeInvalidated};` and `use bind::AscendState;`.
 
 ## Tests
@@ -739,9 +739,8 @@ Posts run whether or not anything claimed: they are scheduled by their trigger, 
 
 ## Open questions
 
-1. The duplicate-trigger check still rejects the same trigger bound at two depths of the active path, while the claim makes that combination well-defined (deepest claimant wins). Keep the ban, or relax it to same-node duplicates only? The demo dodges by using distinct keys.
-2. `#[post]` and `#[pre_post]` are now the same thing modulo the synthesized pre. Keep both spellings, or collapse to `#[post]` with an optional `(pre, f)` rhs?
-3. `TimerId::fresh()` is demo filler; real ids mint from root state per `timer-ids-on-root.md`.
+1. `#[post]` and `#[pre_post]` are now the same thing modulo the synthesized pre. Keep both spellings, or collapse to `#[post]` with an optional `(pre, f)` rhs?
+2. `TimerId::fresh()` is demo filler; real ids mint from root state per `timer-ids-on-root.md`.
 
 ## Ordered changes
 
