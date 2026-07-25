@@ -3,7 +3,7 @@
 
 use bind::Node;
 use freddie::TimerFired;
-use laserbeam::AscendMut;
+use laserbeam::IntoAncestor;
 
 use crate::MercuryEffect;
 use crate::state::{Mercury, MercuryPath};
@@ -11,11 +11,11 @@ use crate::state::{Mercury, MercuryPath};
 /// `o` in a layer that binds keys: show that layer's keymap, or take it down if it is up.
 ///
 /// Generic over the event and the path, so every such layer binds it from its own node.
-pub(crate) fn toggle_overlay<'a, E, P: AscendMut<MercuryPath<'a>>>(
+pub(crate) fn toggle_overlay<'a, E, P: IntoAncestor<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
-    node.parent.ascend_mut().toggle_overlay()
+    node.parent.into_ancestor().toggle_overlay()
 }
 
 /// The overlay's hide timer fired. Bound at the root, so it fires from whatever layer is active,

@@ -208,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn ascend_reads_an_ancestor_by_shared_ref() {
+    fn ancestor_reads_by_shared_ref() {
         type Outer<'a> = PathMut<Attack, &'a mut Sheer>;
         let mut album = Sheer {
             heart: Attack { length: 7 },
@@ -218,7 +218,7 @@ mod tests {
             PathMut::from_fn(outer, |p| &mut p.get_mut().length, |p| &p.get().length);
 
         // Read the parent (Attack) by shared ref, without consuming the path.
-        let attack: &Outer = inner.ascend_to::<Outer>();
+        let attack: &Outer = inner.ancestor::<Outer>();
         assert_eq!(attack.get().length, 7);
 
         *inner.get_mut() += 1;
@@ -229,16 +229,16 @@ mod tests {
 /// Walk up a path to an ancestor by shared reference.
 ///
 /// Takes `&self` and returns `&Target`, so a handler can read an ancestor and keep
-/// using its own node. [`AscendMut`] is the consuming mirror, for a handler that
+/// using its own node. [`IntoAncestor`] is the consuming mirror, for a handler that
 /// walks up to mutate.
 ///
 /// Implemented for every path and for each of its ancestors, to twelve levels, so
 /// a handler can be generic over "any path beneath this node" rather than naming
-/// one. Use [`PathMut::ascend_to`] to name the target, or let it be inferred.
+/// one. Use [`PathMut::ancestor`] to name the target, or let it be inferred.
 ///
 /// ```ignore
-/// fn read<'a, P: Ascend<LayerPath<'a>>>(path: &P) {
-///     let layer: &LayerPath = path.ascend();
+/// fn read<'a, P: HasAncestor<LayerPath<'a>>>(path: &P) {
+///     let layer: &LayerPath = path.ancestor();
 /// }
 /// ```
 ///
@@ -254,118 +254,123 @@ mod tests {
 ///
 /// Only for trees where every node has one parent. A node with several declares
 /// its parent as a route enum rather than a `PathMut`, so the shapes stop matching,
-/// and the ascent would not be unique anyway.
-pub trait Ascend<Target> {
-    fn ascend(&self) -> &Target;
+/// and the walk would not be unique anyway.
+pub trait HasAncestor<Target> {
+    fn ancestor(&self) -> &Target;
 }
 
 /// Walk up a path to an ancestor, consuming it.
 ///
-/// The consuming mirror of [`Ascend`]: takes `self` and returns `Target` by value,
-/// which is how a handler that mutates the ancestor gets there. Shares [`Ascend`]'s
-/// per-depth impl structure and overlap-freedom. Use [`PathMut::ascend_to_mut`] to
+/// The consuming mirror of [`HasAncestor`]: takes `self` and returns `Target` by value,
+/// which is how a handler that mutates the ancestor gets there. Shares [`HasAncestor`]'s
+/// per-depth impl structure and overlap-freedom. Use [`PathMut::into_ancestor`] to
 /// name the target, or let it be inferred.
 ///
-/// [`Ascend`] is a supertrait: a consuming ascender can always also borrow-ascend,
-/// so one `AscendMut` bound gives a handler both reaches.
+/// [`HasAncestor`] is a supertrait: a consuming walk can always also borrow, so one
+/// `IntoAncestor` bound gives a handler both reaches.
 ///
 /// ```ignore
-/// fn take<'a, P: AscendMut<LayerPath<'a>>>(path: P) {
-///     let layer: LayerPath = path.ascend_mut();
+/// fn take<'a, P: IntoAncestor<LayerPath<'a>>>(path: P) {
+///     let layer: LayerPath = path.into_ancestor();
 /// }
 /// ```
-pub trait AscendMut<Target>: Ascend<Target> {
-    fn ascend_mut(self) -> Target;
+pub trait IntoAncestor<Target>: HasAncestor<Target> {
+    fn into_ancestor(self) -> Target;
 }
 
 /// Every path is its own ancestor, at depth zero.
-impl<T> Ascend<T> for T {
-    fn ascend(&self) -> &T {
+impl<T> HasAncestor<T> for T {
+    fn ancestor(&self) -> &T {
         self
     }
 }
 
-impl<T> AscendMut<T> for T {
-    fn ascend_mut(self) -> T {
+impl<T> IntoAncestor<T> for T {
+    fn into_ancestor(self) -> T {
         self
     }
 }
 
 impl<Node, Parent> PathMut<Node, Parent> {
     /// Walk up to `Target` by shared reference, naming it rather than leaving it to
-    /// inference. See [`ascend_to_mut`](Self::ascend_to_mut) for the consuming form.
+    /// inference. See [`into_ancestor`](Self::into_ancestor) for the consuming form.
     #[must_use]
-    pub fn ascend_to<Target>(&self) -> &Target
+    pub fn ancestor<Target>(&self) -> &Target
     where
-        Self: Ascend<Target>,
+        Self: HasAncestor<Target>,
     {
-        Ascend::ascend(self)
+        HasAncestor::ancestor(self)
     }
 
     /// Walk up to `Target`, consuming the path, naming it rather than leaving it to
     /// inference.
     ///
     /// Sugar, and the only way to name the target on the right. `Target` is a
-    /// parameter of [`AscendMut`] rather than of its method, so `path.ascend_mut::<T>()`
-    /// does not compile: the method takes no generic arguments. Without this you
-    /// would name the target on the left, `let layer: LayerPath = path.ascend_mut();`,
-    /// or spell out `<HomeLayerPath as AscendMut<LayerPath>>::ascend_mut(path)`.
+    /// parameter of [`IntoAncestor`] rather than of its method, so
+    /// `path.into_ancestor::<T>()` on the trait method alone does not compile: the
+    /// method takes no generic arguments. The inherent method does take them, so
+    /// `path.into_ancestor::<T>()` lands here. Without this you would name the
+    /// target on the left, `let layer: LayerPath = path.into_ancestor();`, or spell
+    /// out `<HomeLayerPath as IntoAncestor<LayerPath>>::into_ancestor(path)`.
     #[must_use]
-    pub fn ascend_to_mut<Target>(self) -> Target
+    pub fn into_ancestor<Target>(self) -> Target
     where
-        Self: AscendMut<Target>,
+        Self: IntoAncestor<Target>,
     {
-        AscendMut::ascend_mut(self)
+        IntoAncestor::into_ancestor(self)
     }
 }
 
 /// `PathMut<N0, PathMut<N1, .. T>>`, one level per type parameter.
-macro_rules! ascend_nest {
-    ($t:ident) => { $t };
-    ($t:ident, $head:ident $(, $rest:ident)*) => {
-        PathMut<$head, ascend_nest!($t $(, $rest)*)>
+///
+/// The terminal is any type (`ty`), so a nest can end in a path alias rather than
+/// only a bare identifier.
+macro_rules! path_nest {
+    ($t:ty) => { $t };
+    ($t:ty, $head:ident $(, $rest:ident)*) => {
+        PathMut<$head, path_nest!($t $(, $rest)*)>
     };
 }
 
 /// One `into_parent()` per type parameter.
-macro_rules! ascend_up {
+macro_rules! into_parent_chain {
     ($e:expr) => { $e };
     ($e:expr, $head:ident $(, $rest:ident)*) => {
-        ascend_up!($e.into_parent() $(, $rest)*)
+        into_parent_chain!($e.into_parent() $(, $rest)*)
     };
 }
 
-/// One `parent()` per type parameter, the shared-borrow mirror of `ascend_up!`.
-macro_rules! ascend_up_ref {
+/// One `parent()` per type parameter, the shared-borrow mirror of `into_parent_chain!`.
+macro_rules! parent_chain {
     ($e:expr) => { $e };
     ($e:expr, $head:ident $(, $rest:ident)*) => {
-        ascend_up_ref!($e.parent() $(, $rest)*)
+        parent_chain!($e.parent() $(, $rest)*)
     };
 }
 
-/// One `Ascend` and one `AscendMut` impl per depth, walking the list of type parameters.
-macro_rules! ascend_impls {
+/// One `HasAncestor` and one `IntoAncestor` impl per depth, walking the list of type parameters.
+macro_rules! ancestor_impls {
     ([$($acc:ident),*]) => {};
     ([$($acc:ident),*], $head:ident $(, $rest:ident)*) => {
-        impl<T, $($acc,)* $head> Ascend<T> for ascend_nest!(T $(, $acc)*, $head) {
-            fn ascend(&self) -> &T {
-                ascend_up_ref!(self $(, $acc)*, $head)
+        impl<T, $($acc,)* $head> HasAncestor<T> for path_nest!(T $(, $acc)*, $head) {
+            fn ancestor(&self) -> &T {
+                parent_chain!(self $(, $acc)*, $head)
             }
         }
-        impl<T, $($acc,)* $head> AscendMut<T> for ascend_nest!(T $(, $acc)*, $head) {
-            fn ascend_mut(self) -> T {
-                ascend_up!(self $(, $acc)*, $head)
+        impl<T, $($acc,)* $head> IntoAncestor<T> for path_nest!(T $(, $acc)*, $head) {
+            fn into_ancestor(self) -> T {
+                into_parent_chain!(self $(, $acc)*, $head)
             }
         }
-        ascend_impls!([$($acc,)* $head] $(, $rest)*);
+        ancestor_impls!([$($acc,)* $head] $(, $rest)*);
     };
 }
 
-ascend_impls!([], N0, N1, N2, N3, N4, N5, N6, N7, N8, N9, N10, N11);
+ancestor_impls!([], N0, N1, N2, N3, N4, N5, N6, N7, N8, N9, N10, N11);
 
 #[cfg(test)]
-mod ascend_tests {
-    use crate::{Ascend, AscendMut, PathMut};
+mod ancestor_tests {
+    use crate::{HasAncestor, IntoAncestor, PathMut};
 
     struct Root;
     struct Target;
@@ -397,23 +402,23 @@ mod ascend_tests {
     type D11<'a> = PathMut<N11, D10<'a>>;
     type D12<'a> = PathMut<N12, D11<'a>>;
 
-    const fn ascends<'a, P: Ascend<TargetPath<'a>> + AscendMut<TargetPath<'a>>>() {}
+    const fn reaches<'a, P: HasAncestor<TargetPath<'a>> + IntoAncestor<TargetPath<'a>>>() {}
 
     /// Twelve levels, plus the identity, for both traits. Fails to compile if either reach is short.
     #[test]
-    fn ascends_from_every_depth_up_to_twelve() {
-        ascends::<TargetPath<'_>>(); // depth 0, the identity impl
-        ascends::<D1<'_>>();
-        ascends::<D2<'_>>();
-        ascends::<D6<'_>>();
-        ascends::<D11<'_>>();
-        ascends::<D12<'_>>();
+    fn reaches_from_every_depth_up_to_twelve() {
+        reaches::<TargetPath<'_>>(); // depth 0, the identity impl
+        reaches::<D1<'_>>();
+        reaches::<D2<'_>>();
+        reaches::<D6<'_>>();
+        reaches::<D11<'_>>();
+        reaches::<D12<'_>>();
     }
 
-    /// A path ascends to every ancestor, not only the one it was written for.
+    /// A path reaches every ancestor, not only the one it was written for.
     #[test]
-    fn a_path_ascends_to_each_of_its_ancestors() {
-        const fn to<T, P: Ascend<T> + AscendMut<T>>() {}
+    fn a_path_reaches_each_of_its_ancestors() {
+        const fn to<T, P: HasAncestor<T> + IntoAncestor<T>>() {}
         to::<D2<'_>, D12<'_>>();
         to::<D11<'_>, D12<'_>>();
         to::<TargetPath<'_>, D12<'_>>();

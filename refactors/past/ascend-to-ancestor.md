@@ -1,6 +1,6 @@
 # laserbeam: ascend → ancestor
 
-Not done. Standalone. Prefactor for `path-peel-complete.md` (which uses `path_nest!`).
+Done. Standalone. Prefactor for `path-peel-complete.md` (which uses `path_nest!`).
 
 Pure rename, no behavior change. The up-walk family speaks the nouns the one-level walk already uses: one level is `parent` / `into_parent`, many levels become `ancestor` / `into_ancestor`. The `Mut` suffix dies because `ascend_mut` consumes, while everywhere else in laserbeam `mut` means borrow (`get_mut`) and consuming is spelled `into_` (`into_parent`).
 

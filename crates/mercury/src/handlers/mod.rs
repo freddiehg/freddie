@@ -28,7 +28,7 @@ pub(crate) use root::*;
 pub(crate) use tab::*;
 pub(crate) use window::*;
 
-use laserbeam::AscendMut;
+use laserbeam::IntoAncestor;
 
 use crate::MercuryEffect;
 use crate::state::{HomeLayer, Mercury, MercuryPath};
@@ -48,14 +48,14 @@ pub(crate) fn go_home(root: &mut Mercury) -> Vec<MercuryEffect> {
 /// home; see [`super::nav`].)
 ///
 /// Generic over the path, so every chooser binds it from its own node.
-pub(crate) fn and_go_home<'a, P: AscendMut<MercuryPath<'a>>>(
+pub(crate) fn and_go_home<'a, P: IntoAncestor<MercuryPath<'a>>>(
     path: P,
     effects: impl IntoIterator<Item = MercuryEffect>,
 ) -> Vec<MercuryEffect> {
-    and_go_home_from(path.ascend_mut(), effects)
+    and_go_home_from(path.into_ancestor(), effects)
 }
 
-/// [`and_go_home`] for a caller that has already ascended, which a handler that read the
+/// [`and_go_home`] for a caller that already holds the root, which a handler that read the
 /// root's state to build its effects has.
 pub(crate) fn and_go_home_from(
     root: &mut Mercury,

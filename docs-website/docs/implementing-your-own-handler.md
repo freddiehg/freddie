@@ -58,7 +58,7 @@ fn maximize<'a>(
     _ev: &KeyEvent,
     node: Node<ResizeLayerPath<'a>, ()>,
 ) -> Option<MercuryEffect> {
-    let root: &mut Mercury = node.parent.ascend();
+    let root: &mut Mercury = node.parent.into_ancestor();
 
     let (id, frame) = root.focused?;
     // Only the first maximize records anything. A second one
@@ -77,7 +77,7 @@ fn restore<'a>(
     _ev: &KeyEvent,
     node: Node<ResizeLayerPath<'a>, ()>,
 ) -> Option<MercuryEffect> {
-    let root: &mut Mercury = node.parent.ascend();
+    let root: &mut Mercury = node.parent.into_ancestor();
 
     let (id, _) = root.focused?;
     let frame = root.prior_locations.remove(&id)?;
@@ -86,7 +86,7 @@ fn restore<'a>(
 }
 ```
 
-`node.parent` is the path to the level the binding was written on, and `ascend` climbs from it to the root. There is no checking whether resize is the active layer, and no `unreachable!` for the case where it is not. `restore` runs because it was, and the path is what says so. A state a binding cannot be reached in is not an arm that panics, it is a value the handler is never handed.
+`node.parent` is the path to the level the binding was written on, and `into_ancestor` walks from it to the root. There is no checking whether resize is the active layer, and no `unreachable!` for the case where it is not. `restore` runs because it was, and the path is what says so. A state a binding cannot be reached in is not an arm that panics, it is a value the handler is never handed.
 
 `remove` rather than a lookup, because restoring forgets: press `r` twice and the second press does nothing rather than placing the window again.
 

@@ -29,7 +29,7 @@ const maximizeExample = `fn maximize<'a>(
     node: Node<ResizeLayerPath<'a>, ()>,
 ) -> Option<MercuryEffect> {
     // ResizeLayer -> Layer -> Mercury, where the frames are kept.
-    let root: &mut Mercury = node.parent.ascend();
+    let root: &mut Mercury = node.parent.into_ancestor();
 
     let (id, frame) = root.focused?;
     // Only the first maximize records anything. A second one
@@ -44,7 +44,7 @@ const handlerExample = `fn restore<'a>(
     _ev: &KeyEvent,
     node: Node<ResizeLayerPath<'a>, ()>,
 ) -> Option<MercuryEffect> {
-    let root: &mut Mercury = node.parent.ascend();
+    let root: &mut Mercury = node.parent.into_ancestor();
 
     let (id, _) = root.focused?;
     let frame = root.prior_locations.remove(&id)?;

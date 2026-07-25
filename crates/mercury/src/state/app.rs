@@ -1,7 +1,7 @@
 use bind::Bind;
 use freddie::TimerGuard;
 use freddie_keys::{Key, ModifierFlags};
-use laserbeam::Ascend;
+use laserbeam::HasAncestor;
 
 #[allow(clippy::wildcard_imports)]
 use crate::handlers::*;
@@ -77,8 +77,8 @@ pub enum AppData {
 /// A shared reference, so it cannot mutate: it derives, it does not act. `None` while a nav is in
 /// flight (the old app must not bind in the gap), and `Zed`/`Other` bind nothing, so all three get
 /// no level and no struct.
-fn app_data<'a, P: Ascend<MercuryPath<'a>>>(path: &P) -> Option<AppData> {
-    let root = path.ascend();
+fn app_data<'a, P: HasAncestor<MercuryPath<'a>>>(path: &P) -> Option<AppData> {
+    let root = path.ancestor();
     match root.foreground.confirmed() {
         Some(App::Chrome) => Some(AppData::Chrome(ChromeApp::new())),
         Some(App::Ghostty) => Some(AppData::Ghostty(GhosttyApp::new())),

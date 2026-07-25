@@ -5,11 +5,11 @@
 //! command layers, so the flush is empty; entering typing (open) and leaving it (close) are the
 //! ones that carry effects.
 //!
-//! Each is generic over the event and the path, so any trigger and any node that ascends to the
-//! root can bind it from its own place in the tree.
+//! Each is generic over the event and the path, so any trigger and any node that reaches the root ancestor
+//! can bind it from its own place in the tree.
 
 use bind::Node;
-use laserbeam::AscendMut;
+use laserbeam::IntoAncestor;
 
 use super::go_home;
 use crate::MercuryEffect;
@@ -18,22 +18,22 @@ use crate::state::{AppLayer, MercuryPath, NavLayer, ResizeLayer, SiteLayer, Typi
 /// `escape` anywhere, and a layer's idle-timeout: go back to the home layer.
 ///
 /// Typing has to bind `escape` explicitly, because a plain escape passes through there.
-pub(crate) fn to_home<'a, E, P: AscendMut<MercuryPath<'a>>>(
+pub(crate) fn to_home<'a, E, P: IntoAncestor<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
-    go_home(node.parent.ascend_mut())
+    go_home(node.parent.into_ancestor())
 }
 
 /// `n`: enter the nav layer. Bound from home and from the in-app layer.
 ///
 /// Nav arms an idle-timeout, so its constructor also hands back the effect that schedules it.
-pub(crate) fn to_nav<'a, E, P: AscendMut<MercuryPath<'a>>>(
+pub(crate) fn to_nav<'a, E, P: IntoAncestor<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
     let (nav, timer) = NavLayer::new();
-    let mut effects = node.parent.ascend_mut().set_layer(nav);
+    let mut effects = node.parent.into_ancestor().set_layer(nav);
     effects.push(timer);
     effects
 }
@@ -42,20 +42,20 @@ pub(crate) fn to_nav<'a, E, P: AscendMut<MercuryPath<'a>>>(
 ///
 /// Generic over the node's data as well, because an app's level binds it too (Chrome's `l` focuses
 /// the address bar and lands here) and a derived node carries its data rather than `()`.
-pub(crate) fn to_typing<'a, E, P: AscendMut<MercuryPath<'a>>, D>(
+pub(crate) fn to_typing<'a, E, P: IntoAncestor<MercuryPath<'a>>, D>(
     _ev: &E,
     node: Node<P, D>,
 ) -> Vec<MercuryEffect> {
-    node.parent.ascend_mut().set_layer(TypingLayer::new())
+    node.parent.into_ancestor().set_layer(TypingLayer::new())
 }
 
 /// `i` in home: enter the in-app layer for whatever app is foregrounded.
-pub(crate) fn to_inapp<'a, E, P: AscendMut<MercuryPath<'a>>>(
+pub(crate) fn to_inapp<'a, E, P: IntoAncestor<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
     let (inapp, timer) = AppLayer::new();
-    let mut effects = node.parent.ascend_mut().set_layer(inapp);
+    let mut effects = node.parent.into_ancestor().set_layer(inapp);
     effects.push(timer);
     effects
 }
@@ -64,23 +64,23 @@ pub(crate) fn to_inapp<'a, E, P: AscendMut<MercuryPath<'a>>>(
 ///
 /// Next to `i` under the same finger, because the two are neighbours in meaning as well: `i` is
 /// what the frontmost app can do, `u` is what the site in its front tab can do.
-pub(crate) fn to_site<'a, E, P: AscendMut<MercuryPath<'a>>>(
+pub(crate) fn to_site<'a, E, P: IntoAncestor<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
     let (site, timer) = SiteLayer::new();
-    let mut effects = node.parent.ascend_mut().set_layer(site);
+    let mut effects = node.parent.into_ancestor().set_layer(site);
     effects.push(timer);
     effects
 }
 
 /// `r` in home: enter the resize layer.
-pub(crate) fn to_resize<'a, E, P: AscendMut<MercuryPath<'a>>>(
+pub(crate) fn to_resize<'a, E, P: IntoAncestor<MercuryPath<'a>>>(
     _ev: &E,
     node: Node<P, ()>,
 ) -> Vec<MercuryEffect> {
     let (resize, timer) = ResizeLayer::new();
-    let mut effects = node.parent.ascend_mut().set_layer(resize);
+    let mut effects = node.parent.into_ancestor().set_layer(resize);
     effects.push(timer);
     effects
 }
