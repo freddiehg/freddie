@@ -35,6 +35,13 @@ use std::hash::Hash;
 pub use bind_macro::Bind;
 
 /// One exclusive bind handler per dispatch: the first to [`try_take`](Self::try_take) wins.
+///
+/// A newtype over the slot rather than a bare `&mut Option<()>`, because the
+/// bare reference would let a handler write the slot directly: un-claim a taken
+/// key with `*slot = None`, or claim without the check. The private field
+/// confines writes to `try_take`, so a claim, once taken, is taken for the rest
+/// of the dispatch. The price is [`reborrow`](Self::reborrow): a bare `&mut`
+/// reborrows implicitly at call sites, a newtype does not.
 pub struct Claim<'c> {
     slot: &'c mut Option<()>,
 }
