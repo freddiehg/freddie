@@ -15,19 +15,12 @@ pub struct Ascent<P> {
 }
 ```
 
-Dispatch threads `Ascent<P>`. Hop counting is ownership-based: recovering a parent yields a **`Complete`** that must be consumed to update counters. No interior mutability; no runtime borrow checker.
-
-**`Complete`** — sealed proof one `into_parent` hop happened. Only produced by `Ascent::into_parent`. Only consumed by:
-
-- `complete_ascent_hop` — framework hop (bumps `ascent_hops`)
-- `complete_kill_hop` — kill climb (raises `invalidation_depth` by one, via max with running kill hops)
-
-Dropping `Complete` without consuming it is a bug (`#[must_use]`).
+Dispatch threads `Ascent<P>`. Hop counting is automatic inside framework methods — not a user-facing `.complete()` token.
 
 **`AscentState` (inside `Ascent`, not bare to user code):**
 
-- **`invalidation_depth`** — kill coverage. Only via consumed kill `Complete`s / `invalidate`.
-- **`ascent_hops`** — framework hops since leaf. Only via consumed ascent `Complete`s.
+- **`invalidation_depth`** — kill coverage. Set by `ExclusiveCtx::invalidate(d)`.
+- **`ascent_hops`** — framework parent recoveries since leaf. Bumped inside `into_parent_ascent` only.
 - **`claim`** — `Option<()>`, one-way trap door.
 
 ```text
@@ -36,9 +29,9 @@ mutation() = if ascent_hops < invalidation_depth { MaybeDropped } else { Intact 
 
 **laserbeam `PathMut::into_parent`** recovers parent path only.
 
-**Framework hop:** `into_parent` → `Complete` → `complete_ascent_hop` → posts → `Ascent<Parent>`.
+**Framework hop (`into_parent_ascent`):** recover parent → bump `ascent_hops` → run posts.
 
-**Kill climb:** each path `into_parent` → `Complete` → `complete_kill_hop` (or batch into `invalidate(n)` after n completes).
+**Kill:** `ctx.invalidate(d)` with d = kill path hop count.
 
 User handlers get **capability views**:
 
@@ -47,7 +40,7 @@ User handlers get **capability views**:
 | `mutation()` | yes | yes |
 | `claimed()` | yes | yes |
 | `claim()` | no | yes |
-| `invalidate` / kill completes | no | yes |
+| `invalidate(d)` | no | yes |
 
 ## Types (`crates/bind`)
 
