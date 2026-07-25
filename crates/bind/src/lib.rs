@@ -134,6 +134,38 @@ where
     }
 }
 
+/// Runs `a` then `b` as one handler: one claim, effects in order, `b` receiving
+/// the state `a` left behind.
+///
+/// The schedule's fold, at expression level, so one user action composes from
+/// units at its bind site: `#[bind(K => and(tap_cmd_l, enter_typing))]`. It
+/// nests, and it claims nothing itself — `#[bind]` wraps the outermost
+/// expression in [`exclusive`], so the whole composition takes the one claim and
+/// no unit takes its own.
+///
+/// Both units are handed the same event and the same snap, hence the `Copy`
+/// bounds; in bind position the snap is `()`.
+pub fn and<Ev, Snap, P, E, A, B>(
+    a: A,
+    b: B,
+) -> impl for<'x> FnOnce(Ev, Snap, AscendState<'x, P>) -> (Vec<E>, ::laserbeam::Completed<P>)
+where
+    Ev: Copy,
+    Snap: Copy,
+    P: ::laserbeam::HasStop,
+    A: for<'x> FnOnce(Ev, Snap, AscendState<'x, P>) -> (Vec<E>, ::laserbeam::Completed<P>),
+    B: for<'x> FnOnce(Ev, Snap, AscendState<'x, P>) -> (Vec<E>, ::laserbeam::Completed<P>),
+{
+    move |ev, snap, st| {
+        let AscendState { mut claim, state } = st;
+        let (mut effs, completed) = a(ev, snap, AscendState::new(state, claim.reborrow()));
+        let state = completed.to_maybe_invalidated();
+        let (e, completed) = b(ev, snap, AscendState::new(state, claim));
+        effs.extend(e);
+        (effs, completed)
+    }
+}
+
 /// Emits its body only when the `check` feature is on.
 ///
 /// A derive cannot see the features of the crate it expands into, so it cannot cfg the check

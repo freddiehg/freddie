@@ -6,7 +6,7 @@
 //! path and `Drop` cannot emit the cancel. One post owns the whole deadline story by matching the
 //! state, and it is scheduled before the bind because it keys on what the descent did.
 
-use bind::{AscendState, Bind, Bindings, EventTrigger, dispatch};
+use bind::{AscendState, Bind, Bindings, EventTrigger, and, dispatch};
 use laserbeam::{Complete, Completed, HasStop, IntoAncestor, MaybeInvalidated, PathMut};
 
 // ---- what the app owns: events, triggers, effects ----
@@ -347,12 +347,48 @@ pub struct Mid {
 #[derive(Bind)]
 #[node(parent = MidPath)]
 #[binds(M)]
-#[bind(Key("go") => leaf_home)]
+#[bind(
+    Key("go") => leaf_home,
+    // One gesture, composed from its units at the bind site.
+    Key("pair") => and(emits_flash, emits_cancel),
+    Key("nest") => and(emits_flash, and(emits_cancel, emits_flash)),
+    Key("leave-then-look") => and(leaf_home, witness_leaf),
+)]
 pub struct Leaf;
 
 pub type TopPath<'a> = &'a mut Top;
 pub type MidPath<'a> = PathMut<Mid, TopPath<'a>>;
 pub type LeafPath<'a> = PathMut<Leaf, MidPath<'a>>;
+
+/// Two effect-only units, distinguishable in the order they ran.
+fn emits_flash<P: HasStop + Complete<P>>(
+    _ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<DemoEffect>, Completed<P>) {
+    (vec![DemoEffect::FlashOverlay], st.complete())
+}
+
+fn emits_cancel<P: HasStop + Complete<P>>(
+    _ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<DemoEffect>, Completed<P>) {
+    (vec![DemoEffect::CancelTimer(TimerId(0))], st.complete())
+}
+
+/// Reports the state it was handed at the LEAF, which is how a second unit says what the first
+/// one did to the path they share.
+fn witness_leaf<'x>(
+    _ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, LeafPath<'x>>,
+) -> (Vec<DemoEffect>, Completed<LeafPath<'x>>) {
+    match st.state {
+        MaybeInvalidated::NotInvalidated(leaf) => (vec![DemoEffect::SawStanding], leaf.complete()),
+        MaybeInvalidated::Invalidated(c) => (vec![DemoEffect::SawInvalidated], c),
+    }
+}
 
 /// The leaf's leave, the same shape `go_home` has on the demo tree: it ends at the root, so it
 /// does not match the state at all.
@@ -408,6 +444,72 @@ fn posts_run_without_a_claim_on_the_standing_branch() {
         (
             vec![DemoEffect::SawStanding, DemoEffect::SawStanding],
             false
+        )
+    );
+}
+
+// ---- and: one claim, effects in order, the second unit on the first's state ----
+
+/// The units' effects land in call order, ahead of the posts that run above them, and the whole
+/// composition takes the one claim rather than one per unit.
+#[test]
+fn and_concatenates_effects_in_order() {
+    let mut top = Top {
+        mid: Mid { leaf: Leaf },
+    };
+    assert_eq!(
+        dispatch::<M, Top, _>(&mut top, &key("pair")),
+        (
+            vec![
+                DemoEffect::FlashOverlay,
+                DemoEffect::CancelTimer(TimerId(0)),
+                // Top's two posts, which never claimed and ran anyway.
+                DemoEffect::SawStanding,
+                DemoEffect::SawStanding,
+            ],
+            true
+        )
+    );
+}
+
+/// `a` leaves; `b` is handed what `a` left rather than the path `a` was handed, so it takes its
+/// invalidated arm and forwards the leave. The enclosing dispatch then folds that leave at each
+/// node above, which `Top`'s posts report: gone, then standing again at the root.
+#[test]
+fn the_second_unit_sees_the_firsts_leave() {
+    let mut top = Top {
+        mid: Mid { leaf: Leaf },
+    };
+    assert_eq!(
+        dispatch::<M, Top, _>(&mut top, &key("leave-then-look")),
+        (
+            vec![
+                DemoEffect::SawInvalidated,
+                DemoEffect::SawInvalidated,
+                DemoEffect::SawStanding,
+            ],
+            true
+        )
+    );
+}
+
+/// Nesting is composition: `and(a, and(b, c))` runs all three, in order, under the one claim.
+#[test]
+fn and_nests() {
+    let mut top = Top {
+        mid: Mid { leaf: Leaf },
+    };
+    assert_eq!(
+        dispatch::<M, Top, _>(&mut top, &key("nest")),
+        (
+            vec![
+                DemoEffect::FlashOverlay,
+                DemoEffect::CancelTimer(TimerId(0)),
+                DemoEffect::FlashOverlay,
+                DemoEffect::SawStanding,
+                DemoEffect::SawStanding,
+            ],
+            true
         )
     );
 }
