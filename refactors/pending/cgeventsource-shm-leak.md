@@ -4,7 +4,7 @@
 
 Measured on a ~5h mercury run: `post` count and `shared memory` region count tracked 1:1 (~60k posts, ~60k regions, ~934MB resident SHM). Heap (`MALLOC`) stayed ~45MB. RSS is baseline plus posts × 16KB, unbounded.
 
-The flags on the wire must stay exact: portable modifiers from the caller, plus the non-modifier bits the keycode itself carries (for our `Key` set, `NumericPad` on the navigation cluster). They must not inherit leftover bits from earlier posts through the same source.
+The flags on the wire must stay exact: portable modifiers from the caller, plus the non-modifier bits the keycode itself carries (`NumericPad`, on the four arrows and on the keypad). They must not inherit leftover bits from earlier posts through the same source.
 
 ## Shape after
 
@@ -15,9 +15,43 @@ Two long-lived private sources, one per thread that builds events:
 
 Each is created once, when that thread starts building events. Neither is shared across threads (posting mutates source state). Fixed cost: two sources ≈ 32KB for the life of the process. If either cannot be created, `run_tap` fails with `CaptureError`, the same way a tap that cannot install does.
 
-`keyboard_event` takes a borrow of the source. It never calls `CGEventSource::new`. Flags are set to exactly `to_cg(flags) | intrinsic_flags(key)`, never merged with `event.get_flags() & !MODIFIERS`.
+`keyboard_event` takes a borrow of the source. It never calls `CGEventSource::new`. Flags are set to exactly `to_cg(flags) | intrinsic_flags(code)`, never merged with `event.get_flags() & !MODIFIERS`.
 
 ```rust
+/// The keycodes a clean private source puts `NumericPad` on: the four arrows and the keypad.
+///
+/// Measured by building an event for every code from 0 to 127 on a clean private source and
+/// reading the bit back. `HOME`, `END`, `PAGE_UP` and `PAGE_DOWN` are not in it, and neither
+/// are `ANSI_KEYPAD_CLEAR` or `JIS_KEYPAD_COMMA`; the other seventeen keypad codes are.
+///
+/// By keycode rather than by [`Key`], because the keypad has no `Key` variant. Those keys
+/// reach the emitter as `Key::Raw(code)`, so a match on variants would drop the bit for
+/// exactly the keys that carry it most: the log for one run has `Raw(76)`
+/// (`ANSI_KEYPAD_ENTER`) posted with `kept_from_source=0x00200000`.
+const NUMERIC_PAD_CODES: &[CGKeyCode] = &[
+    KeyCode::LEFT_ARROW,
+    KeyCode::RIGHT_ARROW,
+    KeyCode::DOWN_ARROW,
+    KeyCode::UP_ARROW,
+    KeyCode::ANSI_KEYPAD_DECIMAL,
+    KeyCode::ANSI_KEYPAD_MULTIPLY,
+    KeyCode::ANSI_KEYPAD_PLUS,
+    KeyCode::ANSI_KEYPAD_DIVIDE,
+    KeyCode::ANSI_KEYPAD_ENTER,
+    KeyCode::ANSI_KEYPAD_MINUS,
+    KeyCode::ANSI_KEYPAD_EQUAL,
+    KeyCode::ANSI_KEYPAD_0,
+    KeyCode::ANSI_KEYPAD_1,
+    KeyCode::ANSI_KEYPAD_2,
+    KeyCode::ANSI_KEYPAD_3,
+    KeyCode::ANSI_KEYPAD_4,
+    KeyCode::ANSI_KEYPAD_5,
+    KeyCode::ANSI_KEYPAD_6,
+    KeyCode::ANSI_KEYPAD_7,
+    KeyCode::ANSI_KEYPAD_8,
+    KeyCode::ANSI_KEYPAD_9,
+];
+
 /// Non-modifier flag bits this keycode carries on a clean private source.
 ///
 /// Posting updates the source's flag state, and `CGEventCreateKeyboardEvent` seeds a new
@@ -26,21 +60,13 @@ Each is created once, when that thread starts building events. Neither is shared
 /// `cmd`-`space`, Spotlight dead until restart). So the bits a key is allowed to keep are
 /// named here, and the event's flags are set to exactly those plus the portable modifiers.
 ///
-/// For the keys `freddie_keys::Key` names on macOS, the only non-modifier bit a clean private
-/// source puts on is `NumericPad`, and only on the navigation cluster. Keypad keys are not
-/// in the enum. `SecondaryFn` is already in `MODIFIERS` and only reappears when the portable
-/// flags carry `FN`.
-fn intrinsic_flags(key: Key) -> CGEventFlags {
-    match key {
-        Key::UpArrow
-        | Key::DownArrow
-        | Key::LeftArrow
-        | Key::RightArrow
-        | Key::Home
-        | Key::End
-        | Key::PageUp
-        | Key::PageDown => CGEventFlags::CGEventFlagNumericPad,
-        _ => CGEventFlags::empty(),
+/// `SecondaryFn` is already in `MODIFIERS` and only reappears when the portable flags carry
+/// `FN`.
+fn intrinsic_flags(code: CGKeyCode) -> CGEventFlags {
+    if NUMERIC_PAD_CODES.contains(&code) {
+        CGEventFlags::CGEventFlagNumericPad
+    } else {
+        CGEventFlags::empty()
     }
 }
 
@@ -50,7 +76,7 @@ fn intrinsic_flags(key: Key) -> CGEventFlags {
 /// source. Creating a new `Private` source per call maps ~16KB of shared memory that
 /// `CFRelease` never unmaps, so the source is passed in rather than built here.
 ///
-/// Flags on the wire are `to_cg(flags) | intrinsic_flags(key)` only. Birth flags from the
+/// Flags on the wire are `to_cg(flags) | intrinsic_flags(code)` only. Birth flags from the
 /// source are ignored: they hold whatever the last post left in the source, not what this key
 /// is.
 ///
@@ -72,7 +98,7 @@ fn keyboard_event(
     // source, not a second mapping.
     let event = CGEvent::new_keyboard_event(source.clone(), code, press == PressType::Down)
         .map_err(|_| EmitError::Post)?;
-    let intrinsic = intrinsic_flags(key);
+    let intrinsic = intrinsic_flags(code);
     event.set_flags(to_cg(flags) | intrinsic);
     tracing::debug!(
         ?key,
@@ -213,53 +239,63 @@ New tests:
 
 ```rust
 #[test]
-fn intrinsic_flags_marks_only_the_navigation_cluster() {
-    assert_eq!(
-        intrinsic_flags(Key::UpArrow),
-        CGEventFlags::CGEventFlagNumericPad
-    );
-    assert_eq!(
-        intrinsic_flags(Key::PageDown),
-        CGEventFlags::CGEventFlagNumericPad
-    );
-    assert_eq!(intrinsic_flags(Key::Space), CGEventFlags::empty());
-    assert_eq!(intrinsic_flags(Key::KeyA), CGEventFlags::empty());
+fn only_the_arrows_and_the_keypad_are_intrinsically_numeric_pad() {
+    for code in [
+        KeyCode::UP_ARROW,
+        KeyCode::LEFT_ARROW,
+        KeyCode::ANSI_KEYPAD_ENTER,
+        KeyCode::ANSI_KEYPAD_7,
+    ] {
+        assert_eq!(
+            intrinsic_flags(code),
+            CGEventFlags::CGEventFlagNumericPad,
+            "{code} carries NumericPad on a clean source"
+        );
+    }
+    // The navigation keys that read like the arrows and are not: measured, not assumed.
+    for code in [
+        KeyCode::HOME,
+        KeyCode::END,
+        KeyCode::PAGE_UP,
+        KeyCode::PAGE_DOWN,
+        KeyCode::ANSI_KEYPAD_CLEAR,
+        KeyCode::SPACE,
+        KeyCode::ANSI_A,
+    ] {
+        assert_eq!(
+            intrinsic_flags(code),
+            CGEventFlags::empty(),
+            "{code} carries nothing outside MODIFIERS"
+        );
+    }
 }
 
-// Posting mutates the source: the probe below is born carrying NumericPad. A later chord
-// built from the same source must still post without it, or Spotlight's cmd-space stops
-// matching. Change 1 makes this hold; Change 2 relies on it for the long-lived sources.
-//
-// The post is real and reaches the session, so the posted half is the release: nothing acts
-// on a key-up that had no down.
+// The whole point of the change: what goes on the wire is a function of the key and the
+// portable flags, and of nothing the source is holding. Exact equality, so a reintroduced
+// `| (get_flags() & !MODIFIERS)` fails here rather than in Spotlight six hours later.
 #[test]
-fn posting_an_arrow_does_not_poison_a_later_chord() {
+fn the_wire_flags_are_the_portable_ones_plus_the_intrinsic_ones() {
     let source = private_source();
-    let arrow = keyboard_event(&source, Key::UpArrow, PressType::Up, ModifierFlags::empty())
-        .expect("an arrow");
-    arrow.post(CGEventTapLocation::Session);
-
-    // Born from the source after the post, before any set_flags: carries NumericPad, which
-    // proves the source was poisoned. Without this the assertions below pass vacuously.
-    let probe = CGEvent::new_keyboard_event(source.clone(), KeyCode::SPACE, true)
-        .expect("a probe event");
-    assert!(
-        probe
-            .get_flags()
-            .contains(CGEventFlags::CGEventFlagNumericPad)
-    );
-
-    let space =
-        keyboard_event(&source, Key::Space, PressType::Down, ModifierFlags::COMMAND)
-            .expect("a space");
-    assert!(
-        !space
-            .get_flags()
-            .contains(CGEventFlags::CGEventFlagNumericPad)
-    );
-    assert!(space.get_flags().contains(CGEventFlags::CGEventFlagCommand));
+    for (key, code, flags) in [
+        (Key::Space, KeyCode::SPACE, ModifierFlags::COMMAND),
+        (Key::UpArrow, KeyCode::UP_ARROW, ModifierFlags::empty()),
+        (Key::UpArrow, KeyCode::UP_ARROW, ModifierFlags::COMMAND),
+        (Key::KeyR, KeyCode::ANSI_R, ModifierFlags::CONTROL),
+    ] {
+        let event =
+            keyboard_event(&source, key, PressType::Down, flags).expect("an event for the key");
+        assert_eq!(
+            event.get_flags(),
+            to_cg(flags) | intrinsic_flags(code),
+            "{key:?} with {flags:?}"
+        );
+    }
 }
 ```
+
+The source's accumulated state is not asserted against. Contamination only exists after a real `CGEventPost`, so reaching it from a test means injecting a key into whatever is focused on every `cargo test` and every pre-commit run, and injecting nothing at all in CI, where `cargo test --all --all-features` runs on a `macos-latest` runner with no Accessibility grant. A posted key-up does not contaminate the source (measured: a space born after one still reads `0x20000000`), so the harmless half of the post is also the half that proves nothing; only a key-down does it. `refactors/past/emitted-flags.md` reached the same conclusion, and its check is the manual one under "Verification" below.
+
+The tests above are what makes a long-lived source safe: they pin the output to `to_cg(flags) | intrinsic_flags(code)` exactly, which holds whatever the source accumulates.
 
 ## Change 2: create each source once
 
@@ -352,13 +388,14 @@ Automated:
 cargo test -p freddie_keyboard
 ```
 
-Includes `posting_an_arrow_does_not_poison_a_later_chord` and the intrinsic_flags table test.
+Includes the `intrinsic_flags` table test and the exact-wire-flags test.
 
 By hand, after `mercury restart` (old process cannot unmap what it already mapped):
 
-1. Flags: `cmd`-`space` opens Spotlight, press any arrow, `cmd`-`space` opens Spotlight again.
-2. Memory: note SHM region count (`vmmap -summary $(pgrep -f 'mercury daemon') | grep 'shared memory'`). Type for a minute (hundreds of posts). Region count stays within a few regions of the baseline; it does not climb one per `post`. RSS stays flat aside from normal heap noise.
-3. Log: `post` lines show `intrinsic=0x00200000` on arrows and `intrinsic=0x00000000` on letters/space; `raw_flags` for `cmd`-`space` is `0x00100000` after arrows.
+1. Flags: `cmd`-`space` opens Spotlight, press any arrow, `cmd`-`space` opens Spotlight again. This is the only check that reaches the contamination, because it needs a real post.
+2. Keypad, if the keyboard has one: a keypad digit still types its digit, and the `post` line for it shows `intrinsic=0x00200000` rather than `0x00000000`.
+3. Memory: note SHM region count (`vmmap -summary $(pgrep -f 'mercury daemon') | grep 'shared memory'`). Type for a minute (hundreds of posts). Region count stays within a few regions of the baseline; it does not climb one per `post`. RSS stays flat aside from normal heap noise.
+4. Log: `post` lines show `intrinsic=0x00200000` on arrows and `intrinsic=0x00000000` on letters/space; `raw_flags` for `cmd`-`space` is `0x00100000` after arrows.
 
 ## Ordered commits
 
