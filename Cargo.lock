@@ -662,6 +662,7 @@ dependencies = [
  "block2",
  "core-foundation",
  "core-graphics",
+ "freddie_main_loop",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",

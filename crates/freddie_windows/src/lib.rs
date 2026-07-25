@@ -19,9 +19,9 @@
 //! it ever sees one.
 //!
 //! Setting a frame goes through the Accessibility API, which is the only way to write one:
-//! `CGWindow` can read geometry but not write it. It is immediate, with no animation, and
-//! costs single-digit to low tens of milliseconds, so a caller on a latency-sensitive loop
-//! should hand it to another thread.
+//! `CGWindow` can read geometry but not write it. A placement is queued on the main thread and
+//! written on a thread of its own, because the write costs tens of milliseconds and main is
+//! what every other source is waiting on.
 //!
 //! Requires the Accessibility permission, the same one the keyboard tap needs.
 //!
@@ -32,7 +32,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::mpsc::Receiver;
 
 use accessibility_sys::{
     AXError, AXIsProcessTrusted, AXObserverAddNotification, AXObserverCreate,
@@ -48,6 +48,7 @@ use core_foundation::array::CFArray;
 use core_foundation::base::{CFEqual, CFRelease, CFRetain, CFTypeRef, TCFType};
 use core_foundation::runloop::{CFRunLoop, CFRunLoopSource, kCFRunLoopDefaultMode};
 use core_foundation::string::{CFString, CFStringRef};
+use freddie_main_loop::{MainWaker, WakingSender};
 use core_graphics::geometry::{CGPoint, CGSize};
 use core_graphics::window::{CGWindowID, kCGNullWindowID};
 use objc2::rc::Retained;
@@ -128,10 +129,20 @@ struct Element(Owned);
 impl Element {
     /// The element, for the calls that take one. Borrowed, not owned: the release stays
     /// with the [`Owned`] inside.
-    ///
-    /// Not `as_ref`, which `Arc<Element>` already has from `AsRef` and would shadow this.
     const fn raw(&self) -> AXUIElementRef {
         self.0.0.cast_mut().cast()
+    }
+
+    /// A second owned reference to the same element, for handing to another thread.
+    ///
+    /// `CFRetain` rather than deriving `Clone` on [`Owned`], which two values naming one element
+    /// would release twice.
+    fn retained(&self) -> Self {
+        // SAFETY: `self` holds a live +1 reference, so retaining it yields a second one, which the
+        // returned `Element` releases on drop.
+        #[expect(unsafe_code)]
+        let raw = unsafe { CFRetain(self.raw().cast()) };
+        Self(Owned(raw))
     }
 }
 
@@ -143,57 +154,44 @@ impl Element {
 /// as the rest of the table: seeded at construction, then replaced by whatever the moved and resized
 /// notifications say.
 struct Watched {
-    element: Arc<Element>,
+    element: Element,
     frame: Frame,
 }
 
 /// Every window that can be addressed, the element to address it through, and where it is.
 ///
-/// A `Mutex` and not an `RwLock`: a window opening and a key being pressed are both rare, so there
-/// is nothing for concurrent readers to win. It is held for a lookup and a clone, never across an
-/// `AXUIElement` call.
-#[derive(Default)]
-struct Elements(Mutex<HashMap<WindowId, Watched>>);
+/// Main-thread only, like `apps`: the AX callbacks that write it and the `pump` that reads it both
+/// run there, so there is nothing to lock.
+type Elements = HashMap<WindowId, Watched>;
 
 /// The handle a placement is performed through.
 ///
-/// Cheap to clone and unattached to the thread that made it, because the effect loop
-/// hands each placement to a thread of its own.
-///
-/// A [`Weak`], so the watcher is the only thing keeping the table alive and a sink cannot
-/// outlive the observation it belongs to.
+/// Cheap to clone and unattached to the thread that made it: it is a sender, and the placement is
+/// looked up and performed by the thread that owns the table.
 #[derive(Clone)]
 pub struct WindowSink {
-    elements: Weak<Elements>,
+    placements: WakingSender<WindowFrame>,
 }
 
 impl WindowSink {
     /// Move and resize one window: `target` names which, and the rectangle it goes to.
     ///
-    /// Immediate, with no animation. Costs single-digit to low tens of milliseconds, so a
-    /// caller on a latency-sensitive loop should hand this to another thread.
+    /// Queues the placement and wakes the main thread, which owns the element table. The write
+    /// costs tens of milliseconds and runs on a thread of its own, so this returns immediately and
+    /// a caller on a latency-sensitive loop needs no thread of its own.
     ///
-    /// The frame is the caller's, already worked out. This does not consult the screen,
-    /// the frontmost app, or anything else.
+    /// The frame is the caller's, already worked out. This does not consult the screen, the
+    /// frontmost app, or anything else.
     ///
     /// # Errors
     ///
-    /// [`WindowError::NotWatching`] if the watcher has been dropped, and
-    /// [`WindowError::UnknownWindow`] if nothing with that id is being observed, which is
-    /// the case for a window that has closed or that never reported an id.
+    /// [`WindowError::NotWatching`] if the watcher has been dropped. A window that is not being
+    /// observed cannot be reported here, because the lookup happens after the send;
+    /// [`Watcher::pump`] logs it at `debug` instead.
     pub fn set_frame(&self, target: WindowFrame) -> Result<(), WindowError> {
-        let elements = self.elements.upgrade().ok_or(WindowError::NotWatching)?;
-        // Cloned out so the lock is released before the writes: those take tens of
-        // milliseconds, and the main thread takes this lock every time a window opens or
-        // closes.
-        let (element, from) = {
-            let table = elements.0.lock().map_err(|_| WindowError::UnknownWindow)?;
-            let watched = table.get(&target.window).ok_or(WindowError::UnknownWindow)?;
-            (Arc::clone(&watched.element), watched.frame)
-        };
-        set_frame(element.raw(), from, target.frame);
-        tracing::debug!(?target, ?from, "set a window's frame");
-        Ok(())
+        self.placements
+            .send(target)
+            .map_err(|_| WindowError::NotWatching)
     }
 }
 
@@ -231,9 +229,6 @@ pub enum WindowError {
     NotMainThread,
     /// The Accessibility permission has not been granted.
     NotTrusted,
-    /// Nothing with that id is being observed: the window closed, or it never reported an
-    /// id to begin with.
-    UnknownWindow,
     /// The watcher has been dropped, so nothing is being observed at all.
     NotWatching,
 }
@@ -243,7 +238,6 @@ impl std::fmt::Display for WindowError {
         f.write_str(match self {
             Self::NotMainThread => "freddie_windows::watch must run on the main thread",
             Self::NotTrusted => "Accessibility is not granted",
-            Self::UnknownWindow => "no such window",
             Self::NotWatching => "not watching windows",
         })
     }
@@ -316,13 +310,10 @@ impl Drop for Owned {
 }
 
 // SAFETY: the CoreFoundation types this crate owns are `AXUIElement` and `AXValue`, both
-// usable from any thread, and `CFRelease` is itself thread-safe. Access to a shared one
-// goes through the `Mutex` in `Elements`.
+// usable from any thread, and `CFRelease` is itself thread-safe. An element is moved to the
+// placement thread rather than shared.
 #[expect(unsafe_code)]
 unsafe impl Send for Owned {}
-// SAFETY: as above.
-#[expect(unsafe_code)]
-unsafe impl Sync for Owned {}
 
 /// One `AXValue` attribute: the name it is read by, the `AXValueType` it holds, and the
 /// Rust type that type means.
@@ -748,12 +739,12 @@ pub struct Snapshot {
 
 /// What the [`Watcher`] holds, reachable from the callbacks as well as from it.
 ///
-/// Everything but `elements` is main thread only and unlocked: [`watch`], the launch and
-/// terminate callbacks, and every `AXObserver` notification all run there.
+/// Main-thread only: [`watch`], the launch and terminate callbacks, every `AXObserver`
+/// notification, and [`Watcher::pump`] all run there.
 struct WatcherState {
-    /// The one thing shared off the main thread. The [`Watcher`] holds the only strong
-    /// reference, so dropping it is what ends a [`WindowSink`]'s access.
-    elements: Arc<Elements>,
+    /// Every window being watched. A `RefCell` and not a `Mutex`: nothing off the main thread
+    /// reaches it.
+    elements: RefCell<Elements>,
     /// One entry per observed app. Held here rather than on the [`Watcher`] because the
     /// launch and terminate callbacks are `'static` closures that cannot borrow it.
     apps: RefCell<HashMap<Pid, AppObserver>>,
@@ -770,10 +761,7 @@ impl WatcherState {
     /// whether this is the report that closes it: a window's own `AXUIElementDestroyed` and
     /// its app terminating both arrive, in either order, and only the first of them reports.
     fn forget(&self, window: WindowId) -> bool {
-        self.elements
-            .0
-            .lock()
-            .is_ok_and(|mut table| table.remove(&window).is_some())
+        self.elements.borrow_mut().remove(&window).is_some()
     }
 
     /// Replace where `window` is understood to be. Idempotent, like every report of external truth:
@@ -782,10 +770,7 @@ impl WatcherState {
     /// A window not in the table is not added, because a frame without an element cannot be placed
     /// through.
     fn record(&self, window: WindowId, frame: Frame) {
-        let Ok(mut table) = self.elements.0.lock() else {
-            return;
-        };
-        if let Some(watched) = table.get_mut(&window) {
+        if let Some(watched) = self.elements.borrow_mut().get_mut(&window) {
             watched.frame = frame;
         }
     }
@@ -793,9 +778,7 @@ impl WatcherState {
     /// Where `window` was last reported to be, if it is being watched.
     fn frame_of(&self, window: WindowId) -> Option<Frame> {
         self.elements
-            .0
-            .lock()
-            .ok()?
+            .borrow()
             .get(&window)
             .map(|watched| watched.frame)
     }
@@ -808,7 +791,7 @@ impl WatcherState {
     /// this was watching, which is most of them: the notification is registered on the app, so it
     /// reports every element the app destroys.
     fn forget_element(&self, element: AXUIElementRef) -> Option<WindowId> {
-        let mut table = self.elements.0.lock().ok()?;
+        let mut table = self.elements.borrow_mut();
         // SAFETY: both are live `AXUIElement`s as far as CoreFoundation is concerned. A destroyed
         // element is still a valid CF object; it is the Accessibility calls on it that fail.
         #[expect(unsafe_code)]
@@ -817,7 +800,6 @@ impl WatcherState {
             .find(|(_, held)| unsafe { CFEqual(held.element.raw().cast(), element.cast()) != 0 })
             .map(|(id, _)| *id)?;
         table.remove(&found);
-        drop(table);
         Some(found)
     }
 }
@@ -980,15 +962,13 @@ fn observe_window(
     let Some(frame) = window_frame(element) else {
         return;
     };
-    if let Ok(mut table) = state.elements.0.lock() {
-        table.insert(
-            window,
-            Watched {
-                element: Arc::new(Element(owned)),
-                frame,
-            },
-        );
-    }
+    state.elements.borrow_mut().insert(
+        window,
+        Watched {
+            element: Element(owned),
+            frame,
+        },
+    );
 }
 
 /// Report a window as newly open, with the frame [`observe_window`] recorded for it.
@@ -1279,8 +1259,8 @@ fn watch_notifications(state: &Rc<WatcherState>) -> Vec<Observation> {
 /// changes reach the `on_change` it was built with; dropping it stops them.
 ///
 /// Dropping it is all it takes: `apps` goes, which releases every `AXObserver` and removes
-/// its run loop source, and the last strong reference to the element table goes, which is
-/// how a live [`WindowSink`] learns it is over. No `Drop` impl needed.
+/// its run loop source, and the placement receiver goes, which is how a live [`WindowSink`]
+/// learns it is over. No `Drop` impl needed.
 ///
 /// `!Send`, like `freddie_menu_bar`'s `MenuBar`: it holds main-thread-only state and stays
 /// on the thread that built it.
@@ -1289,16 +1269,44 @@ pub struct Watcher {
     /// they stop before the state they write into is torn down: fields drop in declaration
     /// order.
     _notifications: Vec<Observation>,
+    /// Handed to every [`WindowSink`].
+    placements_sender: WakingSender<WindowFrame>,
+    /// Placements waiting to be performed. Drained by [`Self::pump`] on the main thread.
+    placements: Receiver<WindowFrame>,
     state: Rc<WatcherState>,
 }
 
 impl Watcher {
-    /// A handle to perform placements through. Cheap to clone, `Send`, and safe to keep
-    /// past the watcher, which it answers [`WindowError::NotWatching`] from.
+    /// A handle to perform placements through. Cheap to clone, `Send`, and safe to keep past the
+    /// watcher, which it answers [`WindowError::NotWatching`] from.
     #[must_use]
     pub fn sink(&self) -> WindowSink {
         WindowSink {
-            elements: Arc::downgrade(&self.state.elements),
+            placements: self.placements_sender.clone(),
+        }
+    }
+
+    /// Perform every placement queued since the last wake.
+    ///
+    /// On the main thread, because that is where the element table lives. The lookup is a hashmap
+    /// hit; the write is handed to a thread of its own, because it costs tens of milliseconds and
+    /// this thread is what every other source is waiting on.
+    pub fn pump(&self) {
+        for target in self.placements.try_iter() {
+            let found = self
+                .state
+                .elements
+                .borrow()
+                .get(&target.window)
+                .map(|watched| (watched.element.retained(), watched.frame));
+            let Some((element, from)) = found else {
+                tracing::debug!(?target, "no such window to place");
+                continue;
+            };
+            std::thread::spawn(move || {
+                set_frame(element.raw(), from, target.frame);
+                tracing::debug!(?target, ?from, "set a window's frame");
+            });
         }
     }
 }
@@ -1322,6 +1330,7 @@ impl Watcher {
 /// [`WindowError::NotMainThread`] if called off the main thread, and
 /// [`WindowError::NotTrusted`] if Accessibility has not been granted.
 pub fn watch(
+    waker: &MainWaker,
     on_change: impl Fn(WindowChange) + 'static,
 ) -> Result<(Watcher, Snapshot), WindowError> {
     let mtm = MainThreadMarker::new().ok_or(WindowError::NotMainThread)?;
@@ -1333,10 +1342,11 @@ pub fn watch(
     }
 
     let state = Rc::new(WatcherState {
-        elements: Arc::new(Elements::default()),
+        elements: RefCell::new(HashMap::new()),
         apps: RefCell::new(HashMap::new()),
         on_change: Box::new(on_change),
     });
+    let (placements_sender, placements) = waker.channel::<WindowFrame>();
 
     let notifications = watch_notifications(&state);
     for app in NSWorkspace::sharedWorkspace()
@@ -1348,18 +1358,15 @@ pub fn watch(
     }
 
     let screens = read_monitors(mtm);
-    let windows: Vec<WindowFrame> = state.elements.0.lock().map_or_else(
-        |_| Vec::new(),
-        |table| {
-            table
-                .iter()
-                .map(|(window, watched)| WindowFrame {
-                    window: *window,
-                    frame: watched.frame,
-                })
-                .collect()
-        },
-    );
+    let windows: Vec<WindowFrame> = state
+        .elements
+        .borrow()
+        .iter()
+        .map(|(window, watched)| WindowFrame {
+            window: *window,
+            frame: watched.frame,
+        })
+        .collect();
     let snapshot = Snapshot {
         windows,
         focused: frontmost_pid().and_then(focused_window_id),
@@ -1374,6 +1381,8 @@ pub fn watch(
     Ok((
         Watcher {
             _notifications: notifications,
+            placements_sender,
+            placements,
             state,
         },
         snapshot,

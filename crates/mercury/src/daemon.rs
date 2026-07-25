@@ -43,7 +43,7 @@ use std::time::Instant;
 use freddie::{AlwaysEqual, TimerEffect};
 use freddie_keyboard::Emitter;
 use freddie_overlay::OverlaySink;
-use freddie_windows::{WindowFrame, WindowSink};
+use freddie_windows::WindowSink;
 use mercury::{
     App, Chord, Copied, Mercury, MercuryEffect, MercuryEvent, UrlPart, WindowEvent, Windows,
     foreground, host, quit_event,
@@ -124,13 +124,13 @@ pub(crate) fn run(port: u16) {
     // The window source. Here rather than in `serve` because a `Watcher` is `!Send` and its
     // observers register against this thread's run loop. Installed before its snapshot is
     // taken, which `watch` guarantees by returning both.
-    let windows = freddie_windows::watch({
+    let windows = freddie_windows::watch(&waker, {
         let event_tx = event_tx.clone();
         move |change| {
             let _ = event_tx.send(MercuryEvent::Window(WindowEvent { change }));
         }
     });
-    let (_window_watcher, window_sink, window_state) = match windows {
+    let (window_watcher, window_sink, window_state) = match windows {
         Ok((watcher, snapshot)) => {
             let sink = watcher.sink();
             (Some(watcher), Some(sink), Windows::from_snapshot(snapshot))
@@ -173,6 +173,9 @@ pub(crate) fn run(port: u16) {
             menu_bar.set_title(Some(&format!(" {name}")));
         }
         overlay.pump();
+        if let Some(watcher) = window_watcher.as_ref() {
+            watcher.pump();
+        }
     });
     let _ = worker.join();
     // Held until the loop returns, so the icon is up and the panel is available for the whole run.
@@ -380,7 +383,15 @@ fn perform_effect(
             Ok(()) => debug!(key = ?ke.key, press = ?ke.press, "emitted"),
             Err(e) => warn!(key = ?ke.key, press = ?ke.press, error = %e, "emit failed"),
         },
-        MercuryEffect::SetFrame(target) => set_frame(windows, target),
+        MercuryEffect::SetFrame(target) => {
+            if let Some(windows) = windows {
+                if let Err(e) = windows.set_frame(target) {
+                    warn!(?target, error = %e, "set frame failed");
+                }
+            } else {
+                debug!(?target, "no window sink: nothing to place through");
+            }
+        }
         MercuryEffect::Copy(what) => copy(what),
         MercuryEffect::Kill => {
             info!("kill: exiting");
@@ -418,21 +429,6 @@ fn schedule_timer(timer: TimerEffect<MercuryEvent>, event_tx: &UnboundedSender<M
             () = tokio::time::sleep(delay) => { let _ = event_tx.send(event); }
             _ = cancel => {}
         }
-    });
-}
-
-/// Set one window's frame, fire-and-forget on its own thread. It takes tens of
-/// milliseconds, which is long enough to delay a key the effect loop is about to emit. A
-/// detached thread cannot hold up the exit path the way `spawn_blocking` would, which is
-/// the same reason `foreground_app` uses one.
-fn set_frame(windows: Option<&WindowSink>, target: WindowFrame) {
-    let Some(windows) = windows.cloned() else {
-        debug!(?target, "no window sink: nothing to place through");
-        return;
-    };
-    std::thread::spawn(move || match windows.set_frame(target) {
-        Ok(()) => debug!(?target, "set the window's frame"),
-        Err(e) => warn!(?target, error = %e, "set frame failed"),
     });
 }
 

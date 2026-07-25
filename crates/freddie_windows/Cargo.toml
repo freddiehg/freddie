@@ -11,6 +11,7 @@ accessibility-sys = "0.1"
 block2 = "0.6"
 core-foundation = { version = "0.10", features = ["link"] }
 core-graphics = { version = "0.25", features = ["link"] }
+freddie_main_loop = { path = "../freddie_main_loop", version = "0.0.1" }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSScreen", "NSWorkspace", "NSRunningApplication", "NSApplication", "NSResponder"] }
 objc2-foundation = { version = "0.3", features = ["NSNotification"] }
