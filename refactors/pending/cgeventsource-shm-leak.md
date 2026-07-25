@@ -378,7 +378,9 @@ Outside tests, `CGEventSource::new` appears in exactly two places after this cha
 
 ## Call sites
 
-Only `crates/freddie_keyboard/src/sys/macos.rs`. Mercury calls `Emitter::emit` / `Emitter::tap`; those signatures do not change. `Emitter` gains a `CGEventSource` field, and `CGEventSource` is not `Send`, so `Emitter` stops being `Send`; mercury compiles unchanged because the daemon calls `intercept` and drains the effect channel on the same worker thread, under a current-thread runtime's `block_on`. No mercury, daemon, or effect changes.
+Only `crates/freddie_keyboard/src/sys/macos.rs`. Mercury calls `Emitter::emit` / `Emitter::tap`; those signatures do not change. `Emitter` gains a `CGEventSource` field, and `CGEventSource` is not `Send`, so `Emitter` stops being `Send`; mercury still works because the daemon calls `intercept` and drains the effect channel on the same worker thread, under a current-thread runtime's `block_on`, so nothing moves the emitter anywhere.
+
+The workspace denies `clippy::nursery`, which includes `future_not_send`, so the two futures that own the emitter say why they are not `Send`: `#[expect(clippy::future_not_send)]` on `serve` and on `run_effect_loop` in `crates/mercury/src/daemon.rs`. No other mercury, daemon, or effect changes.
 
 ## Verification
 
