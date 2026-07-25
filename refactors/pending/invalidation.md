@@ -121,7 +121,7 @@ pub trait Dispatch<M: Bindings>: Place {
 }
 ```
 
-`Place::Path<'a>` stays the laserbeam path (`PathMut<…>` or `&mut Root`). Bind `Path<_, pack>` is only for leave/kill peels after `after_first_peel`.
+`Place::Path<'a>` stays the laserbeam path (`PathMut<…>` or `&mut Root`). `LeavePath` (focus + pack) is only for leave/kill after `after_first_peel`.
 
 ## DX types
 
