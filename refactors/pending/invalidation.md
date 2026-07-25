@@ -10,10 +10,12 @@ A deep exclusive may destroy a child field (reshape / set_layer). Ancestor posts
 
 That knowledge is a hop counter on a live ascent object, frozen into a snapshot for the posts at each level.
 
-## Two objects (bind / freddie — not consumer types)
+## Two objects (bind / freddie)
 
-- **`AscentState`** — live. Constructed at leaf turnaround (`AscentState::new()`). Threaded as `&mut AscentState` for the rest of the ascent. Private fields. Only methods mutate it: `invalidate`, `step_up`, `claim`.
-- **`AscentStateSnapshot`** — frozen. Produced by `state.snapshot()` at the start of each framework `into_parent`, **before** that level's posts. Posts receive `&AscentStateSnapshot` only. They call `snap.mutation()`. They never hold `&mut AscentState` and never touch the hop counter.
+- **`AscentState`** — **internal** to the dispatch machine (`pub(crate)` in `bind`). Live hop counter + claim. Constructed at leaf turnaround. Threaded only through framework code (`dispatch`, `into_parent`, `run_exclusive`). User posts never see it. Private fields; mutate only via methods.
+- **`AscentStateSnapshot`** — **what is passed into user post functions**. Frozen at `state.snapshot()` when framework `into_parent` starts, before that level's posts. Posts take `&AscentStateSnapshot` and call `snap.mutation()`.
+
+Exclusive bodies are framework-gated (`run_exclusive`); they may hold `&mut AscentState` only inside that gate so they can `invalidate` / participate in `claim`. That is not the post path. Posts get the snapshot only.
 
 No hand assignment of `invalidation_depth`.
 
@@ -111,24 +113,26 @@ pub enum Mutation {
 
 struct Claimed; // crate-private; only claim() produces it
 
-pub struct AscentState {
+/// Internal to bind dispatch. Not passed to user posts.
+pub(crate) struct AscentState {
     invalidation_depth: u32,
     claim: Option<Claimed>,
 }
 
+/// Passed to user post functions.
 pub struct AscentStateSnapshot {
     mutation: Mutation,
 }
 
 impl AscentState {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             invalidation_depth: 0,
             claim: None,
         }
     }
 
-    pub fn snapshot(&self) -> AscentStateSnapshot {
+    pub(crate) fn snapshot(&self) -> AscentStateSnapshot {
         AscentStateSnapshot {
             mutation: if self.invalidation_depth == 0 {
                 Mutation::Intact
@@ -138,8 +142,8 @@ impl AscentState {
         }
     }
 
-    /// Kill: depth = depth.max(d). Call site in exclusive body (or kill helper).
-    pub fn invalidate(&mut self, d: u32) {
+    /// Kill: depth = depth.max(d). Exclusive / kill helper only.
+    pub(crate) fn invalidate(&mut self, d: u32) {
         self.invalidation_depth = self.invalidation_depth.max(d);
     }
 
@@ -164,9 +168,9 @@ impl AscentStateSnapshot {
 
 Visibility:
 
-- `pub`: `Mutation`, `AscentState::new`, `snapshot`, `invalidate`, `AscentStateSnapshot`, `mutation`
-- `pub(crate)`: `step_up`, `claim`, `claimed`
-- private: fields, `Claimed`
+- `pub` (user-facing): `Mutation`, `AscentStateSnapshot`, `AscentStateSnapshot::mutation`
+- `pub(crate)` (internal): whole `AscentState`, `new` / `snapshot` / `invalidate` / `step_up` / `claim` / `claimed`, `Claimed`
+- Exclusive user fns in other crates: still need a public way to `invalidate` — either a thin public wrapper type or kill helpers in bind. Open until reshape carrier lands; do not pass raw internal state to posts.
 
 ## Developer experience
 
@@ -326,58 +330,260 @@ above: Intact
 
 KeyB (AnyKey posts only, no bind): no `invalidate`; every snapshot Intact; rearm runs; never `claim`.
 
-## Generated shape (Outer)
+## Types (dispatch)
 
 ```rust
-// descent: opt_0 = pre_post, opt_1 = post, opt_2 = bind token
-let inner_path = PathMut::from_fn(
-    path,
-    |p| &mut p.get_mut().inner,
-    |p| &p.get().inner,
-    move |parent, snap| {
-        let mut local = Vec::new();
-        let mut path = parent;
-        if let Some(id) = opt_0 {
-            let (p, e) = run_post(path, snap, |n, s| after_child(id, n, s));
-            path = p;
-            local.extend(e);
+pub trait Bindings {
+    type Trigger: Eq + Hash;
+    type Event;
+    type Effect;
+}
+
+pub struct PathMut<N, P, F> {
+    on_into_parent: F, // FnOnce(P, &AscentStateSnapshot) -> (P, Vec<Effect>)
+}
+
+fn empty_on_into_parent<P>(parent: P, _snap: &AscentStateSnapshot) -> (P, Vec<Effect>) {
+    (parent, Vec::new())
+}
+
+impl<N, P, F> PathMut<N, P, F>
+where
+    F: FnOnce(P, &AscentStateSnapshot) -> (P, Vec<Effect>),
+{
+    pub fn into_parent(self, sink: &mut Vec<Effect>, state: &mut AscentState) -> P {
+        let snap = state.snapshot();
+        let (parent, post_effs) = (self.on_into_parent)(self.parent, &snap);
+        Extend::extend(sink, post_effs);
+        state.step_up();
+        parent
+    }
+}
+
+pub trait Dispatch<M: Bindings>: Place {
+    fn dispatch<'a>(
+        path: Self::Path<'a>,
+        event: &M::Event,
+        effs: &mut Vec<M::Effect>,
+    ) -> (Self::Path<'a>, AscentState)
+    where
+        Self: 'a;
+}
+
+pub fn dispatch<'a, M, N>(path: N::Path<'a>, event: &M::Event) -> Option<Vec<M::Effect>>
+where
+    M: Bindings,
+    N: Dispatch<M> + 'a,
+{
+    let mut effs = Vec::new();
+    let (_path, state) = <N as Dispatch<M>>::dispatch(path, event, &mut effs);
+    if state.claimed() || !effs.is_empty() {
+        Some(effs)
+    } else {
+        None
+    }
+}
+```
+
+## Generated code
+
+### Helpers (in bind, not generated)
+
+```rust
+fn noop_pre<E, P, D>(_ev: &E, _node: Node<&P, D>) {}
+
+fn run_post<P>(
+    path: P,
+    snap: &AscentStateSnapshot,
+    body: impl FnOnce(Node<P, ()>, &AscentStateSnapshot) -> (Vec<Effect>, P),
+) -> (P, Vec<Effect>) {
+    body(Node { parent: path, data: () }, snap)
+}
+
+fn run_exclusive<P>(
+    path: P,
+    state: &mut AscentState,
+    body: impl FnOnce(Node<P, ()>, &mut AscentState) -> (Vec<Effect>, P),
+) -> (P, Vec<Effect>) {
+    match state.claim() {
+        None => (path, Vec::new()),
+        Some(Claimed) => body(Node { parent: path, data: () }, state),
+    }
+}
+```
+
+### Inner (leaf, one bind)
+
+```rust
+impl Dispatch<M> for Inner {
+    fn dispatch<'a>(
+        path: <Inner as Place>::Path<'a>,
+        event: &M::Event,
+        effs: &mut Vec<M::Effect>,
+    ) -> (<Inner as Place>::Path<'a>, AscentState)
+    where
+        Self: 'a,
+    {
+        // ----- descent: schedule only; no AscentState yet -----
+        // index 0: #[bind(KeyA => inner_handler)]
+        let opt_0 = if let ::core::option::Option::Some(ev) =
+            ::core::convert::TryFrom::try_from(event).ok()
+        {
+            let trigger = KeyA;
+            if ::bind::EventTrigger::is_matching(&trigger, ev) {
+                ::core::option::Option::Some(noop_pre(
+                    ev,
+                    ::bind::Node {
+                        parent: &path,
+                        data: (),
+                    },
+                ))
+            } else {
+                ::core::option::Option::None
+            }
+        } else {
+            ::core::option::Option::None
+        };
+
+        // ----- ascent begins: construct internal AscentState -----
+        let mut state = AscentState::new();
+
+        if let ::core::option::Option::Some(()) = opt_0 {
+            let ev = /* &KeyEvent from event */;
+            // body may state.invalidate(N); still returns InnerPath
+            let (path, out_effs) = run_exclusive(path, &mut state, |node, state| {
+                inner_handler(ev, node, state)
+            });
+            ::core::iter::Extend::extend(effs, out_effs);
+            return (path, state);
         }
-        if let Some(()) = opt_1 {
-            let (p, e) = run_post(path, snap, |n, s| {
-                only_if_intact(|p| &mut p.get_mut().return_home, rearm)(n, s)
+        (path, state)
+    }
+}
+```
+
+### Outer (pre_post + post + bind)
+
+```rust
+impl Dispatch<M> for Outer {
+    fn dispatch<'a>(
+        mut path: <Outer as Place>::Path<'a>,
+        event: &M::Event,
+        effs: &mut Vec<M::Effect>,
+    ) -> (<Outer as Place>::Path<'a>, AscentState)
+    where
+        Self: 'a,
+    {
+        // ----- descent: schedule only -----
+        // opt_0: #[pre_post(AnyKey => (snap_child_id, after_child))]
+        let opt_0 = if let ::core::option::Option::Some(ev) =
+            ::core::convert::TryFrom::try_from(event).ok()
+        {
+            let trigger = AnyKey;
+            if ::bind::EventTrigger::is_matching(&trigger, ev) {
+                ::core::option::Option::Some(snap_child_id(
+                    ev,
+                    ::bind::Node {
+                        parent: &path,
+                        data: (),
+                    },
+                ))
+            } else {
+                ::core::option::Option::None
+            }
+        } else {
+            ::core::option::Option::None
+        };
+
+        // opt_1: #[post(AnyKey => only_if_intact(..., rearm))] via noop_pre
+        let opt_1 = if let ::core::option::Option::Some(ev) =
+            ::core::convert::TryFrom::try_from(event).ok()
+        {
+            let trigger = AnyKey;
+            if ::bind::EventTrigger::is_matching(&trigger, ev) {
+                ::core::option::Option::Some(noop_pre(
+                    ev,
+                    ::bind::Node {
+                        parent: &path,
+                        data: (),
+                    },
+                ))
+            } else {
+                ::core::option::Option::None
+            }
+        } else {
+            ::core::option::Option::None
+        };
+
+        // opt_2: #[bind(KeyA => outer_handler)] schedule token
+        let opt_2 = if let ::core::option::Option::Some(ev) =
+            ::core::convert::TryFrom::try_from(event).ok()
+        {
+            let trigger = KeyA;
+            if ::bind::EventTrigger::is_matching(&trigger, ev) {
+                ::core::option::Option::Some(noop_pre(
+                    ev,
+                    ::bind::Node {
+                        parent: &path,
+                        data: (),
+                    },
+                ))
+            } else {
+                ::core::option::Option::None
+            }
+        } else {
+            ::core::option::Option::None
+        };
+
+        let inner_path = ::laserbeam::PathMut::from_fn(
+            path,
+            |p| &mut p.get_mut().inner,
+            |p| &p.get().inner,
+            // into_parent creates snap BEFORE this runs; step_up AFTER it returns
+            move |parent, snap| {
+                let mut local = ::std::vec::Vec::new();
+                let mut path = parent;
+                if let ::core::option::Option::Some(id) = opt_0 {
+                    let (p, e) = run_post(path, snap, |node, snap| {
+                        after_child(id, node, snap)
+                    });
+                    path = p;
+                    ::core::iter::Extend::extend(&mut local, e);
+                }
+                if let ::core::option::Option::Some(()) = opt_1 {
+                    let (p, e) = run_post(path, snap, |node, snap| {
+                        only_if_intact(|p| &mut p.get_mut().return_home, rearm)(node, snap)
+                    });
+                    path = p;
+                    ::core::iter::Extend::extend(&mut local, e);
+                }
+                (path, local)
+            },
+        );
+
+        // child: leaf constructs AscentState; may invalidate on kill
+        let (inner_path, mut state) =
+            <Inner as ::bind::Dispatch<M>>::dispatch(inner_path, event, effs);
+
+        // into_parent: snap = state.snapshot(); posts(&snap); state.step_up();
+        let mut path = inner_path.into_parent(effs, &mut state);
+
+        if let ::core::option::Option::Some(()) = opt_2 {
+            let ev = /* &KeyEvent from event */;
+            let (p, e) = run_exclusive(path, &mut state, |node, state| {
+                outer_handler(ev, node, state)
             });
             path = p;
-            local.extend(e);
+            ::core::iter::Extend::extend(effs, e);
         }
-        (path, local)
-    },
-);
-
-let (inner_path, mut state) = <Inner as Dispatch<M>>::dispatch(inner_path, event, effs);
-
-// snapshot + posts + step_up inside:
-let mut path = inner_path.into_parent(effs, &mut state);
-
-if let Some(()) = opt_2 {
-    let (p, e) = run_exclusive(path, &mut state, |n, st| outer_handler(ev, n, st));
-    path = p;
-    effs.extend(e);
-}
-(path, state)
-```
-
-Leaf Inner: `state = AscentState::new()`; `run_exclusive` if bind matched; return `(path, state)`.
-
-Top-level:
-
-```rust
-let (_path, state) = <N as Dispatch<M>>::dispatch(path, event, &mut effs);
-if state.claimed() || !effs.is_empty() {
-    Some(effs)
-} else {
-    None
+        (path, state)
+    }
 }
 ```
+
+### `#[post]` alone
+
+Same indexed opts. Expands to `(noop_pre, post)`. User body is `(node, &AscentStateSnapshot)`. Never `claim()`.
 
 ## Prefactors
 
@@ -424,12 +630,12 @@ Handlers return `(Vec<Effect>, P)` at the same level. Behavior-identical to P3.
 
 1. Descent schedules; set is final (`opt_N` only).
 2. Ascent runs every scheduled post; kill does not cancel posts.
-3. Live `AscentState` + frozen `AscentStateSnapshot`. No direct field writes.
+3. `AscentState` is internal (`pub(crate)`). User posts receive `&AscentStateSnapshot` only.
 4. Framework `into_parent` = `snapshot` → posts(`&snap`) → `step_up`.
-5. Kill = `invalidate(N)` on live state; exclusive still returns same-level path; framework stack still walks.
-6. Posts: `&AscentStateSnapshot`. Exclusive: `&mut AscentState`. Different signatures.
+5. Kill = `invalidate(N)` on live state (exclusive/framework); exclusive still returns same-level path; framework stack still walks.
+6. Posts and exclusives are different signatures. Posts never see `AscentState`.
 7. `claim` only in `run_exclusive`. Logging never claims.
-8. Generate stays thin.
+8. Generate stays thin. Full expanded `Dispatch` impls are part of this doc.
 
 ## Tests
 
