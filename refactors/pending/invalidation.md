@@ -159,8 +159,10 @@ At each level of the **framework** ascent (after the handler returns):
 4. `step_up` when leaving the level (framework `into_parent` after this level's posts).
 
 ```rust
+// crates/bind. pub only where handlers or other crates need it.
+
 #[derive(Clone, Copy)]
-enum Mutation {
+pub enum Mutation {
     /// No kill/reshape hop zone covers this level. `invalidation_depth == 0`.
     Intact,
     /// A deeper handler climbed through this level with `into_parent` (or more
@@ -169,20 +171,25 @@ enum Mutation {
     MaybeDropped,
 }
 
-#[derive(Clone, Copy)]
+/// Marker returned only by `claim`. Crate-private.
 struct Claimed;
 
-struct AscentState {
-    /// Remaining into_parent hops still inside the destroyed region. 0 = Intact.
-    invalidation_depth: u32,
-    claim: Option<Claimed>,
+pub struct AscentState {
+    invalidation_depth: u32, // private field
+    claim: Option<Claimed>,  // private field
 }
 
 impl AscentState {
+    pub fn new() -> Self {
+        Self {
+            invalidation_depth: 0,
+            claim: None,
+        }
+    }
+
     /// Intact iff `invalidation_depth == 0`; else MaybeDropped.
-    /// Not a stored field. If something deeper called `into_parent` through this
-    /// level, posts here see `MaybeDropped`.
-    fn mutation(&self) -> Mutation {
+    /// If something deeper called `into_parent` through this level, posts see MaybeDropped.
+    pub fn mutation(&self) -> Mutation {
         if self.invalidation_depth == 0 {
             Mutation::Intact
         } else {
@@ -190,19 +197,18 @@ impl AscentState {
         }
     }
 
-    /// Raise the invalidated zone by `d` hops (max with current).
-    fn invalidate(&mut self, d: u32) {
+    /// Raise the hop zone by `d` (max with current). Handlers that kill a spine.
+    pub fn invalidate(&mut self, d: u32) {
         self.invalidation_depth = self.invalidation_depth.max(d);
     }
 
-    /// One hop up. Called from into_parent after this level's posts.
-    fn step_up(&mut self) {
+    /// Framework only (`into_parent`). Not for handlers.
+    pub(crate) fn step_up(&mut self) {
         self.invalidation_depth = self.invalidation_depth.saturating_sub(1);
     }
 
-    /// Try to take exclusive ownership of this event.
-    /// `Some(Claimed)` if it was open (now taken). `None` if already taken.
-    fn claim(&mut self) -> Option<Claimed> {
+    /// Try-take exclusive. Framework only (`run_exclusive`). Not a getter.
+    pub(crate) fn claim(&mut self) -> Option<Claimed> {
         match self.claim {
             Some(_) => None,
             None => {
@@ -211,10 +217,15 @@ impl AscentState {
             }
         }
     }
+
+    /// Whether exclusive already took. Framework only (top-level dispatch).
+    pub(crate) fn claimed(&self) -> bool {
+        self.claim.is_some()
+    }
 }
 ```
 
-`claim` is not a getter. It claims. Logging / plain posts never call it.
+Handler-facing: `Mutation`, `AscentState::new`, `mutation`, `invalidate`. Framework-only: `step_up`, `claim`, `claimed`, `Claimed`. Logging / plain posts never call `claim`.
 
 ### How the fields move
 
@@ -222,8 +233,7 @@ impl AscentState {
 DESCENT: schedule opt_N only — no AscentState (not yet constructed)
 
 ASCENT begins at leaf:
-  construct AscentState {
- invalidation_depth: 0, claim: None }
+  construct AscentState::new()
   exclusive kills spine with N× into_parent → invalidation_depth = invalidation_depth.max(N)
   at each level leaf → root:
     reshape if any (same hop rule if applied here)
@@ -351,7 +361,8 @@ pub enum Mutation {
     MaybeDropped,
 }
 
-pub struct Claimed;
+/// Crate-private. Only `claim` produces it.
+struct Claimed;
 
 // crates/bind — shared by every freddie consumer (mercury, figaro, …)
 pub struct AscentState {
@@ -360,38 +371,28 @@ pub struct AscentState {
 }
 
 impl AscentState {
-    // invalidation_depth is a private field. Posts use mutation(); framework
-    // uses invalidate / step_up. No pub getter for the raw integer.
+    pub fn new() -> Self {
+        Self {
+            invalidation_depth: 0,
+            claim: None,
+        }
+    }
 
     /// Intact iff `invalidation_depth == 0`; else MaybeDropped.
-    /// Not a stored field. If something deeper called `into_parent` through this
-    /// level, posts here see `MaybeDropped`.
-    pub fn mutation(&self) -> Mutation {
-        if self.invalidation_depth == 0 {
-            Mutation::Intact
-        } else {
-            Mutation::MaybeDropped
-        }
-    }
+    /// If something deeper called `into_parent` through this level, posts see MaybeDropped.
+    pub fn mutation(&self) -> Mutation { /* … */ }
 
-    pub fn invalidate(&mut self, d: u32) {
-        self.invalidation_depth = self.invalidation_depth.max(d);
-    }
+    /// Handlers that kill a spine.
+    pub fn invalidate(&mut self, d: u32) { /* … */ }
 
-    pub fn step_up(&mut self) {
-        self.invalidation_depth = self.invalidation_depth.saturating_sub(1);
-    }
+    /// `into_parent` only.
+    pub(crate) fn step_up(&mut self) { /* … */ }
 
-    /// Try-take. Some(Claimed) if open (now taken). None if already taken.
-    pub fn claim(&mut self) -> Option<Claimed> {
-        match self.claim {
-            Some(_) => None,
-            None => {
-                self.claim = Some(Claimed);
-                Some(Claimed)
-            }
-        }
-    }
+    /// `run_exclusive` only. Try-take, not a getter.
+    pub(crate) fn claim(&mut self) -> Option<Claimed> { /* … */ }
+
+    /// Top-level dispatch only. Do not call `claim` again to observe.
+    pub(crate) fn claimed(&self) -> bool { self.claim.is_some() }
 }
 
 pub struct PathMut<N, P, F> {
@@ -440,8 +441,8 @@ where
     let mut effs = Vec::new();
     // AscentState is constructed inside N::dispatch at the leaf turnaround, not here.
     let (_path, ctx) = <N as Dispatch<M>>::dispatch(path, event, &mut effs);
-    // Do not call claim() again (try-take). Framework observes stored claim field.
-    if /* ctx.claim field is Some */ || !effs.is_empty() {
+    // Do not call claim() again (try-take). Use claimed().
+    if ctx.claimed() || !effs.is_empty() {
         Some(effs)
     } else {
         None
@@ -512,10 +513,7 @@ impl Dispatch<M> for Inner {
         };
 
         // ----- ascent begins: construct AscentState -----
-        let mut ctx = AscentState {
-            invalidation_depth: 0,
-            claim: None,
-        };
+        let mut ctx = AscentState::new();
 
         if let ::core::option::Option::Some(()) = opt_0 {
             let ev = /* &KeyEvent from event */;
@@ -656,7 +654,7 @@ DESCENT  (no AscentState)
   opt_0? opt_1? opt_2?
   move path into child
 
-ASCENT  leaf constructs AscentState { invalidation_depth: 0, claim: None }
+ASCENT  leaf constructs AscentState::new()
   Inner bind: may invalidate(d); run_exclusive via claim()
   Outer into_parent: posts see mutation() from invalidation_depth; step_up
   Outer bind: run_exclusive via claim()
@@ -709,7 +707,7 @@ Crate-private / sealed. With P1 or immediately after.
 
 ### P3 — full ascent + one `&mut AscentState` (no user posts yet)
 
-Drop `Break`. Always return path. Leaf constructs `AscentState` at turnaround (`invalidation_depth` 0, claim None); return `(path, ctx)` so parents continue the ascent. Exclusive via `ctx.claim()` try-take. Mercury `ascend_mut`+`set_layer` waits on reshape carrier — no `complete` token. Bind tests first if mercury blocks.
+Drop `Break`. Always return path. Leaf constructs `AscentState::new()` at turnaround; return `(path, ctx)` so parents continue the ascent. Exclusive via `ctx.claim()` (`pub(crate)` try-take). Mercury `ascend_mut`+`set_layer` waits on reshape carrier — no `complete` token. Bind tests first if mercury blocks.
 
 ### P4 — `#[bind]` through `run_exclusive` only
 
@@ -737,9 +735,9 @@ No new attributes. Handlers return `(Vec<Effect>, P)`. Behavior-identical to P3.
 2. Ascent runs every scheduled post; mutation does not cancel them.
 3. Pre: shared path. Post: owned path, return `(Vec<Effect>, P)`.
 4. `AscentState` is bind/freddie (not a consumer type). Constructed at the leaf turnaround; none during descent. One object for the ascent; posts take `&mut AscentState`.
-5. `claim(&mut self) -> Option<Claimed>` try-takes. Not a getter. Not a parallel flag.
-6. `AscentState` holds `invalidation_depth: u32`. A kill's N× `into_parent` does `invalidation_depth = invalidation_depth.max(N)`. Framework ascent `step_up` decrements. Getter `mutation(&self) -> Mutation`: `invalidation_depth == 0` → Intact, else MaybeDropped.
-7. Logging never calls `claim()`. Only exclusive does.
+5. Handler-facing `pub`: `Mutation`, `AscentState::new`, `mutation`, `invalidate`. Framework-only `pub(crate)`: `step_up`, `claim`, `claimed`. `Claimed` and the integer fields are not public.
+6. A kill's N× `into_parent` does `invalidate(N)`. Framework ascent `step_up` decrements. `mutation()`: depth 0 → Intact, else MaybeDropped.
+7. Logging never calls `claim()`. Only `run_exclusive` does.
 8. Every pre/post attr is a pre_post pair. Missing pre is well-known `noop_pre` (macro drops it in).
 9. No `#[pre]` alone. A pre exists only as the first half of `#[pre_post]`.
 10. User posts never take a dummy `()` to drop; `#[post]` bodies are `(node, ctx)`.
