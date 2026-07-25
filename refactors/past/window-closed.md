@@ -74,9 +74,12 @@ struct AppObserver {
     /// The app element's `refcon`. Boxed so its address is stable, and owned here so it is
     /// freed exactly when the observer naming it is.
     _app: Box<Registration>,
-    /// One `refcon` per window this observer was given, in the order they arrived. Each is kept
-    /// for the life of the observer, not until its window closes, so the framework can never
-    /// hand back the address of a box that has been freed. All of them go when the app quits.
+    /// One `refcon` per window this observer was given, in the order they arrived. Each is
+    /// boxed so its heap address is stable under `Vec` reallocation; the framework keeps that
+    /// address as the notification `refcon`. Kept for the life of the observer, not until its
+    /// window closes, so the framework can never hand back a freed address. All of them go when
+    /// the app quits.
+    #[expect(clippy::vec_box)]
     windows: Vec<Box<Registration>>,
 }
 ```
@@ -322,10 +325,10 @@ unsafe extern "C" fn on_notification(
     } else if name == kAXUIElementDestroyedNotification {
         // The element is gone and cannot be asked what it was, so the id comes from this
         // registration, which is the window's own.
-        if let Subject::Window(window) = subject {
-            if state.forget(window) {
-                state.report(WindowChange::Closed(window));
-            }
+        if let Subject::Window(window) = subject
+            && state.forget(window)
+        {
+            state.report(WindowChange::Closed(window));
         }
     } else if name == kAXFocusedWindowChangedNotification {
         // Only the frontmost app's focused window is what a placement aims at; a background
