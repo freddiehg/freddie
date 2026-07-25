@@ -92,7 +92,7 @@ impl<N, N2, Q: Above> Stop<PathMut<N, PathMut<N2, Q>>, Completed<PathMut<N2, Q>>
 }
 ```
 
-`HasStop` is unchanged from what landed. One conversion is added; generated `Descend` code normalizes an Up payload, bare root path or `Completed`, behind one `Into`:
+`HasStop` is unchanged from what landed. One conversion is added; generated `DispatchIntoParent` code normalizes an Up payload, bare root path or `Completed`, behind one `Into`:
 
 ```rust
 impl<'a, R> From<&'a mut R> for Completed<&'a mut R> {
@@ -151,7 +151,7 @@ where
 
 ## Landed baseline (no further change)
 
-`bind/src/lib.rs` already holds `Claim`, the final `Dispatch` and `Descend` signatures, and the final free `dispatch`. (`Descend` renames to `DispatchIntoParent`; that is its own standalone change, next section.)
+`bind/src/lib.rs` already holds `Claim`, the final `Dispatch` and `DispatchIntoParent` signatures, and the final free `dispatch`.
 
 ```rust
 /// One exclusive bind handler per dispatch: the first to `try_take` wins.
@@ -191,11 +191,11 @@ pub trait Dispatch<M: Bindings>: Place {
         Self::Path<'a>: ::laserbeam::HasStop;
 }
 
-pub trait Descend<M: Bindings>: HasParent + Sized
+pub trait DispatchIntoParent<M: Bindings>: HasParent + Sized
 where
     Self::Parent: ::laserbeam::HasStop,
 {
-    fn dispatch(
+    fn dispatch_into_parent(
         self,
         event: &M::Event,
         effs: &mut M::Output,
@@ -222,17 +222,6 @@ where
 ```
 
 The check (`EventHandler` / `DerivedHandler` / `accumulate`) is untouched by everything below.
-
-## Standalone rename: `Descend::dispatch` → `DispatchIntoParent::dispatch_into_parent`
-
-Shippable immediately against the landed baseline; pure rename, no signature or behavior change. The method consumes a child-typed value (a place path or a derived `Node`), dispatches the event at that level, and returns `Completed<Self::Parent>`; the name follows the `into_parent` / `into_ancestor` / `into_inner` convention of a consuming step that names its output, and the trait matches its method as `Complete::complete` does.
-
-- `bind/src/lib.rs`: rename `pub trait Descend<M: Bindings>` → `pub trait DispatchIntoParent<M: Bindings>` and its method `dispatch` → `dispatch_into_parent`. Bounds, params, and return type stay byte-identical.
-- `bind/src/lib.rs`: rewrite the trait's doc comment around the capability: consumes a child-typed value, dispatches at that level, surfaces at the parent; it exists because a derived-child caller cannot name the child's type, so it calls in method position and inference finds the impl. Update every other doc-comment mention of `Descend` in the crate (crate header, `Place`, `Node`, `HasParent`, `DerivedHandler` comments; grep).
-- `bind_macro/src/lib.rs`: in the emissions of `descend_impl`, `derived_node_impl`, `derived_enum_node_impl`, and `derived_child_descent`, change the emitted tokens `::bind::Descend` → `::bind::DispatchIntoParent` and the emitted `fn dispatch` / `::dispatch(` calls → `dispatch_into_parent`.
-- `bind_macro/src/lib.rs`: rename the generator fn `descend_impl` → `dispatch_into_parent_impl` and update its doc comment. The other internal helpers (`derived_child_descent`, `derived_dispatch_descent`) keep their names: they describe the descent phase of dispatch, not the trait.
-- `Dispatch`, the free `dispatch`, and the check half (`EventHandler` / `DerivedHandler`) are untouched.
-- Acceptance: `grep -rw Descend crates/` returns nothing; the workspace compiles; bind tests pass unchanged; a grep of mercury for `Descend` confirms no handwritten call sites existed.
 
 ## The demo: `A → B`, everything the user writes
 
@@ -491,7 +480,7 @@ After (the root/non-root split lives in laserbeam's two `to_maybe_invalidated` i
 .to_maybe_invalidated()
 ```
 
-`descend_impl` (post-rename: `dispatch_into_parent_impl`), before:
+`dispatch_into_parent_impl`, before:
 
 ```rust
 match <#name as ::bind::Dispatch<#marker>>::dispatch(self, event, effs, claim) {
@@ -643,8 +632,6 @@ Posts run whether or not anything claimed: they are scheduled by their trigger, 
 ## Ordered changes
 
 Prefactors first, each independently shippable. The macro deltas per change are in "bind_macro (before / after)".
-
-### 0 — the standalone `DispatchIntoParent` rename (section above; in flight)
 
 ### 1 — macro emits `Completed`: signature, linear body, `dispatch_into_parent_impl`/`derived_node_impl`; laserbeam `From<&mut R> for Completed<&mut R>`
 

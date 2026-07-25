@@ -41,8 +41,8 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let binds = binds(&input.attrs)?;
 
     // A DERIVED level is not a place in the tree. It has no `Resolve`, so it can have neither
-    // `Dispatch` nor `EventHandler`, both of which take `Self::Path`. It implements `Descend`
-    // on its `Node` instead.
+    // `Dispatch` nor `EventHandler`, both of which take `Self::Path`. It implements
+    // `DispatchIntoParent` on its `Node` instead.
     if let Some(parent) = derived_node_parent(&input.attrs)? {
         return derived_node_impl(input, name, &parent, &marker, &binds);
     }
@@ -50,19 +50,19 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let place = place_impl(input, name)?;
     let accumulate = accumulate_impl(input, name, &marker, &binds)?;
     let dispatch = dispatch_impl(input, name, &marker, &binds)?;
-    let descend = descend_impl(input, name, &marker);
+    let dispatch_into_parent = dispatch_into_parent_impl(input, name, &marker);
     Ok(quote! {
         #place
         #accumulate
         #dispatch
-        #descend
+        #dispatch_into_parent
     })
 }
 
 /// Emits `impl bind::Place` for a place node: its path type, `PathMut<Self, Parent>` from
 /// `#[node(parent = P)]`, or `&mut Self` for `#[node(root)]`. This is the associated type that
 /// `Dispatch`, `EventHandler`, and the
-/// place `Descend` impl all name.
+/// place `DispatchIntoParent` impl all name.
 fn place_impl(input: &DeriveInput, name: &Ident) -> syn::Result<TokenStream2> {
     let path_ty = if is_root(&input.attrs) {
         quote!(&'a mut Self)
@@ -160,7 +160,7 @@ fn derived_enum_node_impl(
         let vi = &v.ident;
         single_field_ty(&v.fields)?; // one Data per variant
         dispatch_arms.push(quote! {
-            #name::#vi(data) => ::bind::Descend::<#marker>::dispatch(
+            #name::#vi(data) => ::bind::DispatchIntoParent::<#marker>::dispatch_into_parent(
                 ::bind::Node { parent, data },
                 event,
                 effs,
@@ -176,8 +176,8 @@ fn derived_enum_node_impl(
     }
     Ok(quote! {
         #[automatically_derived]
-        impl<'a> ::bind::Descend<#marker> for ::bind::Node<#parent<'a>, #name> {
-            fn dispatch<'c>(
+        impl<'a> ::bind::DispatchIntoParent<#marker> for ::bind::Node<#parent<'a>, #name> {
+            fn dispatch_into_parent<'c>(
                 self,
                 event: &<#marker as ::bind::Bindings>::Event,
                 effs: &mut <#marker as ::bind::Bindings>::Output,
@@ -209,8 +209,8 @@ fn derived_enum_node_impl(
     })
 }
 
-/// Emits `Descend` (and the check's half) for a DERIVED level: its own child, then its own
-/// binds, then hand the parent back.
+/// Emits `DispatchIntoParent` (and the check's half) for a DERIVED level: its own child, then
+/// its own binds, then hand the parent back.
 ///
 /// It never names its own node type. `Node<#parent<'a>, Self>` is built from the attribute and
 /// from the struct the derive sits on.
@@ -252,8 +252,8 @@ fn derived_node_impl(
     let triggers = claimed_triggers(binds);
     Ok(quote! {
         #[automatically_derived]
-        impl<'a> ::bind::Descend<#marker> for ::bind::Node<#parent<'a>, #name> {
-            fn dispatch<'c>(
+        impl<'a> ::bind::DispatchIntoParent<#marker> for ::bind::Node<#parent<'a>, #name> {
+            fn dispatch_into_parent<'c>(
                 self,
                 event: &<#marker as ::bind::Bindings>::Event,
                 effs: &mut <#marker as ::bind::Bindings>::Output,
@@ -294,12 +294,13 @@ fn derived_node_impl(
 ///
 /// `f` is `fn(&Parent) -> Option<Data>`: a shared reference, so the parent is never moved and
 /// never has to be handed back. The derive builds the node, and names no type it cannot see:
-/// `data`'s type comes from `f`'s return, and inference resolves `Descend` from the `Node`.
+/// `data`'s type comes from `f`'s return, and inference resolves `DispatchIntoParent` from the
+/// `Node`.
 fn derived_child_descent(f: &Path, marker: &Path, place: &TokenStream2) -> TokenStream2 {
     quote! {
         let #place = match #f(&#place) {
             ::core::option::Option::Some(data) => {
-                match ::bind::Descend::<#marker>::dispatch(
+                match ::bind::DispatchIntoParent::<#marker>::dispatch_into_parent(
                     ::bind::Node { parent: #place, data },
                     event,
                     effs,
@@ -343,25 +344,25 @@ fn derived_accumulate_descent(input: &DeriveInput, marker: &Path) -> syn::Result
     ))
 }
 
-/// Emits `impl Descend<M>` for a PLACE: delegate to its own `Dispatch`, then hand the parent
-/// back.
+/// Emits `impl DispatchIntoParent<M>` for a PLACE: delegate to its own `Dispatch`, then hand
+/// the parent back.
 ///
-/// Per node, and not a blanket `impl<N, P> Descend<M> for PathMut<N, P>`: `Dispatch` carries
-/// `Self: 'a`, and the HRTB needed to state the blanket is E0311. Here the lifetime is named,
-/// so `Self: 'a` holds.
+/// Per node, and not a blanket `impl<N, P> DispatchIntoParent<M> for PathMut<N, P>`:
+/// `Dispatch` carries `Self: 'a`, and the HRTB needed to state the blanket is E0311. Here the
+/// lifetime is named, so `Self: 'a` holds.
 ///
 /// The root has no parent to hand back, so it gets none.
-fn descend_impl(input: &DeriveInput, name: &Ident, marker: &Path) -> TokenStream2 {
+fn dispatch_into_parent_impl(input: &DeriveInput, name: &Ident, marker: &Path) -> TokenStream2 {
     if is_root(&input.attrs) {
         return quote!();
     }
     quote! {
         #[automatically_derived]
-        impl<'a> ::bind::Descend<#marker> for <#name as ::bind::Place>::Path<'a>
+        impl<'a> ::bind::DispatchIntoParent<#marker> for <#name as ::bind::Place>::Path<'a>
         where
             #name: 'a,
         {
-            fn dispatch<'c>(
+            fn dispatch_into_parent<'c>(
                 self,
                 event: &<#marker as ::bind::Bindings>::Event,
                 effs: &mut <#marker as ::bind::Bindings>::Output,

@@ -272,23 +272,27 @@ macro_rules! self_trigger {
     };
 }
 
-/// ONE descent, whatever the child is.
+/// Consumes a child-typed value (a place path or a derived [`Node`]), dispatches
+/// `event` at that level, and surfaces at the parent.
 ///
 /// A PLACE implements it by delegating to its own [`Dispatch`] and then handing the parent
 /// back. A DERIVED level implements it directly, because it has no [`Resolve`] and so cannot
 /// have `Dispatch`.
 ///
-/// It exists because a node's derive cannot name the return type of a function that produces
-/// its child. It calls this on whatever that function returned, and inference finds the impl.
+/// It exists because a derived-child caller cannot name the child's type. It calls this in
+/// method position on whatever the child function returned, and inference finds the impl.
+/// The name follows the `into_parent` / `into_ancestor` / `into_inner` convention of a
+/// consuming step that names its output, and the trait matches its method as
+/// `Complete::complete` does.
 ///
 /// The place impl is emitted PER NODE by the derive, not once as a blanket
-/// `impl<N, P> Descend<M> for Path<N, P>`: `Dispatch` carries `Self: 'a`, and the HRTB needed
-/// to state the blanket is E0311.
-pub trait Descend<M: Bindings>: HasParent + Sized {
+/// `impl<N, P> DispatchIntoParent<M> for Path<N, P>`: `Dispatch` carries `Self: 'a`, and the
+/// HRTB needed to state the blanket is E0311.
+pub trait DispatchIntoParent<M: Bindings>: HasParent + Sized {
     /// Runs the active binding for `event` into `effs` under `claim`, or hands
     /// the PARENT back on a miss (`Some`). `None` means an exclusive handler
     /// already ran.
-    fn dispatch(
+    fn dispatch_into_parent(
         self,
         event: &M::Event,
         effs: &mut M::Output,
