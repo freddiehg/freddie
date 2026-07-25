@@ -69,11 +69,76 @@ where
 
 `HasParent` stays: pres walk `node.parent`, and the route fold uses it. The check halves (`DerivedHandler`, `EventHandler`) are untouched: feature-gated, ignored by this design, and they read only triggers, which still take `&Node`.
 
+## Tests (change 1)
+
+A `#[cfg(test)]` module in `bind/src/lib.rs`, one test per `HasPlace` shape. Each asserts through the returned place that it still addresses the tree, so the identity impls and the recursion are all exercised as values, not just as types. `DispatchIntoPlace` gets no change-1 test: nothing implements it until invalidation change 5, whose tests (the `derived.rs` suite, the derived-leave walk, the `Modes` tree, the trybuild rejection) are listed in invalidation.md's Tests section.
+
+```rust
+#[cfg(test)]
+mod has_place_tests {
+    use super::{HasPlace, Node};
+    use laserbeam::PathMut;
+
+    struct Root {
+        layer: u32,
+    }
+
+    #[test]
+    fn a_root_path_is_its_own_place() {
+        let mut root = Root { layer: 7 };
+        let place: &mut Root = HasPlace::into_place(&mut root);
+        place.layer = 8;
+        assert_eq!(root.layer, 8);
+    }
+
+    #[test]
+    fn a_path_mut_is_its_own_place() {
+        let mut root = Root { layer: 7 };
+        let path: PathMut<u32, &mut Root> =
+            PathMut::from_fn(&mut root, |r| &mut r.layer, |r| &r.layer);
+        let mut place: PathMut<u32, &mut Root> = HasPlace::into_place(path);
+        *place.get_mut() = 9;
+        assert_eq!(root.layer, 9);
+    }
+
+    #[test]
+    fn a_node_flattens_to_its_parent_path() {
+        let mut root = Root { layer: 7 };
+        let path: PathMut<u32, &mut Root> =
+            PathMut::from_fn(&mut root, |r| &mut r.layer, |r| &r.layer);
+        let node = Node {
+            parent: path,
+            data: "derived",
+        };
+        let mut place: PathMut<u32, &mut Root> = HasPlace::into_place(node);
+        *place.get_mut() = 10;
+        assert_eq!(root.layer, 10);
+    }
+
+    #[test]
+    fn two_node_layers_flatten_to_the_same_place() {
+        let mut root = Root { layer: 7 };
+        let path: PathMut<u32, &mut Root> =
+            PathMut::from_fn(&mut root, |r| &mut r.layer, |r| &r.layer);
+        let node = Node {
+            parent: Node {
+                parent: path,
+                data: "outer",
+            },
+            data: 3_u8,
+        };
+        let mut place: PathMut<u32, &mut Root> = HasPlace::into_place(node);
+        *place.get_mut() = 11;
+        assert_eq!(root.layer, 11);
+    }
+}
+```
+
 ## Ordered changes
 
 ### 1 — bind: `HasPlace` + `DispatchIntoPlace`, pure additions
 
-Unit tests: `into_place` at each shape — root path, `PathMut`, `Node` one and two levels deep. Nothing else consumes the new items until invalidation change 5.
+With the tests above. Nothing else consumes the new items until invalidation change 5.
 
 ### 2 — everything else is invalidation change 5
 
