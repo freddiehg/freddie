@@ -475,6 +475,57 @@ impl<P: HasStop + Complete<P>> MaybeInvalidated<P> {
     }
 }
 
+impl<P: HasStop> MaybeInvalidated<P> {
+    /// Walk this state to `Target` by shared reference, on either branch.
+    #[must_use]
+    pub fn ancestor<Target>(&self) -> &Target
+    where
+        Self: HasAncestor<Target>,
+    {
+        HasAncestor::ancestor(self)
+    }
+
+    /// Walk this state to `Target`, consuming it, on either branch.
+    #[must_use]
+    pub fn into_ancestor<Target>(self) -> Target
+    where
+        Self: IntoAncestor<Target>,
+    {
+        IntoAncestor::into_ancestor(self)
+    }
+}
+
+/// The state after a descent holds the root on both branches: through the
+/// standing path, or through the leave that replaced it.
+///
+/// A handler whose meaning is that the dispatch ends at the root stops matching
+/// the state at all: it reaches the root either way, at every depth.
+impl<'a, R, P> HasAncestor<&'a mut R> for MaybeInvalidated<P>
+where
+    P: HasStop + HasAncestor<&'a mut R>,
+    Completed<P>: HasAncestor<&'a mut R>,
+{
+    fn ancestor(&self) -> &&'a mut R {
+        match self {
+            Self::NotInvalidated(path) => HasAncestor::ancestor(path),
+            Self::Invalidated(completed) => HasAncestor::ancestor(completed),
+        }
+    }
+}
+
+impl<'a, R, P> IntoAncestor<&'a mut R> for MaybeInvalidated<P>
+where
+    P: HasStop + IntoAncestor<&'a mut R>,
+    Completed<P>: IntoAncestor<&'a mut R>,
+{
+    fn into_ancestor(self) -> &'a mut R {
+        match self {
+            Self::NotInvalidated(path) => IntoAncestor::into_ancestor(path),
+            Self::Invalidated(completed) => IntoAncestor::into_ancestor(completed),
+        }
+    }
+}
+
 /// A completed leave from origin `P`: where the peeling stopped.
 ///
 /// [`Complete::complete`] and [`Completed::up`] construct one; `new` is private.
@@ -497,6 +548,73 @@ impl<P: HasStop> Completed<P> {
     #[must_use]
     pub fn to_maybe_invalidated(self) -> MaybeInvalidated<P> {
         P::to_maybe_invalidated(self)
+    }
+
+    /// Walk this leave to `Target` by shared reference, naming it rather than
+    /// leaving it to inference.
+    #[must_use]
+    pub fn ancestor<Target>(&self) -> &Target
+    where
+        Self: HasAncestor<Target>,
+    {
+        HasAncestor::ancestor(self)
+    }
+
+    /// Walk this leave to `Target`, consuming it, naming the target.
+    #[must_use]
+    pub fn into_ancestor<Target>(self) -> Target
+    where
+        Self: IntoAncestor<Target>,
+    {
+        IntoAncestor::into_ancestor(self)
+    }
+}
+
+/// A leave from the root holds the root.
+impl<'a, R> HasAncestor<&'a mut R> for Completed<&'a mut R> {
+    fn ancestor(&self) -> &&'a mut R {
+        &self.stop
+    }
+}
+
+impl<'a, R> IntoAncestor<&'a mut R> for Completed<&'a mut R> {
+    fn into_ancestor(self) -> &'a mut R {
+        self.stop
+    }
+}
+
+/// A leave from a path holds the root through whichever arm it stopped in:
+/// through the path it left standing, or through the leave above it.
+///
+/// The root is the only ancestor a leave holds on every inhabitant. `Completed`
+/// erases where the leave stopped, which is what lets one handler return the same
+/// type from every branch, so a shallower ancestor is simply absent from the
+/// went-to-the-root one; reaching those is [`TryIntoAncestor`]'s question.
+impl<'a, R, N, P> HasAncestor<&'a mut R> for Completed<PathMut<N, P>>
+where
+    P: Above,
+    PathMut<N, P>: HasAncestor<&'a mut R>,
+    P::Up: HasAncestor<&'a mut R>,
+{
+    fn ancestor(&self) -> &&'a mut R {
+        match &self.stop {
+            Stop::Here(path) => path.ancestor(),
+            Stop::Up(rest) => HasAncestor::ancestor(rest),
+        }
+    }
+}
+
+impl<'a, R, N, P> IntoAncestor<&'a mut R> for Completed<PathMut<N, P>>
+where
+    P: Above,
+    PathMut<N, P>: IntoAncestor<&'a mut R>,
+    P::Up: IntoAncestor<&'a mut R>,
+{
+    fn into_ancestor(self) -> &'a mut R {
+        match self.stop {
+            Stop::Here(path) => path.into_ancestor(),
+            Stop::Up(rest) => IntoAncestor::into_ancestor(rest),
+        }
     }
 }
 
@@ -1071,5 +1189,167 @@ mod maybe_invalidated_tests {
             root.hits = 5;
         }
         assert_eq!(app.hits, 5);
+    }
+}
+
+#[cfg(test)]
+mod ancestors_through_a_leave_tests {
+    use crate::{
+        Complete, Completed, HasAncestor, HasStop, IntoAncestor, MaybeInvalidated, PathMut,
+    };
+
+    struct App {
+        hits: u32,
+        layer: Layer,
+    }
+    struct Layer {
+        hits: u32,
+        nav: Nav,
+    }
+    struct Nav {
+        hits: u32,
+        deep: Deep,
+    }
+    struct Deep {
+        hits: u32,
+    }
+
+    type AppPath<'a> = &'a mut App;
+    type LayerPath<'a> = PathMut<Layer, AppPath<'a>>;
+    type NavPath<'a> = PathMut<Nav, LayerPath<'a>>;
+    type DeepPath<'a> = PathMut<Deep, NavPath<'a>>;
+
+    const fn tree() -> App {
+        App {
+            hits: 0,
+            layer: Layer {
+                hits: 0,
+                nav: Nav {
+                    hits: 0,
+                    deep: Deep { hits: 0 },
+                },
+            },
+        }
+    }
+
+    fn layer_path(app: &mut App) -> LayerPath<'_> {
+        PathMut::from_fn(app, |a| &mut a.layer, |a| &a.layer)
+    }
+
+    fn nav_path(app: &mut App) -> NavPath<'_> {
+        PathMut::from_fn(
+            layer_path(app),
+            |lp| &mut lp.get_mut().nav,
+            |lp| &lp.get().nav,
+        )
+    }
+
+    fn deep_path(app: &mut App) -> DeepPath<'_> {
+        PathMut::from_fn(
+            nav_path(app),
+            |np| &mut np.get_mut().deep,
+            |np| &np.get().deep,
+        )
+    }
+
+    /// Fails to compile if either reach is short at any depth, on either carrier.
+    #[test]
+    fn completed_and_state_reach_the_root_at_every_depth() {
+        const fn reaches<'a, T: HasAncestor<AppPath<'a>> + IntoAncestor<AppPath<'a>>>() {}
+        reaches::<Completed<AppPath<'_>>>();
+        reaches::<Completed<LayerPath<'_>>>();
+        reaches::<Completed<NavPath<'_>>>();
+        reaches::<Completed<DeepPath<'_>>>();
+        reaches::<MaybeInvalidated<AppPath<'_>>>();
+        reaches::<MaybeInvalidated<LayerPath<'_>>>();
+        reaches::<MaybeInvalidated<NavPath<'_>>>();
+        reaches::<MaybeInvalidated<DeepPath<'_>>>();
+    }
+
+    /// Wherever a leave stopped, the root is still in it: the `Here` arm walks the
+    /// standing path up, the `Up` arm asks the leave above.
+    #[test]
+    fn a_leave_holds_the_root_wherever_it_stopped() {
+        let mut app = tree();
+        {
+            let stopped_at_nav: Completed<NavPath<'_>> = nav_path(&mut app).complete();
+            assert_eq!(stopped_at_nav.ancestor::<AppPath<'_>>().hits, 0);
+            stopped_at_nav.into_ancestor::<AppPath<'_>>().hits = 1;
+        }
+        assert_eq!(app.hits, 1);
+
+        {
+            let stopped_at_layer: Completed<NavPath<'_>> =
+                nav_path(&mut app).into_parent().complete();
+            stopped_at_layer.into_ancestor::<AppPath<'_>>().hits = 2;
+        }
+        assert_eq!(app.hits, 2);
+
+        {
+            let peeled_to_root: Completed<NavPath<'_>> =
+                nav_path(&mut app).into_parent().into_parent().complete();
+            peeled_to_root.into_ancestor::<AppPath<'_>>().hits = 3;
+        }
+        assert_eq!(app.hits, 3);
+
+        // One level deeper, so the recursion runs through two `Up` frames rather
+        // than one, and the levels it passes are untouched on the way.
+        {
+            let from_deep: Completed<DeepPath<'_>> = deep_path(&mut app).complete();
+            assert_eq!(from_deep.ancestor::<AppPath<'_>>().layer.hits, 0);
+            assert_eq!(from_deep.ancestor::<AppPath<'_>>().layer.nav.hits, 0);
+            assert_eq!(from_deep.ancestor::<AppPath<'_>>().layer.nav.deep.hits, 0);
+            from_deep.into_ancestor::<AppPath<'_>>().hits = 4;
+        }
+        assert_eq!(app.hits, 4);
+    }
+
+    /// One handler, no match on the state, bound at every depth: what it means is
+    /// that the dispatch ends at the root, so it re-roots the leave either way.
+    #[test]
+    fn one_root_handler_serves_both_branches_at_every_depth() {
+        fn go_root<'a, P>(state: MaybeInvalidated<P>) -> Completed<P>
+        where
+            P: HasStop,
+            MaybeInvalidated<P>: IntoAncestor<AppPath<'a>>,
+            AppPath<'a>: Complete<P>,
+        {
+            let root: AppPath<'a> = state.into_ancestor();
+            root.hits += 1;
+            root.complete()
+        }
+
+        let mut app = tree();
+        {
+            let standing = go_root(MaybeInvalidated::NotInvalidated(nav_path(&mut app)));
+            assert_eq!(standing.into_ancestor::<AppPath<'_>>().hits, 1);
+        }
+        {
+            let left: Completed<NavPath<'_>> = nav_path(&mut app).into_parent().complete();
+            let invalidated = go_root(MaybeInvalidated::Invalidated(left));
+            assert_eq!(invalidated.into_ancestor::<AppPath<'_>>().hits, 2);
+        }
+        {
+            let at_the_root = go_root(MaybeInvalidated::NotInvalidated(&mut app));
+            assert_eq!(at_the_root.into_ancestor::<AppPath<'_>>().hits, 3);
+        }
+        assert_eq!(app.hits, 3);
+    }
+
+    /// The shared reach, on both branches of the state.
+    #[test]
+    fn the_state_reads_the_root_on_both_branches() {
+        let mut app = tree();
+        app.hits = 4;
+        {
+            let standing: MaybeInvalidated<NavPath<'_>> =
+                MaybeInvalidated::NotInvalidated(nav_path(&mut app));
+            assert_eq!(standing.ancestor::<AppPath<'_>>().hits, 4);
+        }
+        {
+            let left: Completed<NavPath<'_>> = nav_path(&mut app).into_parent().complete();
+            let invalidated: MaybeInvalidated<NavPath<'_>> = MaybeInvalidated::Invalidated(left);
+            assert_eq!(invalidated.ancestor::<AppPath<'_>>().hits, 4);
+        }
     }
 }
