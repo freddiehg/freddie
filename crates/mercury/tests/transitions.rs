@@ -157,7 +157,7 @@ fn home_n_enters_nav() {
     let mut m = home();
     assert_eq!(
         m.handle(&key(Key::KeyN)),
-        Some(vec![shows("Nav"), return_home_timer()])
+        (vec![shows("Nav"), return_home_timer()], true)
     );
     assert!(matches!(m.layer(), Layer::Nav(_)));
 }
@@ -165,20 +165,20 @@ fn home_n_enters_nav() {
 #[test]
 fn home_t_enters_typing() {
     let mut m = home();
-    assert_eq!(m.handle(&key(Key::KeyT)), Some(vec![shows("Typing")]));
+    assert_eq!(m.handle(&key(Key::KeyT)), (vec![shows("Typing")], true));
     assert!(matches!(m.layer(), Layer::Typing(_)));
 }
 
 #[test]
 fn home_q_quits() {
     let mut m = home();
-    assert_eq!(m.handle(&key(Key::KeyQ)), Some(vec![MercuryEffect::Kill]));
+    assert_eq!(m.handle(&key(Key::KeyQ)), (vec![MercuryEffect::Kill], true));
 }
 
 #[test]
 fn quit_event_kills_from_home() {
     let mut m = home();
-    assert_eq!(m.handle(&quit_event()), Some(vec![MercuryEffect::Kill]));
+    assert_eq!(m.handle(&quit_event()), (vec![MercuryEffect::Kill], true));
     // No layer change: quit is an effect, not a transition.
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
@@ -192,10 +192,13 @@ fn quit_emits_held_modifiers_so_the_app_learns_the_physical_state() {
     let _ = m.handle(&key(Key::MetaLeft)); // tracked, swallowed in home
     assert_eq!(
         m.handle(&quit_event()),
-        Some(vec![
-            emit_with(Key::MetaLeft, PressType::Down, ModifierFlags::COMMAND),
-            MercuryEffect::Kill,
-        ])
+        (
+            vec![
+                emit_with(Key::MetaLeft, PressType::Down, ModifierFlags::COMMAND),
+                MercuryEffect::Kill,
+            ],
+            true
+        )
     );
 }
 
@@ -209,8 +212,8 @@ fn quit_event_kills_from_every_layer() {
         let _ = m.handle(&key(enter));
         assert_eq!(
             m.handle(&quit_event()),
-            Some(vec![MercuryEffect::Kill]),
-            "quit from the layer entered by {enter:?}",
+            (vec![MercuryEffect::Kill], true),
+            "quit from the layer entered by {enter:?}"
         );
     }
 }
@@ -220,7 +223,7 @@ fn home_escape_does_nothing() {
     // In home, escape re-enters home (the layer-level go-home binding): it renames the layer to
     // the one it is already in, and nothing else changes.
     let mut m = home();
-    assert_eq!(m.handle(&key(Key::Escape)), Some(vec![shows("Home")]));
+    assert_eq!(m.handle(&key(Key::Escape)), (vec![shows("Home")], true));
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
@@ -229,19 +232,19 @@ fn escape_goes_home_from_a_sublayer() {
     let mut m = home();
     let _ = m.handle(&key(Key::KeyN));
     assert!(matches!(m.layer(), Layer::Nav(_)));
-    assert_eq!(m.handle(&key(Key::Escape)), Some(vec![shows("Home")]));
+    assert_eq!(m.handle(&key(Key::Escape)), (vec![shows("Home")], true));
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
 #[test]
 fn nav_times_out_home() {
     let mut m = home();
-    let entered = m.handle(&key(Key::KeyN)).expect("n enters nav");
+    let entered = m.handle(&key(Key::KeyN)).0;
     assert!(matches!(m.layer(), Layer::Nav(_)));
     // The timer nav set fires: its id came back on the effect that set it.
     assert_eq!(
         m.handle(&fired(timer_id(&entered))),
-        Some(vec![shows("Home")])
+        (vec![shows("Home")], true)
     );
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
@@ -251,19 +254,19 @@ fn a_firing_from_a_layer_already_left_matches_nothing() {
     // Enter nav, leave, and enter again: the first timer's firing arrives late, after a second
     // nav replaced it. It must not send the live one home.
     let mut m = home();
-    let first = timer_id(&m.handle(&key(Key::KeyN)).expect("n enters nav"));
+    let first = timer_id(&m.handle(&key(Key::KeyN)).0);
     let _ = m.handle(&key(Key::Escape));
-    let second = timer_id(&m.handle(&key(Key::KeyN)).expect("n enters nav"));
+    let second = timer_id(&m.handle(&key(Key::KeyN)).0);
     assert_ne!(first, second, "each entry sets its own timer");
 
     assert_eq!(
         m.handle(&fired(first)),
-        None,
+        (vec![], false),
         "no binding matches a stale firing"
     );
     assert!(matches!(m.layer(), Layer::Nav(_)), "still in nav");
 
-    assert_eq!(m.handle(&fired(second)), Some(vec![shows("Home")]));
+    assert_eq!(m.handle(&fired(second)), (vec![shows("Home")], true));
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
@@ -271,9 +274,9 @@ fn a_firing_from_a_layer_already_left_matches_nothing() {
 fn a_firing_in_a_layer_that_set_no_timer_matches_nothing() {
     // Home sets none, so there is no binding for a firing to match, whatever id it carries.
     let mut m = home();
-    let stale = timer_id(&m.handle(&key(Key::KeyN)).expect("n enters nav"));
+    let stale = timer_id(&m.handle(&key(Key::KeyN)).0);
     let _ = m.handle(&key(Key::Escape));
-    assert_eq!(m.handle(&fired(stale)), None);
+    assert_eq!(m.handle(&fired(stale)), (vec![], false));
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
@@ -281,8 +284,8 @@ fn a_firing_in_a_layer_that_set_no_timer_matches_nothing() {
 fn typing_passes_any_key_through() {
     let mut m = home();
     let _ = m.handle(&key(Key::KeyT));
-    assert_eq!(m.handle(&key(Key::KeyA)), Some(passed(Key::KeyA)));
-    assert_eq!(m.handle(&key(Key::KeyZ)), Some(passed(Key::KeyZ)));
+    assert_eq!(m.handle(&key(Key::KeyA)), (passed(Key::KeyA), true));
+    assert_eq!(m.handle(&key(Key::KeyZ)), (passed(Key::KeyZ), true));
     assert!(matches!(m.layer(), Layer::Typing(_)));
 }
 
@@ -299,11 +302,14 @@ fn typing_passes_a_baked_modifier_through() {
     });
     assert_eq!(
         m.handle(&cmd_v),
-        Some(vec![emit_with(
-            Key::KeyV,
-            PressType::Down,
-            ModifierFlags::COMMAND
-        )])
+        (
+            vec![emit_with(
+                Key::KeyV,
+                PressType::Down,
+                ModifierFlags::COMMAND
+            )],
+            true
+        )
     );
 }
 
@@ -312,7 +318,7 @@ fn typing_plain_escape_passes_through() {
     // In typing, escape is a normal key: it passes through and stays in typing.
     let mut m = home();
     let _ = m.handle(&key(Key::KeyT));
-    assert_eq!(m.handle(&key(Key::Escape)), Some(passed(Key::Escape)));
+    assert_eq!(m.handle(&key(Key::Escape)), (passed(Key::Escape), true));
     assert!(matches!(m.layer(), Layer::Typing(_)));
 }
 
@@ -332,11 +338,14 @@ fn typing_cmd_escape_types_the_escape() {
     });
     assert_eq!(
         m.handle(&cmd_down),
-        Some(vec![emit_with(
-            Key::MetaLeft,
-            PressType::Down,
-            ModifierFlags::COMMAND
-        )])
+        (
+            vec![emit_with(
+                Key::MetaLeft,
+                PressType::Down,
+                ModifierFlags::COMMAND
+            )],
+            true
+        )
     );
 
     let cmd_escape = MercuryEvent::Key(KeyEvent {
@@ -346,11 +355,14 @@ fn typing_cmd_escape_types_the_escape() {
     });
     assert_eq!(
         m.handle(&cmd_escape),
-        Some(vec![emit_with(
-            Key::Escape,
-            PressType::Down,
-            ModifierFlags::COMMAND
-        )])
+        (
+            vec![emit_with(
+                Key::Escape,
+                PressType::Down,
+                ModifierFlags::COMMAND
+            )],
+            true
+        )
     );
     assert!(matches!(m.layer(), Layer::Typing(_)));
 }
@@ -363,11 +375,14 @@ fn nav_c_foregrounds_chrome_and_enters_inapp() {
     let _ = m.handle(&key(Key::KeyN));
     assert_eq!(
         m.handle(&key(Key::KeyC)),
-        Some(vec![
-            shows("App"),
-            return_home_timer(),
-            MercuryEffect::Foreground(App::Chrome)
-        ])
+        (
+            vec![
+                shows("App"),
+                return_home_timer(),
+                MercuryEffect::Foreground(App::Chrome)
+            ],
+            true
+        )
     );
     assert!(matches!(m.layer(), Layer::InApp(_)));
     // The effect is inert: nothing is foregrounded until the watcher reports it, and
@@ -389,11 +404,14 @@ fn every_nav_choice_enters_inapp() {
         assert!(matches!(m.layer(), Layer::Nav(_)));
         assert_eq!(
             m.handle(&key(k)),
-            Some(vec![
-                shows("App"),
-                return_home_timer(),
-                MercuryEffect::Foreground(app)
-            ])
+            (
+                vec![
+                    shows("App"),
+                    return_home_timer(),
+                    MercuryEffect::Foreground(app)
+                ],
+                true
+            )
         );
         assert!(matches!(m.layer(), Layer::InApp(_)), "{app:?} left nav");
         assert!(
@@ -411,17 +429,17 @@ fn nav_space_opens_spotlight_and_enters_typing() {
     let _ = m.handle(&key(Key::KeyN));
     assert_eq!(
         m.handle(&key(Key::Space)),
-        Some(vec![
-            tap(Key::Space, ModifierFlags::COMMAND),
-            shows("Typing")
-        ])
+        (
+            vec![tap(Key::Space, ModifierFlags::COMMAND), shows("Typing")],
+            true
+        )
     );
     assert!(matches!(m.layer(), Layer::Typing(_)));
     // Nothing was foregrounded, and no navigation is pending: Spotlight is not an app choice.
     assert_eq!(m.foreground.app(), App::Other);
     assert!(!m.foreground.navigating());
     // Typing passes keys through, so what follows types itself into Spotlight.
-    assert_eq!(m.handle(&key(Key::KeyC)), Some(passed(Key::KeyC)));
+    assert_eq!(m.handle(&key(Key::KeyC)), (passed(Key::KeyC), true));
 }
 
 // `n c` foregrounds Chrome and, once the watcher reports it, `r`
@@ -432,18 +450,21 @@ fn n_c_then_foreground_then_r_refreshes_chrome() {
     let _ = m.handle(&key(Key::KeyN));
     assert_eq!(
         m.handle(&key(Key::KeyC)),
-        Some(vec![
-            shows("App"),
-            return_home_timer(),
-            MercuryEffect::Foreground(App::Chrome)
-        ])
+        (
+            vec![
+                shows("App"),
+                return_home_timer(),
+                MercuryEffect::Foreground(App::Chrome)
+            ],
+            true
+        )
     );
     assert!(matches!(m.layer(), Layer::InApp(_)));
 
     let _ = m.handle(&foreground(App::Chrome)); // the watcher reports it
     assert_eq!(m.foreground.app(), App::Chrome);
     assert!(!m.foreground.navigating());
-    assert_eq!(m.handle(&key(Key::KeyR)), Some(in_app(cmd_r())));
+    assert_eq!(m.handle(&key(Key::KeyR)), (in_app(cmd_r()), true));
 }
 
 // While a nav is pending, the in-app level is empty: `foreground.app()` is still the old
@@ -460,21 +481,21 @@ fn a_pending_nav_binds_nothing_until_the_foreground_event() {
     assert!(m.foreground.navigating());
     assert_eq!(m.foreground.app(), App::Ghostty);
     // Ghostty's `j` does not apply, even though Ghostty is still the (stale) front app.
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(in_app(vec![])));
+    assert_eq!(m.handle(&key(Key::KeyJ)), (in_app(vec![]), true));
     // Chrome's `r` does not apply yet either: nothing binds while the nav is pending.
-    assert_eq!(m.handle(&key(Key::KeyR)), Some(in_app(vec![])));
+    assert_eq!(m.handle(&key(Key::KeyR)), (in_app(vec![]), true));
 
     let _ = m.handle(&foreground(App::Chrome)); // the watcher catches up
     assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foreground.app(), App::Chrome);
     assert!(!m.foreground.navigating());
-    assert_eq!(m.handle(&key(Key::KeyR)), Some(in_app(cmd_r())));
+    assert_eq!(m.handle(&key(Key::KeyR)), (in_app(cmd_r()), true));
 }
 
 #[test]
 fn foreground_records_the_app_without_changing_layer() {
     let mut m = home();
-    assert_eq!(m.handle(&foreground(App::Zed)), Some(vec![]));
+    assert_eq!(m.handle(&foreground(App::Zed)), (vec![], true));
     assert_eq!(m.foreground.app(), App::Zed);
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
@@ -485,7 +506,7 @@ fn i_enters_inapp_for_the_foregrounded_app() {
     let _ = m.handle(&foreground(App::Chrome));
     assert_eq!(
         m.handle(&key(Key::KeyI)),
-        Some(vec![shows("App"), return_home_timer()])
+        (vec![shows("App"), return_home_timer()], true)
     );
     assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foreground.app(), App::Chrome);
@@ -510,10 +531,10 @@ fn chrome_l_focuses_the_address_bar_and_enters_typing() {
     let mut m = chrome_showing("https://www.x.com/asdfasdf");
     assert_eq!(
         m.handle(&key(Key::KeyL)),
-        Some(vec![
-            tap(Key::KeyL, ModifierFlags::COMMAND),
-            shows("Typing")
-        ])
+        (
+            vec![tap(Key::KeyL, ModifierFlags::COMMAND), shows("Typing")],
+            true
+        )
     );
     assert!(matches!(m.layer(), Layer::Typing(_)));
 }
@@ -525,7 +546,7 @@ fn chrome_shift_l_copies_the_url() {
     let mut m = chrome_showing("https://www.x.com/asdfasdf");
     assert_eq!(
         m.handle(&key_with(Key::KeyL, ModifierFlags::SHIFT)),
-        Some(in_app(vec![copies("https://www.x.com/asdfasdf")]))
+        (in_app(vec![copies("https://www.x.com/asdfasdf")]), true)
     );
     // It repeats, so it stays in the in-app layer.
     assert!(matches!(m.layer(), Layer::InApp(_)));
@@ -537,7 +558,7 @@ fn chrome_cmd_l_copies_the_host() {
     let mut m = chrome_showing("https://www.x.com/asdfasdf");
     assert_eq!(
         m.handle(&key_with(Key::KeyL, ModifierFlags::COMMAND)),
-        Some(in_app(vec![copies("www.x.com")]))
+        (in_app(vec![copies("www.x.com")]), true)
     );
     assert!(matches!(m.layer(), Layer::InApp(_)));
 }
@@ -560,7 +581,7 @@ fn the_three_ls_do_not_shadow_each_other() {
         ),
     ] {
         let mut m = chrome_showing("https://claude.ai/new");
-        assert_eq!(m.handle(&event), Some(want), "{event:?}");
+        assert_eq!(m.handle(&event), (want, true), "{event:?}");
     }
 }
 
@@ -573,15 +594,21 @@ fn a_copy_with_no_reported_url_asks_chrome() {
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(
         m.handle(&key_with(Key::KeyL, ModifierFlags::SHIFT)),
-        Some(in_app(vec![MercuryEffect::Copy(Copied::FrontTabUrl(
-            UrlPart::Whole
-        ))]))
+        (
+            in_app(vec![MercuryEffect::Copy(Copied::FrontTabUrl(
+                UrlPart::Whole
+            ))]),
+            true
+        )
     );
     assert_eq!(
         m.handle(&key_with(Key::KeyL, ModifierFlags::COMMAND)),
-        Some(in_app(vec![MercuryEffect::Copy(Copied::FrontTabUrl(
-            UrlPart::Host
-        ))]))
+        (
+            in_app(vec![MercuryEffect::Copy(Copied::FrontTabUrl(
+                UrlPart::Host
+            ))]),
+            true
+        )
     );
 }
 
@@ -591,7 +618,7 @@ fn copying_the_host_of_a_hostless_url_copies_nothing() {
     let mut m = chrome_showing("about:blank");
     assert_eq!(
         m.handle(&key_with(Key::KeyL, ModifierFlags::COMMAND)),
-        Some(in_app(vec![]))
+        (in_app(vec![]), true)
     );
 }
 
@@ -601,10 +628,10 @@ fn the_ls_are_chromes_alone() {
     let mut m = home();
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
-    assert_eq!(m.handle(&key(Key::KeyL)), Some(in_app(vec![])));
+    assert_eq!(m.handle(&key(Key::KeyL)), (in_app(vec![]), true));
     assert_eq!(
         m.handle(&key_with(Key::KeyL, ModifierFlags::SHIFT)),
-        Some(in_app(vec![]))
+        (in_app(vec![]), true)
     );
 }
 
@@ -622,10 +649,13 @@ fn claude_ai_n_starts_a_new_chat_and_enters_typing() {
     let mut m = site_showing("https://claude.ai/new");
     assert_eq!(
         m.handle(&key(Key::KeyN)),
-        Some(vec![
-            tap(Key::KeyO, ModifierFlags::COMMAND | ModifierFlags::SHIFT),
-            shows("Typing")
-        ])
+        (
+            vec![
+                tap(Key::KeyO, ModifierFlags::COMMAND | ModifierFlags::SHIFT),
+                shows("Typing")
+            ],
+            true
+        )
     );
     assert!(matches!(m.layer(), Layer::Typing(_)));
 }
@@ -636,7 +666,7 @@ fn claude_ai_n_starts_a_new_chat_and_enters_typing() {
 fn n_is_claude_ais_alone() {
     let mut m = site_showing("https://www.x.com/asdfasdf");
     // Swallowed, and the site layer treats the keypress as activity: its return-home timer resets.
-    assert_eq!(m.handle(&key(Key::KeyN)), Some(vec![return_home_timer()]));
+    assert_eq!(m.handle(&key(Key::KeyN)), (vec![return_home_timer()], true));
     assert!(matches!(m.layer(), Layer::Site(_)));
 }
 
@@ -649,7 +679,7 @@ fn inapp_s_enters_site() {
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(
         m.handle(&key(Key::KeyS)),
-        Some(vec![shows("Site"), return_home_timer()])
+        (vec![shows("Site"), return_home_timer()], true)
     );
     assert!(matches!(m.layer(), Layer::Site(_)));
 }
@@ -664,7 +694,7 @@ fn inapp_n_enters_nav() {
     assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(
         m.handle(&key(Key::KeyN)),
-        Some(vec![shows("Nav"), return_home_timer()])
+        (vec![shows("Nav"), return_home_timer()], true)
     );
     assert!(matches!(m.layer(), Layer::Nav(_)));
 }
@@ -675,7 +705,7 @@ fn inapp_t_enters_typing() {
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(m.layer(), Layer::InApp(_)));
-    assert_eq!(m.handle(&key(Key::KeyT)), Some(vec![shows("Typing")]));
+    assert_eq!(m.handle(&key(Key::KeyT)), (vec![shows("Typing")], true));
     assert!(matches!(m.layer(), Layer::Typing(_)));
 }
 
@@ -689,7 +719,7 @@ fn inapp_app_bindings_still_take_precedence() {
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(
         m.handle(&key(Key::KeyJ)),
-        Some(in_app(tmux(ModifierFlags::empty(), Key::KeyP)))
+        (in_app(tmux(ModifierFlags::empty(), Key::KeyP)), true)
     );
     assert!(matches!(m.layer(), Layer::InApp(_)));
 }
@@ -699,7 +729,7 @@ fn chrome_r_refreshes() {
     let mut m = home();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
-    assert_eq!(m.handle(&key(Key::KeyR)), Some(in_app(cmd_r())));
+    assert_eq!(m.handle(&key(Key::KeyR)), (in_app(cmd_r()), true));
 }
 
 #[test]
@@ -709,13 +739,13 @@ fn inapp_other_app_ignores_keys() {
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(m.layer(), Layer::InApp(_)));
     assert!(matches!(m.foreground.app(), App::Zed | App::Other));
-    assert_eq!(m.handle(&key(Key::KeyR)), Some(in_app(vec![])));
+    assert_eq!(m.handle(&key(Key::KeyR)), (in_app(vec![]), true));
 }
 
 #[test]
 fn unbound_key_is_none() {
     let mut m = home();
-    assert_eq!(m.handle(&key(Key::KeyX)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyX)), (vec![], true));
 }
 
 // ---- ghostty: j/k walk tmux's windows, digits jump to one ----
@@ -743,11 +773,11 @@ fn ghostty_j_is_previous_window_and_k_is_next() {
 
     assert_eq!(
         m.handle(&key(Key::KeyJ)),
-        Some(in_app(tmux(ModifierFlags::empty(), Key::KeyP)))
+        (in_app(tmux(ModifierFlags::empty(), Key::KeyP)), true)
     );
     assert_eq!(
         m.handle(&key(Key::KeyK)),
-        Some(in_app(tmux(ModifierFlags::empty(), Key::KeyN)))
+        (in_app(tmux(ModifierFlags::empty(), Key::KeyN)), true)
     );
     // Still in Ghostty's layer, so windows can be walked without re-entering.
     assert!(matches!(m.layer(), Layer::InApp(_)));
@@ -761,7 +791,7 @@ fn the_tmux_command_is_a_bare_tap() {
     let mut m = home();
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
-    let effects = m.handle(&key(Key::KeyJ)).expect("j is bound");
+    let effects = m.handle(&key(Key::KeyJ)).0;
 
     // A prefix and a command, then the return-home timer reset (walking is in-app activity).
     assert_eq!(effects.len(), 3);
@@ -776,8 +806,8 @@ fn j_and_k_are_unbound_in_chrome_in_app() {
     let mut m = home();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(in_app(vec![])));
-    assert_eq!(m.handle(&key(Key::KeyK)), Some(in_app(vec![])));
+    assert_eq!(m.handle(&key(Key::KeyJ)), (in_app(vec![]), true));
+    assert_eq!(m.handle(&key(Key::KeyK)), (in_app(vec![]), true));
 }
 
 // Foregrounding Ghostty while in-app retargets to its layer, so its bindings
@@ -795,7 +825,7 @@ fn foregrounding_ghostty_retargets_the_inapp_layer() {
     assert_eq!(m.foreground.app(), App::Ghostty);
     assert_eq!(
         m.handle(&key(Key::KeyJ)),
-        Some(in_app(tmux(ModifierFlags::empty(), Key::KeyP)))
+        (in_app(tmux(ModifierFlags::empty(), Key::KeyP)), true)
     );
 }
 
@@ -816,7 +846,7 @@ fn the_digits_select_a_tmux_window_and_return_home() {
 
         assert_eq!(
             m.handle(&key(k)),
-            Some(leaves(tmux(ModifierFlags::SHIFT, expected))),
+            (leaves(tmux(ModifierFlags::SHIFT, expected)), true),
             "{k:?}"
         );
         // Choosing a window is a choice, not something you repeat.
@@ -848,7 +878,7 @@ fn all_ten_digits_are_bound_in_ghostty() {
         let _ = m.handle(&key(Key::KeyI));
         assert_eq!(
             m.handle(&key(digit)),
-            Some(leaves(tmux(ModifierFlags::SHIFT, digit))),
+            (leaves(tmux(ModifierFlags::SHIFT, digit)), true),
             "{digit:?} is unbound"
         );
     }
@@ -878,12 +908,12 @@ fn inapp_activity_resets_the_return_home_timer() {
     // Walking a window stays in-app, so the timer is reset.
     assert_eq!(
         m.handle(&key(Key::KeyJ)),
-        Some(in_app(tmux(ModifierFlags::empty(), Key::KeyP)))
+        (in_app(tmux(ModifierFlags::empty(), Key::KeyP)), true)
     );
     // Jumping to a window leaves for home, so nothing re-schedules it.
     assert_eq!(
         m.handle(&key(Key::Num3)),
-        Some(leaves(tmux(ModifierFlags::SHIFT, Key::Num3)))
+        (leaves(tmux(ModifierFlags::SHIFT, Key::Num3)), true)
     );
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
@@ -892,12 +922,12 @@ fn inapp_activity_resets_the_return_home_timer() {
 #[test]
 fn the_digits_are_unbound_outside_ghostty() {
     let mut m = home();
-    assert_eq!(m.handle(&key(Key::Num1)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::Num1)), (vec![], true));
 
     let mut m = home();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
-    assert_eq!(m.handle(&key(Key::Num1)), Some(in_app(vec![])));
+    assert_eq!(m.handle(&key(Key::Num1)), (in_app(vec![]), true));
 }
 
 // ---- resize: `r` from home, then the arrows place the focused window ----
@@ -907,7 +937,7 @@ fn home_r_enters_resize() {
     let mut m = home();
     assert_eq!(
         m.handle(&key(Key::KeyR)),
-        Some(vec![shows("Resize"), return_home_timer()])
+        (vec![shows("Resize"), return_home_timer()], true)
     );
     assert!(matches!(m.layer(), Layer::Resize(_)));
 }
@@ -940,13 +970,16 @@ fn the_arrows_place_the_window_and_return_home() {
 
         assert_eq!(
             m.handle(&key(k)),
-            Some(leaves(vec![
-                MercuryEffect::SetFrame(WindowFrame {
-                    window: WINDOW,
-                    frame,
-                }),
-                settle_timer(),
-            ])),
+            (
+                leaves(vec![
+                    MercuryEffect::SetFrame(WindowFrame {
+                        window: WINDOW,
+                        frame,
+                    }),
+                    settle_timer(),
+                ]),
+                true
+            ),
             "{k:?}"
         );
         assert!(
@@ -962,7 +995,7 @@ fn the_arrows_place_the_window_and_return_home() {
 fn a_placement_with_no_focused_window_asks_for_nothing() {
     let mut m = home();
     let _ = m.handle(&key(Key::KeyR));
-    assert_eq!(m.handle(&key(Key::UpArrow)), Some(leaves(vec![])));
+    assert_eq!(m.handle(&key(Key::UpArrow)), (leaves(vec![]), true));
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
@@ -973,7 +1006,7 @@ fn escape_leaves_resize() {
     let _ = m.handle(&key(Key::KeyR));
     assert!(matches!(m.layer(), Layer::Resize(_)));
 
-    assert_eq!(m.handle(&key(Key::Escape)), Some(vec![shows("Home")]));
+    assert_eq!(m.handle(&key(Key::Escape)), (vec![shows("Home")], true));
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
@@ -984,27 +1017,33 @@ fn placing_twice_re_enters_resize() {
     let _ = m.handle(&key(Key::KeyR));
     assert_eq!(
         m.handle(&key(Key::UpArrow)),
-        Some(leaves(vec![
-            MercuryEffect::SetFrame(WindowFrame {
-                window: WINDOW,
-                frame: SCREEN.visible,
-            }),
-            settle_timer(),
-        ]))
+        (
+            leaves(vec![
+                MercuryEffect::SetFrame(WindowFrame {
+                    window: WINDOW,
+                    frame: SCREEN.visible,
+                }),
+                settle_timer(),
+            ]),
+            true
+        )
     );
     let _ = m.handle(&key(Key::KeyR));
     assert_eq!(
         m.handle(&key(Key::LeftArrow)),
-        Some(leaves(vec![
-            MercuryEffect::SetFrame(WindowFrame {
-                window: WINDOW,
-                frame: Frame {
-                    width: 800.0,
-                    ..SCREEN.visible
-                },
-            }),
-            settle_timer(),
-        ]))
+        (
+            leaves(vec![
+                MercuryEffect::SetFrame(WindowFrame {
+                    window: WINDOW,
+                    frame: Frame {
+                        width: 800.0,
+                        ..SCREEN.visible
+                    },
+                }),
+                settle_timer(),
+            ]),
+            true
+        )
     );
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
@@ -1014,9 +1053,9 @@ fn placing_twice_re_enters_resize() {
 #[test]
 fn the_arrows_are_unbound_in_home() {
     let mut m = home();
-    assert_eq!(m.handle(&key(Key::UpArrow)), Some(vec![]));
-    assert_eq!(m.handle(&key(Key::LeftArrow)), Some(vec![]));
-    assert_eq!(m.handle(&key(Key::RightArrow)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::UpArrow)), (vec![], true));
+    assert_eq!(m.handle(&key(Key::LeftArrow)), (vec![], true));
+    assert_eq!(m.handle(&key(Key::RightArrow)), (vec![], true));
 }
 
 // `r` is Chrome's refresh in the in-app layer, and resize's entry from home. The
@@ -1026,7 +1065,7 @@ fn r_still_refreshes_chrome_in_app() {
     let mut m = home();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
-    assert_eq!(m.handle(&key(Key::KeyR)), Some(in_app(cmd_r())));
+    assert_eq!(m.handle(&key(Key::KeyR)), (in_app(cmd_r()), true));
     assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foreground.app(), App::Chrome);
 }
@@ -1040,14 +1079,12 @@ fn settle(
     runner: &mut SimpleRunner<'_, MercuryStruct, Mercury>,
     performed: &mut Vec<MercuryEffect>,
 ) {
-    while let Some(dispatched) = runner.next() {
-        if let Some(output) = dispatched {
-            for effect in output {
-                if let MercuryEffect::Foreground(app) = &effect {
-                    runner.queue_event(foreground(*app));
-                }
-                performed.push(effect);
+    while let Some((effects, _handled)) = runner.next() {
+        for effect in effects {
+            if let MercuryEffect::Foreground(app) = &effect {
+                runner.queue_event(foreground(*app));
             }
+            performed.push(effect);
         }
     }
 }
@@ -1116,18 +1153,18 @@ fn the_inapp_layers_bindings_follow_the_root_with_no_resync() {
     let _ = m.handle(&key(Key::KeyI)); // enter the in-app layer
     m.foreground.set_front_app(App::Chrome);
     // Chrome binds `r`.
-    assert_eq!(m.handle(&key(Key::KeyR)), Some(in_app(cmd_r())));
+    assert_eq!(m.handle(&key(Key::KeyR)), (in_app(cmd_r()), true));
 
     // Write the ROOT directly. Nothing touches the layer.
     m.foreground.set_front_app(App::Ghostty);
 
     // Chrome's `r` is gone and Ghostty's `j` is live, with no re-entry and no resync.
-    assert_eq!(m.handle(&key(Key::KeyR)), Some(in_app(vec![])));
-    assert!(m.handle(&key(Key::KeyJ)).is_some());
+    assert_eq!(m.handle(&key(Key::KeyR)), (in_app(vec![]), true));
+    assert!(m.handle(&key(Key::KeyJ)).1);
 
     // An app with no bindings has no level at all.
     m.foreground.set_front_app(App::Zed);
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(in_app(vec![])));
+    assert_eq!(m.handle(&key(Key::KeyJ)), (in_app(vec![]), true));
 }
 
 // In the in-app layer, foregrounding a different app retargets the layer to it, so
@@ -1140,12 +1177,12 @@ fn foreground_retargets_the_inapp_layer() {
     assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foreground.app(), App::Chrome);
 
-    assert_eq!(m.handle(&foreground(App::Zed)), Some(vec![]));
+    assert_eq!(m.handle(&foreground(App::Zed)), (vec![], true));
     assert_eq!(m.foreground.app(), App::Zed);
     assert!(matches!(m.layer(), Layer::InApp(_)));
     assert!(matches!(m.foreground.app(), App::Zed | App::Other));
     // Chrome's refresh is gone now that Chrome is not the front app.
-    assert_eq!(m.handle(&key(Key::KeyR)), Some(in_app(vec![])));
+    assert_eq!(m.handle(&key(Key::KeyR)), (in_app(vec![]), true));
 }
 
 // Foregrounding Chrome again while in-app restores its bindings.
@@ -1160,7 +1197,7 @@ fn foreground_back_to_chrome_restores_its_bindings() {
     let _ = m.handle(&foreground(App::Chrome));
     assert!(matches!(m.layer(), Layer::InApp(_)));
     assert_eq!(m.foreground.app(), App::Chrome);
-    assert_eq!(m.handle(&key(Key::KeyR)), Some(in_app(cmd_r())));
+    assert_eq!(m.handle(&key(Key::KeyR)), (in_app(cmd_r()), true));
 }
 
 // Outside the in-app layer, foregrounding records the app but never moves you
@@ -1171,7 +1208,7 @@ fn foreground_outside_inapp_does_not_change_layer() {
     let _ = m.handle(&key(Key::KeyN));
     assert!(matches!(m.layer(), Layer::Nav(_)));
 
-    assert_eq!(m.handle(&foreground(App::Chrome)), Some(vec![]));
+    assert_eq!(m.handle(&foreground(App::Chrome)), (vec![], true));
     assert_eq!(m.foreground.app(), App::Chrome);
     assert!(matches!(m.layer(), Layer::Nav(_)));
 }
@@ -1217,10 +1254,10 @@ fn typing() -> Mercury {
 #[test]
 fn jk_typed_one_key_at_a_time_leaves_for_home() {
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
+    assert_eq!(m.handle(&key(Key::KeyJ)), (vec![jk_timer()], true));
     assert!(!m.typing_state.jk.is_idle());
-    assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
-    assert_eq!(m.handle(&key(Key::KeyK)), Some(vec![shows("Home")]));
+    assert_eq!(m.handle(&up(Key::KeyJ)), (vec![], true));
+    assert_eq!(m.handle(&key(Key::KeyK)), (vec![shows("Home")], true));
     assert!(matches!(m.layer(), Layer::Home(_)));
     assert!(m.typing_state.jk.is_idle());
 }
@@ -1231,25 +1268,28 @@ fn jk_rolled_leaves_for_home_and_the_ups_land_in_home() {
     // and is not a passthrough layer, so they are swallowed rather than reaching the app as ups
     // with no downs.
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
-    assert_eq!(m.handle(&key(Key::KeyK)), Some(vec![shows("Home")]));
+    assert_eq!(m.handle(&key(Key::KeyJ)), (vec![jk_timer()], true));
+    assert_eq!(m.handle(&key(Key::KeyK)), (vec![shows("Home")], true));
     assert!(matches!(m.layer(), Layer::Home(_)));
-    assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
-    assert_eq!(m.handle(&up(Key::KeyK)), Some(vec![]));
+    assert_eq!(m.handle(&up(Key::KeyJ)), (vec![], true));
+    assert_eq!(m.handle(&up(Key::KeyK)), (vec![], true));
 }
 
 #[test]
 fn a_j_tap_then_another_key_types_the_j_first() {
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
-    assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyJ)), (vec![jk_timer()], true));
+    assert_eq!(m.handle(&up(Key::KeyJ)), (vec![], true));
     assert_eq!(
         m.handle(&key(Key::KeyA)),
-        Some(vec![
-            emit(Key::KeyJ, PressType::Down),
-            emit(Key::KeyJ, PressType::Up),
-            emit(Key::KeyA, PressType::Down),
-        ]),
+        (
+            vec![
+                emit(Key::KeyJ, PressType::Down),
+                emit(Key::KeyJ, PressType::Up),
+                emit(Key::KeyA, PressType::Down),
+            ],
+            true
+        )
     );
 }
 
@@ -1258,17 +1298,20 @@ fn a_held_j_then_another_key_replays_only_its_down() {
     // Only the j down was swallowed, so only it replays. The real j up passes through later, with
     // the run already idle.
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
+    assert_eq!(m.handle(&key(Key::KeyJ)), (vec![jk_timer()], true));
     assert_eq!(
         m.handle(&key(Key::KeyA)),
-        Some(vec![
-            emit(Key::KeyJ, PressType::Down),
-            emit(Key::KeyA, PressType::Down),
-        ]),
+        (
+            vec![
+                emit(Key::KeyJ, PressType::Down),
+                emit(Key::KeyA, PressType::Down),
+            ],
+            true
+        )
     );
     assert_eq!(
         m.handle(&up(Key::KeyJ)),
-        Some(vec![emit(Key::KeyJ, PressType::Up)]),
+        (vec![emit(Key::KeyJ, PressType::Up)], true)
     );
 }
 
@@ -1277,11 +1320,14 @@ fn a_j_carrying_a_modifier_never_opens_the_run() {
     let mut m = typing();
     assert_eq!(
         m.handle(&key_with(Key::KeyJ, ModifierFlags::COMMAND)),
-        Some(vec![emit_with(
-            Key::KeyJ,
-            PressType::Down,
-            ModifierFlags::COMMAND
-        )]),
+        (
+            vec![emit_with(
+                Key::KeyJ,
+                PressType::Down,
+                ModifierFlags::COMMAND
+            )],
+            true
+        )
     );
     assert!(m.typing_state.jk.is_idle());
 }
@@ -1289,13 +1335,16 @@ fn a_j_carrying_a_modifier_never_opens_the_run() {
 #[test]
 fn a_modifier_arriving_mid_run_breaks_it() {
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
+    assert_eq!(m.handle(&key(Key::KeyJ)), (vec![jk_timer()], true));
     assert_eq!(
         m.handle(&key_with(Key::MetaLeft, ModifierFlags::COMMAND)),
-        Some(vec![
-            emit(Key::KeyJ, PressType::Down),
-            emit_with(Key::MetaLeft, PressType::Down, ModifierFlags::COMMAND),
-        ]),
+        (
+            vec![
+                emit(Key::KeyJ, PressType::Down),
+                emit_with(Key::MetaLeft, PressType::Down, ModifierFlags::COMMAND),
+            ],
+            true
+        )
     );
     assert!(m.typing_state.jk.is_idle());
 }
@@ -1305,16 +1354,19 @@ fn a_held_js_auto_repeat_breaks_the_run() {
     // The swallowed down replays ahead of the repeat, so the app sees the same two downs it would
     // have seen unwatched, and the k after it is an ordinary k.
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
+    assert_eq!(m.handle(&key(Key::KeyJ)), (vec![jk_timer()], true));
     assert_eq!(
         m.handle(&key(Key::KeyJ)),
-        Some(vec![
-            emit(Key::KeyJ, PressType::Down),
-            emit(Key::KeyJ, PressType::Down),
-        ]),
+        (
+            vec![
+                emit(Key::KeyJ, PressType::Down),
+                emit(Key::KeyJ, PressType::Down),
+            ],
+            true
+        )
     );
     assert!(m.typing_state.jk.is_idle());
-    assert_eq!(m.handle(&key(Key::KeyK)), Some(passed(Key::KeyK)));
+    assert_eq!(m.handle(&key(Key::KeyK)), (passed(Key::KeyK), true));
     assert!(matches!(m.layer(), Layer::Typing(_)));
 }
 
@@ -1323,15 +1375,18 @@ fn escape_in_typing_breaks_the_run_and_reaches_the_app() {
     // Typing binds nothing, so escape runs through the sequence like any other key and the j
     // replays AHEAD of it.
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
-    assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyJ)), (vec![jk_timer()], true));
+    assert_eq!(m.handle(&up(Key::KeyJ)), (vec![], true));
     assert_eq!(
         m.handle(&key(Key::Escape)),
-        Some(vec![
-            emit(Key::KeyJ, PressType::Down),
-            emit(Key::KeyJ, PressType::Up),
-            emit(Key::Escape, PressType::Down),
-        ]),
+        (
+            vec![
+                emit(Key::KeyJ, PressType::Down),
+                emit(Key::KeyJ, PressType::Up),
+                emit(Key::Escape, PressType::Down),
+            ],
+            true
+        )
     );
     assert!(matches!(m.layer(), Layer::Typing(_)));
 }
@@ -1341,8 +1396,8 @@ fn leaving_typing_abandons_a_held_j() {
     // The layer change replaces the run, and the j is dropped rather than typed: the app never saw
     // its down, and its up will be swallowed by the command layer.
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
-    assert_eq!(m.handle(&key(Key::KeyK)), Some(vec![shows("Home")]));
+    assert_eq!(m.handle(&key(Key::KeyJ)), (vec![jk_timer()], true));
+    assert_eq!(m.handle(&key(Key::KeyK)), (vec![shows("Home")], true));
     assert!(matches!(m.layer(), Layer::Home(_)));
     assert!(m.typing_state.jk.is_idle());
 }
@@ -1351,36 +1406,39 @@ fn leaving_typing_abandons_a_held_j() {
 fn j_and_k_still_type_themselves_when_they_are_not_a_run() {
     // j, j, k: the second j breaks the first run and does not open a second, so all three type.
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
-    assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyJ)), (vec![jk_timer()], true));
+    assert_eq!(m.handle(&up(Key::KeyJ)), (vec![], true));
     assert_eq!(
         m.handle(&key(Key::KeyJ)),
-        Some(vec![
-            emit(Key::KeyJ, PressType::Down),
-            emit(Key::KeyJ, PressType::Up),
-            emit(Key::KeyJ, PressType::Down),
-        ]),
+        (
+            vec![
+                emit(Key::KeyJ, PressType::Down),
+                emit(Key::KeyJ, PressType::Up),
+                emit(Key::KeyJ, PressType::Down),
+            ],
+            true
+        )
     );
     assert_eq!(
         m.handle(&up(Key::KeyJ)),
-        Some(vec![emit(Key::KeyJ, PressType::Up)]),
+        (vec![emit(Key::KeyJ, PressType::Up)], true)
     );
-    assert_eq!(m.handle(&key(Key::KeyK)), Some(passed(Key::KeyK)));
+    assert_eq!(m.handle(&key(Key::KeyK)), (passed(Key::KeyK), true));
     assert!(matches!(m.layer(), Layer::Typing(_)));
 }
 
 #[test]
 fn a_half_typed_run_types_itself_when_the_window_elapses() {
     let mut m = typing();
-    let opened = m.handle(&key(Key::KeyJ)).expect("j opens the run");
+    let opened = m.handle(&key(Key::KeyJ)).0;
     assert_eq!(opened, vec![jk_timer()]);
     assert_eq!(
         m.handle(&fired(timer_id(&opened))),
-        Some(vec![emit(Key::KeyJ, PressType::Down)]),
+        (vec![emit(Key::KeyJ, PressType::Down)], true)
     );
     assert!(m.typing_state.jk.is_idle());
     // The k that follows is an ordinary k, not the second half of anything.
-    assert_eq!(m.handle(&key(Key::KeyK)), Some(passed(Key::KeyK)));
+    assert_eq!(m.handle(&key(Key::KeyK)), (passed(Key::KeyK), true));
     assert!(matches!(m.layer(), Layer::Typing(_)));
 }
 
@@ -1388,15 +1446,18 @@ fn a_half_typed_run_types_itself_when_the_window_elapses() {
 fn a_full_tap_types_itself_when_the_window_elapses() {
     // Both halves were swallowed, so both replay, in the order they arrived.
     let mut m = typing();
-    let opened = m.handle(&key(Key::KeyJ)).expect("j opens the run");
+    let opened = m.handle(&key(Key::KeyJ)).0;
     assert_eq!(opened, vec![jk_timer()]);
-    assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&up(Key::KeyJ)), (vec![], true));
     assert_eq!(
         m.handle(&fired(timer_id(&opened))),
-        Some(vec![
-            emit(Key::KeyJ, PressType::Down),
-            emit(Key::KeyJ, PressType::Up),
-        ]),
+        (
+            vec![
+                emit(Key::KeyJ, PressType::Down),
+                emit(Key::KeyJ, PressType::Up),
+            ],
+            true
+        )
     );
 }
 
@@ -1405,38 +1466,38 @@ fn a_firing_from_a_run_that_ended_matches_nothing() {
     // Open a run, break it, open another: the first window's firing arrives late. It must not
     // interrupt the run that replaced it.
     let mut m = typing();
-    let first = timer_id(&m.handle(&key(Key::KeyJ)).expect("j opens the run"));
+    let first = timer_id(&m.handle(&key(Key::KeyJ)).0);
     let _ = m.handle(&key(Key::KeyA)); // breaks it
-    let second = timer_id(&m.handle(&key(Key::KeyJ)).expect("j opens another"));
+    let second = timer_id(&m.handle(&key(Key::KeyJ)).0);
     assert_ne!(first, second, "each run sets its own window");
 
     assert_eq!(
         m.handle(&fired(first)),
-        None,
+        (vec![], false),
         "no binding matches a stale firing"
     );
     assert!(!m.typing_state.jk.is_idle(), "the live run is untouched");
 
     assert_eq!(
         m.handle(&fired(second)),
-        Some(vec![emit(Key::KeyJ, PressType::Down)]),
+        (vec![emit(Key::KeyJ, PressType::Down)], true)
     );
 }
 
 #[test]
 fn a_firing_with_no_run_in_progress_matches_nothing() {
     let mut m = typing();
-    let stale = timer_id(&m.handle(&key(Key::KeyJ)).expect("j opens the run"));
+    let stale = timer_id(&m.handle(&key(Key::KeyJ)).0);
     let _ = m.handle(&key(Key::KeyA)); // breaks it, so nothing is live
-    assert_eq!(m.handle(&fired(stale)), None);
+    assert_eq!(m.handle(&fired(stale)), (vec![], false));
 }
 
 #[test]
 fn the_window_is_armed_once_per_run_not_once_per_key() {
     // The j up advances the run without re-arming: the window runs from the first key.
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyJ)), Some(vec![jk_timer()]));
-    assert_eq!(m.handle(&up(Key::KeyJ)), Some(vec![]));
+    assert_eq!(m.handle(&key(Key::KeyJ)), (vec![jk_timer()], true));
+    assert_eq!(m.handle(&up(Key::KeyJ)), (vec![], true));
 }
 
 // ---- the overlay: `o` shows the active layer's keymap ----
@@ -1474,7 +1535,7 @@ fn o_shows_the_layers_keymap() {
         if let Some(k) = enter {
             let _ = m.handle(&key(k));
         }
-        let effects = m.handle(&key(Key::KeyO)).expect("o is bound");
+        let effects = m.handle(&key(Key::KeyO)).0;
         assert_eq!(shown_heading(&effects), heading);
         assert_eq!(effects[1], overlay_hide_timer());
     }
@@ -1488,14 +1549,14 @@ fn showing_the_overlay_rearms_the_return_home_timer() {
     for enter in [Key::KeyN, Key::KeyR] {
         let mut m = home();
         let _ = m.handle(&key(enter));
-        let effects = m.handle(&key(Key::KeyO)).expect("o is bound");
+        let effects = m.handle(&key(Key::KeyO)).0;
         assert_eq!(effects.len(), 3, "overlay, its dwell, then the rearm");
         assert_eq!(effects[1], overlay_hide_timer());
         assert_eq!(effects[2], return_home_timer());
     }
 
     let mut m = home();
-    let effects = m.handle(&key(Key::KeyO)).expect("o is bound");
+    let effects = m.handle(&key(Key::KeyO)).0;
     assert_eq!(effects.len(), 2, "home has no return-home timer to rearm");
     assert_eq!(effects[1], overlay_hide_timer());
 }
@@ -1511,7 +1572,7 @@ fn the_in_app_keymap_is_the_front_apps() {
         let mut m = home();
         let _ = m.handle(&foreground(app));
         let _ = m.handle(&key(Key::KeyI));
-        let effects = m.handle(&key(Key::KeyO)).expect("o is bound");
+        let effects = m.handle(&key(Key::KeyO)).0;
         assert_eq!(shown_heading(&effects), heading, "{app:?}");
     }
 }
@@ -1519,13 +1580,13 @@ fn the_in_app_keymap_is_the_front_apps() {
 #[test]
 fn the_overlay_hides_after_the_dwell() {
     let mut m = home();
-    let shown = m.handle(&key(Key::KeyO)).expect("o is bound");
+    let shown = m.handle(&key(Key::KeyO)).0;
     assert_eq!(
         m.handle(&fired(timer_id(&shown))),
-        Some(vec![MercuryEffect::HideOverlay])
+        (vec![MercuryEffect::HideOverlay], true)
     );
     // And again matches nothing: the field was taken, so no binding names that guard.
-    assert_eq!(m.handle(&fired(timer_id(&shown))), None);
+    assert_eq!(m.handle(&fired(timer_id(&shown))), (vec![], false));
 }
 
 #[test]
@@ -1535,10 +1596,10 @@ fn o_again_takes_it_down() {
     let _ = m.handle(&key(Key::KeyO));
     assert_eq!(
         m.handle(&key(Key::KeyO)),
-        Some(vec![MercuryEffect::HideOverlay])
+        (vec![MercuryEffect::HideOverlay], true)
     );
     // And a third press puts it back up.
-    let effects = m.handle(&key(Key::KeyO)).expect("o is bound");
+    let effects = m.handle(&key(Key::KeyO)).0;
     assert_eq!(shown_heading(&effects), "  HOME");
 }
 
@@ -1547,15 +1608,15 @@ fn a_dwell_from_a_showing_already_gone_matches_nothing() {
     // Show one in home, leave for nav (which takes it down), and show nav's. The first showing's
     // dwell arrives late and must not take the live one down.
     let mut m = home();
-    let first = timer_id(&m.handle(&key(Key::KeyO)).expect("o is bound"));
+    let first = timer_id(&m.handle(&key(Key::KeyO)).0);
     let _ = m.handle(&key(Key::KeyN));
-    let second = timer_id(&m.handle(&key(Key::KeyO)).expect("o is bound"));
+    let second = timer_id(&m.handle(&key(Key::KeyO)).0);
     assert_ne!(first, second, "each showing sets its own dwell");
 
-    assert_eq!(m.handle(&fired(first)), None);
+    assert_eq!(m.handle(&fired(first)), (vec![], false));
     assert_eq!(
         m.handle(&fired(second)),
-        Some(vec![MercuryEffect::HideOverlay])
+        (vec![MercuryEffect::HideOverlay], true)
     );
 }
 
@@ -1566,11 +1627,14 @@ fn changing_layers_takes_the_overlay_down() {
     // Entering nav hides it, ahead of naming the layer and setting nav's own timer.
     assert_eq!(
         m.handle(&key(Key::KeyN)),
-        Some(vec![
-            MercuryEffect::HideOverlay,
-            shows("Nav"),
-            return_home_timer(),
-        ])
+        (
+            vec![
+                MercuryEffect::HideOverlay,
+                shows("Nav"),
+                return_home_timer(),
+            ],
+            true
+        )
     );
 }
 
@@ -1579,7 +1643,7 @@ fn a_transition_with_no_overlay_hides_nothing() {
     let mut m = home();
     assert_eq!(
         m.handle(&key(Key::KeyN)),
-        Some(vec![shows("Nav"), return_home_timer()])
+        (vec![shows("Nav"), return_home_timer()], true)
     );
 }
 
@@ -1587,7 +1651,7 @@ fn a_transition_with_no_overlay_hides_nothing() {
 fn o_in_typing_is_typed() {
     // Typing binds nothing, so `o` falls to the root and reaches the app.
     let mut m = typing();
-    assert_eq!(m.handle(&key(Key::KeyO)), Some(passed(Key::KeyO)));
+    assert_eq!(m.handle(&key(Key::KeyO)), (passed(Key::KeyO), true));
 }
 
 // ---- the window source: `Windows` is a pure function of the changes reported to it ----
@@ -1650,7 +1714,7 @@ fn a_window_change_produces_no_effects() {
     let mut m = home();
     assert_eq!(
         m.handle(&windows(opened(WINDOW, WINDOW_FRAME))),
-        Some(vec![])
+        (vec![], true)
     );
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
@@ -1761,13 +1825,16 @@ fn a_placement_uses_the_screen_the_window_is_on() {
 
     assert_eq!(
         m.handle(&key(Key::UpArrow)),
-        Some(leaves(vec![
-            MercuryEffect::SetFrame(WindowFrame {
-                window: WINDOW,
-                frame: SECOND.visible,
-            }),
-            settle_timer(),
-        ]))
+        (
+            leaves(vec![
+                MercuryEffect::SetFrame(WindowFrame {
+                    window: WINDOW,
+                    frame: SECOND.visible,
+                }),
+                settle_timer(),
+            ]),
+            true
+        )
     );
 }
 
@@ -1787,13 +1854,16 @@ fn resize_r_restores_the_frame_from_before_the_placement() {
     let _ = m.handle(&key(Key::KeyR));
     assert_eq!(
         m.handle(&key(Key::KeyR)),
-        Some(leaves(vec![
-            MercuryEffect::SetFrame(WindowFrame {
-                window: WINDOW,
-                frame: WINDOW_FRAME,
-            }),
-            settle_timer(),
-        ]))
+        (
+            leaves(vec![
+                MercuryEffect::SetFrame(WindowFrame {
+                    window: WINDOW,
+                    frame: WINDOW_FRAME,
+                }),
+                settle_timer(),
+            ]),
+            true
+        )
     );
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
@@ -1815,13 +1885,16 @@ fn a_second_placement_does_not_move_the_remembered_frame() {
     let _ = m.handle(&key(Key::KeyR));
     assert_eq!(
         m.handle(&key(Key::KeyR)),
-        Some(leaves(vec![
-            MercuryEffect::SetFrame(WindowFrame {
-                window: WINDOW,
-                frame: WINDOW_FRAME,
-            }),
-            settle_timer(),
-        ]))
+        (
+            leaves(vec![
+                MercuryEffect::SetFrame(WindowFrame {
+                    window: WINDOW,
+                    frame: WINDOW_FRAME,
+                }),
+                settle_timer(),
+            ]),
+            true
+        )
     );
 }
 
@@ -1851,13 +1924,16 @@ fn the_intermediate_frames_of_a_placement_are_not_a_move_by_hand() {
     let _ = m.handle(&key(Key::KeyR));
     assert_eq!(
         m.handle(&key(Key::KeyR)),
-        Some(leaves(vec![
-            MercuryEffect::SetFrame(WindowFrame {
-                window: WINDOW,
-                frame: WINDOW_FRAME,
-            }),
-            settle_timer(),
-        ]))
+        (
+            leaves(vec![
+                MercuryEffect::SetFrame(WindowFrame {
+                    window: WINDOW,
+                    frame: WINDOW_FRAME,
+                }),
+                settle_timer(),
+            ]),
+            true
+        )
     );
 }
 
@@ -1884,13 +1960,16 @@ fn the_target_frame_reported_twice_is_still_not_a_move_by_hand() {
     let _ = m.handle(&key(Key::KeyR));
     assert_eq!(
         m.handle(&key(Key::KeyR)),
-        Some(leaves(vec![
-            MercuryEffect::SetFrame(WindowFrame {
-                window: WINDOW,
-                frame: WINDOW_FRAME,
-            }),
-            settle_timer(),
-        ]))
+        (
+            leaves(vec![
+                MercuryEffect::SetFrame(WindowFrame {
+                    window: WINDOW,
+                    frame: WINDOW_FRAME,
+                }),
+                settle_timer(),
+            ]),
+            true
+        )
     );
 }
 
@@ -1900,7 +1979,7 @@ fn the_target_frame_reported_twice_is_still_not_a_move_by_hand() {
 fn a_move_by_hand_forgets_the_remembered_frame() {
     let mut m = home_with_a_window();
     let _ = m.handle(&key(Key::KeyR));
-    let effects = m.handle(&key(Key::UpArrow)).expect("the placement");
+    let effects = m.handle(&key(Key::UpArrow)).0;
     // The settle wait ends, so the window is the user's again.
     let _ = m.handle(&fired(timer_id(&effects)));
 
@@ -1913,7 +1992,7 @@ fn a_move_by_hand_forgets_the_remembered_frame() {
     })));
 
     let _ = m.handle(&key(Key::KeyR));
-    assert_eq!(m.handle(&key(Key::KeyR)), Some(leaves(vec![])));
+    assert_eq!(m.handle(&key(Key::KeyR)), (leaves(vec![]), true));
 }
 
 // Restoring takes the frame, so a second `r` has nothing to put back.
@@ -1926,7 +2005,7 @@ fn restoring_twice_asks_for_nothing_the_second_time() {
     let _ = m.handle(&key(Key::KeyR));
 
     let _ = m.handle(&key(Key::KeyR));
-    assert_eq!(m.handle(&key(Key::KeyR)), Some(leaves(vec![])));
+    assert_eq!(m.handle(&key(Key::KeyR)), (leaves(vec![]), true));
 }
 
 // `r` in resize is restore, not a second entry into resize.
@@ -1952,5 +2031,5 @@ fn a_closed_window_is_forgotten() {
     let _ = m.handle(&windows(WindowChange::Focused(Some(WINDOW))));
 
     let _ = m.handle(&key(Key::KeyR));
-    assert_eq!(m.handle(&key(Key::KeyR)), Some(leaves(vec![])));
+    assert_eq!(m.handle(&key(Key::KeyR)), (leaves(vec![]), true));
 }

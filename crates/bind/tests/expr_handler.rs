@@ -24,8 +24,11 @@ fn expression_handler_is_called() {
     let mut root = ExprRoot;
     // "x" has length 1, plus 10.
     assert_eq!(
-        bind::dispatch::<Demo, ExprRoot>(&mut root, &key("x")),
-        Some(vec![11])
+        bind::dispatch::<Demo, ExprRoot, _>(&mut root, &key("x")),
+        (vec![11], true)
     );
-    assert_eq!(bind::dispatch::<Demo, ExprRoot>(&mut root, &key("y")), None);
+    assert_eq!(
+        bind::dispatch::<Demo, ExprRoot, _>(&mut root, &key("y")),
+        (vec![], false)
+    );
 }

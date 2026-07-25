@@ -58,6 +58,69 @@ impl<'c> Claim<'c> {
             Some(())
         }
     }
+
+    /// The per-item reborrow the generated code hands to each [`AscendState`].
+    ///
+    /// One claim serves every scheduled item of every node on the path, and each
+    /// item gets its own [`AscendState`] by value, so what rides in that state is
+    /// a shorter-lived borrow of the same slot.
+    pub const fn reborrow(&mut self) -> Claim<'_> {
+        Claim {
+            slot: &mut *self.slot,
+        }
+    }
+}
+
+/// What every scheduled handler receives beside the event.
+///
+/// One lifetime: the claim rides by value, reborrowed per item, and the state is
+/// what the items before this one left behind.
+pub struct AscendState<'a, P: ::laserbeam::HasStop> {
+    claim: Claim<'a>,
+    /// Whether the descent, and every item scheduled before this one, destroyed
+    /// the path this handler is bound on.
+    pub state: ::laserbeam::MaybeInvalidated<P>,
+}
+
+impl<'a, P: ::laserbeam::HasStop> AscendState<'a, P> {
+    #[must_use]
+    pub const fn new(state: ::laserbeam::MaybeInvalidated<P>, claim: Claim<'a>) -> Self {
+        Self { claim, state }
+    }
+
+    /// `Some(())`: you won the claim. `None`: someone already has it.
+    pub const fn claim(&mut self) -> Option<()> {
+        self.claim.try_take()
+    }
+
+    /// Stay where you are: the leave this state completes to.
+    #[must_use]
+    pub fn complete(self) -> ::laserbeam::Completed<P>
+    where
+        P: ::laserbeam::Complete<P>,
+    {
+        self.state.complete()
+    }
+}
+
+/// The claim gate, shape-preserving: `handler` runs iff the claim is won, and
+/// otherwise the state completes where it stands.
+///
+/// `#[bind]` desugars through this, and nothing else does: a post is scheduled by
+/// its trigger and runs whether or not anything claimed. Winning the claim says
+/// nothing about whether the path survived, which is why the state a handler
+/// matches on is the same either way.
+pub fn exclusive<Ev, Snap, P, E, H>(
+    handler: H,
+) -> impl for<'a> FnOnce(Ev, Snap, AscendState<'a, P>) -> (Vec<E>, ::laserbeam::Completed<P>)
+where
+    P: ::laserbeam::HasStop + ::laserbeam::Complete<P>,
+    H: for<'a> FnOnce(Ev, Snap, AscendState<'a, P>) -> (Vec<E>, ::laserbeam::Completed<P>),
+{
+    move |ev, snap, mut st| match st.claim() {
+        Some(()) => handler(ev, snap, st),
+        None => (Vec::new(), st.complete()),
+    }
 }
 
 /// Emits its body only when the `check` feature is on.
@@ -336,19 +399,23 @@ pub trait Dispatch<M: Bindings>: Place {
 }
 
 /// Dispatches `event` against the tree at `path` (the root's `&mut Root`),
-/// returning the handler's output, or `None` when nothing on the active path
-/// binds it.
-pub fn dispatch<'a, M, N>(path: N::Path<'a>, event: &M::Event) -> Option<M::Output>
+/// returning what it produced and whether anything claimed the event.
+///
+/// The effects are always the caller's to perform: a scheduled item runs on its
+/// trigger, not on the claim, so an event nothing claimed can still have produced
+/// some. The bool is the only answer to "was this handled", which is what a
+/// consumer that decides whether to pass the event on asks.
+pub fn dispatch<'a, M, N, E>(path: N::Path<'a>, event: &M::Event) -> (Vec<E>, bool)
 where
-    M: Bindings,
+    M: Bindings<Output = Vec<E>>,
     N: Dispatch<M> + 'a,
-    M::Output: Default,
+    N::Path<'a>: ::laserbeam::HasStop,
 {
-    let mut effs = M::Output::default();
+    let mut effs: Vec<E> = Vec::new();
     let mut claim_slot = None;
     let mut claim = Claim::new(&mut claim_slot);
     let _path = <N as Dispatch<M>>::dispatch(path, event, &mut effs, &mut claim);
-    if claim.is_taken() { Some(effs) } else { None }
+    (effs, claim.is_taken())
 }
 
 // The real event loop is bespoke: its queue and its wait-when-empty differ per
@@ -368,10 +435,9 @@ pub struct SimpleRunner<'a, M: Bindings, N> {
     queue: VecDeque<M::Event>,
 }
 
-impl<'a, M, N> SimpleRunner<'a, M, N>
+impl<'a, M, N, E> SimpleRunner<'a, M, N>
 where
-    M: Bindings,
-    M::Output: Default,
+    M: Bindings<Output = Vec<E>>,
     N: Dispatch<M> + for<'b> Place<Path<'b> = &'b mut N>,
 {
     /// A runner over the tree rooted at `root`, with an empty queue.
@@ -387,17 +453,17 @@ where
         self.queue.push_back(event);
     }
 
-    /// Processes exactly one queued event. The outer `None` means the queue was
-    /// empty; the inner is what [`dispatch`] returned for the event (`None` when
-    /// no binding matched, `Some` with the output otherwise).
+    /// Processes exactly one queued event. `None` means the queue was empty;
+    /// otherwise it is what [`dispatch`] returned for the event: its effects, and
+    /// whether anything claimed it.
     #[expect(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> Option<Option<M::Output>> {
+    pub fn next(&mut self) -> Option<(Vec<E>, bool)> {
         let event = self.queue.pop_front()?;
-        Some(dispatch::<M, N>(&mut *self.root, &event))
+        Some(dispatch::<M, N, E>(&mut *self.root, &event))
     }
 
-    /// Queues `event` and processes one event, returning its output (`None` when
-    /// no binding matched). There is no empty case: the queue is non-empty after
+    /// Queues `event` and processes one event, returning its effects and whether
+    /// anything claimed it. There is no empty case: the queue is non-empty after
     /// queueing, so there is always an event to process.
     ///
     /// The event processed is the front of the queue, which is `event` only when
@@ -407,7 +473,7 @@ where
     /// # Panics
     ///
     /// Never: the queue is non-empty after queueing; the `expect` asserts it.
-    pub fn process_event(&mut self, event: M::Event) -> Option<M::Output> {
+    pub fn process_event(&mut self, event: M::Event) -> (Vec<E>, bool) {
         // Field ops inlined rather than calling `queue_event`/`next`, which the
         // impl's HRTB bound would otherwise force to `'static`.
         self.queue.push_back(event);
@@ -415,7 +481,7 @@ where
             .queue
             .pop_front()
             .expect("the queue is non-empty: an event was just queued");
-        dispatch::<M, N>(&mut *self.root, &event)
+        dispatch::<M, N, E>(&mut *self.root, &event)
     }
 }
 

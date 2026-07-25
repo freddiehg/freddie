@@ -34,16 +34,16 @@ type TupleMidPath<'a> = PathMut<TupleMid, TupleRootPath<'a>>;
 fn positional_resolve_into_descends() {
     let mut root = TupleRoot(TupleMid(Box::new(TupleLeaf)));
     assert_eq!(
-        bind::dispatch::<Demo, TupleRoot>(&mut root, &key("g")),
-        Some(vec![1])
+        bind::dispatch::<Demo, TupleRoot, _>(&mut root, &key("g")),
+        (vec![1], true)
     );
     assert_eq!(
-        bind::dispatch::<Demo, TupleRoot>(&mut root, &key("esc")),
-        Some(vec![3])
+        bind::dispatch::<Demo, TupleRoot, _>(&mut root, &key("esc")),
+        (vec![3], true)
     );
     assert_eq!(
-        bind::dispatch::<Demo, TupleRoot>(&mut root, &key("zzz")),
-        None
+        bind::dispatch::<Demo, TupleRoot, _>(&mut root, &key("zzz")),
+        (vec![], false)
     );
 }
 

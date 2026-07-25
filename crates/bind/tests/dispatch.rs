@@ -31,8 +31,8 @@ fn typing_app() -> App {
 #[test]
 fn leaf_binding_fires() {
     let mut app = nav_app();
-    let out = bind::dispatch::<Demo, App>(&mut app, &key("g"));
-    assert_eq!(out, Some(vec![1])); // "g"
+    let out = bind::dispatch::<Demo, App, _>(&mut app, &key("g"));
+    assert_eq!(out, (vec![1], true)); // "g"
     let Layer::Nav(nav) = &app.layer else {
         unreachable!()
     };
@@ -45,8 +45,8 @@ fn leaf_binding_fires() {
 #[test]
 fn ancestor_binding_fires_after_subtree_misses() {
     let mut app = nav_app();
-    let out = bind::dispatch::<Demo, App>(&mut app, &key("esc"));
-    assert_eq!(out, Some(vec![3])); // "esc"
+    let out = bind::dispatch::<Demo, App, _>(&mut app, &key("esc"));
+    assert_eq!(out, (vec![3], true)); // "esc"
     assert_eq!(app.hits, 1);
     let Layer::Nav(nav) = &app.layer else {
         unreachable!()
@@ -58,16 +58,16 @@ fn ancestor_binding_fires_after_subtree_misses() {
 #[test]
 fn enum_binding_fires() {
     let mut app = nav_app();
-    let out = bind::dispatch::<Demo, App>(&mut app, &key("f1"));
-    assert_eq!(out, Some(vec![2])); // "f1"
+    let out = bind::dispatch::<Demo, App, _>(&mut app, &key("f1"));
+    assert_eq!(out, (vec![2], true)); // "f1"
 }
 
 // Through the other enum variant, and on through the boxed `#[resolve_into]`.
 #[test]
 fn through_typing_variant() {
     let mut app = typing_app();
-    let out = bind::dispatch::<Demo, App>(&mut app, &key("bksp"));
-    assert_eq!(out, Some(vec![4])); // "bksp"
+    let out = bind::dispatch::<Demo, App, _>(&mut app, &key("bksp"));
+    assert_eq!(out, (vec![4], true)); // "bksp"
     let Layer::Typing(t) = &app.layer else {
         unreachable!()
     };
@@ -77,8 +77,8 @@ fn through_typing_variant() {
 #[test]
 fn through_box_to_deep() {
     let mut app = typing_app();
-    let out = bind::dispatch::<Demo, App>(&mut app, &key("d"));
-    assert_eq!(out, Some(vec![1])); // "d"
+    let out = bind::dispatch::<Demo, App, _>(&mut app, &key("d"));
+    assert_eq!(out, (vec![1], true)); // "d"
     let Layer::Typing(t) = &app.layer else {
         unreachable!()
     };
@@ -89,16 +89,16 @@ fn through_box_to_deep() {
 #[test]
 fn foreground_binding_fires() {
     let mut app = nav_app();
-    let out = bind::dispatch::<Demo, App>(&mut app, &foreground("Slack"));
-    assert_eq!(out, Some(vec![5])); // "Slack"
+    let out = bind::dispatch::<Demo, App, _>(&mut app, &foreground("Slack"));
+    assert_eq!(out, (vec![5], true)); // "Slack"
 }
 
 // An event no node binds returns `None` and mutates nothing.
 #[test]
 fn unbound_event_is_none() {
     let mut app = nav_app();
-    let out = bind::dispatch::<Demo, App>(&mut app, &key("x"));
-    assert_eq!(out, None);
+    let out = bind::dispatch::<Demo, App, _>(&mut app, &key("x"));
+    assert_eq!(out, (vec![], false));
     assert_eq!(app.hits, 0);
     let Layer::Nav(nav) = &app.layer else {
         unreachable!()
@@ -110,8 +110,8 @@ fn unbound_event_is_none() {
 #[test]
 fn binding_on_inactive_variant_is_none() {
     let mut app = typing_app();
-    let out = bind::dispatch::<Demo, App>(&mut app, &key("g"));
-    assert_eq!(out, None);
+    let out = bind::dispatch::<Demo, App, _>(&mut app, &key("g"));
+    assert_eq!(out, (vec![], false));
 }
 
 // A foreground event that matches no foreground trigger is skipped, not matched
@@ -119,8 +119,8 @@ fn binding_on_inactive_variant_is_none() {
 #[test]
 fn unmatched_foreground_is_none() {
     let mut app = nav_app();
-    let out = bind::dispatch::<Demo, App>(&mut app, &foreground("Other"));
-    assert_eq!(out, None);
+    let out = bind::dispatch::<Demo, App, _>(&mut app, &foreground("Other"));
+    assert_eq!(out, (vec![], false));
 }
 
 // The multi-parent leaf `Title` fires whether reached through `Album` or `Song`.
@@ -129,8 +129,8 @@ fn multi_parent_leaf_via_album() {
     let mut media = Media::Album(Album {
         title: Title { hits: 0 },
     });
-    let out = bind::dispatch::<Demo, Media>(&mut media, &key("t"));
-    assert_eq!(out, Some(vec![1])); // "t"
+    let out = bind::dispatch::<Demo, Media, _>(&mut media, &key("t"));
+    assert_eq!(out, (vec![1], true)); // "t"
     let Media::Album(a) = &media else {
         unreachable!()
     };
@@ -142,8 +142,8 @@ fn multi_parent_leaf_via_song() {
     let mut media = Media::Song(Song {
         title: Title { hits: 0 },
     });
-    let out = bind::dispatch::<Demo, Media>(&mut media, &key("t"));
-    assert_eq!(out, Some(vec![1])); // "t"
+    let out = bind::dispatch::<Demo, Media, _>(&mut media, &key("t"));
+    assert_eq!(out, (vec![1], true)); // "t"
     let Media::Song(s) = &media else {
         unreachable!()
     };
@@ -157,8 +157,8 @@ fn multi_parent_ancestor_recover() {
     let mut media = Media::Album(Album {
         title: Title { hits: 0 },
     });
-    let out = bind::dispatch::<Demo, Media>(&mut media, &key("a"));
-    assert_eq!(out, Some(vec![1])); // "a"
+    let out = bind::dispatch::<Demo, Media, _>(&mut media, &key("a"));
+    assert_eq!(out, (vec![1], true)); // "a"
     let Media::Album(a) = &media else {
         unreachable!()
     };
@@ -177,8 +177,8 @@ fn a_closure_trigger_matches_only_what_its_node_waits_for() {
         child: ArmedChild { wants: None },
     };
     assert_eq!(
-        bind::dispatch::<Demo, Armed>(&mut armed, &key("g")),
-        Some(vec![1])
+        bind::dispatch::<Demo, Armed, _>(&mut armed, &key("g")),
+        (vec![1], true)
     );
     assert_eq!(armed.waiting_for, None, "the handler ran and cleared it");
 }
@@ -191,7 +191,10 @@ fn a_closure_trigger_matching_nothing_dispatches_nothing() {
         child: ArmedChild { wants: None },
     };
     // A key it is not waiting for reaches no binding at all: the handler never runs to decline it.
-    assert_eq!(bind::dispatch::<Demo, Armed>(&mut armed, &key("h")), None);
+    assert_eq!(
+        bind::dispatch::<Demo, Armed, _>(&mut armed, &key("h")),
+        (vec![], false)
+    );
     assert_eq!(armed.waiting_for, Some("g"), "nothing was cleared");
 }
 
@@ -202,7 +205,10 @@ fn a_node_waiting_for_nothing_matches_nothing() {
         for_child: None,
         child: ArmedChild { wants: None },
     };
-    assert_eq!(bind::dispatch::<Demo, Armed>(&mut armed, &key("g")), None);
+    assert_eq!(
+        bind::dispatch::<Demo, Armed, _>(&mut armed, &key("g")),
+        (vec![], false)
+    );
 }
 
 #[test]
@@ -213,8 +219,8 @@ fn a_constant_trigger_still_works_beside_a_closure_one() {
         child: ArmedChild { wants: None },
     };
     assert_eq!(
-        bind::dispatch::<Demo, Armed>(&mut armed, &key("esc")),
-        Some(vec![3])
+        bind::dispatch::<Demo, Armed, _>(&mut armed, &key("esc")),
+        (vec![3], true)
     );
 }
 
@@ -228,8 +234,8 @@ fn a_closure_trigger_on_a_deeper_node_reads_through_its_path() {
         child: ArmedChild { wants: Some("z") },
     };
     assert_eq!(
-        bind::dispatch::<Demo, Armed>(&mut armed, &key("z")),
-        Some(vec![1])
+        bind::dispatch::<Demo, Armed, _>(&mut armed, &key("z")),
+        (vec![1], true)
     );
     assert_eq!(armed.child.wants, None, "the child's handler ran");
 }
@@ -245,8 +251,8 @@ fn a_closure_trigger_can_read_its_parent() {
     // The child's binding fires for the key its parent named, and the handler that ran says so:
     // the parent-reading one returns the key's length plus 100.
     assert_eq!(
-        bind::dispatch::<Demo, Armed>(&mut armed, &key("up")),
-        Some(vec![102])
+        bind::dispatch::<Demo, Armed, _>(&mut armed, &key("up")),
+        (vec![102], true)
     );
 }
 
@@ -258,7 +264,10 @@ fn an_absent_option_trigger_matches_nothing() {
         for_child: None,
         child: ArmedChild { wants: None },
     };
-    assert_eq!(bind::dispatch::<Demo, Armed>(&mut armed, &key("z")), None);
+    assert_eq!(
+        bind::dispatch::<Demo, Armed, _>(&mut armed, &key("z")),
+        (vec![], false)
+    );
 }
 
 #[test]
@@ -269,7 +278,7 @@ fn a_present_option_trigger_matches_its_key() {
         child: ArmedChild { wants: Some("z") },
     };
     assert_eq!(
-        bind::dispatch::<Demo, Armed>(&mut armed, &key("z")),
-        Some(vec![1])
+        bind::dispatch::<Demo, Armed, _>(&mut armed, &key("z")),
+        (vec![1], true)
     );
 }

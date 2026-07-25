@@ -114,7 +114,10 @@ fn root(tab: Option<&str>) -> Root {
 #[test]
 fn a_derived_level_binds_its_own_keys_and_reaches_the_tree_through_parent() {
     let mut r = root(Some("inbox"));
-    assert_eq!(dispatch::<Demo, Root>(&mut r, &key("r")), Some(vec![1]));
+    assert_eq!(
+        dispatch::<Demo, Root, _>(&mut r, &key("r")),
+        (vec![1], true)
+    );
     assert_eq!(r.layer.log, "inbox"); // the LAYER's real state, written from the derived level
     assert_eq!(r.app.as_ref().unwrap().tab, "inbox"); // the tree is untouched by `data`
 }
@@ -122,7 +125,10 @@ fn a_derived_level_binds_its_own_keys_and_reaches_the_tree_through_parent() {
 #[test]
 fn a_derived_level_can_have_a_derived_child() {
     let mut r = root(Some("gmail"));
-    assert_eq!(dispatch::<Demo, Root>(&mut r, &key("g")), Some(vec![1]));
+    assert_eq!(
+        dispatch::<Demo, Root, _>(&mut r, &key("g")),
+        (vec![1], true)
+    );
     assert_eq!(r.layer.log, "gmail7"); // own data, the parent level's data, and the layer
 }
 
@@ -130,20 +136,32 @@ fn a_derived_level_can_have_a_derived_child() {
 fn a_miss_hands_the_parent_back_at_every_level() {
     // The tab level misses `r`, so the app level's bind runs with its data intact.
     let mut r = root(Some("gmail"));
-    assert_eq!(dispatch::<Demo, Root>(&mut r, &key("r")), Some(vec![1]));
+    assert_eq!(
+        dispatch::<Demo, Root, _>(&mut r, &key("r")),
+        (vec![1], true)
+    );
     assert_eq!(r.layer.log, "gmail");
 
     // Both derived levels miss `esc`, so the LAYER's bind runs with its path intact.
     let mut r = root(Some("gmail"));
-    assert_eq!(dispatch::<Demo, Root>(&mut r, &key("esc")), Some(vec![3]));
+    assert_eq!(
+        dispatch::<Demo, Root, _>(&mut r, &key("esc")),
+        (vec![3], true)
+    );
     assert_eq!(r.layer.log, "e");
 }
 
 #[test]
 fn with_no_app_there_is_no_level_and_the_layer_still_works() {
     let mut r = root(None);
-    assert_eq!(dispatch::<Demo, Root>(&mut r, &key("r")), None);
-    assert_eq!(dispatch::<Demo, Root>(&mut r, &key("esc")), Some(vec![3]));
+    assert_eq!(
+        dispatch::<Demo, Root, _>(&mut r, &key("r")),
+        (vec![], false)
+    );
+    assert_eq!(
+        dispatch::<Demo, Root, _>(&mut r, &key("esc")),
+        (vec![3], true)
+    );
     assert_eq!(r.layer.log, "e");
 }
 

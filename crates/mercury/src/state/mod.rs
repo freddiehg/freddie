@@ -597,21 +597,25 @@ impl Mercury {
         }
     }
 
-    /// Dispatches one event, returning the handler's effects, or `None` when the active state
-    /// binds nothing for it.
+    /// Dispatches one event, returning the effects it produced and whether the active state
+    /// bound it.
+    ///
+    /// The effects are the caller's to perform either way; the bool says whether anything
+    /// claimed the event, which is what a caller deciding to pass it on asks.
     #[must_use]
-    pub fn handle(&mut self, event: &MercuryEvent) -> Option<Vec<MercuryEffect>> {
+    pub fn handle(&mut self, event: &MercuryEvent) -> (Vec<MercuryEffect>, bool) {
         let before = std::mem::discriminant(&self.layer);
-        let mut effects = bind::dispatch::<MercuryStruct, Self>(self, event)?;
+        let (mut effects, handled) = bind::dispatch::<MercuryStruct, Self, _>(self, event);
         // A keypress that leaves you in the same layer is activity: reset that layer's return-home
         // timer, so it fires only after you go idle, not a fixed span after you entered.
-        if matches!(event, MercuryEvent::Key(_))
+        if handled
+            && matches!(event, MercuryEvent::Key(_))
             && std::mem::discriminant(&self.layer) == before
             && let Some(reset) = self.layer.rearm_timeout()
         {
             effects.push(reset);
         }
-        Some(effects)
+        (effects, handled)
     }
 
     #[must_use]
