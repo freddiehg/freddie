@@ -607,6 +607,7 @@ dependencies = [
  "core-graphics",
  "freddie_hid_device",
  "freddie_keys",
+ "objc2",
  "tracing",
 ]
 

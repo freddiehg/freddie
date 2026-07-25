@@ -17,6 +17,7 @@ use core_graphics::event::{
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use freddie_hid_device::{DeviceInfo, ResolveFailure, SourceId, resolve, source_of};
 use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
+use objc2::rc::autoreleasepool;
 
 use crate::{CaptureError, EmitError};
 
@@ -532,11 +533,20 @@ impl Emitter {
     ///
     /// The event states its own modifiers rather than trusting a source: whoever built it said
     /// what it carries, and we apply exactly that. See [`keyboard_event`].
+    ///
+    /// The body runs inside an autorelease pool because `CGEventPost` autoreleases two
+    /// `CFData`s per call, about 574 bytes. An `Emitter` posts from whatever thread owns it,
+    /// which for a daemon is a worker thread with no pool of its own, so a pool here is what
+    /// makes a post free what it allocated. Draining per post rather than per batch keeps the
+    /// property local to the call that needs it: pushing and popping a pool is tens of
+    /// nanoseconds against a post that costs tens of microseconds.
     fn post(&self, key: Key, press: PressType, flags: ModifierFlags) -> Result<(), EmitError> {
-        let event = keyboard_event(&self.source, key, press, flags)?;
-        self.tag.stamp(&event);
-        event.post(CGEventTapLocation::Session);
-        Ok(())
+        autoreleasepool(|_pool| {
+            let event = keyboard_event(&self.source, key, press, flags)?;
+            self.tag.stamp(&event);
+            event.post(CGEventTapLocation::Session);
+            Ok(())
+        })
     }
 
     /// Emit one key event, a press or a release, carrying `flags`.

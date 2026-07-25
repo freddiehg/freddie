@@ -13,6 +13,10 @@ tracing = "0.1"
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = { version = "0.25", features = ["link"] }
 core-foundation = { version = "0.10", features = ["link"] }
+# For `rc::autoreleasepool`. `CGEventPost` autoreleases, and an `Emitter` posts from whatever
+# thread owns it, which is not required to have a pool. The one function used is safe, so this
+# does not cost the crate its `unsafe_code = "forbid"`.
+objc2 = "0.6"
 freddie_hid_device = { path = "../freddie_hid_device", version = "0.0.1" }
 
 [lints]
