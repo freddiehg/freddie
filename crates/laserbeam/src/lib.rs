@@ -493,6 +493,19 @@ impl<P: HasStop> MaybeInvalidated<P> {
     {
         IntoAncestor::into_ancestor(self)
     }
+
+    /// Walk this state to `Target` if it is still standing.
+    ///
+    /// # Errors
+    ///
+    /// The leave this state holds went above `Target`; the state comes back,
+    /// ready to forward.
+    pub fn try_into_ancestor<Target>(self) -> Result<Target, Self>
+    where
+        Self: TryIntoAncestor<Target>,
+    {
+        TryIntoAncestor::try_into_ancestor(self)
+    }
 }
 
 /// The state after a descent holds the root on both branches: through the
@@ -522,6 +535,94 @@ where
         match self {
             Self::NotInvalidated(path) => IntoAncestor::into_ancestor(path),
             Self::Invalidated(completed) => IntoAncestor::into_ancestor(completed),
+        }
+    }
+}
+
+/// Reach a chain ancestor that a completed leave may have destroyed.
+///
+/// `Ok` iff the leave stopped at or below the target, so the target is still
+/// standing: here it is, consumed out of the leave. `Err` gives the value
+/// back unchanged, because the caller still has to return a `Completed` and
+/// must be able to forward the leave it could not use. To the root the answer
+/// is always `Ok`; the total [`IntoAncestor`] says the same thing without the
+/// `Result`.
+pub trait TryIntoAncestor<Target>: Sized {
+    /// # Errors
+    ///
+    /// The leave went above `Target`, which no longer exists; the value comes
+    /// back so the caller can forward it.
+    fn try_into_ancestor(self) -> Result<Target, Self>;
+}
+
+/// Distance zero: the leave reaches its own origin iff it stopped there.
+impl<T: HasStop> TryIntoAncestor<T> for Completed<T> {
+    fn try_into_ancestor(self) -> Result<T, Self> {
+        match self.to_maybe_invalidated() {
+            MaybeInvalidated::NotInvalidated(path) => Ok(path),
+            MaybeInvalidated::Invalidated(completed) => Err(completed),
+        }
+    }
+}
+
+/// Distance one to the root: the root is always alive.
+impl<'a, R, H> TryIntoAncestor<&'a mut R> for Completed<PathMut<H, &'a mut R>> {
+    fn try_into_ancestor(self) -> Result<&'a mut R, Self> {
+        match self.stop {
+            Stop::Here(path) => Ok(path.into_parent()),
+            Stop::Up(root) => Ok(root),
+        }
+    }
+}
+
+/// Distance one to a non-root ancestor: alive iff the leave stopped at or
+/// below it.
+impl<H, N2, Q: Above> TryIntoAncestor<PathMut<N2, Q>> for Completed<PathMut<H, PathMut<N2, Q>>> {
+    fn try_into_ancestor(self) -> Result<PathMut<N2, Q>, Self> {
+        match self.stop {
+            Stop::Here(path) => Ok(path.into_parent()),
+            Stop::Up(up) => up.try_into_ancestor().map_err(Self::up),
+        }
+    }
+}
+
+/// One impl per distance of two or more: the `Here` arm walks the standing
+/// path up, and the `Up` arm hands the question to the parent's leave.
+macro_rules! try_into_ancestor_impls {
+    ($head:ident) => {};
+    ($head:ident, $next:ident $(, $rest:ident)*) => {
+        impl<T, $head, $next $(, $rest)*> TryIntoAncestor<T>
+            for Completed<path_nest!(T, $head, $next $(, $rest)*)>
+        where
+            T: Above,
+            Completed<path_nest!(T, $next $(, $rest)*)>: TryIntoAncestor<T>,
+        {
+            fn try_into_ancestor(self) -> Result<T, Self> {
+                match self.stop {
+                    Stop::Here(path) => Ok(path.into_ancestor()),
+                    Stop::Up(up) => up.try_into_ancestor().map_err(Completed::up),
+                }
+            }
+        }
+        try_into_ancestor_impls!($next $(, $rest)*);
+    };
+}
+
+try_into_ancestor_impls!(M1, M2, M3, M4, M5, M6, M7, M8, M9, M10, M11, M12);
+
+/// On the state: a standing path reaches every chain ancestor; an invalidated
+/// one asks its leave.
+impl<P, T> TryIntoAncestor<T> for MaybeInvalidated<P>
+where
+    P: HasStop + IntoAncestor<T>,
+    Completed<P>: TryIntoAncestor<T>,
+{
+    fn try_into_ancestor(self) -> Result<T, Self> {
+        match self {
+            Self::NotInvalidated(path) => Ok(path.into_ancestor()),
+            Self::Invalidated(completed) => {
+                TryIntoAncestor::try_into_ancestor(completed).map_err(Self::Invalidated)
+            }
         }
     }
 }
@@ -567,6 +668,18 @@ impl<P: HasStop> Completed<P> {
         Self: IntoAncestor<Target>,
     {
         IntoAncestor::into_ancestor(self)
+    }
+
+    /// Walk this leave to `Target` if the leave left it standing.
+    ///
+    /// # Errors
+    ///
+    /// The leave went above `Target`; it comes back, ready to forward.
+    pub fn try_into_ancestor<Target>(self) -> Result<Target, Self>
+    where
+        Self: TryIntoAncestor<Target>,
+    {
+        TryIntoAncestor::try_into_ancestor(self)
     }
 }
 
@@ -1334,6 +1447,140 @@ mod ancestors_through_a_leave_tests {
             assert_eq!(at_the_root.into_ancestor::<AppPath<'_>>().hits, 3);
         }
         assert_eq!(app.hits, 3);
+    }
+
+    /// Distance zero: a leave reaches its own origin iff it stopped there.
+    #[test]
+    fn try_at_distance_zero_recovers_a_here_stop() {
+        let mut app = tree();
+        {
+            let stopped: Completed<NavPath<'_>> = nav_path(&mut app).complete();
+            let Ok(mut nav) = stopped.try_into_ancestor::<NavPath<'_>>() else {
+                panic!("a leave that stopped at nav still holds nav");
+            };
+            nav.get_mut().hits = 5;
+        }
+        assert_eq!(app.layer.nav.hits, 5);
+
+        {
+            let peeled: Completed<NavPath<'_>> = nav_path(&mut app).into_parent().complete();
+            let Err(back) = peeled.try_into_ancestor::<NavPath<'_>>() else {
+                panic!("a leave that peeled past nav cannot hand nav back");
+            };
+            // The leave came back whole, so the caller can still forward it.
+            back.into_ancestor::<AppPath<'_>>().hits = 6;
+        }
+        assert_eq!(app.hits, 6);
+    }
+
+    /// A mid ancestor is alive exactly when the leave stopped at or below it.
+    #[test]
+    fn try_reaches_a_mid_ancestor_iff_the_leave_stopped_at_or_below_it() {
+        let mut app = tree();
+        {
+            let stopped_below: Completed<NavPath<'_>> = nav_path(&mut app).complete();
+            let Ok(mut layer) = stopped_below.try_into_ancestor::<LayerPath<'_>>() else {
+                panic!("stopping at nav leaves the layer above it standing");
+            };
+            layer.get_mut().hits = 1;
+        }
+        assert_eq!(app.layer.hits, 1);
+
+        {
+            let stopped_at: Completed<NavPath<'_>> = nav_path(&mut app).into_parent().complete();
+            let Ok(mut layer) = stopped_at.try_into_ancestor::<LayerPath<'_>>() else {
+                panic!("stopping exactly at the layer recovers it");
+            };
+            layer.get_mut().hits = 2;
+        }
+        assert_eq!(app.layer.hits, 2);
+
+        {
+            let peeled: Completed<NavPath<'_>> =
+                nav_path(&mut app).into_parent().into_parent().complete();
+            let Err(back) = peeled.try_into_ancestor::<LayerPath<'_>>() else {
+                panic!("a leave past the layer cannot hand it back");
+            };
+            back.into_ancestor::<AppPath<'_>>().hits = 3;
+        }
+        assert_eq!(app.hits, 3);
+    }
+
+    /// The root is the one target that is always still there.
+    #[test]
+    fn try_to_the_root_always_succeeds() {
+        let mut app = tree();
+        {
+            let peeled: Completed<LayerPath<'_>> = layer_path(&mut app).into_parent().complete();
+            let Ok(root) = peeled.try_into_ancestor::<AppPath<'_>>() else {
+                panic!("the root outlives every leave");
+            };
+            root.hits = 7;
+        }
+        assert_eq!(app.hits, 7);
+    }
+
+    /// On the state: the standing branch reaches every chain ancestor, and the
+    /// invalidated one answers with its leave, giving the state back on a miss.
+    #[test]
+    fn try_on_the_state_covers_both_branches() {
+        let mut app = tree();
+        {
+            let standing: MaybeInvalidated<NavPath<'_>> =
+                MaybeInvalidated::NotInvalidated(nav_path(&mut app));
+            let Ok(mut layer) = standing.try_into_ancestor::<LayerPath<'_>>() else {
+                panic!("a standing path reaches its own ancestors");
+            };
+            layer.get_mut().hits = 8;
+        }
+        assert_eq!(app.layer.hits, 8);
+
+        {
+            let leave: Completed<NavPath<'_>> =
+                nav_path(&mut app).into_parent().into_parent().complete();
+            let invalidated: MaybeInvalidated<NavPath<'_>> = MaybeInvalidated::Invalidated(leave);
+            let Err(back) = invalidated.try_into_ancestor::<LayerPath<'_>>() else {
+                panic!("the leave went above the layer");
+            };
+            let MaybeInvalidated::Invalidated(forwardable) = back else {
+                panic!("the state comes back as it went in");
+            };
+            forwardable.into_ancestor::<AppPath<'_>>().hits = 9;
+        }
+        assert_eq!(app.hits, 9);
+    }
+
+    /// Distance two, the macro impl's `Here` arm: the standing path walks up.
+    #[test]
+    fn try_here_arm_at_macro_depth() {
+        let mut app = tree();
+        {
+            let stopped_at_deep: Completed<DeepPath<'_>> = deep_path(&mut app).complete();
+            let Ok(mut layer) = stopped_at_deep.try_into_ancestor::<LayerPath<'_>>() else {
+                panic!("stopping at deep leaves the layer two levels up standing");
+            };
+            layer.get_mut().hits = 11;
+        }
+        assert_eq!(app.layer.hits, 11);
+    }
+
+    /// Distance two, the macro impl's `Err` path: each distance rebuilds the leave
+    /// on the way back out, so what the caller gets is the leave it started with.
+    #[test]
+    fn try_err_rebuilds_through_the_macro() {
+        let mut app = tree();
+        {
+            let peeled: Completed<DeepPath<'_>> = deep_path(&mut app)
+                .into_parent()
+                .into_parent()
+                .into_parent()
+                .complete();
+            let Err(back) = peeled.try_into_ancestor::<LayerPath<'_>>() else {
+                panic!("a leave peeled to the root cannot hand the layer back");
+            };
+            back.into_ancestor::<AppPath<'_>>().hits = 12;
+        }
+        assert_eq!(app.hits, 12);
     }
 
     /// The shared reach, on both branches of the state.
