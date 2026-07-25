@@ -12,8 +12,9 @@ You are the agent implementing `refactors/pending/invalidation.md`. This file te
 
 1. Wait until told that `derived-levels.md` is settled. Until then change 5 stays blocked: do not improvise, do not write an interim, do not narrow the change to fit.
 2. When told to continue, reread `refactors/pending/invalidation.md` and `refactors/pending/derived-levels.md` end to end; both changed after change 4 landed.
-3. Implement `derived-levels.md` change 1 first (`HasPlace` + `DispatchIntoPlace`, pure additions with unit tests), as its own commit.
-4. Then invalidation change 5 as one workspace-global change: trait signatures, the linear `Completed` body, scheduled blocks, the place `dispatch_into_parent_impl` deletion, route folds, `up =` parsing, `#[post]` / `#[pre_post]` parsing, the derived codegen (before/afters in invalidation.md's change-5 section), and the handler migration in mercury and the bind tests. Workspace green, commit.
-5. Then invalidation change 6 (demo tree + walks). Move the finished docs to `refactors/past` when the work is implemented and tested.
+3. Implement `completed-ancestors.md` first (its changes 1 and 2, laserbeam only, each its own commit): the state-level root reach and `TryIntoAncestor`. Mercury's change-5 migration lands directly on those shapes.
+4. Implement `derived-levels.md` change 1 (`HasPlace` + `DispatchIntoPlace`, pure additions with unit tests), as its own commit.
+5. Then invalidation change 5 as one workspace-global change: trait signatures, the linear `Completed` body, scheduled blocks, the place `dispatch_into_parent_impl` deletion, route folds, `up =` parsing, `#[post]` / `#[pre_post]` parsing, the derived codegen (before/afters in invalidation.md's change-5 section), and the handler migration in mercury and the bind tests. Workspace green, commit.
+6. Then invalidation change 6 (demo tree + walks). Move the finished docs to `refactors/past` when the work is implemented and tested.
 
 If any step stops matching the code, stop and report, as before; the fix goes into the doc first.

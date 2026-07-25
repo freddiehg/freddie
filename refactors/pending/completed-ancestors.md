@@ -1,6 +1,6 @@
 # Ancestors through a completed leave
 
-Not started. The baseline is laserbeam as it stands after invalidation.md's change 1 (`Completed`, `MaybeInvalidated`, `Above`, `HasStop`, all on disk); nothing here waits on invalidation.md's changes 4–6. Every impl and every test below was compile-checked and run green in the design scratch, at the workspace's clippy levels. The consumer snippets use the handler signature that arrives with invalidation change 5, so mercury adoption rides that migration; the laserbeam changes ship on their own.
+Not started. Ships before invalidation change 5, so mercury's change-5 migration lands its root-consuming handlers directly on these shapes (`mercury-post-patterns.md` assumes them). The baseline is laserbeam on disk after 62345c7: `Completed`, `MaybeInvalidated`, `Above`, `HasStop`, plus the route Up declarations, which change nothing here — `TitleParentUp` has no ancestor impls, so the route edge still fails the bounds. Every impl and every test below was compile-checked and run green in the design scratch, at the workspace's clippy levels (against the change-1 baseline, before the route `Above` landed). The consumer snippets use the handler signature that arrives with invalidation change 5. The impls live in laserbeam's `lib.rs` beside the existing ancestor machinery.
 
 ## Model
 

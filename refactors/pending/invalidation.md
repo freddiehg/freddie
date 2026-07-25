@@ -681,7 +681,7 @@ where
 }
 ```
 
-`copy_host` follows it with `UrlPart::Host`; `refresh` and the tmux handlers are pure effects and need no match at all (`(vec![tap(..)], st.complete())`). No mercury derived handler reads `data` (`ChromeApp`, `GhosttyApp`, `ClaudeAiSite` are units), so none needs a pre; the affected set is `refresh`, `focus_address_bar`, `copy_url`, `copy_host`, the tmux window handlers in `handlers/app.rs`, `new_chat` on the site side, and the layer handlers (`to_home`, `to_nav`, `to_site`, `to_typing`, `toggle_overlay`) where bound on derived levels.
+`copy_host` follows it with `UrlPart::Host`; `refresh` and the tmux handlers are pure effects and need no match at all (`(vec![tap(..)], st.complete())`). The root-consuming leavers (`to_home` and its family) migrate to `completed-ancestors.md`'s state-level shape, which ships first: the `P: IntoAncestor<MercuryPath<'a>>` bound becomes `MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>`, and the body is branch-free — `st.state.into_ancestor()`, the one mutation, `root.complete()`. No mercury derived handler reads `data` (`ChromeApp`, `GhosttyApp`, `ClaudeAiSite` are units), so none needs a pre; the affected set is `refresh`, `focus_address_bar`, `copy_url`, `copy_host`, the tmux window handlers in `handlers/app.rs`, `new_chat` on the site side, and the layer handlers (`to_home`, `to_nav`, `to_site`, `to_typing`, `toggle_overlay`) where bound on derived levels.
 
 The bind tests' derived handlers do read data, which is why `#[pre_post]` parses in this change. `tests/derived.rs` migrates to:
 
