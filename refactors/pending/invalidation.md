@@ -739,8 +739,7 @@ Posts run whether or not anything claimed: they are scheduled by their trigger, 
 
 ## Open questions
 
-1. `#[post]` and `#[pre_post]` are now the same thing modulo the synthesized pre. Keep both spellings, or collapse to `#[post]` with an optional `(pre, f)` rhs?
-2. `TimerId::fresh()` is demo filler; real ids mint from root state per `timer-ids-on-root.md`.
+1. `TimerId::fresh()` is demo filler; real ids mint from root state per `timer-ids-on-root.md`.
 
 ## Ordered changes
 
