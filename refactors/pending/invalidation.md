@@ -12,7 +12,7 @@ Every node's dispatch returns `Completed<Self::Path<'a>>`, root included. Betwee
 opts        one local per scheduled attribute, source order, snapped before descent
 descend     child dispatch → .into_inner().to_maybe_invalidated() → AscendState
 scheduled   one identical block per item: call, extend effs, rebind the state
-finish      st.finish()
+complete    state.complete()
 ```
 
 `MaybeInvalidated<P>` answers one question, have we destroyed the path we need:
@@ -29,7 +29,7 @@ Every handler, bind or post, has the same signature, and it returns the call to 
 FnOnce(Payload, AscendState<'a, 'c, P>) -> (Vec<E>, Completed<P>)
 ```
 
-A handler matches the state totally, no helpers, `into_parent` the only way up; staying put is `st.finish()`:
+A handler matches the state totally, no helpers, `into_parent` the only way up; staying put is `st.complete()`:
 
 ```rust
 match st.state {
@@ -41,9 +41,9 @@ match st.state {
 }
 ```
 
-`Invalidated` is unforgeable, since `Completed` has no public constructor; `NotInvalidated` accepts only a path of exactly type `P`. The state threading is wrapper-internal: `exclusive` and `post` fold a fired handler's `Completed` back into the state (`HasStop::to_maybe_invalidated`: `Here` re-establishes the path as `NotInvalidated`, `Up` stays a forwarded leave), so the state evolves through the schedule — with `#[post(a => b, c => d)]`, `b` can receive `NotInvalidated`, leave, and `d` then receives `Invalidated`. Every scheduled item runs; a leave is data, not control flow, and nothing early-returns. The wrapper outputs (`(Vec<E>, MaybeInvalidated<P>)`) are the macro-facing shape; no one handwrites it.
+`Invalidated` is unforgeable, since `Completed` has no public constructor; `NotInvalidated` accepts only a path of exactly type `P`. The generated code folds every returned `Completed` back into the state, separately, after each item (`completed.to_maybe_invalidated()`: `Here` re-establishes the path as `NotInvalidated`, `Up` stays a forwarded leave), so the state evolves through the schedule — with `#[post(a => b, c => d)]`, `b` can receive `NotInvalidated`, leave, and `d` then receives `Invalidated`. Every scheduled item runs; a leave is data, not control flow, and nothing early-returns. A consequence of the fold: after any item runs, the state reflects that item's answer, not the descent's, so a post keyed on what the descent did (the return-home cancel) is scheduled before any bind.
 
-`#[bind(X => foo)]` desugars to `#[post(X => exclusive(foo))]`; the macro wraps every rhs (`exclusive(tokens)` for `#[bind]`, `post(tokens)` for `#[post]`/`#[pre_post]`) and never looks inside. `exclusive` means not claimed: the claim gate and nothing else, calling `foo` iff the claim is won; a gated state passes through untouched, which is what preserves an earlier leave for later items. The claim's win is not part of any signature, because winning the claim does not imply `NotInvalidated` (a post can leave without claiming); what each state branch means is the handler's business.
+`#[bind(X => foo)]` desugars to `#[post(X => exclusive(foo))]`; a `#[post]` rhs is taken raw, and the macro looks inside neither. `exclusive` is shape-preserving and means not claimed: it calls `foo` iff the claim is won and otherwise completes the state where it stands, so its output is the same scheduled shape as everything else. The claim's win is not part of any signature, because winning the claim does not imply `NotInvalidated` (a post can leave without claiming); what each state branch means is the handler's business.
 
 "Invalidated" means off the active path: focus left it. Whether state was also replaced is the handler's business (an enum layer usually swaps; a struct field persists).
 
@@ -65,7 +65,7 @@ impl<P: HasStop> MaybeInvalidated<P>
 where
     P: Complete<P>,
 {
-    pub fn finish(self) -> Completed<P> {
+    pub fn complete(self) -> Completed<P> {
         match self {
             Self::NotInvalidated(path) => path.complete(),
             Self::Invalidated(completed) => completed,
@@ -119,6 +119,12 @@ impl<'a, R> HasStop for &'a mut R {
         MaybeInvalidated::NotInvalidated(completed.into_inner())
     }
 }
+
+impl<P: HasStop> Completed<P> {
+    pub fn to_maybe_invalidated(self) -> MaybeInvalidated<P> {
+        P::to_maybe_invalidated(self)
+    }
+}
 ```
 
 One conversion is added; generated `DispatchIntoParent` code normalizes an Up payload, bare root path or `Completed`, behind one `Into`:
@@ -150,43 +156,26 @@ impl<'a, 'c, P: ::laserbeam::HasStop> AscendState<'a, 'c, P> {
         self.claim.try_take()
     }
 
-    pub fn finish(self) -> ::laserbeam::Completed<P>
+    pub fn complete(self) -> ::laserbeam::Completed<P>
     where
         P: ::laserbeam::Complete<P>,
     {
-        self.state.finish()
+        self.state.complete()
     }
 }
 
-/// The claim gate: the handler runs iff the claim is won; a gated state
-/// passes through untouched.
+/// The claim gate, shape-preserving: the handler runs iff the claim is won;
+/// otherwise it completes the state where it stands.
 pub fn exclusive<Payload, P, E, H>(
     handler: H,
-) -> impl for<'a, 'c> FnOnce(Payload, AscendState<'a, 'c, P>) -> (Vec<E>, ::laserbeam::MaybeInvalidated<P>)
+) -> impl for<'a, 'c> FnOnce(Payload, AscendState<'a, 'c, P>) -> (Vec<E>, ::laserbeam::Completed<P>)
 where
-    P: ::laserbeam::HasStop,
+    P: ::laserbeam::HasStop + ::laserbeam::Complete<P>,
     H: for<'a, 'c> FnOnce(Payload, AscendState<'a, 'c, P>) -> (Vec<E>, ::laserbeam::Completed<P>),
 {
     move |payload, mut st| match st.claim() {
-        Some(()) => {
-            let (e, completed) = handler(payload, st);
-            (e, P::to_maybe_invalidated(completed))
-        }
-        None => (Vec::new(), st.state),
-    }
-}
-
-/// Always runs; the handler's returned leave becomes the next state.
-pub fn post<Payload, P, E, F>(
-    f: F,
-) -> impl for<'a, 'c> FnOnce(Payload, AscendState<'a, 'c, P>) -> (Vec<E>, ::laserbeam::MaybeInvalidated<P>)
-where
-    P: ::laserbeam::HasStop,
-    F: for<'a, 'c> FnOnce(Payload, AscendState<'a, 'c, P>) -> (Vec<E>, ::laserbeam::Completed<P>),
-{
-    move |payload, st| {
-        let (e, completed) = f(payload, st);
-        (e, P::to_maybe_invalidated(completed))
+        Some(()) => handler(payload, st),
+        None => (Vec::new(), st.complete()),
     }
 }
 ```
@@ -288,11 +277,13 @@ struct TimerGuard {
 
 // #[post] / #[pre_post] are new (change 4); the other attributes are today's
 // derive surface.
+// The deadline post keys on what the descent did, so it is scheduled before
+// the bind (source order).
 #[derive(Bind)]
 #[node(root)]
 #[binds(M)]
-#[bind(KeyEsc => flash)]                                        // opt_0
-#[pre_post(AnyKey => (snap_return_home, return_home_deadline))] // opt_1
+#[pre_post(AnyKey => (snap_return_home, return_home_deadline))] // opt_0
+#[bind(KeyEsc => flash)]                                        // opt_1
 struct A {
     #[resolve_into]
     b: B,
@@ -335,7 +326,7 @@ fn flash<'a, 'c, 'x>(
     _ev: &KeyEvent,
     st: AscendState<'a, 'c, APath<'x>>,
 ) -> (Vec<DemoEffect>, Completed<APath<'x>>) {
-    (vec![DemoEffect::FlashOverlay], st.finish())
+    (vec![DemoEffect::FlashOverlay], st.complete())
 }
 
 /// A's pre: runs before descending into B, while the old timer id is live.
@@ -365,7 +356,7 @@ fn return_home_deadline<'a, 'c, 'x>(
 }
 ```
 
-`Stop` never appears in user code. Every arm returns a `Completed`: staying put is `st.finish()` or `path.complete()`, leaving is `into_parent()` then `.complete()`, and the already-invalidated arm forwards `c`.
+`Stop` never appears in user code. Every arm returns a `Completed`: staying put is `st.complete()` or `path.complete()`, leaving is `into_parent()` then `.complete()`, and the already-invalidated arm forwards `c`.
 
 ## Generated: B (target, leaf)
 
@@ -394,12 +385,12 @@ impl Dispatch<M> for B {
         let mut state = MaybeInvalidated::NotInvalidated(path);
 
         if let Some(ev) = opt_0 {
-            let (e, next) = (::bind::exclusive(go_home))(ev, AscendState::new(state, &mut *claim));
+            let (e, completed) = (::bind::exclusive(go_home))(ev, AscendState::new(state, &mut *claim));
             effs.extend(e);
-            state = next;
+            state = completed.to_maybe_invalidated();
         }
 
-        state.finish()
+        state.complete()
     }
 }
 ```
@@ -421,10 +412,10 @@ where
         Self: 'a,
     {
         // Snapped before descent: the schedule is final.
-        let opt_0: Option<&KeyEvent> = if let Ok(ev) = TryFrom::try_from(event) {
-            let trigger = KeyEsc;
+        let opt_0: Option<(&KeyEvent, TimerId)> = if let Ok(ev) = TryFrom::try_from(event) {
+            let trigger = AnyKey;
             if EventTrigger::is_matching(&trigger, ev) {
-                Some(ev)
+                Some((ev, snap_return_home(ev, &path)))
             } else {
                 None
             }
@@ -432,10 +423,10 @@ where
             None
         };
 
-        let opt_1: Option<(&KeyEvent, TimerId)> = if let Ok(ev) = TryFrom::try_from(event) {
-            let trigger = AnyKey;
+        let opt_1: Option<&KeyEvent> = if let Ok(ev) = TryFrom::try_from(event) {
+            let trigger = KeyEsc;
             if EventTrigger::is_matching(&trigger, ev) {
-                Some((ev, snap_return_home(ev, &path)))
+                Some(ev)
             } else {
                 None
             }
@@ -447,19 +438,19 @@ where
 
         let mut state = B::dispatch(b_path, event, effs, claim).into_inner().to_maybe_invalidated();
 
-        if let Some(ev) = opt_0 {
-            let (e, next) = (::bind::exclusive(flash))(ev, AscendState::new(state, &mut *claim));
+        if let Some(payload) = opt_0 {
+            let (e, completed) = return_home_deadline(payload, AscendState::new(state, &mut *claim));
             effs.extend(e);
-            state = next;
+            state = completed.to_maybe_invalidated();
         }
 
-        if let Some(payload) = opt_1 {
-            let (e, next) = (::bind::post(return_home_deadline))(payload, AscendState::new(state, &mut *claim));
+        if let Some(ev) = opt_1 {
+            let (e, completed) = (::bind::exclusive(flash))(ev, AscendState::new(state, &mut *claim));
             effs.extend(e);
-            state = next;
+            state = completed.to_maybe_invalidated();
         }
 
-        state.finish()
+        state.complete()
     }
 }
 ```
@@ -504,7 +495,7 @@ where
     #(#opts)*
     let mut state = #state;
     #(#scheduled)*
-    state.finish()
+    state.complete()
 }
 ```
 
@@ -568,17 +559,17 @@ let opt_N = match ::core::convert::TryFrom::try_from(event) {
 
 ### Change 3 — `AscendState` threading; one scheduled block
 
-bind gains `AscendState`, `exclusive`, and `post`; laserbeam gains `MaybeInvalidated` (+ `finish`) and the two `to_maybe_invalidated` conversions, on `Stop` and on `HasStop` (code above). The check emission, before: the change-1 `*effs = collect(..)` form. After, one kind-blind block per scheduled item; `#rhs` is the attribute's rhs tokens wrapped at parse time, `::bind::exclusive(#tokens)` for `#[bind]` and `::bind::post(#tokens)` for `#[post]`/`#[pre_post]`, and the macro never looks inside:
+bind gains `AscendState` and `exclusive`; laserbeam gains `MaybeInvalidated` (+ `complete`) and the `to_maybe_invalidated` conversions (code above). The check emission, before: the change-1 `*effs = collect(..)` form. After, one kind-blind block per scheduled item, ending in the fold the generated code owns; `#rhs` is `::bind::exclusive(#tokens)` for `#[bind]` and the raw tokens for `#[post]`/`#[pre_post]`, and the macro looks inside neither:
 
 ```rust
 if let ::core::option::Option::Some(payload) = opt_N {
-    let (e, next) = (#rhs)(payload, ::bind::AscendState::new(state, &mut *claim));
+    let (e, completed) = (#rhs)(payload, ::bind::AscendState::new(state, &mut *claim));
     ::core::iter::Extend::extend(effs, e);
-    state = next;
+    state = ::laserbeam::Completed::to_maybe_invalidated(completed);
 }
 ```
 
-Every bind handler in mercury and the bind tests migrates: `(ev, Node<P, ()>) -> impl IntoIterator<Item = E>` becomes `(ev, AscendState<P>) -> (Vec<E>, Completed<P>)`, with `st.finish()` where the body stays put.
+Every bind handler in mercury and the bind tests migrates: `(ev, Node<P, ()>) -> impl IntoIterator<Item = E>` becomes `(ev, AscendState<P>) -> (Vec<E>, Completed<P>)`, with `st.complete()` where the body stays put.
 
 ### Change 4 — `#[post]` / `#[pre_post]` parsing
 
@@ -631,22 +622,23 @@ Derived-level binds migrate to the scheduled shape over `AscendState<Self::Paren
 ### KeyH: B goes home
 
 ```text
-B:  exclusive(go_home): claim won → state := Invalidated(Up(a))
-    st.finish() → the stored Completed
-A:  st.state = Invalidated(Here(path))
-    exclusive(flash): claim already taken → state untouched, flash never runs
-    return_home_deadline: Invalidated → [CancelTimer(snapped)]
-    st.finish() → the stored Completed
+B:  exclusive(go_home): claim won → Up(a); fold → Invalidated
+    state.complete() → the stored Completed
+A:  state = Invalidated(root.complete())
+    return_home_deadline (scheduled first): Invalidated → [CancelTimer(snapped)]
+    fold of its returned c: root Completed → NotInvalidated
+    exclusive(flash): claim already taken → completes where it stands; fold
+    state.complete() → complete(path)
 ```
 
 ### Any other key: B stays
 
 ```text
 B:  fallthrough → Here(b)
-A:  st.state = NotInvalidated(b.into_parent())
-    KeyEsc only: exclusive(flash) fires → [FlashOverlay]; state unchanged
+A:  state = NotInvalidated(b.into_parent())
     return_home_deadline: NotInvalidated → [CancelTimer(old), ScheduleTimer(fresh)]
-    st.finish() → complete(path)
+    KeyEsc only: exclusive(flash) fires → [FlashOverlay]
+    state.complete() → complete(path)
 ```
 
 Posts run whether or not anything claimed: they are scheduled by their trigger, not by the claim.
@@ -654,10 +646,10 @@ Posts run whether or not anything claimed: they are scheduled by their trigger, 
 ## Rules
 
 1. No stubs.
-2. Between nodes: `Completed` / `Stop`, `Here` / `Up`. Inside a node: the state, built once via `to_maybe_invalidated`, handed to each scheduled item in a fresh `AscendState` (claim reborrowed), rebuilt from each wrapper's output, finished with `state.finish()`. `Stop` never appears in user code.
+2. Between nodes: `Completed` / `Stop`, `Here` / `Up`. Inside a node: the state, built once via `to_maybe_invalidated`, handed to each scheduled item in a fresh `AscendState` (claim reborrowed), re-derived by the generated code from each item's returned `Completed`, completed with `state.complete()`. `Stop` never appears in user code.
 3. Every dispatch returns `Completed<Self::Path>` (derived levels: `Completed<Self::Parent>`); no ascent associated type.
 4. Opts are snapped before descent, one per scheduled attribute, in source order. The schedule is final; every scheduled item runs, and its body decides what each state branch means.
-5. Every handler is `(payload, AscendState<P>) -> (Vec<E>, Completed<P>)` and returns the call to `.complete()`: staying put is `st.finish()`, leaving is `into_parent()` then `.complete()`, the invalidated arm forwards `c`. `exclusive` means not claimed: it is the claim gate and nothing else. The state a handler receives reflects everything scheduled before it.
+5. Every handler is `(payload, AscendState<P>) -> (Vec<E>, Completed<P>)` and returns the call to `.complete()`: staying put is `st.complete()`, leaving is `into_parent()` then `.complete()`, the invalidated arm forwards `c`. `exclusive` is shape-preserving and means not claimed: the claim gate and nothing else. The state a handler receives reflects the item before it, so a post keyed on the descent's outcome is scheduled before any bind.
 6. The claim lives inside `AscendState`; only binds claim, so posts are exempt from the duplicate-trigger check.
 7. Generated code spells laserbeam and bind items fully qualified; handwritten handlers `use laserbeam::{Complete, MaybeInvalidated};` and `use bind::AscendState;`.
 
@@ -665,13 +657,12 @@ Posts run whether or not anything claimed: they are scheduled by their trigger, 
 
 - KeyH / any-key walks on the A/B expansion, asserting the exact effect
   sequences above
-- a three-level tree: `Invalidated` forwards through `st.finish()` unchanged
-- a gated `exclusive` passes the state through untouched
+- a three-level tree: `Invalidated` forwards through `state.complete()` unchanged
 - claim trap door: KeyEsc bound at A fires only when B did not claim
 - posts run without a claim, and on both branches of `MaybeInvalidated`
 - pre snap reads pre-descent state even when the descent mutates it
-- a fired bind that leaves flips the state to `Invalidated` for later items;
-  one that stays hands it back unchanged
+- a leaving item flips the state to `Invalidated` for later items; the fold
+  after a staying item re-derives `NotInvalidated`
 
 ## Ordered changes
 
@@ -681,7 +672,7 @@ Prefactors first, each independently shippable. The macro deltas per change are 
 
 ### 2 — opts before descent, source order
 
-### 3 — laserbeam `MaybeInvalidated` (+ `finish`) and both `to_maybe_invalidated` conversions; bind `AscendState`, `exclusive`, `post`; one scheduled block per item; handler migration
+### 3 — laserbeam `MaybeInvalidated` (+ `complete`) and the `to_maybe_invalidated` conversions; bind `AscendState`, `exclusive`; one scheduled block per item with the fold in generated code; handler migration
 
 ### 4 — `#[post]` / `#[pre_post]`: registration, parsing, payload capture
 
