@@ -4,6 +4,16 @@ Not done. Standalone. Prefactor for `invalidation.md`.
 
 ## What
 
+The leave API is on the path values themselves. No wrapper type, no constructor:
+
+```text
+path.complete()                                // Here(path)
+path.into_parent().complete()                  // Up(Here(parent))
+path.into_parent().into_parent().complete()    // Up(Up(root))
+```
+
+Peel is laserbeam `PathMut::into_parent` on existing `Place::Path` values. `complete` is bind's `Complete<A>` trait method; `A` is the origin's ascent, pinned by the dispatch return type.
+
 Runtime peel depth unifies to one return type. Parent matches once:
 
 ```rust
@@ -13,9 +23,7 @@ match child_leave {
 }
 ```
 
-Peel is `PathMut::into_parent` on existing `Place::Path` values.
-
-`(Focus, Origin)` alone selects the nest constructor: a `Place::Path` type encodes its full ancestry; each step up is a structural suffix of the previous type; a focus type appears at most once on the chain from any origin. `PathMut<N, PathMut<N, _>>` is still a different type from `PathMut<N, _>`, so `(Focus, Origin)` stays unambiguous.
+`(Focus, A)` alone selects the nest constructor: a `Place::Path` type encodes its full ancestry; each step up is a structural suffix of the previous type; a focus type appears at most once in any ascent nest. `PathMut<N, PathMut<N, _>>` is still a different type from `PathMut<N, _>`, so `(Focus, A)` stays unambiguous, and the `Up` count is determined by the pair.
 
 ## Place paths (bind macro)
 
@@ -71,7 +79,7 @@ pub type TypingAscent<'a> = Doll<TypingPath<'a>, LayerAscent<'a>>;
 pub type DeepAscent<'a> = Doll<DeepPath<'a>, TypingAscent<'a>>;
 ```
 
-Macro (consumer): emit one alias per place node from `#[node(root)]` / `#[node(parent = …)]`.
+Macro (consumer): emit one alias per place node from `#[node(root)]` / `#[node(parent = …)]`. That is all the derive emits for this feature.
 
 ```text
 Child returns  Ascent(child) = Doll<ChildPath, Ascent(this)>
@@ -85,138 +93,96 @@ Layer → App  : LayerAscent
 App receives only LayerAscent
 ```
 
-Root: no `leave_at` on `&mut App`. Root matches child-of-root ascent only.
+Root has no ascent of its own. Root matches the child-of-root ascent only.
 
-## LeavePath
+## Complete
 
 ```rust
-use core::marker::PhantomData;
-use laserbeam::PathMut;
-
-pub struct LeavePath<P, Origin> {
-    focus: P,
-    _origin: PhantomData<fn() -> Origin>,
-}
-
-impl<P, Origin> LeavePath<P, Origin> {
-    pub fn new(focus: P) -> Self {
-        Self {
-            focus,
-            _origin: PhantomData,
-        }
-    }
-
-    pub fn focus(&self) -> &P {
-        &self.focus
-    }
-
-    pub fn focus_mut(&mut self) -> &mut P {
-        &mut self.focus
-    }
-}
-
-/// All nodes, all depths.
-impl<N, P, Origin> LeavePath<PathMut<N, P>, Origin> {
-    pub fn into_parent(self) -> LeavePath<P, Origin> {
-        LeavePath {
-            focus: self.focus.into_parent(),
-            _origin: PhantomData,
-        }
-    }
-}
-
-pub fn leave<P>(path: P) -> LeavePath<P, P> {
-    LeavePath::new(path)
+pub trait Complete<A> {
+    fn complete(self) -> A;
 }
 ```
 
-`into_parent` only on `PathMut`. `LeavePath<&mut R, Origin>` has no `into_parent` — over-peel past root does not compile.
+- `A` is a type parameter, not an associated type: one focus completes into every ascent whose chain contains it (`LayerPath` into `NavAscent`, `TypingAscent`, `DeepAscent`, `LayerAscent`).
+- A trait is what makes this API expressible at all: `PathMut` is laserbeam's type and the root path is `&mut Root`, so no crate can put an inherent `complete` on both. The trait replaces `LeavePath`'s `Origin` phantom; the expected return type carries the origin.
+- The dispatch return type pins `A`. A call outside return position needs an annotation.
+- Call sites need `Complete` in scope; generated dispatch imports it.
 
-## `complete` in bind (by path structure, not by node name)
+## `complete` impls in bind (by path structure, not by node name)
 
-Consumer crates cannot write inherent `impl LeavePath<NavPath, NavPath>` (E0116: inherent impl on foreign type). `complete` lives in **bind**, generic over node/root type parameters, one impl per **(origin depth, focus position)**.
+All impls live in bind, generic over node/root type parameters, one impl per **(origin depth, focus position)**. The consumer emits nothing. Return types are the structural expansions of the Ascent equations; consumer aliases (`NavAscent`, …) name those same types.
 
-Return types are the structural expansions of the Ascent equations. Consumer aliases (`NavAscent`, …) name those same types.
-
-### Depth 1 origin (child of root): `PathMut<N, &mut R>`
+### Depth 1 origin (child of root)
 
 ```rust
+type Ascent1<'a, N, R> = Doll<PathMut<N, &'a mut R>, &'a mut R>;
+
 // focus = origin
-impl<'a, N, R> LeavePath<PathMut<N, &'a mut R>, PathMut<N, &'a mut R>> {
-    pub fn complete(self) -> Doll<PathMut<N, &'a mut R>, &'a mut R> {
-        Doll::Here(self.focus)
+impl<'a, N, R> Complete<Ascent1<'a, N, R>> for PathMut<N, &'a mut R> {
+    fn complete(self) -> Ascent1<'a, N, R> {
+        Doll::Here(self)
     }
 }
 
 // focus = root
-impl<'a, N, R> LeavePath<&'a mut R, PathMut<N, &'a mut R>> {
-    pub fn complete(self) -> Doll<PathMut<N, &'a mut R>, &'a mut R> {
-        Doll::Up(self.focus)
+impl<'a, N, R> Complete<Ascent1<'a, N, R>> for &'a mut R {
+    fn complete(self) -> Ascent1<'a, N, R> {
+        Doll::Up(self)
     }
 }
 ```
 
-`LayerAscent<'a>` = that return type with `N = Layer`, `R = App`.
+`LayerAscent<'a>` = `Ascent1` with `N = Layer`, `R = App`.
 
-### Depth 2 origin: `PathMut<N1, PathMut<N2, &mut R>>`
+### Depth 2 origin
 
 ```rust
-type P2<'a, N1, N2, R> = PathMut<N1, PathMut<N2, &'a mut R>>;
 type P1<'a, N2, R> = PathMut<N2, &'a mut R>;
+type P2<'a, N1, N2, R> = PathMut<N1, P1<'a, N2, R>>;
+type Ascent2<'a, N1, N2, R> = Doll<P2<'a, N1, N2, R>, Doll<P1<'a, N2, R>, &'a mut R>>;
 
 // focus = origin
-impl<'a, N1, N2, R> LeavePath<P2<'a, N1, N2, R>, P2<'a, N1, N2, R>> {
-    pub fn complete(
-        self,
-    ) -> Doll<P2<'a, N1, N2, R>, Doll<P1<'a, N2, R>, &'a mut R>> {
-        Doll::Here(self.focus)
+impl<'a, N1, N2, R> Complete<Ascent2<'a, N1, N2, R>> for P2<'a, N1, N2, R> {
+    fn complete(self) -> Ascent2<'a, N1, N2, R> {
+        Doll::Here(self)
     }
 }
 
 // focus = parent (one peel)
-impl<'a, N1, N2, R> LeavePath<P1<'a, N2, R>, P2<'a, N1, N2, R>> {
-    pub fn complete(
-        self,
-    ) -> Doll<P2<'a, N1, N2, R>, Doll<P1<'a, N2, R>, &'a mut R>> {
-        Doll::Up(Doll::Here(self.focus))
+impl<'a, N1, N2, R> Complete<Ascent2<'a, N1, N2, R>> for P1<'a, N2, R> {
+    fn complete(self) -> Ascent2<'a, N1, N2, R> {
+        Doll::Up(Doll::Here(self))
     }
 }
 
 // focus = root (two peels)
-impl<'a, N1, N2, R> LeavePath<&'a mut R, P2<'a, N1, N2, R>> {
-    pub fn complete(
-        self,
-    ) -> Doll<P2<'a, N1, N2, R>, Doll<P1<'a, N2, R>, &'a mut R>> {
-        Doll::Up(Doll::Up(self.focus))
+impl<'a, N1, N2, R> Complete<Ascent2<'a, N1, N2, R>> for &'a mut R {
+    fn complete(self) -> Ascent2<'a, N1, N2, R> {
+        Doll::Up(Doll::Up(self))
     }
 }
 ```
 
-`NavAscent<'a>` = that return type with `N1 = Nav`, `N2 = Layer`, `R = App`.
+`NavAscent<'a>` = `Ascent2` with `N1 = Nav`, `N2 = Layer`, `R = App`.
 
 ### Depth 3 and 4
 
-Same pattern: origin depth d needs d+1 `complete` impls (focus at origin, each parent, root). Depths 1..4 (Deep): 2+3+4+5 = 14 impls in bind, once for every tree.
+Same pattern: origin depth d needs d+1 impls (focus at origin, each parent, root). Depths 1..4 (Deep): 2+3+4+5 = 14 impls in bind, once for every tree.
 
-`&mut R` never unifies with `PathMut<_, _>` in the parent slot → impls stay disjoint.
+Disjointness: impls for the same `A` have foci at distinct chain positions, and `&mut R` never unifies with `PathMut<_, _>`; impls for the same focus have structurally different `A` nests. Off-chain completes have no impl (`NavPath` into `LayerAscent` does not compile).
 
-### Consumer surface
+### Call sites
 
-```rust
-// bind
-pub fn leave<P>(path: P) -> LeavePath<P, P> { LeavePath::new(path) }
+```text
+// in Nav dispatch (return type NavAscent)
+path.complete()                                // Here(nav)
+path.into_parent().complete()                  // Up(Here(layer))
+path.into_parent().into_parent().complete()    // Up(Up(app))
 
-// consumer / derive — aliases only (legal)
-pub type NavAscent<'a> = Doll<NavPath<'a>, LayerAscent<'a>>;
-pub type LayerAscent<'a> = Doll<LayerPath<'a>, AppPath<'a>>;
-
-// optional thin wrappers
-pub fn leave_at_nav<'a>(path: NavPath<'a>) -> LeavePath<NavPath<'a>, NavPath<'a>> {
-    leave(path)
-}
+// in Layer dispatch (return type LayerAscent)
+path.complete()                                // Here(layer)
+path.into_parent().complete()                  // Up(app)
 ```
-
-No inherent `complete` emitted into mercury. No private `LeavePath::new` required from outside if `leave` / `LeavePath::new` is public.
 
 ## Parent match
 
@@ -237,23 +203,22 @@ Posts when receiving `Up`: `invalidation.md`.
 ## Tests
 
 ```rust
-// smoke (constructor placement)
-leave(nav).complete();
-leave(nav).into_parent().complete();
-leave(nav).into_parent().into_parent().complete();
-leave(layer).into_parent().complete();
+// smoke (annotation plays the dispatch return type)
+let _: NavAscent<'_> = nav.complete();
+let _: NavAscent<'_> = nav.into_parent().complete();
+let _: NavAscent<'_> = nav.into_parent().into_parent().complete();
+let _: LayerAscent<'_> = layer.into_parent().complete();
 
 // trybuild — must not compile
-leave(nav).into_parent().into_parent().into_parent();
-leave(layer).into_parent().into_parent();
+nav.into_parent().into_parent().into_parent(); // no into_parent on &mut App
+let _: LayerAscent<'_> = nav.complete();       // off-chain: no impl
 
-// unification — nest invariant under peel count
+// unification — one return type across peel depths
 fn all_depths<'a>(nav: NavPath<'a>, branch: u8) -> NavAscent<'a> {
-    let leave = leave(nav);
     match branch {
-        0 => leave.complete(),
-        1 => leave.into_parent().complete(),
-        _ => leave.into_parent().into_parent().complete(),
+        0 => nav.complete(),
+        1 => nav.into_parent().complete(),
+        _ => nav.into_parent().into_parent().complete(),
     }
 }
 
@@ -262,13 +227,13 @@ fn all_depths<'a>(nav: NavPath<'a>, branch: u8) -> NavAscent<'a> {
 
 ## Ordered changes
 
-### 1 — `Doll`, `LeavePath<P, Origin>`, generic `into_parent`, public `leave`
+### 1 — `Doll`, `trait Complete<A>` in bind
 
-### 2 — Depth-keyed `complete` impls in bind (depths 1..4)
+### 2 — Depth-keyed `Complete` impls in bind (depths 1..4)
 
-### 3 — Tests on App tree paths: smoke, trybuild over-peel, unification, mut through recovered paths
+### 3 — Tests on App tree paths: smoke, trybuild over-peel + off-chain complete, unification, mut through recovered paths
 
-### 4 — Derive emits ascent aliases (+ optional `leave_at_*` thin wrappers over `leave`). No inherent impls on `LeavePath` in the consumer.
+### 4 — Derive emits ascent aliases only
 
 ### 5 — invalidation: match `Ascent(child)`, return `Ascent(self)`; posts on `Up`
 
@@ -276,8 +241,9 @@ fn all_depths<'a>(nav: NavPath<'a>, branch: u8) -> NavAscent<'a> {
 
 1. `Place::Path` only: `&mut Root` or `PathMut<Self, ParentPath>`.
 2. `Ascent(root) = Path`; `Ascent(node) = Doll<Path, Ascent(parent)>`.
-3. `LeavePath<Focus, Origin>`; one `into_parent` on `PathMut`; `complete` only as bind inherent impls keyed by path structure/depth.
-4. Child returns `Ascent(child)`; parent returns `Ascent(self)`; `Up` payload is `Ascent(self)`.
-5. App receives only `LayerAscent`.
-6. Over-peel past root does not compile.
-7. `_origin: PhantomData<fn() -> Origin>`. Arms: `Here` / `Up`.
+3. Peel is laserbeam `PathMut::into_parent` only; no wrapper type.
+4. `complete` is `Complete<A>::complete`, impls only in bind, keyed by path structure/depth; `A` pinned by the dispatch return type.
+5. Child returns `Ascent(child)`; parent returns `Ascent(self)`; `Up` payload is `Ascent(self)`.
+6. App receives only `LayerAscent`.
+7. Over-peel past root and off-chain `complete` do not compile.
+8. Arms: `Here` / `Up`.
