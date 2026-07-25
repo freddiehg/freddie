@@ -51,7 +51,7 @@ The schedule's fold, at expression level: run `a`, fold its leave back into the 
 ```rust
 /// Runs `a` then `b` as one handler: one claim, effects in order, `b`
 /// receiving the state `a` left behind. A gesture composes from units at its
-/// bind site: `#[bind(K => and(tap_cmd_l, enter_typing))]`.
+/// bind site: `#[bind(K => and!(tap_cmd_l, enter_typing))]`.
 pub fn and<Ev, Snap, P, E, A, B>(
     a: A,
     b: B,
@@ -74,11 +74,26 @@ where
 }
 ```
 
-Both units receive the same event and the same snap (hence the `Copy` bounds; in bind position the snap is `()`). Tests, in `crates/bind/tests` on the existing demo tree, landing with the prefactor:
+Both units receive the same event and the same snap (hence the `Copy` bounds; in bind position the snap is `()`).
+
+The flat spelling is a macro over the same fn — it expands to the nested calls, so closures and generic units survive and nothing goes dynamic (a slice would force one element type: fn-pointer coercion breaks a parameterized unit like `tmux_window(1)`, and `&dyn` buys vtables and per-element `&`):
+
+```rust
+/// `and!(a, b, c)` is `and(a, and(b, c))`.
+#[macro_export]
+macro_rules! and {
+    ($h:expr) => { $h };
+    ($h:expr, $($rest:expr),+ $(,)?) => {
+        $crate::and($h, $crate::and!($($rest),+))
+    };
+}
+```
+
+Tests, in `crates/bind/tests` on the existing demo tree, landing with the prefactor:
 
 - `and_concatenates_effects_in_order`: two effect-only units, the pair's effects in call order, one claim taken.
 - `the_second_unit_sees_the_firsts_leave`: `a` leaves, `b` receives `Invalidated` and forwards it; the dispatch's fold re-establishes the parent.
-- `and_nests`: `and(a, and(b, c))` runs all three in order.
+- `and_nests`: `and!(a, b, c)` runs all three in order, identically to the hand-nested form.
 
 ## Downstream
 
@@ -159,16 +174,16 @@ Each multi-part gesture is one bind whose rhs is an `and` of its units. Effects 
 
 ```text
 // Nav app keys — the whole gesture, one claim
-#[bind(Key::KeyC.down() => and(mark_navigating, and(foreground_chrome, enter_inapp)))]
+#[bind(Key::KeyC.down() => and!(mark_navigating, foreground_chrome, enter_inapp))]
 
 // emit then type
-#[bind(Key::KeyL.down().bare() => and(tap_cmd_l, enter_typing))]      // Chrome l
-#[bind(Key::KeyN.down() => and(tap_cmd_shift_o, enter_typing))]      // claude.ai n
-#[bind(Key::Space.down() => and(tap_cmd_space, enter_typing))]       // Nav space
+#[bind(Key::KeyL.down().bare() => and!(tap_cmd_l, enter_typing))]      // Chrome l
+#[bind(Key::KeyN.down() => and!(tap_cmd_shift_o, enter_typing))]      // claude.ai n
+#[bind(Key::Space.down() => and!(tap_cmd_space, enter_typing))]       // Nav space
 
 // place, then the choice is made, so home
-#[bind(Key::LeftArrow.down() => and(left_half, go_home))]            // Resize
-#[bind(Key::Num1.down() => and(tmux_window_1, go_home))]             // Ghostty digits
+#[bind(Key::LeftArrow.down() => and!(left_half, go_home))]            // Resize
+#[bind(Key::Num1.down() => and!(tmux_window_1, go_home))]             // Ghostty digits
 ```
 
 ### Return-home deadline: one owner, above the layers
@@ -256,7 +271,7 @@ hide_overlay       (dwell) as above
 
 ### Quit
 
-One gesture: `held.open()` then Kill, one handler. An open without Kill is not a behavior, and Kill without open is a bug; whether the body is a single fn or `and(open_held, kill)` is immaterial, since the claim and the key are one either way.
+One gesture: `held.open()` then Kill, one handler. An open without Kill is not a behavior, and Kill without open is a bug; whether the body is a single fn or `and!(open_held, kill)` is immaterial, since the claim and the key are one either way.
 
 ### Root AnyKey (passthrough)
 
@@ -294,16 +309,16 @@ fn track_held_modifiers<'x>(
 to_home                         go_home
 to_nav / to_resize / ...        enter_*
 to_typing                       enter_typing
-open_chrome (etc.)              and(mark_navigating, and(foreground_chrome, enter_inapp))
-open_spotlight                  and(tap_cmd_space, enter_typing)
-focus_address_bar               and(tap_cmd_l, enter_typing)
-new_chat                        and(tap_cmd_shift_o, enter_typing)
+open_chrome (etc.)              and!(mark_navigating, foreground_chrome, enter_inapp)
+open_spotlight                  and!(tap_cmd_space, enter_typing)
+focus_address_bar               and!(tap_cmd_l, enter_typing)
+new_chat                        and!(tap_cmd_shift_o, enter_typing)
 refresh                         tap_cmd_r
 previous_window / next_window   tmux_prev / tmux_next
-window_N                        and(tmux_window(N), go_home)
-maximize / left_half / ...      and(place unit, go_home)
-restore_window                  and(restore unit, go_home)
-and_go_home / and_go_home_from  deleted; and(unit, go_home) at the bind site
+window_N                        and!(tmux_window(N), go_home)
+maximize / left_half / ...      and!(place unit, go_home)
+restore_window                  and!(restore unit, go_home)
+and_go_home / and_go_home_from  deleted; and!(unit, go_home) at the bind site
 maybe_pass_through              track_held_modifiers (post) + pass_or_swallow (bind)
 Mercury::handle rearm           the AndReturnHome home_deadline pre_post
 Layer::rearm_timeout            deleted (timed-layer-wrapper.md)
@@ -339,11 +354,11 @@ pub struct AndReturnHome {
 #[bind(
     Key::Escape.down() => go_home,
     Key::KeyT.down() => enter_typing,
-    Key::KeyC.down() => and(mark_navigating, and(foreground_chrome, enter_inapp)),
-    Key::KeyF.down() => and(mark_navigating, and(foreground_finder, enter_inapp)),
-    Key::KeyG.down() => and(mark_navigating, and(foreground_ghostty, enter_inapp)),
-    Key::KeyZ.down() => and(mark_navigating, and(foreground_zed, enter_inapp)),
-    Key::Space.down() => and(tap_cmd_space, enter_typing),
+    Key::KeyC.down() => and!(mark_navigating, foreground_chrome, enter_inapp),
+    Key::KeyF.down() => and!(mark_navigating, foreground_finder, enter_inapp),
+    Key::KeyG.down() => and!(mark_navigating, foreground_ghostty, enter_inapp),
+    Key::KeyZ.down() => and!(mark_navigating, foreground_zed, enter_inapp),
+    Key::Space.down() => and!(tap_cmd_space, enter_typing),
 )]
 struct NavLayer;
 ```
@@ -352,7 +367,7 @@ struct NavLayer;
 
 ```rust
 #[bind(Key::KeyR.down() => tap_cmd_r)]
-#[bind(Key::KeyL.down().bare() => and(tap_cmd_l, enter_typing))]
+#[bind(Key::KeyL.down().bare() => and!(tap_cmd_l, enter_typing))]
 #[bind(Key::KeyL.down().with(SHIFT) => copy_url)]
 #[bind(Key::KeyL.down().with(COMMAND) => copy_host)]
 ```
@@ -360,7 +375,7 @@ struct NavLayer;
 ### Resize
 
 ```rust
-#[bind(Key::LeftArrow.down() => and(left_half, go_home))]
+#[bind(Key::LeftArrow.down() => and!(left_half, go_home))]
 // same for right, up, r(restore), ...
 ```
 
