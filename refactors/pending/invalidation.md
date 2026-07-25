@@ -165,15 +165,13 @@ impl<'a, P: ::laserbeam::HasStop> AscendState<'a, P> {
     }
 }
 
-/// `Claim` gains the per-item reborrow the generated code hands to each
-/// `AscendState`:
-///
-/// ```rust
-/// pub fn reborrow(&mut self) -> Claim<'_> {
-///     Claim { slot: &mut *self.slot }
-/// }
-/// ```
-///
+impl<'c> Claim<'c> {
+    /// The per-item reborrow the generated code hands to each `AscendState`.
+    pub fn reborrow(&mut self) -> Claim<'_> {
+        Claim { slot: &mut *self.slot }
+    }
+}
+
 /// The claim gate, shape-preserving: the handler runs iff the claim is won;
 /// otherwise it completes the state where it stands.
 pub fn exclusive<Ev, Snap, P, E, H>(
@@ -190,9 +188,9 @@ where
 }
 ```
 
-## Landed baseline (no further change)
+## Landed baseline
 
-`bind/src/lib.rs` already holds `Claim`, the final `Dispatch` and `DispatchIntoParent` signatures, and the final free `dispatch`.
+`bind/src/lib.rs` already holds `Claim` (which gains only `reborrow`, in change 3), the final `Dispatch` and `DispatchIntoParent` signatures, and the free `dispatch` (whose return is open question 1 below).
 
 ```rust
 /// One exclusive bind handler per dispatch: the first to `try_take` wins.
@@ -468,7 +466,7 @@ where
 }
 ```
 
-The same body serves every node: only the `st` construction differs (leaf: `NotInvalidated(path)`; parent: the child call chained through `to_maybe_invalidated`), and that difference is one expression, not a shape.
+The same body serves every node: only the `state` construction differs (leaf: `NotInvalidated(path)`; parent: the child call chained through `to_maybe_invalidated`), and that difference is one expression, not a shape.
 
 ## bind_macro (before / after)
 
@@ -561,7 +559,7 @@ let opt_N = match ::core::convert::TryFrom::try_from(event) {
     ::core::result::Result::Ok(ev) => {
         let trigger = #trigger;
         if ::bind::EventTrigger::is_matching(&trigger, ev) {
-            ::core::option::Option::Some(#payload) // ev, or (ev, #pre(ev, &path))
+            ::core::option::Option::Some((ev, (#pre)(ev, &path))) // #pre: written, or synthesized |_, _| ()
         } else {
             ::core::option::Option::None
         }
@@ -575,14 +573,14 @@ let opt_N = match ::core::convert::TryFrom::try_from(event) {
 bind gains `AscendState` and `exclusive`; laserbeam gains `MaybeInvalidated` (+ `complete`) and the `to_maybe_invalidated` conversions (code above). The check emission, before: the change-1 `*effs = collect(..)` form. After, one kind-blind block per scheduled item, ending in the fold the generated code owns; `#rhs` is `::bind::exclusive(#tokens)` for `#[bind]` and the raw tokens for `#[post]`/`#[pre_post]`, and the macro looks inside neither:
 
 ```rust
-if let ::core::option::Option::Some(payload) = opt_N {
-    let (e, completed) = (#rhs)(payload, ::bind::AscendState::new(state, claim.reborrow()));
+if let ::core::option::Option::Some((ev, snap)) = opt_N {
+    let (e, completed) = (#rhs)(ev, snap, ::bind::AscendState::new(state, ::bind::Claim::reborrow(claim)));
     ::core::iter::Extend::extend(effs, e);
     state = ::laserbeam::Completed::to_maybe_invalidated(completed);
 }
 ```
 
-Every bind handler in mercury and the bind tests migrates: `(ev, Node<P, ()>) -> impl IntoIterator<Item = E>` becomes `(ev, AscendState<P>) -> (Vec<E>, Completed<P>)`, with `st.complete()` where the body stays put.
+Every bind handler in mercury and the bind tests migrates: `(ev, Node<P, ()>) -> impl IntoIterator<Item = E>` becomes `(ev, _snap: (), AscendState<P>) -> (Vec<E>, Completed<P>)`, with `st.complete()` where the body stays put.
 
 ### Change 4 — `#[post]` / `#[pre_post]` parsing
 
@@ -624,7 +622,7 @@ impl syn::parse::Parse for PrePost {
 }
 ```
 
-All three attribute kinds feed one scheduled list in source order; the differences are confined to parse time (which payload the opt captures, which wrapper the rhs tokens get). `claimed_triggers` does not change: only `#[bind]` triggers claim, so posts are exempt from the duplicate-trigger check.
+All three attribute kinds feed one scheduled list in source order; the differences are confined to parse time (which tokens fill `#pre`, written or synthesized, and whether the rhs gets the `exclusive` wrap). `claimed_triggers` does not change: only `#[bind]` triggers claim, so posts are exempt from the duplicate-trigger check.
 
 ### Change 5 — derived levels
 
@@ -662,7 +660,7 @@ Posts run whether or not anything claimed: they are scheduled by their trigger, 
 2. Between nodes: `Completed` / `Stop`, `Here` / `Up`. Inside a node: the state, built once via `to_maybe_invalidated`, handed to each scheduled item in a fresh `AscendState` (claim reborrowed), re-derived by the generated code from each item's returned `Completed`, completed with `state.complete()`. `Stop` never appears in user code.
 3. Every dispatch returns `Completed<Self::Path>` (derived levels: `Completed<Self::Parent>`); no ascent associated type.
 4. Opts are snapped before descent, one per scheduled attribute, in source order. The schedule is final; every scheduled item runs, and its body decides what each state branch means.
-5. Every handler is `(payload, AscendState<P>) -> (Vec<E>, Completed<P>)` and returns the call to `.complete()`: staying put is `st.complete()`, leaving is `into_parent()` then `.complete()`, the invalidated arm forwards `c`. `exclusive` is shape-preserving and means not claimed: the claim gate and nothing else. The state a handler receives reflects the item before it, so a post keyed on the descent's outcome is scheduled before any bind.
+5. Every handler is `(ev, snap, AscendState<P>) -> (Vec<E>, Completed<P>)` (`snap = ()` under the synthesized pre) and returns the call to `.complete()`: staying put is `st.complete()`, leaving is `into_parent()` then `.complete()`, the invalidated arm forwards `c`. `exclusive` is shape-preserving and means not claimed: the claim gate and nothing else. The state a handler receives reflects the item before it, so a post keyed on the descent's outcome is scheduled before any bind.
 6. The claim lives inside `AscendState`; only binds claim, so posts are exempt from the duplicate-trigger check.
 7. Generated code spells laserbeam and bind items fully qualified; handwritten handlers `use laserbeam::{Complete, MaybeInvalidated};` and `use bind::AscendState;`.
 
@@ -676,6 +674,13 @@ Posts run whether or not anything claimed: they are scheduled by their trigger, 
 - pre snap reads pre-descent state even when the descent mutates it
 - a leaving item flips the state to `Invalidated` for later items; the fold
   after a staying item re-derives `NotInvalidated`
+
+## Open questions
+
+1. The free `dispatch` conflates "handled" with "produced effects": it returns `Some(effs)` when `claim.is_taken() || !effs.is_empty()`, and mercury uses `None` to pass unhandled keys to the OS. Under this design the rearm post emits effects on every key in the layer, which would mark every key handled and swallow it. The claim alone is the "handled" signal; the return likely needs to carry effects and handled-ness separately (e.g. `(Vec<E>, bool)`), with the consumer performing effects either way and passing the key through when unclaimed.
+2. The duplicate-trigger check still rejects the same trigger bound at two depths of the active path, while the claim makes that combination well-defined (deepest claimant wins). Keep the ban, or relax it to same-node duplicates only? The demo dodges by using distinct keys.
+3. `#[post]` and `#[pre_post]` are now the same thing modulo the synthesized pre. Keep both spellings, or collapse to `#[post]` with an optional `(pre, f)` rhs?
+4. `TimerId::fresh()` is demo filler; real ids mint from root state per `timer-ids-on-root.md`.
 
 ## Ordered changes
 
