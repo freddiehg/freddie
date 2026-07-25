@@ -463,8 +463,26 @@ fn set_attribute<A: AxAttribute>(element: AXUIElementRef, value: A::Value) {
 
 /// Set the window's position and size, twice.
 ///
-/// Twice because some apps clamp a move against their current size, so the first
-/// position lands short of where it was asked to go and the second lands true.
+/// Position and size are two separate attribute writes, and an app validates each against the
+/// value the other one currently holds. Moving a 600-wide window at x=1000 to x=0 at 1600 wide
+/// writes the position while the window is still 600 wide, so an app that keeps its window on
+/// screen, or against a minimum size or an aspect ratio, clamps the move and lands short of 0.
+/// The size write then widens it to 1600 around the origin it was left at, and the window ends
+/// up in a frame nobody asked for.
+///
+/// The second pass runs with the other attribute already correct: the position is applied again
+/// with the width at 1600, so whatever clamped it the first time no longer applies.
+///
+/// Which write is safe to do first depends on the direction of the change, which is why this
+/// iterates rather than picking an order. The write that gets clamped is the one whose
+/// intermediate state, itself new and the other attribute still old, covers more than either the
+/// start or the target: position first clamps when a window grows into the right edge, and size
+/// first clamps when the origin it is growing from is already far right. Two passes needs neither
+/// comparison, because after the first one the remaining write's intermediate state is the target.
+///
+/// Two passes is what apps in practice converge in. It is also where the cost of a placement
+/// comes from: four attribute writes, each an IPC round trip into the app that owns the window,
+/// which is the tens of milliseconds a caller must keep off a latency-sensitive loop.
 fn set_frame(window: AXUIElementRef, frame: Frame) {
     let origin = CGPoint::new(frame.x, frame.y);
     let size = CGSize::new(frame.width, frame.height);
