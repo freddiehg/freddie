@@ -368,6 +368,130 @@ macro_rules! ancestor_impls {
 
 ancestor_impls!([], N0, N1, N2, N3, N4, N5, N6, N7, N8, N9, N10, N11);
 
+/// Where a leave stopped: at this path, or somewhere further up.
+///
+/// No derives: paths are neither `Debug` nor `PartialEq`; consumers
+/// destructure.
+pub enum Stop<H, U> {
+    Here(H),
+    Up(U),
+}
+
+/// What a completed leave hands upward once it has peeled past a child of
+/// this path: the root path itself, or the completed leave from this path.
+pub trait Above {
+    type Up;
+}
+
+impl<'a, R> Above for &'a mut R {
+    type Up = &'a mut R;
+}
+
+impl<N, P: Above> Above for PathMut<N, P> {
+    type Up = Completed<Self>;
+}
+
+/// A path's stop layer: stopped here, or went above. A root path can only
+/// stop at itself, so its layer is the bare path.
+pub trait HasStop {
+    type Stop;
+}
+
+impl<N, P: Above> HasStop for PathMut<N, P> {
+    type Stop = Stop<Self, P::Up>;
+}
+
+impl<'a, R> HasStop for &'a mut R {
+    type Stop = &'a mut R;
+}
+
+/// A completed leave from origin `P`: where the peeling stopped.
+///
+/// Only [`Complete::complete`] constructs one; `new` is private. Consumers get
+/// [`into_inner`](Self::into_inner) and nothing else.
+pub struct Completed<P: HasStop> {
+    stop: P::Stop,
+}
+
+impl<P: HasStop> Completed<P> {
+    const fn new(stop: P::Stop) -> Self {
+        Self { stop }
+    }
+
+    #[must_use]
+    pub fn into_inner(self) -> P::Stop {
+        self.stop
+    }
+}
+
+/// Complete a leave from origin `O` at this path: wrap the focus into
+/// `Completed<O>` at its chain position.
+///
+/// `O` is a type parameter, not an associated type, because one focus
+/// completes into every `Completed` whose chain contains it (a `LayerPath`
+/// into `Completed<NavPath>`, `Completed<TypingPath>`, `Completed<LayerPath>`).
+/// The call site's expected type pins `O`: the dispatch return type, or an
+/// annotation.
+///
+/// Impls are indexed by peel distance, like `HasAncestor`: one impl for zero
+/// peels at any depth, then per distance one impl for a focus still on the
+/// chain and one for a focus at the root. Unifying two distances needs a type
+/// that contains itself, which the occurs check rejects, so no phantom index
+/// is needed. Off-chain completes have no impl and do not compile.
+pub trait Complete<O: HasStop> {
+    fn complete(self) -> Completed<O>;
+}
+
+/// One `Completed::new(Stop::Up(..))` per peeled-past type parameter.
+macro_rules! up_wrap {
+    ($e:expr) => { $e };
+    ($e:expr, $head:ident $(, $rest:ident)*) => {
+        Completed::new(Stop::Up(up_wrap!($e $(, $rest)*)))
+    };
+}
+
+/// Stopping at the origin: zero peels, every depth, one impl.
+impl<N, P: Above> Complete<Self> for PathMut<N, P> {
+    fn complete(self) -> Completed<Self> {
+        Completed::new(Stop::Here(self))
+    }
+}
+
+/// Stopping at the root, for a leave that began there: the bare path.
+impl<'a, R> Complete<&'a mut R> for &'a mut R {
+    fn complete(self) -> Completed<&'a mut R> {
+        Completed::new(self)
+    }
+}
+
+/// Two `Complete` impls per peel distance: focus still a path, and focus at
+/// the root. The origin in the trait parameter is the focus wrapped in one
+/// `PathMut` per skipped layer.
+macro_rules! complete_impls {
+    ([$($done:ident),*]) => {};
+    ([$($done:ident),*], $head:ident $(, $rest:ident)*) => {
+        impl<$($done,)* $head, N, P: Above> Complete<path_nest!(PathMut<N, P>, $($done,)* $head)>
+            for PathMut<N, P>
+        {
+            fn complete(self) -> Completed<path_nest!(PathMut<N, P>, $($done,)* $head)> {
+                up_wrap!(Completed::new(Stop::Here(self)), $($done,)* $head)
+            }
+        }
+
+        impl<'a, R, $($done,)* $head> Complete<path_nest!(&'a mut R, $($done,)* $head)>
+            for &'a mut R
+        {
+            fn complete(self) -> Completed<path_nest!(&'a mut R, $($done,)* $head)> {
+                up_wrap!(self, $($done,)* $head)
+            }
+        }
+
+        complete_impls!([$($done,)* $head] $(, $rest)*);
+    };
+}
+
+complete_impls!([], N1, N2, N3, N4, N5, N6, N7, N8, N9, N10, N11, N12);
+
 #[cfg(test)]
 mod ancestor_tests {
     use crate::{HasAncestor, IntoAncestor, PathMut};
@@ -422,5 +546,240 @@ mod ancestor_tests {
         to::<D2<'_>, D12<'_>>();
         to::<D11<'_>, D12<'_>>();
         to::<TargetPath<'_>, D12<'_>>();
+    }
+}
+
+#[cfg(test)]
+mod complete_tests {
+    use crate::{Complete, Completed, HasStop, IntoAncestor, PathMut, Stop};
+
+    struct App {
+        hits: u32,
+        layer: Layer,
+    }
+    struct Layer {
+        nav: Nav,
+    }
+    struct Nav {
+        hits: u32,
+    }
+
+    type AppPath<'a> = &'a mut App;
+    type LayerPath<'a> = PathMut<Layer, AppPath<'a>>;
+    type NavPath<'a> = PathMut<Nav, LayerPath<'a>>;
+
+    fn tree(nav_hits: u32, app_hits: u32) -> App {
+        App {
+            hits: app_hits,
+            layer: Layer {
+                nav: Nav { hits: nav_hits },
+            },
+        }
+    }
+
+    fn layer_path(app: &mut App) -> LayerPath<'_> {
+        PathMut::from_fn(app, |a| &mut a.layer, |a| &a.layer)
+    }
+
+    fn nav_path(app: &mut App) -> NavPath<'_> {
+        PathMut::from_fn(
+            layer_path(app),
+            |lp| &mut lp.get_mut().nav,
+            |lp| &lp.get().nav,
+        )
+    }
+
+    /// Pins the expanded Stop shapes for the three-level tree.
+    #[allow(dead_code)]
+    fn shapes<'a>(nav: Completed<NavPath<'a>>) {
+        let stop: Stop<NavPath<'a>, Completed<LayerPath<'a>>> = nav.into_inner();
+        if let Stop::Up(rest) = stop {
+            let _: Stop<LayerPath<'a>, AppPath<'a>> = rest.into_inner();
+        }
+    }
+
+    #[test]
+    fn complete_at_nav() {
+        let mut app = tree(7, 0);
+        let out: Completed<NavPath<'_>> = nav_path(&mut app).complete();
+        let Stop::Here(mut nav) = out.into_inner() else {
+            panic!("expected Here");
+        };
+        assert_eq!(nav.get().hits, 7);
+        nav.get_mut().hits = 8;
+        drop(nav);
+        assert_eq!(app.layer.nav.hits, 8);
+    }
+
+    #[test]
+    fn one_peel() {
+        let mut app = tree(7, 0);
+        let out: Completed<NavPath<'_>> = nav_path(&mut app).into_parent().complete();
+        let Stop::Up(rest) = out.into_inner() else {
+            panic!("expected Up");
+        };
+        let Stop::Here(layer) = rest.into_inner() else {
+            panic!("expected Up(Here(layer))");
+        };
+        assert_eq!(layer.get().nav.hits, 7);
+    }
+
+    #[test]
+    fn two_peels() {
+        let mut app = tree(0, 0);
+        {
+            let out: Completed<NavPath<'_>> =
+                nav_path(&mut app).into_parent().into_parent().complete();
+            let Stop::Up(rest) = out.into_inner() else {
+                panic!("expected Up");
+            };
+            let Stop::Up(root) = rest.into_inner() else {
+                panic!("expected Up(Up(app))");
+            };
+            root.hits = 3;
+        }
+        assert_eq!(app.hits, 3);
+    }
+
+    #[test]
+    fn layer_origin_bare_root() {
+        let mut app = tree(0, 0);
+        {
+            let out: Completed<LayerPath<'_>> = layer_path(&mut app).into_parent().complete();
+            let Stop::Up(root) = out.into_inner() else {
+                panic!("expected Up(app)");
+            };
+            root.hits = 1;
+        }
+        assert_eq!(app.hits, 1);
+    }
+
+    #[test]
+    fn root_completes_bare() {
+        let mut app = tree(0, 0);
+        {
+            let out: Completed<AppPath<'_>> = (&mut app).complete();
+            let root = out.into_inner();
+            root.hits = 5;
+        }
+        assert_eq!(app.hits, 5);
+    }
+
+    fn stay<P: Complete<P> + HasStop>(path: P) -> Completed<P> {
+        path.complete()
+    }
+
+    fn to_root<'a, P>(path: P) -> Completed<P>
+    where
+        P: IntoAncestor<AppPath<'a>> + HasStop,
+        AppPath<'a>: Complete<P>,
+    {
+        path.into_ancestor().complete()
+    }
+
+    #[test]
+    fn same_generic_handler_at_nav_and_root() {
+        let mut app = tree(7, 0);
+
+        let stay_nav: Completed<NavPath<'_>> = stay(nav_path(&mut app));
+        let Stop::Here(nav) = stay_nav.into_inner() else {
+            panic!("stay at nav is Here");
+        };
+        assert_eq!(nav.get().hits, 7);
+        drop(nav);
+
+        let stay_root: Completed<AppPath<'_>> = stay(&mut app);
+        assert_eq!(stay_root.into_inner().hits, 0);
+
+        let mut app = tree(0, 0);
+        {
+            let from_nav: Completed<NavPath<'_>> = to_root(nav_path(&mut app));
+            let Stop::Up(rest) = from_nav.into_inner() else {
+                panic!("to_root from nav peels");
+            };
+            let Stop::Up(root) = rest.into_inner() else {
+                panic!("two peels to root");
+            };
+            assert_eq!(root.hits, 0);
+        }
+
+        let from_root: Completed<AppPath<'_>> = to_root(&mut app);
+        assert_eq!(from_root.into_inner().hits, 0);
+    }
+
+    #[test]
+    fn all_peel_depths_unify() {
+        fn all_depths(nav: NavPath<'_>, branch: u8) -> Completed<NavPath<'_>> {
+            match branch {
+                0 => nav.complete(),
+                1 => nav.into_parent().complete(),
+                _ => nav.into_parent().into_parent().complete(),
+            }
+        }
+
+        let mut app = tree(7, 0);
+        {
+            let here = all_depths(nav_path(&mut app), 0);
+            let Stop::Here(nav) = here.into_inner() else {
+                panic!("branch 0");
+            };
+            assert_eq!(nav.get().hits, 7);
+        }
+        {
+            let one = all_depths(nav_path(&mut app), 1);
+            let Stop::Up(rest) = one.into_inner() else {
+                panic!("branch 1");
+            };
+            let Stop::Here(layer) = rest.into_inner() else {
+                panic!("branch 1 Here(layer)");
+            };
+            assert_eq!(layer.get().nav.hits, 7);
+        }
+        {
+            let two = all_depths(nav_path(&mut app), 2);
+            let Stop::Up(rest) = two.into_inner() else {
+                panic!("branch 2");
+            };
+            let Stop::Up(root) = rest.into_inner() else {
+                panic!("branch 2 Up(app)");
+            };
+            assert_eq!(root.hits, 0);
+        }
+    }
+
+    #[test]
+    fn parent_returns_up_payload() {
+        fn parent_returns_up_payload(child: Completed<NavPath<'_>>) -> Completed<LayerPath<'_>> {
+            match child.into_inner() {
+                Stop::Here(nav) => nav.into_parent().complete(),
+                Stop::Up(rest) => rest,
+            }
+        }
+
+        let mut app = tree(7, 0);
+        let from_here = parent_returns_up_payload(nav_path(&mut app).complete());
+        let Stop::Here(layer) = from_here.into_inner() else {
+            panic!("Here arm peels to layer");
+        };
+        assert_eq!(layer.get().nav.hits, 7);
+
+        let mut app = tree(7, 0);
+        let from_up = parent_returns_up_payload(nav_path(&mut app).into_parent().complete());
+        let Stop::Here(layer) = from_up.into_inner() else {
+            panic!("Up arm is the layer Completed");
+        };
+        assert_eq!(layer.get().nav.hits, 7);
+
+        let mut app = tree(0, 0);
+        {
+            let from_root = parent_returns_up_payload(
+                nav_path(&mut app).into_parent().into_parent().complete(),
+            );
+            let Stop::Up(root) = from_root.into_inner() else {
+                panic!("Up past layer is bare root");
+            };
+            root.hits = 9;
+        }
+        assert_eq!(app.hits, 9);
     }
 }

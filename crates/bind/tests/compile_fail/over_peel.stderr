@@ -1,0 +1,8 @@
+error[E0599]: no method named `into_parent` found for mutable reference `&mut App` in the current scope
+  --> tests/compile_fail/over_peel.rs:25:45
+   |
+25 |     let _ = nav.into_parent().into_parent().into_parent();
+   |             --- -------------               ^^^^^^^^^^^ method not found in `&mut App`
+   |             |   |
+   |             |   method `into_parent` is available on `PathMut<Layer, &mut App>`
+   |             method `into_parent` is available on `PathMut<Nav, PathMut<Layer, &mut App>>`
