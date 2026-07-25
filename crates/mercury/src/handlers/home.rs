@@ -22,7 +22,7 @@ use laserbeam::{Complete, Completed, HasStop, IntoAncestor, MaybeInvalidated};
 
 use crate::MercuryEffect;
 use crate::state::{
-    AppLayer, HomeLayer, MercuryPath, NavLayer, ResizeLayer, SiteLayer, TypingLayer,
+    AndReturnHome, AppLayer, HomeLayer, MercuryPath, NavLayer, ResizeLayer, SiteLayer, TypingLayer,
 };
 
 /// `escape` anywhere, and a layer's idle-timeout: go back to the home layer.
@@ -57,8 +57,8 @@ where
     MercuryPath<'a>: Complete<P>,
 {
     let root: MercuryPath<'a> = st.state.into_ancestor();
-    let (nav, timer) = NavLayer::new();
-    let mut effects = root.set_layer(nav);
+    let (wrapped, timer) = AndReturnHome::new(NavLayer::new());
+    let mut effects = root.set_layer(wrapped);
     effects.push(timer);
     (effects, root.complete())
 }
@@ -92,8 +92,8 @@ where
     MercuryPath<'a>: Complete<P>,
 {
     let root: MercuryPath<'a> = st.state.into_ancestor();
-    let (inapp, timer) = AppLayer::new();
-    let mut effects = root.set_layer(inapp);
+    let (wrapped, timer) = AndReturnHome::new(AppLayer::new());
+    let mut effects = root.set_layer(wrapped);
     effects.push(timer);
     (effects, root.complete())
 }
@@ -113,8 +113,8 @@ where
     MercuryPath<'a>: Complete<P>,
 {
     let root: MercuryPath<'a> = st.state.into_ancestor();
-    let (site, timer) = SiteLayer::new();
-    let mut effects = root.set_layer(site);
+    let (wrapped, timer) = AndReturnHome::new(SiteLayer::new());
+    let mut effects = root.set_layer(wrapped);
     effects.push(timer);
     (effects, root.complete())
 }
@@ -131,8 +131,8 @@ where
     MercuryPath<'a>: Complete<P>,
 {
     let root: MercuryPath<'a> = st.state.into_ancestor();
-    let (resize, timer) = ResizeLayer::new();
-    let mut effects = root.set_layer(resize);
+    let (wrapped, timer) = AndReturnHome::new(ResizeLayer::new());
+    let mut effects = root.set_layer(wrapped);
     effects.push(timer);
     (effects, root.complete())
 }

@@ -29,6 +29,7 @@ mod app;
 mod home;
 mod nav;
 mod resize;
+mod return_home;
 mod site;
 mod typing;
 
@@ -36,6 +37,7 @@ pub use app::{AppData, AppLayer, ChromeApp, GhosttyApp};
 pub use home::HomeLayer;
 pub use nav::NavLayer;
 pub use resize::ResizeLayer;
+pub use return_home::{AndReturnHome, ReturnHomeLayers};
 pub use site::{ClaudeAiSite, SiteData, SiteLayer};
 pub use typing::TypingLayer;
 
@@ -45,7 +47,7 @@ pub const RETURN_TO_HOME_TIMEOUT: Duration = Duration::from_secs(10);
 /// Arm the return-to-home timer a layer holds: the guard cancels it on drop, and the effect
 /// schedules it. It fires after [`RETURN_TO_HOME_TIMEOUT`], and the layer that set it binds that
 /// firing home, matching on the guard it still holds.
-fn arm_return_home() -> (TimerGuard, MercuryEffect) {
+pub(crate) fn arm_return_home() -> (TimerGuard, MercuryEffect) {
     let (guard, effect) = timer_effect_and_guard(RETURN_TO_HOME_TIMEOUT, |id| {
         MercuryEvent::Timer(TimerFired(id))
     });
@@ -64,8 +66,8 @@ pub const JK_TIMEOUT: Duration = Duration::from_millis(200);
 /// Arm a run's window: the guard cancels it on drop, the effect schedules it. The delay is the
 /// run's own, read off the sequence, so this does not restate the policy.
 ///
-/// `pub(crate)` where `arm_return_home` is private, because the root's handlers call this one and
-/// they are not children of this module.
+/// `pub(crate)` for the same reason `arm_return_home` is: the handlers that call it are not
+/// children of this module.
 pub(crate) fn arm_jk_timeout(window: Duration) -> (TimerGuard, MercuryEffect) {
     let (guard, effect) = timer_effect_and_guard(window, |id| MercuryEvent::Timer(TimerFired(id)));
     (guard, MercuryEffect::Timer(effect))
@@ -486,11 +488,8 @@ impl Foreground {
 // set that timer, so it matches only its own.
 pub enum Layer {
     Home(HomeLayer),
-    Nav(NavLayer),
-    Resize(ResizeLayer),
     Typing(TypingLayer),
-    InApp(AppLayer),
-    Site(SiteLayer),
+    ReturnHome(AndReturnHome),
 }
 
 impl Layer {
@@ -509,17 +508,19 @@ impl Layer {
     pub fn overlay_content(&self, foreground: &Foreground) -> &'static str {
         match self {
             Self::Home(_) => home::OVERLAY,
-            Self::Nav(_) => nav::OVERLAY,
-            Self::Resize(_) => resize::OVERLAY,
-            Self::InApp(_) => app::overlay_for(foreground.app()),
-            // The site layer's keymap is the front tab's, so it needs the URL and not just the app.
-            Self::Site(_) => site::overlay_for(
-                foreground
-                    .confirmed_chrome()
-                    .and_then(|chrome| chrome.url.as_deref())
-                    .map(Site::from_url),
-            ),
             Self::Typing(_) => typing::OVERLAY,
+            Self::ReturnHome(w) => match w.layers() {
+                ReturnHomeLayers::Nav(_) => nav::OVERLAY,
+                ReturnHomeLayers::Resize(_) => resize::OVERLAY,
+                ReturnHomeLayers::InApp(_) => app::overlay_for(foreground.app()),
+                // The site layer's keymap is the front tab's, so it needs the URL, not just the app.
+                ReturnHomeLayers::Site(_) => site::overlay_for(
+                    foreground
+                        .confirmed_chrome()
+                        .and_then(|chrome| chrome.url.as_deref())
+                        .map(Site::from_url),
+                ),
+            },
         }
     }
 
@@ -528,40 +529,24 @@ impl Layer {
     pub const fn name(&self) -> &'static str {
         match self {
             Self::Home(_) => "Home",
-            Self::Nav(_) => "Nav",
-            Self::Resize(_) => "Resize",
             Self::Typing(_) => "Typing",
-            Self::InApp(_) => "App",
-            Self::Site(_) => "Site",
+            Self::ReturnHome(w) => match w.layers() {
+                ReturnHomeLayers::Nav(_) => "Nav",
+                ReturnHomeLayers::Resize(_) => "Resize",
+                ReturnHomeLayers::InApp(_) => "App",
+                ReturnHomeLayers::Site(_) => "Site",
+            },
         }
-    }
-
-    /// Reset the return-home timer on activity that kept you in this layer: drop the guard it holds
-    /// (cancelling the old firing) and arm a fresh one, returning the effect that re-schedules it,
-    /// or `None` for a layer that has no such timer (Home and Typing). Every chooser layer
-    /// qualifies, because each has a key that stays: `o` shows the overlay in all of them, and
-    /// resize's arrows place a window without leaving. That in-layer activity has to push the idle
-    /// clock out rather than let it fire mid-use.
-    #[must_use]
-    fn rearm_timeout(&mut self) -> Option<MercuryEffect> {
-        let home_timeout = match self {
-            Self::Nav(nav) => &mut nav.home_timeout,
-            Self::Resize(resize) => &mut resize.home_timeout,
-            Self::InApp(inapp) => &mut inapp.home_timeout,
-            Self::Site(site) => &mut site.home_timeout,
-            Self::Home(_) | Self::Typing(_) => return None,
-        };
-        let (guard, timer) = arm_return_home();
-        *home_timeout = guard;
-        Some(timer)
     }
 }
 
 /// The root's path is `&mut Self`; naming it lets the root's children say `parent = MercuryPath`.
 pub type MercuryPath<'a> = &'a mut Mercury;
 pub type LayerPath<'a> = PathMut<Layer, MercuryPath<'a>>;
-pub type AppLayerPath<'a> = PathMut<AppLayer, LayerPath<'a>>;
-pub type SiteLayerPath<'a> = PathMut<SiteLayer, LayerPath<'a>>;
+pub type AndReturnHomePath<'a> = PathMut<AndReturnHome, LayerPath<'a>>;
+pub type ReturnHomeLayersPath<'a> = PathMut<ReturnHomeLayers, AndReturnHomePath<'a>>;
+pub type AppLayerPath<'a> = PathMut<AppLayer, ReturnHomeLayersPath<'a>>;
+pub type SiteLayerPath<'a> = PathMut<SiteLayer, ReturnHomeLayersPath<'a>>;
 
 impl Mercury {
     /// The layer a fresh mercury boots into: Typing, the passthrough layer, so a fresh mercury
@@ -612,18 +597,7 @@ impl Mercury {
     /// claimed the event, which is what a caller deciding to pass it on asks.
     #[must_use]
     pub fn handle(&mut self, event: &MercuryEvent) -> (Vec<MercuryEffect>, bool) {
-        let before = std::mem::discriminant(&self.layer);
-        let (mut effects, handled) = bind::dispatch::<MercuryStruct, Self, _>(self, event);
-        // A keypress that leaves you in the same layer is activity: reset that layer's return-home
-        // timer, so it fires only after you go idle, not a fixed span after you entered.
-        if handled
-            && matches!(event, MercuryEvent::Key(_))
-            && std::mem::discriminant(&self.layer) == before
-            && let Some(reset) = self.layer.rearm_timeout()
-        {
-            effects.push(reset);
-        }
-        (effects, handled)
+        bind::dispatch::<MercuryStruct, Self, _>(self, event)
     }
 
     #[must_use]

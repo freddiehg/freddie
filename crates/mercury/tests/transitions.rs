@@ -8,7 +8,8 @@ use freddie_windows::{Frame, Monitor, WindowChange, WindowFrame, WindowId};
 use mercury::{
     App, Chord, Copied, HomeLayer, JK_TIMEOUT, Key, KeyEvent, Layer, Mercury, MercuryEffect,
     MercuryEvent, MercuryStruct, ModifierFlags, OVERLAY_DWELL, PLACEMENT_SETTLE, PressType,
-    RETURN_TO_HOME_TIMEOUT, UrlPart, WindowEvent, Windows, foreground, key, quit_event, tab,
+    RETURN_TO_HOME_TIMEOUT, ReturnHomeLayers, UrlPart, WindowEvent, Windows, foreground, key,
+    quit_event, tab,
 };
 
 // `BOOT_TITLE` is painted on the status item before the model exists, so it is a literal rather
@@ -52,6 +53,15 @@ fn timer_id(effects: &[MercuryEffect]) -> freddie::TimerId {
     match timer.event {
         MercuryEvent::Timer(freddie::TimerFired(id)) => id,
         ref other => panic!("not a timer firing: {other:?}"),
+    }
+}
+
+// The active return-home layer, or `None` when the active layer is home or typing. The four
+// timed layers sit under the wrapper that owns their shared timer.
+const fn return_home(m: &Mercury) -> Option<&ReturnHomeLayers> {
+    match m.layer() {
+        Layer::ReturnHome(w) => Some(w.layers()),
+        Layer::Home(_) | Layer::Typing(_) => None,
     }
 }
 
@@ -159,7 +169,7 @@ fn home_n_enters_nav() {
         m.handle(&key(Key::KeyN)),
         (vec![shows("Nav"), return_home_timer()], true)
     );
-    assert!(matches!(m.layer(), Layer::Nav(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Nav(_))));
 }
 
 #[test]
@@ -231,7 +241,7 @@ fn home_escape_does_nothing() {
 fn escape_goes_home_from_a_sublayer() {
     let mut m = home();
     let _ = m.handle(&key(Key::KeyN));
-    assert!(matches!(m.layer(), Layer::Nav(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Nav(_))));
     assert_eq!(m.handle(&key(Key::Escape)), (vec![shows("Home")], true));
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
@@ -240,7 +250,7 @@ fn escape_goes_home_from_a_sublayer() {
 fn nav_times_out_home() {
     let mut m = home();
     let entered = m.handle(&key(Key::KeyN)).0;
-    assert!(matches!(m.layer(), Layer::Nav(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Nav(_))));
     // The timer nav set fires: its id came back on the effect that set it.
     assert_eq!(
         m.handle(&fired(timer_id(&entered))),
@@ -264,7 +274,10 @@ fn a_firing_from_a_layer_already_left_matches_nothing() {
         (vec![], false),
         "no binding matches a stale firing"
     );
-    assert!(matches!(m.layer(), Layer::Nav(_)), "still in nav");
+    assert!(
+        matches!(return_home(&m), Some(ReturnHomeLayers::Nav(_))),
+        "still in nav"
+    );
 
     assert_eq!(m.handle(&fired(second)), (vec![shows("Home")], true));
     assert!(matches!(m.layer(), Layer::Home(_)));
@@ -385,7 +398,7 @@ fn nav_c_foregrounds_chrome_and_enters_inapp() {
             true
         )
     );
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     // The effect is inert: nothing is foregrounded until the watcher reports it, and
     // the navigation is pending until then.
     assert_eq!(m.foreground.app(), App::Other);
@@ -402,7 +415,7 @@ fn every_nav_choice_enters_inapp() {
     ] {
         let mut m = home();
         let _ = m.handle(&key(Key::KeyN));
-        assert!(matches!(m.layer(), Layer::Nav(_)));
+        assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Nav(_))));
         assert_eq!(
             m.handle(&key(k)),
             (
@@ -414,7 +427,10 @@ fn every_nav_choice_enters_inapp() {
                 true
             )
         );
-        assert!(matches!(m.layer(), Layer::InApp(_)), "{app:?} left nav");
+        assert!(
+            matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))),
+            "{app:?} left nav"
+        );
         assert!(
             m.foreground.navigating(),
             "{app:?} did not mark the nav pending"
@@ -461,7 +477,7 @@ fn n_c_then_foreground_then_r_refreshes_chrome() {
             true
         )
     );
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
 
     let _ = m.handle(&foreground(App::Chrome)); // the watcher reports it
     assert_eq!(m.foreground.app(), App::Chrome);
@@ -479,7 +495,7 @@ fn a_pending_nav_binds_nothing_until_the_foreground_event() {
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyN)); // home -> nav
     let _ = m.handle(&key(Key::KeyC)); // navigate to Chrome; the front app is still Ghostty
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert!(m.foreground.navigating());
     assert_eq!(m.foreground.app(), App::Ghostty);
     // Ghostty's `j` does not apply, even though Ghostty is still the (stale) front app.
@@ -488,7 +504,7 @@ fn a_pending_nav_binds_nothing_until_the_foreground_event() {
     assert_eq!(m.handle(&key(Key::KeyR)), (in_app(vec![]), true));
 
     let _ = m.handle(&foreground(App::Chrome)); // the watcher catches up
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(m.foreground.app(), App::Chrome);
     assert!(!m.foreground.navigating());
     assert_eq!(m.handle(&key(Key::KeyR)), (in_app(cmd_r()), true));
@@ -510,7 +526,7 @@ fn i_enters_inapp_for_the_foregrounded_app() {
         m.handle(&key(Key::KeyI)),
         (vec![shows("App"), return_home_timer()], true)
     );
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(m.foreground.app(), App::Chrome);
 }
 
@@ -551,7 +567,7 @@ fn chrome_shift_l_copies_the_url() {
         (in_app(vec![copies("https://www.x.com/asdfasdf")]), true)
     );
     // It repeats, so it stays in the in-app layer.
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
 }
 
 // `cmd-l` copies the host, `www.` and all.
@@ -562,7 +578,7 @@ fn chrome_cmd_l_copies_the_host() {
         m.handle(&key_with(Key::KeyL, ModifierFlags::COMMAND)),
         (in_app(vec![copies("www.x.com")]), true)
     );
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
 }
 
 // The three are one key at three modifier combinations, and each does only its own thing.
@@ -669,7 +685,7 @@ fn n_is_claude_ais_alone() {
     let mut m = site_showing("https://www.x.com/asdfasdf");
     // Swallowed, and the site layer treats the keypress as activity: its return-home timer resets.
     assert_eq!(m.handle(&key(Key::KeyN)), (vec![return_home_timer()], true));
-    assert!(matches!(m.layer(), Layer::Site(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Site(_))));
 }
 
 // `s` in the in-app layer reaches the site layer, the way `u` does from home: `i` is what the
@@ -683,7 +699,7 @@ fn inapp_s_enters_site() {
         m.handle(&key(Key::KeyS)),
         (vec![shows("Site"), return_home_timer()], true)
     );
-    assert!(matches!(m.layer(), Layer::Site(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Site(_))));
 }
 
 // The in-app layer works like home for entering nav and typing: `n` and `t` reach
@@ -693,12 +709,12 @@ fn inapp_n_enters_nav() {
     let mut m = home();
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(
         m.handle(&key(Key::KeyN)),
         (vec![shows("Nav"), return_home_timer()], true)
     );
-    assert!(matches!(m.layer(), Layer::Nav(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Nav(_))));
 }
 
 #[test]
@@ -706,7 +722,7 @@ fn inapp_t_enters_typing() {
     let mut m = home();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(m.handle(&key(Key::KeyT)), (vec![shows("Typing")], true));
     assert!(matches!(m.layer(), Layer::Typing(_)));
 }
@@ -723,7 +739,7 @@ fn inapp_app_bindings_still_take_precedence() {
         m.handle(&key(Key::KeyJ)),
         (in_app(tmux(ModifierFlags::empty(), Key::KeyP)), true)
     );
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
 }
 
 #[test]
@@ -739,7 +755,7 @@ fn inapp_other_app_ignores_keys() {
     let mut m = home();
     let _ = m.handle(&foreground(App::Zed));
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert!(matches!(m.foreground.app(), App::Zed | App::Other));
     assert_eq!(m.handle(&key(Key::KeyR)), (in_app(vec![]), true));
 }
@@ -763,7 +779,7 @@ fn i_enters_ghostty_in_app_when_ghostty_is_frontmost() {
     let mut m = home();
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(m.foreground.app(), App::Ghostty);
 }
 
@@ -782,7 +798,7 @@ fn ghostty_j_is_previous_window_and_k_is_next() {
         (in_app(tmux(ModifierFlags::empty(), Key::KeyN)), true)
     );
     // Still in Ghostty's layer, so windows can be walked without re-entering.
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(m.foreground.app(), App::Ghostty);
 }
 
@@ -819,11 +835,11 @@ fn foregrounding_ghostty_retargets_the_inapp_layer() {
     let mut m = home();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(m.foreground.app(), App::Chrome);
 
     let _ = m.handle(&foreground(App::Ghostty));
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(m.foreground.app(), App::Ghostty);
     assert_eq!(
         m.handle(&key(Key::KeyJ)),
@@ -894,7 +910,7 @@ fn walking_stays_but_jumping_leaves() {
     let _ = m.handle(&key(Key::KeyI));
 
     let _ = m.handle(&key(Key::KeyJ));
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(m.foreground.app(), App::Ghostty);
     let _ = m.handle(&key(Key::Num3));
     assert!(matches!(m.layer(), Layer::Home(_)));
@@ -941,7 +957,7 @@ fn home_r_enters_resize() {
         m.handle(&key(Key::KeyR)),
         (vec![shows("Resize"), return_home_timer()], true)
     );
-    assert!(matches!(m.layer(), Layer::Resize(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Resize(_))));
 }
 
 // Resize is a one-shot chooser, like nav: each arrow emits the rectangle its window is
@@ -968,7 +984,7 @@ fn the_arrows_place_the_window_and_return_home() {
     ] {
         let mut m = home_with_a_window();
         let _ = m.handle(&key(Key::KeyR));
-        assert!(matches!(m.layer(), Layer::Resize(_)));
+        assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Resize(_))));
 
         assert_eq!(
             m.handle(&key(k)),
@@ -1006,7 +1022,7 @@ fn a_placement_with_no_focused_window_asks_for_nothing() {
 fn escape_leaves_resize() {
     let mut m = home();
     let _ = m.handle(&key(Key::KeyR));
-    assert!(matches!(m.layer(), Layer::Resize(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Resize(_))));
 
     assert_eq!(m.handle(&key(Key::Escape)), (vec![shows("Home")], true));
     assert!(matches!(m.layer(), Layer::Home(_)));
@@ -1068,7 +1084,7 @@ fn r_still_refreshes_chrome_in_app() {
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(m.handle(&key(Key::KeyR)), (in_app(cmd_r()), true));
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(m.foreground.app(), App::Chrome);
 }
 
@@ -1117,7 +1133,7 @@ fn foregrounding_chrome_is_reported_back() {
     assert_eq!(m.foreground.app(), App::Chrome);
     // Nav landed in Chrome's in-app layer, and the reported-back event cleared the
     // pending flag so Chrome's bindings are live.
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert!(!m.foreground.navigating());
 }
 
@@ -1176,12 +1192,12 @@ fn foreground_retargets_the_inapp_layer() {
     let mut m = home();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(m.foreground.app(), App::Chrome);
 
     assert_eq!(m.handle(&foreground(App::Zed)), (vec![], true));
     assert_eq!(m.foreground.app(), App::Zed);
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert!(matches!(m.foreground.app(), App::Zed | App::Other));
     // Chrome's refresh is gone now that Chrome is not the front app.
     assert_eq!(m.handle(&key(Key::KeyR)), (in_app(vec![]), true));
@@ -1193,11 +1209,11 @@ fn foreground_back_to_chrome_restores_its_bindings() {
     let mut m = home();
     let _ = m.handle(&foreground(App::Zed));
     let _ = m.handle(&key(Key::KeyI));
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert!(matches!(m.foreground.app(), App::Zed | App::Other));
 
     let _ = m.handle(&foreground(App::Chrome));
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(m.foreground.app(), App::Chrome);
     assert_eq!(m.handle(&key(Key::KeyR)), (in_app(cmd_r()), true));
 }
@@ -1208,11 +1224,11 @@ fn foreground_back_to_chrome_restores_its_bindings() {
 fn foreground_outside_inapp_does_not_change_layer() {
     let mut m = home();
     let _ = m.handle(&key(Key::KeyN));
-    assert!(matches!(m.layer(), Layer::Nav(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Nav(_))));
 
     assert_eq!(m.handle(&foreground(App::Chrome)), (vec![], true));
     assert_eq!(m.foreground.app(), App::Chrome);
-    assert!(matches!(m.layer(), Layer::Nav(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Nav(_))));
 }
 
 // The full loop: foreground Chrome from nav (reported back), enter its in-app
@@ -1230,12 +1246,12 @@ fn inapp_follows_the_front_app_across_a_switch() {
             settle(&mut runner, &mut performed);
         }
     }
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(m.foreground.app(), App::Chrome);
     // The user switches to Zed outside mercury; the watcher reports it.
     let _ = m.handle(&foreground(App::Zed));
     assert_eq!(m.foreground.app(), App::Zed);
-    assert!(matches!(m.layer(), Layer::InApp(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert!(matches!(m.foreground.app(), App::Zed | App::Other));
 }
 
@@ -1511,12 +1527,21 @@ fn overlay_hide_timer() -> MercuryEffect {
     MercuryEffect::Timer(effect)
 }
 
+// Where the overlay's own effects start in a batch. In a timed layer the deadline post runs
+// during the ascent below the root, so its rearm precedes them; in home there is no such timer
+// and the overlay's text is first.
+fn shown_at(effects: &[MercuryEffect]) -> usize {
+    effects
+        .iter()
+        .position(|e| matches!(e, MercuryEffect::ShowOverlay(_)))
+        .unwrap_or_else(|| panic!("o shows the overlay: {effects:?}"))
+}
+
 // The keymap `o` put up, asserted by its heading rather than in full, so re-wording a row does not
-// rewrite the test table.
+// rewrite the test table. Its dwell follows it.
 fn shown_heading(effects: &[MercuryEffect]) -> &'static str {
-    // The dwell follows the text, and in the in-app layer a third effect follows both: the key
-    // kept you there, so that layer's own return-home timer is rearmed.
-    match effects {
+    let at = shown_at(effects);
+    match &effects[at..] {
         [
             MercuryEffect::ShowOverlay(text),
             MercuryEffect::Timer(_),
@@ -1524,6 +1549,11 @@ fn shown_heading(effects: &[MercuryEffect]) -> &'static str {
         ] => text.lines().next().expect("a keymap has a heading"),
         other => panic!("o shows the overlay and sets its hide: {other:?}"),
     }
+}
+
+// The id of the dwell `o` set, which is the timer that follows the overlay's text.
+fn dwell_id(effects: &[MercuryEffect]) -> freddie::TimerId {
+    timer_id(&effects[shown_at(effects)..])
 }
 
 #[test]
@@ -1539,22 +1569,27 @@ fn o_shows_the_layers_keymap() {
         }
         let effects = m.handle(&key(Key::KeyO)).0;
         assert_eq!(shown_heading(&effects), heading);
-        assert_eq!(effects[1], overlay_hide_timer());
+        assert_eq!(effects[shown_at(&effects) + 1], overlay_hide_timer());
     }
 }
 
 // `o` shows the overlay and keeps you in the layer, so in a chooser layer it is activity: the
-// return-home timer is re-scheduled as a third effect, past the overlay and its dwell. Home has no
-// such timer, so its `o` stops at the overlay and its dwell.
+// deadline post rearms that layer's return-home timer. It runs on the wrapper below the root, so
+// its effect leads the batch, ahead of the overlay `o` itself puts up. Home has no such timer, so
+// its `o` is only the overlay and its dwell.
 #[test]
 fn showing_the_overlay_rearms_the_return_home_timer() {
     for enter in [Key::KeyN, Key::KeyR] {
         let mut m = home();
         let _ = m.handle(&key(enter));
         let effects = m.handle(&key(Key::KeyO)).0;
-        assert_eq!(effects.len(), 3, "overlay, its dwell, then the rearm");
-        assert_eq!(effects[1], overlay_hide_timer());
-        assert_eq!(effects[2], return_home_timer());
+        assert_eq!(
+            effects.len(),
+            3,
+            "the rearm, then the overlay and its dwell"
+        );
+        assert_eq!(effects[0], return_home_timer());
+        assert_eq!(effects[2], overlay_hide_timer());
     }
 
     let mut m = home();
@@ -1584,11 +1619,11 @@ fn the_overlay_hides_after_the_dwell() {
     let mut m = home();
     let shown = m.handle(&key(Key::KeyO)).0;
     assert_eq!(
-        m.handle(&fired(timer_id(&shown))),
+        m.handle(&fired(dwell_id(&shown))),
         (vec![MercuryEffect::HideOverlay], true)
     );
     // And again matches nothing: the field was taken, so no binding names that guard.
-    assert_eq!(m.handle(&fired(timer_id(&shown))), (vec![], false));
+    assert_eq!(m.handle(&fired(dwell_id(&shown))), (vec![], false));
 }
 
 #[test]
@@ -1610,9 +1645,9 @@ fn a_dwell_from_a_showing_already_gone_matches_nothing() {
     // Show one in home, leave for nav (which takes it down), and show nav's. The first showing's
     // dwell arrives late and must not take the live one down.
     let mut m = home();
-    let first = timer_id(&m.handle(&key(Key::KeyO)).0);
+    let first = dwell_id(&m.handle(&key(Key::KeyO)).0);
     let _ = m.handle(&key(Key::KeyN));
-    let second = timer_id(&m.handle(&key(Key::KeyO)).0);
+    let second = dwell_id(&m.handle(&key(Key::KeyO)).0);
     assert_ne!(first, second, "each showing sets its own dwell");
 
     assert_eq!(m.handle(&fired(first)), (vec![], false));
@@ -2015,7 +2050,7 @@ fn restoring_twice_asks_for_nothing_the_second_time() {
 fn r_in_resize_does_not_re_enter_resize() {
     let mut m = home();
     let _ = m.handle(&key(Key::KeyR));
-    assert!(matches!(m.layer(), Layer::Resize(_)));
+    assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Resize(_))));
     let _ = m.handle(&key(Key::KeyR));
     assert!(matches!(m.layer(), Layer::Home(_)));
 }

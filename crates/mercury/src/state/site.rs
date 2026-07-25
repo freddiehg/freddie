@@ -1,13 +1,12 @@
 use bind::{Bind, and};
-use freddie::TimerGuard;
 use freddie_keys::Key;
 use laserbeam::HasAncestor;
 
 #[allow(clippy::wildcard_imports)]
 use crate::handlers::*;
-use crate::{MercuryEffect, MercuryStruct, Site};
+use crate::{MercuryStruct, Site};
 
-use super::{LayerPath, MercuryPath, SiteLayerPath, arm_return_home};
+use super::{MercuryPath, ReturnHomeLayersPath, SiteLayerPath};
 
 pub(crate) const OVERLAY: &str = include_str!("overlays/site.txt");
 pub(crate) const CLAUDE_AI_OVERLAY: &str = include_str!("overlays/claude-ai.txt");
@@ -29,32 +28,19 @@ pub(crate) const fn overlay_for(site: Option<Site>) -> &'static str {
 /// It stores no site: [`site_data`] reads the front tab's URL from the root on every dispatch, so
 /// switching tabs while sitting in this layer changes what is bound with no event of its own.
 #[derive(Bind, Debug)]
-#[node(parent = LayerPath)]
+#[node(parent = ReturnHomeLayersPath)]
 #[binds(MercuryStruct)]
 #[derived_child(site_data)]
 #[bind(
-    |path| path.get().home_timeout.trigger() => go_home,
     Key::Escape.down() => go_home,
     Key::KeyT.down() => enter_typing,
 )]
-pub struct SiteLayer {
-    // Read for the trigger matching its firing, and held for its `Drop`: dropping the guard
-    // cancels this layer's return-home timer.
-    pub(crate) home_timeout: TimerGuard,
-}
+pub struct SiteLayer;
 
 impl SiteLayer {
-    /// Build the site layer with its return-home timer armed, returning the layer and the effect
-    /// that schedules it.
     #[must_use]
-    pub(crate) fn new() -> (Self, MercuryEffect) {
-        let (timeout, timer) = arm_return_home();
-        (
-            Self {
-                home_timeout: timeout,
-            },
-            timer,
-        )
+    pub(crate) const fn new() -> Self {
+        Self
     }
 }
 

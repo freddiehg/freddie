@@ -1,13 +1,12 @@
 use bind::{Bind, and};
-use freddie::TimerGuard;
 use freddie_keys::{Key, ModifierFlags};
 use laserbeam::HasAncestor;
 
 #[allow(clippy::wildcard_imports)]
 use crate::handlers::*;
-use crate::{App, MercuryEffect, MercuryStruct};
+use crate::{App, MercuryStruct};
 
-use super::{AppLayerPath, LayerPath, MercuryPath, arm_return_home};
+use super::{AppLayerPath, MercuryPath, ReturnHomeLayersPath};
 
 pub(crate) const CHROME_OVERLAY: &str = include_str!("overlays/chrome.txt");
 pub(crate) const GHOSTTY_OVERLAY: &str = include_str!("overlays/ghostty.txt");
@@ -31,33 +30,21 @@ pub(crate) const fn overlay_for(app: App) -> &'static str {
 /// builds the app's level from it on every dispatch. There is nothing to keep in sync and
 /// nothing to go stale.
 #[derive(Bind, Debug)]
-#[node(parent = LayerPath)]
+#[node(parent = ReturnHomeLayersPath)]
 #[binds(MercuryStruct)]
 #[derived_child(app_data)]
 #[bind(
-    |path| path.get().home_timeout.trigger() => go_home,
     Key::Escape.down() => go_home,
     Key::KeyN.down() => enter_nav,
     Key::KeyS.down() => enter_site,
     Key::KeyT.down() => enter_typing,
 )]
-pub struct AppLayer {
-    // Read for the trigger matching its firing, and held for its `Drop`: dropping the guard cancels the in-app layer's return-home timer.
-    pub(crate) home_timeout: TimerGuard,
-}
+pub struct AppLayer;
 
 impl AppLayer {
-    /// Build the in-app layer with its return-home timer armed, returning the layer and the effect
-    /// that schedules it.
     #[must_use]
-    pub(crate) fn new() -> (Self, MercuryEffect) {
-        let (timeout, timer) = arm_return_home();
-        (
-            Self {
-                home_timeout: timeout,
-            },
-            timer,
-        )
+    pub(crate) const fn new() -> Self {
+        Self
     }
 }
 
