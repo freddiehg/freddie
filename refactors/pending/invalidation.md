@@ -94,30 +94,13 @@ impl AscentState {
         }
     }
 
-    /// Framework hop: must consume `Complete` from `Ascent::into_parent`.
-    fn complete_ascent_hop(&mut self, _hop: Complete) {
+    fn bump_ascent_hop(&mut self) {
         self.ascent_hops = self.ascent_hops.saturating_add(1);
     }
 
-    /// Kill hop: each consumed `Complete` counts one unit of kill coverage.
-    fn complete_kill_hop(&mut self, _hop: Complete) {
-        let next = self.invalidation_depth.saturating_add(1);
-        self.invalidation_depth = self.invalidation_depth.max(next);
-        // equivalent: invalidation_depth += 1 when starting from 0 per-kill;
-        // max keeps concurrent kills monotone.
-    }
-
-    /// Record kill coverage of exactly `d` hops (after d kill completes, or directly).
     fn invalidate(&mut self, d: u32) {
         self.invalidation_depth = self.invalidation_depth.max(d);
     }
-}
-
-/// Proof one parent recovery happened. Only from `Ascent::into_parent`.
-/// Must be fed to `complete_ascent_hop` or `complete_kill_hop` (or equivalent).
-#[must_use]
-pub struct Complete {
-    _seal: (),
 }
 
 /// Path + state. Dispatch threads this.
@@ -146,12 +129,6 @@ impl<P> Ascent<P> {
         self.state.claimed()
     }
 
-    pub fn post_ctx(&mut self) -> PostCtx<'_> {
-        PostCtx {
-            state: &mut self.state,
-        }
-    }
-
     pub fn with_exclusive<E>(
         self,
         body: impl FnOnce(Node<P, ()>, ExclusiveCtx<'_>) -> (Vec<E>, P),
@@ -177,31 +154,18 @@ impl<P> Ascent<P> {
 }
 
 impl<Node, Parent> Ascent<laserbeam::PathMut<Node, Parent>> {
-    /// Recover parent path. Returns `Complete` that **must** be used to count the hop.
-    pub fn into_parent(self) -> (Ascent<Parent>, Complete) {
-        let Ascent { path, state } = self;
-        let parent = path.into_parent();
-        (
-            Ascent {
-                path: parent,
-                state,
-            },
-            Complete { _seal: () },
-        )
-    }
-
-    /// Framework hop: into_parent → complete_ascent_hop → posts.
-    /// Does not change invalidation_depth.
+    /// Framework hop: recover parent, bump ascent_hops, run posts.
+    /// Does not change invalidation_depth. No user-facing complete token.
     pub fn into_parent_ascent<E>(
         self,
         sink: &mut Vec<E>,
         run_posts: impl FnOnce(Parent, PostCtx<'_>) -> (Parent, Vec<E>),
     ) -> Ascent<Parent> {
-        let (mut ascent, hop) = self.into_parent();
-        ascent.state.complete_ascent_hop(hop);
-        let Ascent { path, mut state } = ascent;
+        let Ascent { path, mut state } = self;
+        let parent = path.into_parent();
+        state.bump_ascent_hop();
         let (path, post_effs) = run_posts(
-            path,
+            parent,
             PostCtx {
                 state: &mut state,
             },
@@ -242,14 +206,10 @@ impl<'a> ExclusiveCtx<'a> {
         self.state.claim()
     }
 
-    /// Record kill coverage of `d` hops (after climbing d times and completing each hop).
+    /// Kill coverage. d = number of path hops the kill climbs
+    /// (`into_parent`×d ⇒ invalidate(d)).
     pub fn invalidate(&mut self, d: u32) {
         self.state.invalidate(d);
-    }
-
-    /// One kill hop: consume `Complete` from `Ascent::into_parent` during a kill climb.
-    pub fn complete_kill_hop(&mut self, hop: Complete) {
-        self.state.complete_kill_hop(hop);
     }
 }
 ```
@@ -504,9 +464,7 @@ fn inner_handler(
     node: Node<InnerPath, ()>,
     mut ctx: ExclusiveCtx<'_>,
 ) -> (Vec<DemoEffect>, InnerPath) {
-    // Kill coverage of two hops. Either:
-    //   climb with Ascent::into_parent twice, complete_kill_hop each Complete, or
-    //   invalidate(2) once the hop count is known.
+    // Two path hops of kill coverage → invalidate(2). No .complete() token.
     ctx.invalidate(2);
     (vec![], node.parent)
 }
@@ -678,8 +636,8 @@ ASCENT Inner
   return Ascent { InnerPath, state }
 
 ASCENT Outer into_parent_ascent
-  (ascent, hop) = into_parent()          // Complete must be returned
-  complete_ascent_hop(hop)               // hops = 1; inv still 2
+  path.into_parent()                     // laserbeam
+  bump_ascent_hop()                      // hops = 1; inv still 2
   posts PostCtx:
     mutation: 1 < 2 → MaybeDropped
     after_child → LogDestroyed
@@ -735,8 +693,8 @@ Dispatch returns `Ascent<Path>`. Framework bumps `ascent_hops` only. Kill uses `
 3. Thread `Ascent<P>` (path + state together).
 4. User code: `PostCtx` / `ExclusiveCtx` only.
 5. laserbeam `into_parent`: parent only.
-6. `Ascent::into_parent` returns `Complete`; hop counts only when `Complete` is consumed (`complete_ascent_hop` / `complete_kill_hop` / `invalidate`).
-7. No interior mutability; ownership of `Complete` is the check.
+6. Framework `into_parent_ascent` bumps `ascent_hops` internally (no user `.complete()`).
+7. Kill: `ExclusiveCtx::invalidate(d)` only; d = kill path hop count.
 8. `mutation()` = MaybeDropped iff `ascent_hops < invalidation_depth`.
 9. `claim()` is `Option<()>` trap door.
 10. Generate matches expand above.
