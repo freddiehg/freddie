@@ -387,7 +387,7 @@ impl Dispatch<M> for B {
         let opt_0 = if let Ok(ev) = TryFrom::try_from(event) {
             let trigger = KeyH;
             if EventTrigger::is_matching(&trigger, ev) {
-                Some((ev, ()))
+                Some((ev, (|_, _| ())(ev, &path)))
             } else {
                 None
             }
@@ -428,7 +428,7 @@ where
         let opt_0 = if let Ok(ev) = TryFrom::try_from(event) {
             let trigger = AnyKey;
             if EventTrigger::is_matching(&trigger, ev) {
-                Some((ev, snap_return_home(ev, &path)))
+                Some((ev, (snap_return_home)(ev, &path)))
             } else {
                 None
             }
@@ -439,7 +439,7 @@ where
         let opt_1 = if let Ok(ev) = TryFrom::try_from(event) {
             let trigger = KeyEsc;
             if EventTrigger::is_matching(&trigger, ev) {
-                Some((ev, ()))
+                Some((ev, (|_, _| ())(ev, &path)))
             } else {
                 None
             }
