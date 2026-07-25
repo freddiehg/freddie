@@ -47,6 +47,20 @@ Ambient state the program itself owns belongs on the root struct, not in a `stat
 
 This is distinct from state the outside world owns. The front app and a window's frame are seeded at construction and kept current by events, under the idempotence rule above; they are external truth mirrored into the model, not ambient state the program invented. The test is who mints the value. If the program mints it, it is a field on root. If the OS owns it, it arrives as an event.
 
+## unwrap, unreachable, Infallible
+
+`unwrap`, `expect`, `unreachable!`, `panic!`, `todo!`, `unimplemented!`, and `Infallible` (including a `Result<T, Infallible>` or any other type-level claim that a failure case cannot occur) are almost always the wrong reach in freddie. The model makes impossible states unrepresentable: a handler that needs a value already holds it at the type level, and a branch that cannot run is not an arm. So when a design proposes any of these, three things happen every time:
+
+- Question whether it is needed at all. Most of the time the type is wrong. An `Option` or `Result` the body will always unwrap should not have been optional. A match arm that is always unreachable is a state the handler should never have been handed. An `Infallible` error type is a `Result` that should not be a `Result`.
+- Default to the version that does not need it. Fix the types so the success path is the only path the compiler allows. Write that version first and only fall back to a panic or an infallibility claim when the non-panicking version is genuinely, provably impossible — not merely more work.
+- Raise it with the user, every single time, before it goes into a planning doc or into code. There are no exceptions to this. Name the construct, say what invariant it is asserting and why the type system cannot express that invariant, and wait for the user's decision.
+
+The preferred alternative is the same structural fix the typed path already does for layers. A state a binding cannot be reached in is not an arm that panics; it is a value the handler is never handed. An `Option` that is always `Some` at a call site is a non-optional field or a narrower type. A `Result` whose `Err` is `Infallible` returns the `Ok` payload directly.
+
+This is distinct from total handling of values the outside world owns. An OS callback, a parse of a user-supplied path, a socket read: those can fail for reasons the program does not control, and the response is a typed error, a skip, or an event that reports the failure — never an unwrap of something the OS controls (see `docs/platform-apis.md`). A panic must not cross an FFI boundary.
+
+Tests may `expect` with a reason that names an invariant the test itself established (a fixture it built, an env the harness sets). Production code is not a test fixture.
+
 ## Tests
 
 The standard for the model is exhaustive: every key in every reachable state, asserting exactly what dispatch produces. The model is a pure function of state and event, so the full table is checkable and doubles as documentation of the keymap. Not all of it exists yet; new bindings should extend toward it rather than test only the happy path.
