@@ -110,16 +110,8 @@ where
 `A` is the root and holds the layer `B`. `B` arms a return-home timer; every key while `B` is up pushes the deadline out; leaving `B` must cancel the timer, because the OS timer outlives the state that armed it and `Drop` cannot emit the cancel.
 
 ```rust
-// APath<'a> = &'a mut A
-// BPath<'a> = laserbeam::PathMut<B, APath<'a>>
-
-// Declarations (post attribute syntax is ordered changes 5–6; shown as intent):
-//
-//   A  bind      KeyEsc → flash                                       (opt_2)
-//   A  post      AnyKey → rearm                 B alive; live path    (opt_1)
-//   A  pre_post  AnyKey → snap_return_home / cancel_return_home,
-//                          B dropped; snap only                       (opt_0)
-//   B  bind      KeyH   → go_home
+type APath<'a> = &'a mut A;
+type BPath<'a> = PathMut<B, APath<'a>>;
 
 #[derive(Clone, Copy)]
 struct TimerId(u64);
@@ -134,10 +126,24 @@ struct TimerGuard {
     id: TimerId,
 }
 
+// #[bind], #[node], #[binds], #[resolve_into] are today's derive surface.
+// #[post] (alive arms, live path) and #[pre_post] (dropped arms, snap only)
+// are new in ordered change 5.
+#[derive(Bind)]
+#[node(root)]
+#[binds(M)]
+#[bind(KeyEsc => flash)]                                               // opt_2
+#[post(AnyKey => rearm)]                                               // opt_1
+#[pre_post(AnyKey, pre = snap_return_home, post = cancel_return_home)] // opt_0
 struct A {
+    #[resolve_into]
     b: B,
 }
 
+#[derive(Bind)]
+#[node(parent = APath)]
+#[binds(M)]
+#[bind(KeyH => go_home)]
 struct B {
     return_home: TimerGuard,
 }
