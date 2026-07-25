@@ -765,6 +765,16 @@ fn observe_app(state: &Rc<WatcherState>, ObservableApp(pid): ObservableApp) {
         return;
     }
 
+    // Before the observer, so the one early return between the two `Create` calls happens
+    // while there is still nothing to release.
+    // SAFETY: `pid` names a live process and the element is +1, released with the `Owned`.
+    #[expect(unsafe_code)]
+    let app = unsafe { AXUIElementCreateApplication(pid.0) };
+    let Some(app) = Owned::new(app.cast()) else {
+        return;
+    };
+    let app_element: AXUIElementRef = app.0.cast_mut().cast();
+
     let mut observer: AXObserverRef = std::ptr::null_mut();
     // SAFETY: `pid` names a process; the out-parameter receives a +1 observer on success
     // and is untouched otherwise.
@@ -781,14 +791,6 @@ fn observe_app(state: &Rc<WatcherState>, ObservableApp(pid): ObservableApp) {
         state: Rc::downgrade(state),
     });
     let refcon = std::ptr::from_ref(registration.as_ref()).cast_mut().cast();
-
-    // SAFETY: `pid` names a live process and the element is +1, released with the `Owned`.
-    #[expect(unsafe_code)]
-    let app = unsafe { AXUIElementCreateApplication(pid.0) };
-    let Some(app) = Owned::new(app.cast()) else {
-        return;
-    };
-    let app_element: AXUIElementRef = app.0.cast_mut().cast();
 
     for notification in [
         kAXFocusedWindowChangedNotification,
