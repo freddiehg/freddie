@@ -40,7 +40,7 @@ a mid-level ancestor     st.state.try_into_ancestor::<..>():         Ok ends at 
                                                                      Err forwards the leave
 ```
 
-A unit that writes the root ends there; there is deliberately no way to mutate an ancestor from a standing path. For `mark_navigating` and the place units the ending is truthful: their gestures end at the root anyway (`enter_inapp`, `go_home` complete the `and`), so `Invalidated` after them means what it says, and two root-enders compose, since the state-level `into_ancestor` is total on both branches. `toggle_overlay` is the one unit where the shape lies — it ends at the root while meaning a stay — and that is accepted debt, recorded in `invalidation-granularity.md`; it starts to matter at step 2, where the deadline would read an o-press as a leave.
+A unit that writes the root ends there; there is deliberately no way to mutate an ancestor from a standing path. For `mark_navigating` and the place units the ending is truthful: their gestures end at the root anyway (`enter_inapp`, `go_home` complete the `and`), so `Invalidated` after them means what it says, and two root-enders compose, since the state-level `into_ancestor` is total on both branches. The overlay toggle stops being a counterexample by binding where its state lives (below): the root ending it hands back is its own completion, invalidating nothing beneath it. After that, every root-ender's gesture genuinely ends at the root, and `Invalidated` never lies.
 
 Mutation methods on the root (`set_layer`, `placing`, `hide_overlay`) stay methods: each is one state write and returns the effects that write implies. A gesture calls `set_layer` at most once; calling it twice is two gestures.
 
@@ -85,7 +85,7 @@ Both units receive the same event and the same snap (hence the `Copy` bounds; in
 ```text
 and (prefactor above)        ships now: bind addition + tests
 timed-layer-wrapper.md       the deadline's design (in past; revived at step 2)
-invalidation-granularity.md  the o-press false leave; resolves before step 2 lands
+invalidation-granularity.md  the general hole (field-granular writes); no longer gates anything here
 multiple-children.md         needs posts-run-regardless
 also-binds / handler-kinds / exclusive-as-post   history; schedule + and replace them
 ```
@@ -211,14 +211,30 @@ The wrapper carries the one `pre_post` and the one firing bind; the four leaves 
 
 ### Overlay
 
-```text
-show_overlay       ShowOverlay + arm dwell; stay
-hide_overlay       HideOverlay; clear guard; stay
-toggle_overlay     one gesture; one handler that branches on overlay.is_some()
-                   is still one job: toggle
+`o` binds once, at the root, whose own field `overlay` is; the five per-layer o binds are deleted. The typing gate rides the trigger, preserving today's behavior (o in typing types an o):
+
+```rust
+// on Mercury (root), scheduled before the AnyKey pair
+#[bind(
+    |m| (!matches!(m.layer, Layer::Typing(_))).then(|| Key::KeyO.down()) => toggle_overlay,
+)]
 ```
 
-All three write `overlay` on the root, and none of them means a leave, but each ends at the root because nothing narrower exists: invalidation is path-granular, the write is field-granular, and there is no way to say "this write touched nothing any path runs through". They keep the root-ending shape the change-5 migration gave them; the false leave is `invalidation-granularity.md`'s problem, and step 2's deadline does not land until it is resolved, since the deadline would read an o-press as a leave and cancel a timer for a layer the user is still in. Dwell fire is only `hide_overlay`. Layer-change hide stays inside `set_layer` (that mutation's implied effect), not a second handler.
+```rust
+fn toggle_overlay<'x>(
+    _ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, MercuryPath<'x>>,
+) -> (Vec<MercuryEffect>, Completed<MercuryPath<'x>>) {
+    let root: MercuryPath<'x> = st.state.into_ancestor();
+    let effs = root.toggle_overlay();
+    (effs, root.complete())
+}
+```
+
+This is an own-node write. The root owns `overlay`, reads the layer beneath it for the content (`Mercury::toggle_overlay` already does exactly that), and hands back its own completion, so nothing below is invalidated. The deadline post ran earlier, during the ascent below, and read a true stay; an o-press counts as activity and pushes the deadline out. Dwell fire is only `hide_overlay`, the root timer bind it already is. Layer-change hide stays inside `set_layer` (that mutation's implied effect), not a second handler.
+
+An overlay that itself binds keys while open is not foreclosed: such an overlay is a child of the root beside the layer, which is `multiple-children.md`'s territory whichever node the toggle binds on. The root then resolves into two children, the overlay's own keys bind on the overlay node, and `o` stays the root's toggle — today's flat root is that shape with the second child not yet a node.
 
 ### Root recorders
 
@@ -322,7 +338,6 @@ pub struct AndReturnHome {
 #[binds(MercuryStruct)]
 #[bind(
     Key::Escape.down() => go_home,
-    Key::KeyO.down() => toggle_overlay,
     Key::KeyT.down() => enter_typing,
     Key::KeyC.down() => and(mark_navigating, and(foreground_chrome, enter_inapp)),
     Key::KeyF.down() => and(mark_navigating, and(foreground_finder, enter_inapp)),
@@ -361,6 +376,7 @@ struct NavLayer;
     |p| p.overlay_timer().map(TimerGuard::trigger) => hide_overlay,
     |p| p.windows.pending_timer().map(TimerGuard::trigger) => placement_settled,
 )]
+#[bind(|m| (!matches!(m.layer, Layer::Typing(_))).then(|| Key::KeyO.down()) => toggle_overlay)]
 #[post(AnyKey => track_held_modifiers)]
 #[bind(AnyKey => pass_or_swallow)]
 ```
@@ -404,8 +420,7 @@ windows.placing / restoring
 1. gesture binds via and: delete and_go_home / and_go_home_from; open_*,
    focus_address_bar / new_chat / spotlight, window_N, and the place keys
    become and(..) binds of their units
-2. (after invalidation-granularity.md resolves the o-press false leave)
-   the AndReturnHome restructure per timed-layer-wrapper.md: the wrapper node
+2. the AndReturnHome restructure per timed-layer-wrapper.md: the wrapper node
    with the one guard and the home_deadline pre_post; the four timer fields,
    arming sites, and firing closures deleted; the Mercury::handle rearm and
    Layer::rearm_timeout deleted

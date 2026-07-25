@@ -1,12 +1,12 @@
 # Invalidation granularity
 
-Thoughts on debt, not a plan. Background: `refactors/past/invalidation.md` (the model), `mercury-post-patterns.md` (the consumer that hit it, whose step 2 this gates).
+Thoughts on debt, not a plan. Background: `refactors/past/invalidation.md` (the model), `mercury-post-patterns.md` (the consumer that hit it; its concrete case, the overlay toggle, is resolved there by binding the key at the node that owns the field, so nothing in it gates that doc anymore). The general hole remains: it reopens the day a writer cannot bind at its state's owner.
 
 ## The problem
 
 Invalidation is path-granular; a write is field-granular. The type system's only lever for "I need `&mut` an ancestor" is consuming the path to it, and the `Completed` that comes back speaks for the whole subtree below the stop: everything is invalidated, one bit for the entire tree.
 
-`toggle_overlay` is the concrete case. `overlay: Option<TimerGuard>` lives on the root, and today no path runs through it, so a leaf handler writing it invalidates nothing that exists — but it must consume to the root to reach it, and the returned leave claims everything below the root died. The deadline post then reads an o-press as a leave and cancels the return-home timer for a layer the user is still in.
+`toggle_overlay` was the concrete case. `overlay: Option<TimerGuard>` lives on the root, and today no path runs through it, so a leaf handler writing it invalidates nothing that exists — but it must consume to the root to reach it, and the returned leave claims everything below the root died; a deadline post would read an o-press as a leave and cancel the return-home timer for a layer the user is still in. The escape that worked there — bind the key at the node that owns the field, making the write own-node — only exists because the root can bind `o`; it is not available to a writer whose trigger belongs to a deeper node.
 
 The reverse direction is also unrepresentable. Once the overlay grows its own bound subtree (an overlay with keys while it is open, `multiple-children.md`), writing it should invalidate overlay paths and not the layer path, and the one-bit answer cannot say that either.
 
