@@ -8,15 +8,15 @@ Descent schedules which pre/posts/binds run. That set is final. Ascent runs ever
 
 Every node's dispatch returns `Completed<Self::Path<'a>>`, root included. There is no per-node ascent type and no associated type: the return is the same expression of the node's own path everywhere.
 
-A parent sees three outcomes, from two nested `into_inner` matches:
+A non-root parent sees three outcomes, from two nested `into_inner` matches:
 
 ```rust
-match Inner::dispatch(inner_path, event, effs, claim).into_inner() {
-    Stop::Here(inner_path) => {
-        // child kept focus; this node's path is inner_path.into_parent()
+match Child::dispatch(child_path, event, effs, claim).into_inner() {
+    Stop::Here(child_path) => {
+        // child kept focus; this node's path is child_path.into_parent()
     }
     Stop::Up(rest) => match rest.into_inner() {
-        Stop::Here(outer_path) => {
+        Stop::Here(path) => {
             // the leave stopped at this node; child dropped, this node lives
         }
         Stop::Up(above) => {
@@ -26,14 +26,14 @@ match Inner::dispatch(inner_path, event, effs, claim).into_inner() {
 }
 ```
 
-The `Up` payload of a child's `Completed` is this node's own `Completed`, so the no-inspection form forwards `rest` unchanged; the inspecting form rebuilds its gone-above arm with `Completed::up`.
+The `Up` payload of a child's `Completed` is this node's own `Completed`, so the no-inspection form forwards `rest` unchanged; the inspecting form rebuilds its gone-above arm with `Completed::up`. At the root the child's `Up` payload is the bare root path, so the root sees two arms (the demo below).
 
 Posts per arm:
 
 ```text
-Here(child)            child survived   → child-ok posts; own binds (claim-gated)
-Up(Here(this))         child dropped    → child-dropped posts; posts that need this path
-Up(Up(above))          this node dropped → child-dropped posts from pre-descent snaps only
+Here(child)            child survived    → posts with the live path; own binds (claim-gated)
+Up(Here(this))         child dropped     → posts with the live path (this node's)
+Up(Up(above))          this node dropped → posts from pre-descent snaps only
 ```
 
 ## Claim
@@ -61,7 +61,7 @@ impl<'c> Claim<'c> {
 }
 ```
 
-Every bind handler runs behind `try_take`, and its `Completed` is returned directly (see Generated: Inner and Outer).
+Every bind handler runs behind `try_take`, and its `Completed` is returned directly.
 
 ## Dispatch
 
@@ -105,49 +105,23 @@ where
 
 `Here(parent_path)` means the derived level kept focus at the place it lives at. A root-parented derived level works because `Completed<&mut Root>` exists. `EventHandler` / `DerivedHandler` (the check) are untouched.
 
-## Handlers
+## The demo: `A → B`, everything the user writes
 
-A bind handler is a post handler that claims: it consumes its path, returns effects plus where dispatch is afterwards, and the only difference from a post is the claim and the `Completed`. One shape:
-
-```rust
-// stays put: ends with the zero-peel complete
-fn outer_handler<'a>(
-    _ev: &KeyEvent,
-    mut path: OuterPath<'a>,
-) -> (Vec<DemoEffect>, Completed<OuterPath<'a>>) {
-    (vec![DemoEffect::SetLayerHome], path.complete()) // Here(outer)
-}
-
-// leaves: peels first
-fn inner_handler<'a>(
-    _ev: &KeyEvent,
-    path: InnerPath<'a>,
-) -> (Vec<DemoEffect>, Completed<InnerPath<'a>>) {
-    (vec![], path.into_parent().complete()) // Up(Here(outer))
-}
-```
-
-Kill = more `into_parent` calls before `complete`. Handwritten handlers `use laserbeam::Complete;`. Posts return effects only; they run on the ascent and do not move focus.
-
-## DX types
+`A` is the root and holds the layer `B`. `B` arms a return-home timer; every key while `B` is up pushes the deadline out; leaving `B` must cancel the timer, because the OS timer outlives the state that armed it and `Drop` cannot emit the cancel.
 
 ```rust
-// RootPath<'a>  = &'a mut Root
-// OuterPath<'a> = laserbeam::PathMut<Outer, RootPath<'a>>
-// InnerPath<'a> = laserbeam::PathMut<Inner, OuterPath<'a>>
+// APath<'a> = &'a mut A
+// BPath<'a> = laserbeam::PathMut<B, APath<'a>>
+
+// Declarations (post attribute syntax is ordered changes 5–6; shown as intent):
 //
-// Inner::dispatch returns Completed<InnerPath<'a>>
-// Outer::dispatch returns Completed<OuterPath<'a>>
-// Root::dispatch  returns Completed<RootPath<'a>>   (bare &mut Root inside)
+//   A  bind      KeyEsc → flash                                       (opt_2)
+//   A  post      AnyKey → rearm                 B alive; live path    (opt_1)
+//   A  pre_post  AnyKey → snap_return_home / cancel_return_home,
+//                          B dropped; snap only                       (opt_0)
+//   B  bind      KeyH   → go_home
 
-// Post attribute syntax is ordered changes 5–6; the "declares" comments below
-// are what the generated sections expand from.
-
-/// The identity the posts track across a descent: snapped before the child
-/// dispatches, compared (kept arm) or reported (dropped arms) after.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct ChildId(u64);
-
+#[derive(Clone, Copy)]
 struct TimerId(u64);
 
 impl TimerId {
@@ -156,94 +130,82 @@ impl TimerId {
     }
 }
 
-/// Owning half of a scheduled timer; dropping it is cancelling.
 struct TimerGuard {
     id: TimerId,
 }
 
-/// The state the rearm post writes: each key while the child survives replaces
-/// the guard, pushing the return-home deadline out.
-struct AndReturnHome {
-    guard: TimerGuard,
+struct A {
+    b: B,
 }
 
-/// Declares nothing of its own in the demo; `outer` is its #[resolve_into]
-/// child.
-struct Root {
-    outer: Outer,
-}
-
-/// Declares:
-///   bind  KeyA   → outer_handler                                   (opt_2)
-///   post  AnyKey → after_child_ok | after_child_dropped,
-///                   pre-descent snap: snap_child_id                 (opt_0)
-///   post  AnyKey → rearm, kept arm only                             (opt_1)
-/// `inner` is the #[resolve_into] child; `return_home` is what rearm writes.
-struct Outer {
-    inner: Inner,
-    return_home: AndReturnHome,
-}
-
-/// Declares:
-///   bind  KeyA → inner_handler                                      (opt_0)
-/// Deeper than Outer's KeyA bind, so when Inner is active its claim wins.
-struct Inner {
-    id: ChildId,
+struct B {
+    return_home: TimerGuard,
 }
 
 enum DemoEffect {
-    LogDestroyed(ChildId),
     ScheduleTimer(TimerId),
-    SetLayerHome,
+    CancelTimer(TimerId),
+    FlashOverlay,
 }
 
-/// The Bindings marker: in real code `M: Bindings<Output = Vec<DemoEffect>>`.
+/// The Bindings marker: `M: Bindings<Output = Vec<DemoEffect>>`.
 struct M;
+```
 
-fn log_destroyed(id: ChildId) -> DemoEffect {
-    DemoEffect::LogDestroyed(id)
+The handlers and posts, all user-written:
+
+```rust
+/// B's bind: go home. The layer is replaced, so B and the guard it holds drop.
+fn go_home<'a>(
+    _ev: &KeyEvent,
+    path: BPath<'a>,
+) -> (Vec<DemoEffect>, Completed<BPath<'a>>) {
+    (vec![], path.into_parent().complete()) // Up(a)
 }
 
-fn arm_return_home() -> (TimerGuard, DemoEffect) {
-    let id = TimerId::fresh();
-    (TimerGuard { id }, DemoEffect::ScheduleTimer(id))
+/// A's bind: fires only when nothing deeper claimed the key.
+fn flash<'a>(
+    _ev: &KeyEvent,
+    path: APath<'a>,
+) -> (Vec<DemoEffect>, Completed<APath<'a>>) {
+    (vec![DemoEffect::FlashOverlay], path.complete())
 }
 
-fn snap_child_id(_ev: &KeyEvent, outer: &OuterPath<'_>) -> ChildId {
-    outer.get().inner.id
+/// A's post while B is alive: any key pushes B's return-home deadline out.
+fn rearm(a: &mut A) -> Vec<DemoEffect> {
+    let fresh = TimerId::fresh();
+    let old = core::mem::replace(&mut a.b.return_home, TimerGuard { id: fresh });
+    vec![DemoEffect::CancelTimer(old.id), DemoEffect::ScheduleTimer(fresh)]
 }
 
-fn after_child_ok(id: ChildId, outer: &mut OuterPath<'_>) -> Vec<DemoEffect> {
-    debug_assert_eq!(outer.get().inner.id, id);
-    vec![]
+/// A's pre: runs before descending into B, while B still exists.
+fn snap_return_home(_ev: &KeyEvent, a: &A) -> TimerId {
+    a.b.return_home.id
 }
 
-fn after_child_dropped(id: ChildId) -> Vec<DemoEffect> {
-    vec![log_destroyed(id)]
-}
-
-fn rearm(outer: &mut OuterPath<'_>) -> Vec<DemoEffect> {
-    let (guard, schedule) = arm_return_home();
-    outer.get_mut().return_home.guard = guard;
-    vec![schedule]
+/// A's post when B dropped: the snap is all that is left of the timer.
+fn cancel_return_home(id: TimerId) -> Vec<DemoEffect> {
+    vec![DemoEffect::CancelTimer(id)]
 }
 ```
 
-## Generated: Inner
+The user never writes an arm match and never sees `Stop`: which body runs on which arm is declared (`post` = alive, `pre_post` = dropped) and the macro emits the arms.
+
+## Generated: B
 
 ```rust
-impl Dispatch<M> for Inner {
+impl Dispatch<M> for B {
     fn dispatch<'a, 'c>(
-        path: InnerPath<'a>,
+        path: BPath<'a>,
         event: &M::Event,
         effs: &mut M::Output,
         claim: &mut Claim<'c>,
-    ) -> Completed<InnerPath<'a>>
+    ) -> Completed<BPath<'a>>
     where
         Self: 'a,
     {
         let opt_0: Option<&KeyEvent> = if let Ok(ev) = TryFrom::try_from(event) {
-            let trigger = KeyA;
+            let trigger = KeyH;
             if EventTrigger::is_matching(&trigger, ev) {
                 Some(ev)
             } else {
@@ -255,38 +217,38 @@ impl Dispatch<M> for Inner {
 
         if let Some(ev) = opt_0 {
             if claim.try_take().is_some() {
-                let (e, completed) = inner_handler(ev, path);
+                let (e, completed) = go_home(ev, path);
                 effs.extend(e);
                 return completed;
             }
         }
 
-        ::laserbeam::Complete::complete(path) // Here(inner)
+        ::laserbeam::Complete::complete(path) // Here(b)
     }
 }
 ```
 
-## Generated: Outer
+## Generated: A
 
 ```rust
-impl Dispatch<M> for Outer
+impl Dispatch<M> for A
 where
-    Inner: Dispatch<M>,
+    B: Dispatch<M>,
 {
     fn dispatch<'a, 'c>(
-        path: OuterPath<'a>,
+        path: &'a mut A,
         event: &M::Event,
         effs: &mut M::Output,
         claim: &mut Claim<'c>,
-    ) -> Completed<OuterPath<'a>>
+    ) -> Completed<&'a mut A>
     where
         Self: 'a,
     {
-        // Pre-descent snaps: the schedule is final before the child runs.
-        let opt_0: Option<ChildId> = if let Ok(ev) = TryFrom::try_from(event) {
+        // Pre-descent: snaps and the schedule, final before B runs.
+        let opt_0: Option<TimerId> = if let Ok(ev) = TryFrom::try_from(event) {
             let trigger = AnyKey;
             if EventTrigger::is_matching(&trigger, ev) {
-                Some(snap_child_id(ev, &path))
+                Some(snap_return_home(ev, path))
             } else {
                 None
             }
@@ -301,7 +263,7 @@ where
         };
 
         let opt_2: Option<&KeyEvent> = if let Ok(ev) = TryFrom::try_from(event) {
-            let trigger = KeyA;
+            let trigger = KeyEsc;
             if EventTrigger::is_matching(&trigger, ev) {
                 Some(ev)
             } else {
@@ -311,89 +273,36 @@ where
             None
         };
 
-        let inner_path = laserbeam::PathMut::from_fn(
-            path,
-            |p: &mut OuterPath<'a>| &mut p.get_mut().inner,
-            |p: &OuterPath<'a>| &p.get().inner,
-        );
+        let b_path = laserbeam::PathMut::from_fn(path, |a| &mut a.b, |a| &a.b);
 
-        match Inner::dispatch(inner_path, event, effs, claim).into_inner() {
-            Stop::Here(inner_path) => {
-                let mut path = inner_path.into_parent();
-                if let Some(id) = opt_0 {
-                    effs.extend(after_child_ok(id, &mut path));
-                }
+        match B::dispatch(b_path, event, effs, claim).into_inner() {
+            Stop::Here(b_path) => {
+                let path = b_path.into_parent();
                 if opt_1 {
-                    effs.extend(rearm(&mut path));
+                    effs.extend(rearm(path));
                 }
                 if let Some(ev) = opt_2 {
                     if claim.try_take().is_some() {
-                        let (e, completed) = outer_handler(ev, path);
+                        let (e, completed) = flash(ev, path);
                         effs.extend(e);
                         return completed;
                     }
                 }
-                ::laserbeam::Complete::complete(path) // Here(outer)
-            }
-            Stop::Up(rest) => match rest.into_inner() {
-                Stop::Here(path) => {
-                    // Leave stopped at Outer: child dropped, Outer lives.
-                    if let Some(id) = opt_0 {
-                        effs.extend(after_child_dropped(id));
-                    }
-                    ::laserbeam::Complete::complete(path)
-                }
-                Stop::Up(above) => {
-                    // Outer dropped too: pre-descent snaps only.
-                    if let Some(id) = opt_0 {
-                        effs.extend(after_child_dropped(id));
-                    }
-                    Completed::up(above)
-                }
-            },
-        }
-    }
-}
-```
-
-## Generated: Root
-
-```rust
-impl Dispatch<M> for Root
-where
-    Outer: Dispatch<M>,
-{
-    fn dispatch<'a, 'c>(
-        path: &'a mut Root,
-        event: &M::Event,
-        effs: &mut M::Output,
-        claim: &mut Claim<'c>,
-    ) -> Completed<&'a mut Root>
-    where
-        Self: 'a,
-    {
-        let outer_path = laserbeam::PathMut::from_fn(
-            path,
-            |r: &mut Root| &mut r.outer,
-            |r: &Root| &r.outer,
-        );
-
-        match Outer::dispatch(outer_path, event, effs, claim).into_inner() {
-            Stop::Here(outer_path) => {
-                let mut path = outer_path.into_parent();
-                // root's own binds, claim-gated, as at any node
                 ::laserbeam::Complete::complete(path)
             }
-            Stop::Up(root_path) => {
-                // The leave stopped at the root; it cannot go higher.
-                ::laserbeam::Complete::complete(root_path)
+            Stop::Up(path) => {
+                // B dropped; the leave stopped here at the root.
+                if let Some(id) = opt_0 {
+                    effs.extend(cancel_return_home(id));
+                }
+                ::laserbeam::Complete::complete(path)
             }
         }
     }
 }
 ```
 
-The root's `Up` payload is the bare `&mut Root` (its parent slot in the child's nest), and its own return wraps the bare path. Nothing about the root is a special case in the trait.
+A deeper tree gets the three-arm match from Model: alive posts in both live arms, snap-only posts in the gone-above arm, `Completed::up(above)` forwarding.
 
 ## Free dispatch
 
@@ -419,41 +328,45 @@ where
 
 ## Walks
 
-### KeyA, inner kills to root
+### KeyH: B goes home
 
 ```text
-Inner:  claim take; handler returns path.into_parent().into_parent().complete()
-        → Up(Up(root))
-Outer:  into_inner → Up(rest); rest.into_inner → Up(root_path)
-        after_child_dropped(snap); return Completed::up(root_path)
-Root:   into_inner → Up(root_path); return root_path.complete()
+B:  claim take; go_home returns path.into_parent().complete() → Up(a)
+A:  Up(path); cancel_return_home(snapped id) → [CancelTimer]
+    return path.complete()
 ```
 
-### KeyB, no kill
+The timer armed by the dead layer is cancelled from the snap, which is the only place its id survived.
+
+### Any other key: B stays
 
 ```text
-Inner:  fallthrough → Here(inner)
-Outer:  Here(inner) → path = inner.into_parent(); after_child_ok, rearm,
-        maybe exclusive; return path.complete()
-Root:   Here(outer) → path = outer.into_parent(); return path.complete()
+B:  fallthrough → Here(b)
+A:  Here(b) → path = b.into_parent(); rearm(path)
+    → [CancelTimer(old), ScheduleTimer(fresh)]
+    KeyEsc additionally: flash claims → [FlashOverlay], returns Here
 ```
+
+`rearm` runs whether or not anything claimed: posts are scheduled by their trigger, not by the claim.
 
 ## Rules
 
 1. No stubs.
-2. Arms `Here` / `Up`; three outcomes at a parent via two nested `into_inner` matches; the no-inspection form forwards `rest` unchanged.
+2. Arms `Here` / `Up`; three outcomes at a non-root parent via two nested `into_inner` matches; the no-inspection form forwards `rest` unchanged.
 3. Every dispatch returns `Completed<Self::Path>` (derived levels: `Completed<Self::Parent>`); no ascent associated type.
 4. Opts are snapped before descent; the schedule is final; ascent runs every scheduled post.
 5. Every bind handler runs behind the claim and returns `(effects, Completed<Self::Path>)`; staying put is `path.complete()`. Posts return effects only.
-6. Claim separate; one exclusive handler per dispatch.
-7. path-peel-complete ships first, including `Completed::up`.
+6. The user writes triggers, handlers, pres, and posts; the macro writes every arm match. `Stop` never appears in user code.
+7. Claim separate; one exclusive handler per dispatch.
+8. path-peel-complete ships first, including `Completed::up`.
 
 ## Tests
 
-- KeyA / KeyB walks on the Inner/Outer/Root expansion
-- three-arm coverage at Outer (kept / stopped-here / gone-above)
-- claim trap door
-- root binds fire in the Here arm, claim-gated
+- KeyH / any-key walks on the A/B expansion, asserting the exact effect
+  sequences above
+- three-arm coverage on a three-level tree (kept / stopped-at-mid / gone-above)
+- claim trap door: KeyEsc bound at A fires only when B did not claim
+- posts fire without a claim (rearm on an unbound key)
 
 ## Ordered changes
 
@@ -467,6 +380,6 @@ Skeletal; flesh out after the design above is agreed. Prefactors first, each ind
 
 ### 4 — bind handlers return `(effects, Completed<Path>)`, claim-gated; staying put is `path.complete()`; kill = extra `into_parent`
 
-### 5 — `#[post]` on the three arms (kept / stopped-here / gone-above)
+### 5 — `#[post]` (alive arms, live path) and `#[pre_post]` (dropped arms, snap only)
 
-### 6 — `#[pre_post]` pre-snaps; `Here`-only path-mutation posts
+### 6 — Here-only path-mutation posts and any remaining arm refinements
