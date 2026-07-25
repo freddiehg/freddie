@@ -1,12 +1,12 @@
 # Invalidation: descent schedules, ascent runs posts
 
-Not done. Prefactor `path-peel-complete.md`: landed. Invalidation change "Claim + effs sink, drop ControlFlow" (22e5580): landed. Every "before" below is the code on disk after that commit. Every new type and generated shape below is compile-checked in the design scratch against the real laserbeam.
+Not done. Prefactor `path-peel-complete.md`: landed. Invalidation change "Claim + effs sink, drop ControlFlow" (22e5580): landed. Changes 0–3: landed (fa2f155, 74e8077, 7b19f86, 2f6c083); every "before" below is the code on disk after 2f6c083. Changes 1–3's types and generated shapes were compile-checked in the design scratch; the route-enum section is not yet. Change 5 is blocked until "Derived levels" is written.
 
 Descent schedules which posts run. That set is final. Ascent runs every scheduled post.
 
 ## Model
 
-Every node's dispatch returns `Completed<Self::Path<'a>>`, root included. Between nodes, the protocol is the child's `Completed` and its `Stop` arms. Inside a node, dispatch is one linear, kind-blind body:
+Every place node's dispatch returns `Completed<Self::Path<'a>>`, root and route-parented nodes included (derived levels: "Derived levels"). Between nodes, the protocol is the child's `Completed` and its `Stop` arms. Inside a node, dispatch is one linear, kind-blind body:
 
 ```text
 opts        one local per scheduled attribute, source order, snapped before descent
@@ -188,83 +188,100 @@ where
 }
 ```
 
-## Landed baseline
+## Route enums
 
-`bind/src/lib.rs` already holds `Claim` (which gains only `reborrow`, in change 2), the final `Dispatch` and `DispatchIntoParent` signatures, and the free `dispatch` (whose return changes in change 2: the `!effs.is_empty()` half of its condition was never asked for and is wrong, since posts emit effects on unclaimed keys).
+A multi-parent child's parent slot is a route enum, and the consumer hand-writes both directions: the route enum (exists today) plus an Up enum and a one-line `Above` impl (change 4). The Up payload records which route the leave took and how far it went, one variant per parent, each carrying that parent's own `Completed`:
 
 ```rust
-/// One exclusive bind handler per dispatch: the first to `try_take` wins.
-pub struct Claim<'c> {
-    slot: &'c mut Option<()>,
+// tests/common/mod.rs, beside TitleParent (change 4)
+pub enum TitleParentUp<'a> {
+    Album(Completed<AlbumPath<'a>>),
+    Song(Completed<SongPath<'a>>),
 }
 
-impl<'c> Claim<'c> {
-    pub fn new(slot: &'c mut Option<()>) -> Self {
-        Self { slot }
-    }
-
-    pub const fn is_taken(&self) -> bool {
-        self.slot.is_some()
-    }
-
-    /// `Some(())`: you won the claim. `None`: someone already has it.
-    pub const fn try_take(&mut self) -> Option<()> {
-        if self.slot.is_some() {
-            None
-        } else {
-            *self.slot = Some(());
-            Some(())
-        }
-    }
+impl<'a> Above for TitleParent<'a> {
+    type Up = TitleParentUp<'a>;
 }
+```
 
-pub trait Dispatch<M: Bindings>: Place {
-    fn dispatch<'a, 'c>(
-        path: Self::Path<'a>,
-        event: &M::Event,
-        effs: &mut M::Output,
-        claim: &mut Claim<'c>,
-    ) -> ::laserbeam::Completed<Self::Path<'a>>
-    where
-        Self: 'a,
-        Self::Path<'a>: ::laserbeam::HasStop;
-}
+Everything else composes from existing impls, so laserbeam changes not at all: `TitlePath: HasStop` via the blanket `impl<N, P: Above> HasStop for PathMut<N, P>` (its `Stop` is `Stop<TitlePath, TitleParentUp>`), staying put via the blanket zero-peel `Complete`, `Completed::up` already accepts `Par::Up`, and a root parent's variant would carry `Completed<&'a mut R>`. Route enums nest: `TitleParent: Above` makes `TitlePath: Above`, so a child of `Title` would be an ordinary edge. `compile_fail/route_parent_completed.rs` pins the opposite and is deleted in change 4 (path-peel-complete.md's rule 7 is superseded); the shape pin replaces it, in `tests/complete.rs`:
 
-pub trait DispatchIntoParent<M: Bindings>: HasParent + Sized
-where
-    Self::Parent: ::laserbeam::HasStop,
-{
-    fn dispatch_into_parent(
-        self,
-        event: &M::Event,
-        effs: &mut M::Output,
-        claim: &mut Claim<'_>,
-    ) -> ::laserbeam::Completed<Self::Parent>;
-}
-
-pub fn dispatch<'a, M, N, E>(path: N::Path<'a>, event: &M::Event) -> Option<Vec<E>>
-where
-    M: Bindings<Output = Vec<E>>,
-    N: Dispatch<M> + 'a,
-    N::Path<'a>: ::laserbeam::HasStop,
-{
-    let mut effs: Vec<E> = Vec::new();
-    let mut claim_slot = None;
-    let mut claim = Claim::new(&mut claim_slot);
-    let _completed = <N as Dispatch<M>>::dispatch(path, event, &mut effs, &mut claim);
-    if claim.is_taken() || !effs.is_empty() {
-        Some(effs)
-    } else {
-        None
+```rust
+fn title_shapes<'a>(c: Completed<TitlePath<'a>>) {
+    let stop: Stop<TitlePath<'a>, TitleParentUp<'a>> = c.into_inner();
+    if let Stop::Up(TitleParentUp::Album(rest)) = stop {
+        let _: Stop<AlbumPath<'a>, MediaPath<'a>> = rest.into_inner();
     }
 }
 ```
+
+The macro is told both enum names, since it can derive neither, and the child node marks itself, since its derive cannot tell a route enum from a path alias (both in change 5):
+
+```rust
+#[resolve_into(parent = TitleParent, up = TitleParentUp)]
+pub title: Title,
+
+#[derive(Bind)]
+#[node(parent = TitleParent, route)]
+#[binds(Demo)]
+#[bind(Keyboard("t") => on_title, Keyboard("home") => title_home)]
+pub struct Title {
+    pub hits: u32,
+}
+```
+
+`into_parent()` on a `TitlePath` yields the route enum, which has no `into_parent` of its own, so a leaving handler matches it and wraps one `Up` level by hand. Both arms are live, one per route; `IntoAncestor` / `HasAncestor` still do not cross route enums, so the generic go-home handlers do not bind here:
+
+```rust
+/// Title's leave, on `home`: out through whichever route is live, to the root.
+fn title_home<'x>(
+    _ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, TitlePath<'x>>,
+) -> (Vec<usize>, Completed<TitlePath<'x>>) {
+    match st.state {
+        MaybeInvalidated::NotInvalidated(title) => {
+            let up = match title.into_parent() {
+                TitleParent::Album(album) => TitleParentUp::Album(album.into_parent().complete()),
+                TitleParent::Song(song) => TitleParentUp::Song(song.into_parent().complete()),
+            };
+            (vec![], Completed::up(up))
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![], c),
+    }
+}
+```
+
+The parent-side fold. A route edge's `#state` recovers the variant the descent constructed; the `unreachable!()`s assert exactly what `Edge::recover_parent` and the multi-parent projections assert today, relocated into the fold. In Album's generated dispatch:
+
+```rust
+let mut state = match ::laserbeam::Completed::into_inner(
+    <Title as ::bind::Dispatch<Demo>>::dispatch(#child_path, event, effs, claim),
+) {
+    ::laserbeam::Stop::Here(title) => {
+        let TitleParent::Album(album) = ::bind::HasParent::into_parent(title) else {
+            ::core::unreachable!()
+        };
+        ::laserbeam::MaybeInvalidated::NotInvalidated(album)
+    }
+    ::laserbeam::Stop::Up(up) => {
+        let TitleParentUp::Album(c) = up else { ::core::unreachable!() };
+        ::laserbeam::MaybeInvalidated::Invalidated(c)
+    }
+};
+```
+
+`dispatch_into_parent_impl` emits nothing for a `route` node, as it emits nothing for the root: the trait's `Self::Parent: HasStop` bound cannot hold for a route enum, and the only caller of the place impls is the derived-child descent, which calls `Node` impls.
+
+## Landed baseline
+
+`bind/src/lib.rs` holds `Claim` (with `reborrow`), `AscendState`, `exclusive`, and the free `dispatch` returning `(Vec<E>, bool)` — changes 1–2, landed. Call sites name the effect type the two-argument call cannot infer: `dispatch::<Demo, App, _>(&mut app, &event)`. `Mercury::handle` returns `(Vec<MercuryEffect>, bool)` with the layer rearm gated on the claim; `SimpleRunner::next` returns `Option<(Vec<E>, bool)>` and `process_event` the pair. `Dispatch` and `DispatchIntoParent` still return `Option`; their signature change is change 5's.
 
 The check (`EventHandler` / `DerivedHandler` / `accumulate`) is ignored by this design: it is increasingly at odds with it and is expected to be retired rather than migrated. Same-trigger-at-two-depths needs no static ban; the claim resolves it, deepest first.
 
 ## The demo: `A → B`, everything the user writes
 
-The demo is the acceptance surface, not a change of its own: the handlers and generated bodies are change 4's target, and the tree as declared compiles only after change 5 (`A` uses `#[pre_post]`). Through change 4, its `#[bind]`-only subset stands in.
+The demo is the acceptance surface, not a change of its own: the handlers and generated bodies are change 5's target, and the tree as declared compiles only after change 6 (`A` uses `#[pre_post]`). Through change 5, its `#[bind]`-only subset stands in.
 
 `A` is the root and holds the layer `B`. `B` arms a return-home timer; every key while `B` is up pushes the deadline out; a leave must cancel the timer, because the OS timer outlives the active path and `Drop` cannot emit the cancel. One post owns the whole deadline story by matching the state.
 
@@ -285,7 +302,7 @@ struct TimerGuard {
     id: TimerId,
 }
 
-// #[post] / #[pre_post] are new (change 4); the other attributes are today's
+// #[post] / #[pre_post] are new (change 6); the other attributes are today's
 // derive surface.
 // The deadline post keys on what the descent did, so it is scheduled before
 // the bind (source order).
@@ -472,11 +489,11 @@ The same body serves every node: only the `state` construction differs (leaf: `N
 
 ## bind and bind_macro (before / after)
 
-What changes where: the free `dispatch` return in `bind/src/lib.rs` (change 2); opts emission in `dispatch_impl` (change 3); `dispatch_impl`, `dispatch_body`, `dispatch_into_parent_impl`, `derived_node_impl`, and `derived_enum_node_impl` (change 4); attribute registration and parsing (change 5).
+What changes where: the free `dispatch` return in `bind/src/lib.rs` (change 2, landed); opts emission in `dispatch_impl` (change 3, landed); the trait signatures, `dispatch_impl`, `dispatch_body` (route folds included), `dispatch_into_parent_impl`, `up =` / `route` parsing, `derived_node_impl`, and `derived_enum_node_impl` (change 5); `#[post]` / `#[pre_post]` registration and parsing (change 6).
 
-### Change 2 — free `dispatch`: the claim alone means handled
+### Change 2 (landed) — free `dispatch`: the claim alone means handled
 
-Before (landed):
+Before:
 
 ```rust
 let _completed = <N as Dispatch<M>>::dispatch(path, event, &mut effs, &mut claim);
@@ -506,7 +523,7 @@ where
 
 Consumers (mercury's loop, `SimpleRunner`, tests) perform the effects unconditionally and use the bool for pass-through.
 
-### Change 3 — opts before descent, source order
+### Change 3 (landed) — opts before descent, source order
 
 Before, each check builds its trigger inline, after the recursion, inside `dispatch_impl`'s `checks`:
 
@@ -544,7 +561,59 @@ let opt_N = match ::core::convert::TryFrom::try_from(event) {
 };
 ```
 
-### Change 4 — the linear `Completed` body
+### Change 5 — the linear `Completed` body
+
+The trait signatures in `bind/src/lib.rs`, before (on disk):
+
+```rust
+pub trait Dispatch<M: Bindings>: Place {
+    fn dispatch<'a, 'c>(
+        path: Self::Path<'a>,
+        event: &M::Event,
+        effs: &mut M::Output,
+        claim: &mut Claim<'c>,
+    ) -> Option<Self::Path<'a>>
+    where
+        Self: 'a;
+}
+
+pub trait DispatchIntoParent<M: Bindings>: HasParent + Sized {
+    fn dispatch_into_parent(
+        self,
+        event: &M::Event,
+        effs: &mut M::Output,
+        claim: &mut Claim<'_>,
+    ) -> Option<Self::Parent>;
+}
+```
+
+After:
+
+```rust
+pub trait Dispatch<M: Bindings>: Place {
+    fn dispatch<'a, 'c>(
+        path: Self::Path<'a>,
+        event: &M::Event,
+        effs: &mut M::Output,
+        claim: &mut Claim<'c>,
+    ) -> ::laserbeam::Completed<Self::Path<'a>>
+    where
+        Self: 'a,
+        Self::Path<'a>: ::laserbeam::HasStop;
+}
+
+pub trait DispatchIntoParent<M: Bindings>: HasParent + Sized
+where
+    Self::Parent: ::laserbeam::HasStop,
+{
+    fn dispatch_into_parent(
+        self,
+        event: &M::Event,
+        effs: &mut M::Output,
+        claim: &mut Claim<'_>,
+    ) -> ::laserbeam::Completed<Self::Parent>;
+}
+```
 
 `dispatch_impl`, emitted signature and shape, before:
 
@@ -600,6 +669,8 @@ After (the root/non-root split lives in laserbeam's two `Stop::to_maybe_invalida
 .to_maybe_invalidated()
 ```
 
+For a route edge (`#[resolve_into(parent = .., up = ..)]`), `#state` is instead the fold in "Route enums", recovering the descent's variant.
+
 One scheduled block per item, kind-blind; `#rhs` is `::bind::exclusive(#tokens)` for `#[bind]` and the raw tokens otherwise, and the macro looks inside neither:
 
 ```rust
@@ -634,19 +705,13 @@ match ::laserbeam::Completed::into_inner(
 }
 ```
 
-`derived_node_impl` / `derived_enum_node_impl` get the interim migration (their full story is change 6). The fallthrough, before / after:
+For a `#[node(parent = .., route)]` node, no `DispatchIntoParent` impl is emitted (see "Route enums").
 
-```rust
-::core::option::Option::Some(::bind::HasParent::into_parent(node))
-// →
-::laserbeam::Complete::complete(::bind::HasParent::into_parent(node))
-```
-
-and their checks keep the old firing form but end with that same `Complete::complete` instead of `return None`.
+`derived_node_impl` / `derived_enum_node_impl` migrate per "Derived levels", in this same change.
 
 Handler migration, in the same workspace change: every bind handler in mercury and the bind tests goes from `(ev, Node<P, ()>) -> impl IntoIterator<Item = E>` to `(ev, _snap: (), AscendState<P>) -> (Vec<E>, Completed<P>)`, with `st.complete()` where the body stays put.
 
-### Change 5 — `#[post]` / `#[pre_post]` parsing
+### Change 6 — `#[post]` / `#[pre_post]` parsing
 
 Registration, before / after:
 
@@ -688,9 +753,13 @@ impl syn::parse::Parse for PrePost {
 
 All three attribute kinds feed one scheduled list in source order; the differences are confined to parse time (which tokens fill `#pre`, written or synthesized, and whether the rhs gets the `exclusive` wrap). The check is ignored (see Landed baseline), so nothing here touches `claimed_triggers` or `accumulate`.
 
-### Change 6 — derived levels
+### Derived levels (design not yet written)
 
-Derived-level binds migrate to the scheduled shape over `AscendState<Self::Parent>`, and posts across derived-child edges get a story; `DispatchIntoParent`'s `Here` collapse currently hides child-alive from the caller.
+Change 5 is blocked on this section. The design decides what `P` is in a derived handler's `AscendState<P>`, and it must satisfy:
+
+- A derived handler consumes its `Node`, so after a fire there is no parent left to complete: the old firing form cannot end in `Complete::complete`, and the derived edge must hand something back on every branch (the place above folds it into its own `state`). The handler signature change this forces belongs to change 5's workspace-global migration.
+- For a derived level under a derived level, `Self::Parent` is a `Node` (`TabData` in `tests/derived.rs`: `Node<ShellPath, AppData>`), which has no `HasStop`, so `Completed<Self::Parent>` is not well-formed.
+- Posts across derived-child edges get a story; `DispatchIntoParent`'s `Here` collapse currently hides child-alive from the caller.
 
 ## Walks
 
@@ -722,15 +791,16 @@ Posts run whether or not anything claimed: they are scheduled by their trigger, 
 
 1. No stubs.
 2. Between nodes: `Completed` / `Stop`, `Here` / `Up`. Inside a node: the state, built once via `to_maybe_invalidated`, handed to each scheduled item in a fresh `AscendState` (claim reborrowed), re-derived by the generated code from each item's returned `Completed`, completed with `state.complete()`. `Stop` never appears in user code.
-3. Every dispatch returns `Completed<Self::Path>` (derived levels: `Completed<Self::Parent>`); no ascent associated type.
+3. Every place dispatch returns `Completed<Self::Path>`; no ascent associated type. Derived levels: "Derived levels".
 4. Opts are snapped before descent, one per scheduled attribute, in source order. The schedule is final; every scheduled item runs, and its body decides what each state branch means.
 5. Every handler is `(ev, snap, AscendState<P>) -> (Vec<E>, Completed<P>)` (`snap = ()` under the synthesized pre) and returns the call to `.complete()`: staying put is `st.complete()`, leaving is `into_parent()` then `.complete()`, the invalidated arm forwards `c`. `exclusive` is shape-preserving and means not claimed: the claim gate and nothing else. The state a handler receives reflects the item before it, so a post keyed on the descent's outcome is scheduled before any bind.
 6. The claim lives inside `AscendState`; only binds claim. The check is ignored by this design.
 7. Generated code spells laserbeam and bind items fully qualified; handwritten handlers `use laserbeam::{Complete, MaybeInvalidated};` and `use bind::AscendState;`.
+8. Route enums: the consumer hand-writes the route enum, the Up enum, and the `Above` impl; `#[resolve_into(parent = .., up = ..)]` and `#[node(parent = .., route)]` inform the macro; the generated fold recovers the descent's variant and `unreachable!()`s the others; a leave wraps one `Up` level by hand; a `route` node gets no `DispatchIntoParent` impl.
 
 ## Tests
 
-Unit tests on the laserbeam items land with change 1; the rest land with the change that makes them expressible (the full A/B walks: change 5).
+Unit tests on the laserbeam items land with change 1; the rest land with the change that makes them expressible (the full A/B walks: change 6).
 
 - KeyH / any-key walks on the A/B expansion, asserting the exact effect
   sequences above
@@ -740,32 +810,31 @@ Unit tests on the laserbeam items land with change 1; the rest land with the cha
 - pre snap reads pre-descent state even when the descent mutates it
 - a leaving item flips the state to `Invalidated` for later items; the fold
   after a staying item re-derives `NotInvalidated`
+- multi-parent: `t` fires under each route and the fold re-establishes
+  `NotInvalidated`; `home` (`title_home`) leaves through each route and the
+  fold forwards `Invalidated` (change 5)
+- the `Completed<TitlePath>` shape pin (change 4)
 
 ## Ordered changes
 
 One agent, strictly in order: implement each change, get the workspace green, commit, then start the next. The numbering already satisfies every prerequisite. The code deltas live in the labeled additions sections and "bind and bind_macro (before / after)".
 
-### 0 — the standalone `DispatchIntoParent` rename (section above)
+### 0 — the standalone `DispatchIntoParent` rename (landed, fa2f155)
 
-### 1 — laserbeam: `MaybeInvalidated` (+ `complete`), the `to_maybe_invalidated` conversions, `From<&mut R> for Completed<&mut R>`
+### 1 — laserbeam: `MaybeInvalidated` (+ `complete`), the `to_maybe_invalidated` conversions, `From<&mut R> for Completed<&mut R>` (landed, 74e8077)
 
-Pure additions with unit tests; nothing consumes them yet.
+### 2 — bind: `AscendState`, `exclusive`, `Claim::reborrow`; free `dispatch` returns `(Vec<E>, bool)` (landed, 7b19f86)
 
-### 2 — bind: `AscendState`, `exclusive`, `Claim::reborrow`; free `dispatch` returns `(Vec<E>, bool)`
+### 3 — bind_macro: opts before descent, source order, synthesized `|_, _| ()` pre (landed, 2f6c083)
 
-Includes migrating the free `dispatch` consumers (mercury's loop, `SimpleRunner`, tests) in the same change.
+### 4 — route enums: `TitleParentUp` + `Above` beside `TitleParent`; the trybuild negative deleted
 
-### 3 — bind_macro: opts before descent, source order, synthesized `|_, _| ()` pre
+Pure additions plus the flip ("Route enums"); the shape pin lands here. Nothing else consumes the new types until change 5, and the attribute changes (`up =`, `route`), the `home` bind, and `title_home` wait for change 5's handler shape.
 
-Checks keep their firing form; the only behavior change is that triggers and pres read pre-descent state.
+### 5 — bind_macro: trait signatures, the linear `Completed` body, scheduled blocks, `dispatch_into_parent_impl` (skipped for `route` nodes), route folds, `up =` / `route` parsing, derived levels; handler migration in mercury and tests
 
-### 4 — bind_macro: the linear `Completed` body, scheduled blocks, `dispatch_into_parent_impl`, derived interim; handler migration in mercury and tests
+The one big change; it cannot split further because the handler signature change is workspace-global. Blocked until "Derived levels" is written.
 
-The one big change; it cannot split further because the handler signature change is workspace-global.
-
-### 5 — `#[post]` / `#[pre_post]`: registration, parsing, collectors
+### 6 — `#[post]` / `#[pre_post]`: registration, parsing, collectors
 
 Also flips the demo tree and full walks live (the `#[pre_post]` on `A`).
-
-### 6 — derived levels: binds to the scheduled shape; derived-edge posts
-
