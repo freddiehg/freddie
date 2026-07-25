@@ -122,6 +122,16 @@ impl<P: HasStop> Completed<P> {
     }
 }
 
+impl<N, Par: Above> Completed<PathMut<N, Par>> {
+    /// Rebuild "the leave went above this path" from the payload `into_inner`
+    /// handed out: the inverse of unwrapping one `Up` level. A parent that
+    /// inspects its child's leave, finds it went past it, and must still
+    /// return its own `Completed` returns this.
+    pub fn up(above: Par::Up) -> Self {
+        Completed::new(Stop::Up(above))
+    }
+}
+
 /// Complete a leave from origin `O` at this path: wrap the focus into
 /// `Completed<O>` at its chain position.
 ///
@@ -242,6 +252,18 @@ match nav_completed.into_inner() {
 match layer_completed.into_inner() {
     Stop::Here(layer_path) => { /* … */ }
     Stop::Up(app) => { /* app: &mut App */ }
+}
+```
+
+A parent that must distinguish "stopped at me" from "went above me" unwraps one more level, and `Completed::up` rebuilds what the second unwrap consumed:
+
+```rust
+match child_completed.into_inner() {
+    Stop::Here(nav) => nav.into_parent().complete(),
+    Stop::Up(rest) => match rest.into_inner() {
+        Stop::Here(layer) => layer.complete(),      // leave stopped at this node
+        Stop::Up(above) => Completed::up(above),    // gone; forward upward
+    },
 }
 ```
 
@@ -378,7 +400,7 @@ fn g(a: Completed<TitlePath<'_>>) {}               // route parent: no Above
 2. `Completed<P>` is the one leave type, root included; a `PathMut`'s inner layer is `Stop<P, parent's Up>` with the root path bare at the bottom; a root's inner layer is the bare path itself.
 3. Peel is laserbeam `PathMut::into_parent` only; no wrapper around paths.
 4. `complete` is `laserbeam::Complete<O>::complete`, impls only in laserbeam, indexed by peel distance; `O` pinned by the dispatch return type.
-5. Only `complete` constructs a `Completed`; consumers get `into_inner` and nothing else.
+5. `complete` constructs a `Completed`; `Completed::up` rebuilds the one `Up` level `into_inner` unwrapped; nothing else constructs one.
 6. Every node's dispatch returns `Completed<Self::Path>`; a parent returns the `Up` payload unchanged or completes its own leave; a generic handler that completes carries a `HasStop` bound.
 7. Over-peel past root, off-chain `complete` (including a non-root completing a root leave), and route-parented completes do not compile.
 8. Arms: `Here` / `Up`. Nothing is emitted by the bind derive; consumers write `Completed<XPath>` with their existing path aliases.
