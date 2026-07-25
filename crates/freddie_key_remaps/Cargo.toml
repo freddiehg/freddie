@@ -1,0 +1,13 @@
+[package]
+name = "freddie_key_remaps"
+description = "Shareable pure key remaps and dual-role state machines over freddie_keys."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+freddie_keys = { path = "../freddie_keys", version = "0.0.1" }
+
+[lints]
+workspace = true

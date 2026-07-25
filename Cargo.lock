@@ -600,6 +600,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "freddie_key_remaps"
+version = "0.0.1"
+dependencies = [
+ "freddie_keys",
+]
+
+[[package]]
 name = "freddie_keyboard"
 version = "0.0.1"
 dependencies = [
