@@ -15,19 +15,15 @@ scheduled   one identical block per item: call, extend effs, rebind the state
 finish      st.finish()
 ```
 
-Handlers take the event payload and the ascend state. A `#[post]` rhs is taken raw, in the one scheduled shape:
+Every handler, bind or post, has the same signature, the one scheduled shape:
 
 ```rust
-// the scheduled shape: every #[post] rhs, verbatim
 FnOnce(Payload, AscendState<'a, 'c, P>) -> (Vec<E>, AscendState<'a, 'c, P>)
-
-// a bind handler, lifted into it by exclusive
-FnOnce(&Ev, AscendState<'a, 'c, P>) -> (Vec<E>, Completed<P>)
 ```
 
-The state evolves through the schedule. With `#[post(a => b, c => d)]`, `b` can receive `NotInvalidated`, leave (`into_parent().complete()`, placing the result in `Invalidated`), and `d` then receives the invalidated state. Every scheduled item runs; a leave is data in the state, not control flow, and nothing early-returns.
+A handler that stays put hands the state back unchanged. A handler that leaves puts the call to `.complete()` into the state (`Invalidated(path.into_parent().complete())`). The state evolves through the schedule: with `#[post(a => b, c => d)]`, `b` can receive `NotInvalidated`, leave, and `d` then receives the invalidated state. Every scheduled item runs; a leave is data in the state, not control flow, and nothing early-returns.
 
-`#[bind(X => foo)]` desugars to `#[post(X => exclusive(foo))]`, token wrapping and nothing more; the macro never looks inside any rhs. `exclusive` is how the framework controls whether a bind handler is called: `foo` runs iff the state is `NotInvalidated` and the claim is won, and its returned `Completed` is folded back into the state (`reopen`): stayed is `NotInvalidated` again, left is `Invalidated`. A gated state passes through untouched (untouched matters: round-tripping it through a `Completed` would erase `ChildInvalidated`).
+`#[bind(X => foo)]` desugars to `#[post(X => exclusive(foo))]`, token wrapping and nothing more; the macro never looks inside any rhs. `exclusive` means not claimed: it is the claim gate and nothing else, calling `foo` iff the claim is won and handing the state back untouched otherwise. The claim's win is not part of any signature, because winning the claim does not imply `NotInvalidated` (a post can leave without claiming); what each state branch means is the handler's business.
 
 "Invalidated" means off the active path: focus left it. Whether state was also replaced is the handler's business (an enum layer usually swaps; a struct field persists).
 
@@ -84,34 +80,7 @@ impl<N, N2, Q: Above> Stop<PathMut<N, PathMut<N2, Q>>, Completed<PathMut<N2, Q>>
 }
 ```
 
-`HasStop` (landed) gains one associated fn, implemented by its two existing impls; it is what folds a fired handler's `Completed` back into the state:
-
-```rust
-pub trait HasStop: Sized {
-    type Stop;
-    /// Re-open a completed leave from this path into the active-path state.
-    fn reopen(completed: Completed<Self>) -> MaybeInvalidated<Self>;
-}
-
-impl<N, P: Above> HasStop for PathMut<N, P> {
-    type Stop = Stop<PathMut<N, P>, P::Up>;
-    fn reopen(completed: Completed<Self>) -> MaybeInvalidated<Self> {
-        match completed.into_inner() {
-            Stop::Here(path) => MaybeInvalidated::NotInvalidated(path),
-            Stop::Up(rest) => MaybeInvalidated::Invalidated(Completed::up(rest)),
-        }
-    }
-}
-
-impl<'a, R> HasStop for &'a mut R {
-    type Stop = &'a mut R;
-    fn reopen(completed: Completed<Self>) -> MaybeInvalidated<Self> {
-        MaybeInvalidated::NotInvalidated(completed.into_inner())
-    }
-}
-```
-
-And one conversion so `Descend` normalizes an Up payload (bare root path, or already a `Completed`) with one `Into`:
+`HasStop` is unchanged from what landed. One conversion is added so `Descend` normalizes an Up payload (bare root path, or already a `Completed`) with one `Into`:
 
 ```rust
 impl<'a, R> From<&'a mut R> for Completed<&'a mut R> {
@@ -136,24 +105,9 @@ impl<'a, 'c, P: ::laserbeam::HasStop> AscendState<'a, 'c, P> {
         Self { claim, state }
     }
 
+    /// `Some(())`: you won the claim. `None`: someone already has it.
     pub fn claim(&mut self) -> Option<()> {
         self.claim.try_take()
-    }
-
-    /// The bind gate: the path and the claim's remainder, iff nothing is
-    /// invalidated and the claim is won. `Err` hands everything back untouched.
-    pub fn exclusive(self) -> Result<(P, &'a mut Claim<'c>), Self> {
-        let Self { claim, state } = self;
-        match state {
-            ::laserbeam::MaybeInvalidated::NotInvalidated(path) => match claim.try_take() {
-                Some(()) => Ok((path, claim)),
-                None => Err(Self {
-                    claim,
-                    state: ::laserbeam::MaybeInvalidated::NotInvalidated(path),
-                }),
-            },
-            state => Err(Self { claim, state }),
-        }
     }
 
     pub fn finish(self) -> ::laserbeam::Completed<P>
@@ -164,35 +118,53 @@ impl<'a, 'c, P: ::laserbeam::HasStop> AscendState<'a, 'c, P> {
     }
 }
 
-/// Lifts a bind handler into the scheduled shape. The framework decides
-/// whether the handler runs; a fired handler's Completed is folded back into
-/// the state; a gated state passes through untouched.
-pub fn exclusive<Ev, P, E, H>(
+/// The claim gate, and nothing else: the handler has the same signature as
+/// every scheduled item and runs iff the claim is won.
+pub fn exclusive<Payload, P, E, H>(
     handler: H,
-) -> impl for<'a, 'c> FnOnce(&Ev, AscendState<'a, 'c, P>) -> (Vec<E>, AscendState<'a, 'c, P>)
+) -> impl for<'a, 'c> FnOnce(Payload, AscendState<'a, 'c, P>) -> (Vec<E>, AscendState<'a, 'c, P>)
 where
     P: ::laserbeam::HasStop,
-    H: for<'a, 'c> FnOnce(&Ev, AscendState<'a, 'c, P>) -> (Vec<E>, ::laserbeam::Completed<P>),
+    H: for<'a, 'c> FnOnce(Payload, AscendState<'a, 'c, P>) -> (Vec<E>, AscendState<'a, 'c, P>),
 {
-    move |ev, st| match st.exclusive() {
-        Ok((path, claim)) => {
-            let (e, completed) = handler(
-                ev,
-                AscendState::new(::laserbeam::MaybeInvalidated::NotInvalidated(path), &mut *claim),
-            );
-            (e, AscendState::new(P::reopen(completed), claim))
-        }
-        Err(st) => (Vec::new(), st),
+    move |payload, mut st| match st.claim() {
+        Some(()) => handler(payload, st),
+        None => (Vec::new(), st),
     }
 }
-
 ```
 
 ## Landed baseline (no further change)
 
-`bind/src/lib.rs` already holds `Claim` (`try_take` stays if/else because it is `const fn` and `Option::replace` is not const), the final `Dispatch` and `Descend` signatures, and the final free `dispatch`:
+`bind/src/lib.rs` already holds `Claim`, the final `Dispatch` and `Descend` signatures, and the final free `dispatch`:
 
 ```rust
+/// One exclusive bind handler per dispatch: the first to `try_take` wins.
+pub struct Claim<'c> {
+    slot: &'c mut Option<()>,
+}
+
+impl<'c> Claim<'c> {
+    pub fn new(slot: &'c mut Option<()>) -> Self {
+        Self { slot }
+    }
+
+    pub const fn is_taken(&self) -> bool {
+        self.slot.is_some()
+    }
+
+    /// `Some(())`: you won the claim. `None`: someone already has it.
+    /// (if/else rather than `Option::replace`: this is `const fn`.)
+    pub const fn try_take(&mut self) -> Option<()> {
+        if self.slot.is_some() {
+            None
+        } else {
+            *self.slot = Some(());
+            Some(())
+        }
+    }
+}
+
 pub trait Dispatch<M: Bindings>: Place {
     fn dispatch<'a, 'c>(
         path: Self::Path<'a>,
@@ -292,27 +264,35 @@ struct M;
 The handlers, all user-written; every one takes the event payload and the ascend state:
 
 ```rust
-/// B's bind: go home. Everything below root leaves the active path.
+/// B's bind: go home. Everything below root leaves the active path; the
+/// complete() call goes into the state.
 fn go_home<'a, 'c, 'x>(
     _ev: &KeyEvent,
-    st: AscendState<'a, 'c, BPath<'x>>,
-) -> (Vec<DemoEffect>, Completed<BPath<'x>>) {
-    match st.state {
-        MaybeInvalidated::NotInvalidated(b) => (vec![], b.into_parent().complete()), // Up(a)
-        state => (vec![], state.finish()),
-    }
+    mut st: AscendState<'a, 'c, BPath<'x>>,
+) -> (Vec<DemoEffect>, AscendState<'a, 'c, BPath<'x>>) {
+    let state = st.state;
+    st.state = match state {
+        MaybeInvalidated::NotInvalidated(b) => {
+            MaybeInvalidated::Invalidated(b.into_parent().complete()) // Up(a)
+        }
+        other => other,
+    };
+    (vec![], st)
 }
 
-/// A's bind: fires only when nothing deeper claimed the key; stays put.
+/// A's bind: fires only when nothing deeper claimed the key; stays put, so
+/// the state goes back unchanged.
 fn flash<'a, 'c, 'x>(
     _ev: &KeyEvent,
     st: AscendState<'a, 'c, APath<'x>>,
-) -> (Vec<DemoEffect>, Completed<APath<'x>>) {
-    (vec![DemoEffect::FlashOverlay], st.finish())
+) -> (Vec<DemoEffect>, AscendState<'a, 'c, APath<'x>>) {
+    (vec![DemoEffect::FlashOverlay], st)
 }
 
 /// A's pre: runs before descending into B, while the old timer id is live.
-fn snap_return_home(_ev: &KeyEvent, a: &A) -> TimerId {
+/// A pre takes `&Self::Path` at every depth (field access auto-derefs through
+/// the root's `&&mut A` the same as through `&PathMut`).
+fn snap_return_home(_ev: &KeyEvent, a: &APath<'_>) -> TimerId {
     a.b.return_home.id
 }
 
@@ -335,7 +315,7 @@ fn return_home_deadline<'a, 'c, 'x>(
 }
 ```
 
-`Stop` never appears in user code. A bind handler that stays put is `st.finish()`; one that leaves peels and completes; the arms it cannot be called in (the framework gates it to `NotInvalidated`) fall through to `state.finish()`.
+`Stop` never appears in user code. Staying put is handing the state back; leaving is one field write; branches where an action makes no sense pass the state through.
 
 ## Generated: B (target, leaf)
 
@@ -405,7 +385,7 @@ where
         let opt_1: Option<(&KeyEvent, TimerId)> = if let Ok(ev) = TryFrom::try_from(event) {
             let trigger = AnyKey;
             if EventTrigger::is_matching(&trigger, ev) {
-                Some((ev, snap_return_home(ev, path)))
+                Some((ev, snap_return_home(ev, &path)))
             } else {
                 None
             }
@@ -530,7 +510,7 @@ let opt_N = match ::core::convert::TryFrom::try_from(event) {
     ::core::result::Result::Ok(ev) => {
         let trigger = #trigger;
         if ::bind::EventTrigger::is_matching(&trigger, ev) {
-            ::core::option::Option::Some(#payload) // ev, or (ev, #pre(ev, &path))
+            ::core::option::Option::Some(#payload) // ev, or (ev, #pre(ev, &path)); pres take &Self::Path
         } else {
             ::core::option::Option::None
         }
@@ -541,7 +521,7 @@ let opt_N = match ::core::convert::TryFrom::try_from(event) {
 
 ### Change 3 — `AscendState` threading; one scheduled block
 
-bind gains `AscendState`, `exclusive`, `post`; laserbeam gains `MaybeInvalidated` (+ `finish`), `to_maybe_invalidated`, and `HasStop::reopen` (code above). The check emission, before: the change-1 `*effs = collect(..)` form. After, one kind-blind block per scheduled item; `#rhs` is the attribute's rhs tokens, taken raw for `#[post]`/`#[pre_post]` and wrapped as `::bind::exclusive(#tokens)` for `#[bind]`, and the macro never looks inside:
+bind gains `AscendState` and `exclusive`; laserbeam gains `MaybeInvalidated` (+ `finish`) and `to_maybe_invalidated` (code above). The check emission, before: the change-1 `*effs = collect(..)` form. After, one kind-blind block per scheduled item; `#rhs` is the attribute's rhs tokens, taken raw for `#[post]`/`#[pre_post]` and wrapped as `::bind::exclusive(#tokens)` for `#[bind]`, and the macro never looks inside:
 
 ```rust
 if let ::core::option::Option::Some(payload) = opt_N {
@@ -551,7 +531,7 @@ if let ::core::option::Option::Some(payload) = opt_N {
 }
 ```
 
-Every bind handler in mercury and the bind tests migrates: `(ev, Node<P, ()>) -> impl IntoIterator<Item = E>` becomes `(ev, AscendState<P>) -> (Vec<E>, Completed<P>)`, with `st.finish()` where the body stays put.
+Every bind handler in mercury and the bind tests migrates: `(ev, Node<P, ()>) -> impl IntoIterator<Item = E>` becomes the scheduled shape, `(ev, AscendState<P>) -> (Vec<E>, AscendState<P>)`, handing the state back where the body stays put.
 
 ### Change 4 — `#[post]` / `#[pre_post]` parsing
 
@@ -596,20 +576,20 @@ impl syn::parse::Parse for PrePost {
 
 All three attribute kinds feed one scheduled list in source order; the differences are confined to parse time (which payload the opt captures, which wrapper the rhs tokens get). `claimed_triggers` does not change: only `#[bind]` triggers claim, so posts are exempt from the duplicate-trigger check.
 
-### Change 5 — derived-edge posts
+### Change 5 — derived levels
 
-Posts across derived-child edges, where `Descend`'s `Here` collapse currently hides child-alive from the caller.
+Derived-level binds migrate to the scheduled shape over `AscendState<Self::Parent>`, and posts across derived-child edges get a story; `Descend`'s `Here` collapse currently hides child-alive from the caller.
 
 ## Walks
 
 ### KeyH: B goes home
 
 ```text
-B:  exclusive(go_home): gate passes → Up(a); reopen → Invalidated
-    st.finish() → the forwarded Completed
+B:  exclusive(go_home): claim won → state := Invalidated(Up(a))
+    st.finish() → the stored Completed
 A:  st.state = ChildInvalidated(path)
-    exclusive(flash): gated (claim taken) → state untouched
-    post(return_home_deadline): not NotInvalidated → [CancelTimer(snapped)]
+    exclusive(flash): claim already taken → state untouched, flash never runs
+    return_home_deadline: not NotInvalidated → [CancelTimer(snapped)]
     st.finish() → complete(path)
 ```
 
@@ -618,8 +598,8 @@ A:  st.state = ChildInvalidated(path)
 ```text
 B:  fallthrough → Here(b)
 A:  st.state = NotInvalidated(b.into_parent())
-    KeyEsc only: exclusive(flash) fires → [FlashOverlay]; stays → NotInvalidated
-    post(return_home_deadline): NotInvalidated → [CancelTimer(old), ScheduleTimer(fresh)]
+    KeyEsc only: exclusive(flash) fires → [FlashOverlay]; state unchanged
+    return_home_deadline: NotInvalidated → [CancelTimer(old), ScheduleTimer(fresh)]
     st.finish() → complete(path)
 ```
 
@@ -631,9 +611,9 @@ Posts run whether or not anything claimed: they are scheduled by their trigger, 
 2. Between nodes: `Completed` / `Stop`, `Here` / `Up`. Inside a node: `AscendState`, built once via `to_maybe_invalidated`, threaded through every scheduled item, finished with `st.finish()`. `Stop` never appears in user code.
 3. Every dispatch returns `Completed<Self::Path>` (derived levels: `Completed<Self::Parent>`); no ascent associated type.
 4. Opts are snapped before descent, one per scheduled attribute, in source order. The schedule is final; every scheduled item runs, and its body decides what each `MaybeInvalidated` branch means.
-5. Handlers take the event payload and the ascend state. A `#[post]` rhs is the scheduled shape, raw, and may leave by placing its completed in `Invalidated`. A bind handler returns `(effects, Completed)`; `exclusive` gates it and folds the result back (`reopen`). The state a handler receives reflects everything scheduled before it.
+5. Every handler is the scheduled shape, raw, and may leave by placing its completed in `Invalidated`; staying put is handing the state back. `exclusive` means not claimed: it is the claim gate and nothing else. The state a handler receives reflects everything scheduled before it.
 6. The claim lives inside `AscendState`; only binds claim, so posts are exempt from the duplicate-trigger check.
-7. Generated code spells laserbeam and bind items fully qualified; handwritten handlers `use laserbeam::Complete;`.
+7. Generated code spells laserbeam and bind items fully qualified; handwritten handlers `use laserbeam::{Complete, MaybeInvalidated};` and `use bind::AscendState;`.
 
 ## Tests
 
@@ -644,7 +624,8 @@ Posts run whether or not anything claimed: they are scheduled by their trigger, 
 - claim trap door: KeyEsc bound at A fires only when B did not claim
 - posts run without a claim, and on every branch of `MaybeInvalidated`
 - pre snap reads pre-descent state even when the descent mutates it
-- a fired bind that stays is `NotInvalidated` again for later posts (reopen)
+- a fired bind that leaves flips the state to `Invalidated` for later items;
+  one that stays hands it back unchanged
 
 ## Ordered changes
 
@@ -654,8 +635,8 @@ Prefactors first, each independently shippable. The macro deltas per change are 
 
 ### 2 — opts before descent, source order
 
-### 3 — laserbeam `MaybeInvalidated` (+ `finish`), `to_maybe_invalidated`, `HasStop::reopen`; bind `AscendState`, `exclusive`; one scheduled block per item; handler migration
+### 3 — laserbeam `MaybeInvalidated` (+ `finish`), `to_maybe_invalidated`; bind `AscendState`, `exclusive`; one scheduled block per item; handler migration
 
 ### 4 — `#[post]` / `#[pre_post]`: registration, parsing, payload capture
 
-### 5 — derived-edge posts
+### 5 — derived levels: binds to the scheduled shape; derived-edge posts
