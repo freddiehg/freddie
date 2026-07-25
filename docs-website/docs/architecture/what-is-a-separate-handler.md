@@ -18,10 +18,10 @@ An exclusive bind owns the whole of one user action: every state write and every
 
 ## One cross-cutting concern
 
-A `#[post]` or `#[pre_post]` owns one job that cuts across gestures, keyed on its trigger and on whether the descent stayed or left. It never claims, so it runs whether or not a gesture handled the key — which is the point. The return-home deadline is one `pre_post` on the node that owns the timer: snap the old timer id on the way down, rearm on a stay, cancel on a leave. Held-modifier tracking is one root post, because a modifier pressed inside a layer must be tracked even though the layer claimed the key.
+A `#[post]` or `#[pre_post]` owns one job that cuts across gestures, keyed on its trigger and on whether the descent stayed or left. It never claims, so it runs whether or not a gesture handled the key — which is the point. The return-home deadline is one post on the node that owns the timer: on a stay it overwrites the guard with a freshly armed one, and the overwrite is the cancel, because a dropped guard cancels through freddie's cancel channel; on a leave the layer swap already dropped the guard, so it does nothing. Held-modifier tracking is one root post, because a modifier pressed inside a layer must be tracked even though the layer claimed the key.
 
 ```rust
-#[pre_post(AnyKey => (snap_home_timeout, home_deadline))]
+#[post(AnyKey => home_deadline)]
 #[post(AnyKey => track_held_modifiers)]
 ```
 
@@ -43,7 +43,7 @@ A timer bind matches one timer id through a state-reading trigger and applies it
 
 - **A mutation method's implied effects.** `set_layer` hides the overlay, resets jk, opens or closes modifiers, and shows the new layer; those are what the one state write implies, so they belong to the method, not to scheduled items beside it.
 - **A gesture's steps.** Units composed by `and!` share one bind and one claim; they are not schedule slots.
-- **A `TimerGuard`'s `Drop`.** The OS-side cancel on drop is a safety net; the explicit cancel-on-leave lives in the concern's `pre_post`, because `Drop` cannot put an effect into the batch.
+- **A `TimerGuard`'s `Drop`.** Dropping a guard is the cancel — it cancels through freddie's cancel channel — so the rearm's overwrite and a layer swap both cancel by dropping, and no handler carries a cancel step.
 - **A derived child fn.** `app_data` and its kind are resolve inputs that build a level from state; they decide nothing and emit nothing.
 
 ## Where a handler ends

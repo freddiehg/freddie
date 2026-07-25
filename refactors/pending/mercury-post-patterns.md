@@ -99,7 +99,7 @@ Tests, in `crates/bind/tests` on the existing demo tree, landing with the prefac
 
 ```text
 and (prefactor above)        ships now: bind addition + tests
-timed-layer-wrapper.md       the deadline's design (in past; revived at step 2)
+timed-layer-wrapper.md       step 2's tree restructure (in past; its pre/post mechanics superseded)
 invalidation-granularity.md  the general hole (field-granular writes); no longer gates anything here
 multiple-children.md         needs posts-run-regardless
 also-binds / handler-kinds / exclusive-as-post   history; schedule + and replace them
@@ -188,7 +188,7 @@ Each multi-part gesture is one bind whose rhs is an `and` of its units. Effects 
 
 ### Return-home deadline: one owner, above the layers
 
-The design is `refactors/past/timed-layer-wrapper.md`, revived by this step: the four timed layers regroup under one wrapper node that owns the one guard, and the deadline `pre_post` sits on it.
+The tree restructure is `refactors/past/timed-layer-wrapper.md`'s: the four timed layers regroup under one wrapper node that owns the one guard, and the deadline sits on it. That doc's pre/post mechanics predate the landed model and are superseded by what follows.
 
 ```rust
 pub enum Layer {
@@ -211,18 +211,34 @@ pub enum ReturnHomeLayers {
 }
 ```
 
-The wrapper carries the one `pre_post` and the one firing bind; the four leaves lose their `home_timeout` fields, their arming, and their firing closures; an untimed layer is unrepresentable in the deadline's domain, so there is no `Option` snap and no accessor. Placement above the leaves is also what makes the deadline correct: a leaf's own `go_home` claim happens inside the wrapper's descent, so the post sees the leave as `Invalidated` and cancels; scheduled on a leaf it would run before that leaf's binds and rearm a layer about to die, with the cancel lost to the guard's `Drop`.
+The wrapper carries the one deadline post and the one firing bind; the four leaves lose their `home_timeout` fields, their arming, and their firing closures; an untimed layer is unrepresentable in the deadline's domain. Placement above the leaves is what makes the deadline correct: a leaf's own `go_home` claim happens inside the wrapper's descent, so the post sees the leave and does nothing; scheduled on a leaf it would run before that leaf's binds and rearm a layer about to die.
+
+The deadline is a plain `#[post]`, with no pre, because nothing consumes the old timer id: mercury cancels a timer by dropping its guard into freddie's cancel channel, so on a stay the overwrite is the cancel, and on a leave `set_layer`'s swap already dropped the wrapper and its guard. Every mercury timer cancels this way; the deadline is not special. (The A/B demo in `refactors/past/invalidation.md` keeps its `pre_post`: it demonstrates the general mechanism in a world whose cancel is an effect; mercury's is not, and `MercuryEffect` gains no `CancelTimer`.)
 
 ```text
-// on AndReturnHome, the one site
-#[pre_post(AnyKey => (snap_home_timeout, home_deadline))]
+// on AndReturnHome, the one site (AndReturnHomePath<'a> = PathMut<AndReturnHome, LayerPath<'a>>)
+#[post(AnyKey => home_deadline)]
 #[bind(|p| p.get().guard.trigger() => go_home)]
-// pre:  |_, p| p.get().guard.id
-// post: NotInvalidated => cancel old, arm fresh, rewrite p.get_mut().guard
-//       Invalidated    => cancel old
 ```
 
-`Mercury::handle`'s rearm and `Layer::rearm_timeout` are both deleted. The shared exit keys (escape, o, t) staying on the leaves versus lifting onto the wrapper is the follow-up that doc names, as is grouping `Home`/`Typing`.
+```rust
+fn home_deadline<'x>(
+    _ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, AndReturnHomePath<'x>>,
+) -> (Vec<MercuryEffect>, Completed<AndReturnHomePath<'x>>) {
+    match st.state {
+        MaybeInvalidated::NotInvalidated(mut p) => {
+            let (guard, arm) = arm_return_home();
+            p.get_mut().guard = guard;
+            (vec![arm], p.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![], c),
+    }
+}
+```
+
+`Mercury::handle`'s rearm and `Layer::rearm_timeout` are both deleted. The shared exit keys (escape, t) staying on the leaves versus lifting onto the wrapper is the follow-up timed-layer-wrapper.md names, as is grouping `Home`/`Typing`.
 
 ### Overlay
 
@@ -320,7 +336,7 @@ maximize / left_half / ...      and!(place unit, go_home)
 restore_window                  and!(restore unit, go_home)
 and_go_home / and_go_home_from  deleted; and!(unit, go_home) at the bind site
 maybe_pass_through              track_held_modifiers (post) + pass_or_swallow (bind)
-Mercury::handle rearm           the AndReturnHome home_deadline pre_post
+Mercury::handle rearm           the AndReturnHome home_deadline post
 Layer::rearm_timeout            deleted (timed-layer-wrapper.md)
 NavLayer.home_timeout (x4)      deleted; AndReturnHome owns the one guard
 set_layer                       stays (one mutation); a gesture calls it once
@@ -336,7 +352,7 @@ set_layer                       stays (one mutation); a gesture calls it once
 #[derive(Bind)]
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
-#[pre_post(AnyKey => (snap_home_timeout, home_deadline))]
+#[post(AnyKey => home_deadline)]
 #[bind(|p| p.get().guard.trigger() => go_home)]
 pub struct AndReturnHome {
     #[resolve_into]
@@ -416,8 +432,9 @@ set_layer's overlay hide / jk reset / open-close / ShowLayer
     one mutation's implied effects; not scheduled items
 
 TimerGuard Drop cancel
-    OS cancel; the home_deadline pre_post is the explicit cancel-on-leave form
-    for the idle timer (Drop alone cannot push CancelTimer into the batch)
+    the cancel: a dropped guard cancels through freddie's cancel channel, so
+    the rearm's overwrite and set_layer's swap both cancel by dropping, and
+    no CancelTimer effect exists
 
 app_data / site_data
     resolve inputs, not handlers
@@ -436,7 +453,7 @@ windows.placing / restoring
    focus_address_bar / new_chat / spotlight, window_N, and the place keys
    become and(..) binds of their units
 2. the AndReturnHome restructure per timed-layer-wrapper.md: the wrapper node
-   with the one guard and the home_deadline pre_post; the four timer fields,
+   with the one guard and the home_deadline post; the four timer fields,
    arming sites, and firing closures deleted; the Mercury::handle rearm and
    Layer::rearm_timeout deleted
 3. track_held_modifiers as root post; slim pass_or_swallow
@@ -445,4 +462,4 @@ windows.placing / restoring
 
 The change-5 migration already landed the signatures; fat handlers keep their bodies until step 1.
 
-The acceptance test for the whole migration: every multi-part gesture in `crates/mercury/src/handlers/` is one `and(..)` bind and no gesture is split across schedule slots; exactly one `TimerGuard` for return-home exists, on `AndReturnHome`, and no rearm exists outside its `pre_post`; `and_go_home` does not exist; `Mercury::handle` is only dispatch.
+The acceptance test for the whole migration: every multi-part gesture in `crates/mercury/src/handlers/` is one `and(..)` bind and no gesture is split across schedule slots; exactly one `TimerGuard` for return-home exists, on `AndReturnHome`, and no rearm exists outside its `home_deadline` post; `and_go_home` does not exist; `Mercury::handle` is only dispatch.
