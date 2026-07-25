@@ -2,7 +2,7 @@
 //! pass/remap/drop decision, the modifier flags) are unit-tested below; the tap
 //! and the posting are FFI that needs a real keyboard to exercise.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher, RandomState};
 use std::sync::mpsc;
@@ -192,16 +192,34 @@ impl Tag {
     }
 }
 
-fn press_of(kind: CGEventType, event: &CGEvent) -> Option<PressType> {
+/// Keycode from a keyboard event, if it fits in `u16`.
+fn keycode(event: &CGEvent) -> Option<CGKeyCode> {
+    u16::try_from(event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE)).ok()
+}
+
+/// Press type for `kind`/`key`. For `CapsLock`, `caps_down` tracks physical hold: `AlphaShift` is a
+/// latch, not a hold bit, so flag-based up/down is wrong for dual-role.
+fn press_of_key(
+    kind: CGEventType,
+    event: &CGEvent,
+    key: Key,
+    caps_down: &Cell<bool>,
+) -> Option<PressType> {
     match kind {
         CGEventType::KeyDown => Some(PressType::Down),
         CGEventType::KeyUp => Some(PressType::Up),
-        // A modifier: down if its flag bit is set after the change.
+        CGEventType::FlagsChanged if key == Key::CapsLock => {
+            if caps_down.get() {
+                caps_down.set(false);
+                Some(PressType::Up)
+            } else {
+                caps_down.set(true);
+                Some(PressType::Down)
+            }
+        }
+        // Other modifiers: down if its flag bit is set after the change.
         CGEventType::FlagsChanged => {
-            let code =
-                u16::try_from(event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE))
-                    .ok()?;
-            let flag = flag_for(from_code(code))?;
+            let flag = flag_for(key)?;
             Some(if event.get_flags().contains(flag) {
                 PressType::Down
             } else {
@@ -323,29 +341,31 @@ fn run_tap(
             let _ = signal.send(Err(()));
             return;
         };
+        // CapsLock AlphaShift is a latch, not a hold. Track physical down ourselves.
+        let caps_down = Cell::new(false);
         let outcome = CGEventTap::with_enabled(
             CGEventTapLocation::Session,
-            CGEventTapPlacement::TailAppendEventTap,
+            // Head so Drop can stop CapsLock before the OS latches AlphaShift.
+            CGEventTapPlacement::HeadInsertEventTap,
             CGEventTapOptions::Default,
             vec![
                 CGEventType::KeyDown,
                 CGEventType::KeyUp,
                 CGEventType::FlagsChanged,
             ],
-            |_proxy, kind, event| {
+            move |_proxy, kind, event| {
                 if tag.marks(event) {
                     return CallbackResult::Keep; // our own emit
                 }
-                let Some(press) = press_of(kind, event) else {
+                let Some(code) = keycode(event) else {
                     return CallbackResult::Keep;
                 };
-                let Ok(code) = u16::try_from(
-                    event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE),
-                ) else {
+                let key = from_code(code);
+                let Some(press) = press_of_key(kind, event, key, &caps_down) else {
                     return CallbackResult::Keep;
                 };
                 let input = KeyEvent {
-                    key: from_code(code),
+                    key,
                     press,
                     // The modifiers the source baked onto this event. A modifier delivered as a
                     // flag rather than as its own key (an injected `cmd`-`v`, or `fn`) lives only
