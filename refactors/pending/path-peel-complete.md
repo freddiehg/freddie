@@ -90,6 +90,39 @@ Step<C, Step<B, Root>>::Out            = Result<Step<B, Root>, Result<Root, Root
 
 Value-level pack/`complete` must return exactly that associated type (`after_first_peel` sets `Rest = Parent::Out` so `Pack::Out = <Step<N,Parent> as AscentOut>::Out`).
 
+### How we name it
+
+Do **not** name the expanded nest (`Result<OuterPath, Result<RootPath, …>>`) in user or derive signatures. Name it by the path the leave started from.
+
+```rust
+/// Opaque (or transparent) doll for a leave that started at path type `P`.
+pub type AscentOf<P> = <P as AscentOut>::Out;
+
+// or newtype so the Result is private:
+pub struct Ascent<P: AscentOut> {
+    doll: P::Out,
+}
+```
+
+| Role | Name |
+| --- | --- |
+| Trait on the path spine | `AscentOut` |
+| Associated type (raw nest) | `Out` (only behind `AscentOf` / `Ascent`) |
+| Leave started at child path | `AscentOf<ChildPath>` or `Ascent<ChildPath>` |
+| Leave started at this node | `AscentOf<Self::Path<'a>>` or node alias below |
+| Per-node derive alias | `type Ascent<'a> = AscentOf<<Self as Place>::Path<'a>>` |
+
+```rust
+// posts / unpack — child return type
+fn after_child(ascent: AscentOf<InnerPath<'_>>, …) { … }
+
+// Dispatch
+type Ascent<'a> = AscentOf<Self::Path<'a>>;
+// expands to Result<OuterPath<'a>, RootPath<'a>> for Inner, but nobody writes that by hand
+```
+
+`Step::Here` / `Step::Up` unpack `AscentOf<ChildPath>` without spelling the nest. The nest shows up in `AscentOut` impls and in `Pack::Out` proofs only.
+
 ## Simpler path (this prefactor)
 
 No projections, no `get_mut`. Only peel:
