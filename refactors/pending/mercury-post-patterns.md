@@ -32,15 +32,17 @@ Leave is data (`Invalidated`); every later item still runs and sees it. That is 
 What a unit touches decides its reach, and its reach decides its shape:
 
 ```text
-pure effect            (vec![eff], st.complete())                    branch-free, any state
-its own node           match: NotInvalidated => get_mut(); Invalidated => forward `c`
-the root               st.state.into_ancestor::<MercuryPath>(),      branch-free
-                       one mutation, root.complete()                 (completed-ancestors)
-a mid-level ancestor   st.state.try_into_ancestor::<..>():           Ok ends at the target,
+pure effect              (vec![eff], st.complete())                  branch-free, any state
+its own node             match: NotInvalidated => get_mut(); Invalidated => forward `c`
+an ancestor, staying     match: NotInvalidated => p.ancestor_mut::<MercuryPath>(),
+                         mutate, p.complete()                        (ancestor_mut prefactor)
+the root, ending there   st.state.into_ancestor::<MercuryPath>(),    branch-free
+                         one set_layer, root.complete()              (completed-ancestors)
+a mid-level ancestor     st.state.try_into_ancestor::<..>():         Ok ends at the target,
                                                                      Err forwards the leave
 ```
 
-`foreground`, `windows`, `typing_state.held`, and `set_layer` all live on the root, so "mutate the root and stay in the layer" does not exist as a shape: a root-touching unit consumes to the root and completes there, which flips the state to `Invalidated` for whatever runs after it inside the same gesture or schedule. That is harmless, because every later unit on such a key is effect-only or root-level itself. The layer is left by `set_layer`, never by the peel.
+A unit that mutates root state but does not end the layer — the overlay family, `mark_navigating`, the place units — reaches up with `ancestor_mut` and hands back `Here`, so the state stays truthful and the deadline post reads a real stay. The root-ending shape belongs to exactly the `set_layer` units: leaving the layer and ending at the root are the same event, so only they flip the state to `Invalidated`, and a later unit seeing `Invalidated` is seeing a genuine layer change. (The change-5 migration shipped `toggle_overlay` in the root-ending shape for want of `ancestor_mut`; step 2 re-shapes it.)
 
 Mutation methods on the root (`set_layer`, `placing`, `hide_overlay`) stay methods: each is one state write and returns the effects that write implies. A gesture calls `set_layer` at most once; calling it twice is two gestures.
 
@@ -80,10 +82,78 @@ Both units receive the same event and the same snap (hence the `Copy` bounds; in
 - `the_second_unit_sees_the_firsts_leave`: `a` leaves, `b` receives `Invalidated` and forwards it; the dispatch's fold re-establishes the parent.
 - `and_nests`: `and(a, and(b, c))` runs all three in order.
 
+## Prefactor: `ancestor_mut`
+
+The mutable mirror of `HasAncestor`, in laserbeam. A path re-projects on every access and holds no live borrow of its node, so a mutable reach to an ancestor is a chain of field reborrows: the path is frozen while the borrow lives and whole again after. This is what lets a unit mutate the root and still hand back `Here` — without it, `toggle_overlay` ends at the root and reports a leave it did not make, and the deadline post cancels a timer for a layer the user is still in.
+
+```rust
+/// Walk up a path to an ancestor by mutable reference, keeping the path.
+///
+/// The mutable mirror of [`HasAncestor`]: the path re-projects on every
+/// access, so this is a field reborrow, and the path is usable again when the
+/// borrow ends. It is how a handler mutates an ancestor and stays.
+pub trait HasAncestorMut<Target>: HasAncestor<Target> {
+    fn ancestor_mut(&mut self) -> &mut Target;
+}
+
+/// Every path is its own ancestor, at depth zero.
+impl<T> HasAncestorMut<T> for T {
+    fn ancestor_mut(&mut self) -> &mut T {
+        self
+    }
+}
+```
+
+`PathMut` gains the one-level building block beside `parent`:
+
+```rust
+    /// The parent, mutably. No borrow of the node is held, so the path is
+    /// whole again when this borrow ends.
+    pub const fn parent_mut(&mut self) -> &mut Parent {
+        &mut self.parent
+    }
+```
+
+The chain macro and the third arm of `ancestor_impls!`, mirroring the two that exist:
+
+```rust
+/// One `parent_mut()` per type parameter, the mutable mirror of `parent_chain!`.
+macro_rules! parent_mut_chain {
+    ($e:expr) => { $e };
+    ($e:expr, $head:ident $(, $rest:ident)*) => {
+        parent_mut_chain!($e.parent_mut() $(, $rest)*)
+    };
+}
+
+// inside ancestor_impls!, beside the HasAncestor and IntoAncestor arms:
+        impl<T, $($acc,)* $head> HasAncestorMut<T> for path_nest!(T $(, $acc)*, $head) {
+            fn ancestor_mut(&mut self) -> &mut T {
+                parent_mut_chain!(self $(, $acc)*, $head)
+            }
+        }
+```
+
+And the sugar, in `PathMut`'s existing inherent block beside `ancestor` / `into_ancestor`:
+
+```rust
+    /// Walk up to `Target` by mutable reference, keeping the path, naming the
+    /// target rather than leaving it to inference.
+    #[must_use]
+    pub fn ancestor_mut<Target>(&mut self) -> &mut Target
+    where
+        Self: HasAncestorMut<Target>,
+    {
+        HasAncestorMut::ancestor_mut(self)
+    }
+```
+
+Tests, beside `ancestor_tests` on its fixture: `ancestor_mut_writes_at_each_depth` (write the root's `hits` through paths at depths zero, one, and two, and use the path again after each borrow ends), and a generic fn bounded on `HasAncestorMut<AppPath>` instantiated at every depth. Ships now, independent of everything else here.
+
 ## Downstream
 
 ```text
-and (prefactor above)   ships now: bind addition + tests
+and (prefactor above)           ships now: bind addition + tests
+ancestor_mut (prefactor above)  ships now: laserbeam addition + tests
 completed-ancestors.md  ships before invalidation change 5
 invalidation change 5   Completed body; handler signature; #[post]/#[pre_post]; derived levels (derived-levels.md)
 invalidation change 6   demo tree + full walks
@@ -123,9 +193,9 @@ tmux_window(N)     Tap(ctrl-a), Tap(shifted digit)
 
 A tap unit never calls `set_layer`. Chrome refresh is `tap_cmd_r` alone; walking tmux with j/k is `tmux_prev` / `tmux_next` alone (repeatable, stays).
 
-### The root-mutating units
+### The staying root-mutators
 
-`mark_navigating` mutates `foreground`, which lives on the root, so it takes the root-consuming shape (a stay-put version cannot exist: `ancestor()` reads by shared reference); `foreground_chrome` is effect-only and runs on any state.
+`mark_navigating` mutates `foreground`, which lives on the root, but the mutation is not a leave, so it reaches up with `ancestor_mut` and hands back `Here`; `foreground_chrome` is effect-only and runs on any state.
 
 ```rust
 fn mark_navigating<'a, E, P>(
@@ -134,14 +204,16 @@ fn mark_navigating<'a, E, P>(
     st: AscendState<'_, P>,
 ) -> (Vec<MercuryEffect>, Completed<P>)
 where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
+    P: HasStop + Complete<P> + HasAncestorMut<MercuryPath<'a>>,
 {
-    // one job: the watcher has not confirmed the new front app yet
-    let root: MercuryPath<'a> = st.state.into_ancestor();
-    root.foreground.start_navigating();
-    (vec![], root.complete())
+    match st.state {
+        MaybeInvalidated::NotInvalidated(mut p) => {
+            // one job: the watcher has not confirmed the new front app yet
+            p.ancestor_mut().foreground.start_navigating();
+            (vec![], p.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![], c),
+    }
 }
 
 fn foreground_chrome<E, P: HasStop + Complete<P>>(
@@ -153,7 +225,7 @@ fn foreground_chrome<E, P: HasStop + Complete<P>>(
 }
 ```
 
-`left_half` / `right_half` / `maximize` / `restore_window` each only touch `windows`, on the root: root-consuming shape, no `set_layer`.
+`left_half` / `right_half` / `maximize` / `restore_window` each only touch `windows`, on the root, and none of them is a leave: the same staying shape, with `go_home` doing the leaving beside them in the `and(..)`.
 
 ### The gestures
 
@@ -220,7 +292,28 @@ toggle_overlay     one gesture; one handler that branches on overlay.is_some()
                    is still one job: toggle
 ```
 
-Dwell fire is only `hide_overlay`. Layer-change hide stays inside `set_layer` (that mutation's implied effect), not a second handler.
+All three mutate overlay state on the root and none is a leave, so all three take the staying `ancestor_mut` shape. Written out for the one the migration got wrong:
+
+```rust
+fn toggle_overlay<'a, E, P>(
+    _ev: &E,
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>)
+where
+    P: HasStop + Complete<P> + HasAncestorMut<MercuryPath<'a>>,
+{
+    match st.state {
+        MaybeInvalidated::NotInvalidated(mut p) => {
+            let effs = p.ancestor_mut().toggle_overlay();
+            (effs, p.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![], c),
+    }
+}
+```
+
+It hands back `Here`, so the deadline post on `AndReturnHome` reads a stay and pushes the deadline out, which is what pressing `o` in a timed layer should do. Dwell fire is only `hide_overlay`. Layer-change hide stays inside `set_layer` (that mutation's implied effect), not a second handler.
 
 ### Root recorders
 
@@ -402,14 +495,17 @@ windows.placing / restoring
 ## Order of work
 
 ```text
-0. Prefactor, ships now: and in bind, with its three tests
-1. (after invalidation change 6) gesture binds via and: delete and_go_home /
-   and_go_home_from; open_*, focus_address_bar / new_chat / spotlight,
-   window_N, and the place keys become and(..) binds of their units
+0. Prefactors, ship now: and in bind; ancestor_mut in laserbeam; each with
+   its tests, each its own commit
+1. gesture binds via and: delete and_go_home / and_go_home_from; open_*,
+   focus_address_bar / new_chat / spotlight, window_N, and the place keys
+   become and(..) binds of their units
 2. the AndReturnHome restructure per timed-layer-wrapper.md: the wrapper node
    with the one guard and the home_deadline pre_post; the four timer fields,
    arming sites, and firing closures deleted; the Mercury::handle rearm and
-   Layer::rearm_timeout deleted
+   Layer::rearm_timeout deleted; the staying root-mutators (toggle_overlay,
+   show/hide_overlay, mark_navigating, the place units) re-shaped onto
+   ancestor_mut so the deadline reads true stay/leave
 3. track_held_modifiers as root post; slim pass_or_swallow
 4. multiple-children when designed
 ```
