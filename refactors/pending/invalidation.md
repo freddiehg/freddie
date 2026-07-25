@@ -1,48 +1,158 @@
 # Invalidation: descent schedules, ascent runs posts
 
-Not done. Prefactor `path-peel-complete.md`: landed. Invalidation change "Claim + effs sink, drop ControlFlow" (22e5580): landed. Every "before" below is the code on disk after that commit.
+Not done. Prefactor `path-peel-complete.md`: landed. Invalidation change "Claim + effs sink, drop ControlFlow" (22e5580): landed. Every "before" below is the code on disk after that commit. The new types and every generated shape below are compile-checked in the design scratch against the real laserbeam.
 
-Descent schedules which pre/posts/binds run. That set is final. Ascent runs every scheduled post.
+Descent schedules which posts run. That set is final. Ascent runs every scheduled post.
 
 ## Model
 
-Every node's dispatch returns `Completed<Self::Path<'a>>`, root included. There is no per-node ascent type and no associated type: the return is the same expression of the node's own path everywhere.
+Every node's dispatch returns `Completed<Self::Path<'a>>`, root included. Between nodes, the protocol is the child's `Completed` and its `Stop` arms. Inside a node, dispatch is one linear, kind-blind body:
 
-A non-root parent sees three outcomes, from two nested `into_inner` matches:
+```text
+opts        one local per scheduled attribute, source order, snapped before descent
+descend     child dispatch → .into_inner().to_maybe_invalidated() → AscendState
+scheduled   one identical block per item: call, extend effs, Break returns, Continue rebinds
+finish      st.finish()
+```
+
+Every scheduled handler takes the event payload and the ascend state, and the one handler shape is:
 
 ```rust
-match Child::dispatch(child_path, event, effs, claim).into_inner() {
-    Stop::Here(child_path) => {
-        // child kept focus; this node's path is child_path.into_parent()
+FnOnce(Payload, AscendState<'a, 'c, P>)
+    -> (Vec<E>, ControlFlow<Completed<P>, AscendState<'a, 'c, P>>)
+```
+
+`Payload` is whatever the item's opt captured (the event; for a pre-snapped post, the event plus the snap). `Break` ends the node's dispatch with a leave; `Continue` hands the state to the next item. Handlers are arbitrary: what each branch of the state means to them is their body's business, and the macro never looks inside the rhs.
+
+`#[bind(X => foo)]` desugars to `#[post(X => exclusive(foo))]`; `exclusive` is an ordinary combinator, opaque to the macro. Since a leave can only be produced by a handler that established the claim, nothing can fire after an invalidation, with no special casing anywhere.
+
+"Invalidated" means off the active path: focus left it. Whether state was also replaced is the handler's business (an enum layer usually swaps; a struct field persists).
+
+## laserbeam additions
+
+`MaybeInvalidated` is active-path semantics, meaningful in a tree with no bindings, so it lives beside `Stop`:
+
+```rust
+/// After a child's leave: this path's situation on the active path.
+pub enum MaybeInvalidated<P: HasStop> {
+    /// The child kept focus; this node's path, recovered.
+    NotInvalidated(P),
+    /// The leave stopped at this node; the child is off the active path.
+    ChildInvalidated(P),
+    /// This node is off the active path too. Carries the node's own completed
+    /// leave, ready to forward, built where the payload existed.
+    Invalidated(Completed<P>),
+}
+
+/// A child of the root: the Up payload is the bare root path.
+impl<'a, N, R> Stop<PathMut<N, &'a mut R>, &'a mut R> {
+    pub fn to_maybe_invalidated(self) -> MaybeInvalidated<&'a mut R> {
+        match self {
+            Stop::Here(child) => MaybeInvalidated::NotInvalidated(child.into_parent()),
+            Stop::Up(root) => MaybeInvalidated::ChildInvalidated(root),
+        }
     }
-    Stop::Up(rest) => match rest.into_inner() {
-        Stop::Here(path) => {
-            // the leave stopped at this node; child dropped, this node lives
+}
+
+/// A child of a non-root: the Up payload is this node's own Completed.
+impl<N, N2, Q: Above> Stop<PathMut<N, PathMut<N2, Q>>, Completed<PathMut<N2, Q>>> {
+    pub fn to_maybe_invalidated(self) -> MaybeInvalidated<PathMut<N2, Q>> {
+        match self {
+            Stop::Here(child) => MaybeInvalidated::NotInvalidated(child.into_parent()),
+            Stop::Up(rest) => match rest.into_inner() {
+                Stop::Here(path) => MaybeInvalidated::ChildInvalidated(path),
+                Stop::Up(above) => MaybeInvalidated::Invalidated(Completed::up(above)),
+            },
         }
-        Stop::Up(above) => {
-            // this node dropped too; forward Completed::up(above)
-        }
-    },
+    }
+}
+
+/// The root's completed leave as a conversion, so `Descend` normalizes an Up
+/// payload (the bare root path, or already a `Completed`) with one `Into`.
+impl<'a, R> From<&'a mut R> for Completed<&'a mut R> {
+    fn from(root: &'a mut R) -> Self {
+        Completed::new(root)
+    }
 }
 ```
 
-The `Up` payload of a child's `Completed` is this node's own `Completed`, so the no-inspection form forwards `rest` unchanged; the inspecting form rebuilds its gone-above arm with `Completed::up`. At the root the child's `Up` payload is the bare root path, so the root sees two arms.
+The two `to_maybe_invalidated` impls are disjoint (`&mut R` never unifies with `PathMut<_, _>` in the parent slot), so the macro emits the same call at every node, root child or not.
 
-"Dropped" means dropped from the active path: focus left it. Whether its state was also replaced is the handler's business (an enum layer usually swaps; a struct field persists); posts key on the active path either way.
+## bind additions
 
-Posts per arm:
+```rust
+/// What every scheduled handler receives beside the event: the claim, and
+/// where this dispatch stands after its child returned.
+pub struct AscendState<'a, 'c, P: ::laserbeam::HasStop> {
+    claim: &'a mut Claim<'c>,
+    pub state: ::laserbeam::MaybeInvalidated<P>,
+}
 
-```text
-Here(child)            child active      → alive posts (live path); own binds (claim-gated)
-Up(Here(this))         child dropped     → dropped posts (snap bodies; this node's path is live)
-Up(Up(above))          this node dropped → dropped posts from pre-descent snaps only
+impl<'a, 'c, P: ::laserbeam::HasStop> AscendState<'a, 'c, P> {
+    pub fn new(state: ::laserbeam::MaybeInvalidated<P>, claim: &'a mut Claim<'c>) -> Self {
+        Self { claim, state }
+    }
+
+    pub fn claim(&mut self) -> Option<()> {
+        self.claim.try_take()
+    }
+
+    /// The bind gate: the path, exclusively claimed, iff nothing is
+    /// invalidated. `Err` hands everything back untouched.
+    pub fn exclusive(self) -> Result<P, Self> {
+        let Self { claim, state } = self;
+        match state {
+            ::laserbeam::MaybeInvalidated::NotInvalidated(path) => match claim.try_take() {
+                Some(()) => Ok(path),
+                None => Err(Self {
+                    claim,
+                    state: ::laserbeam::MaybeInvalidated::NotInvalidated(path),
+                }),
+            },
+            state => Err(Self { claim, state }),
+        }
+    }
+
+    /// The node's return: total, no dead arms.
+    pub fn finish(self) -> ::laserbeam::Completed<P>
+    where
+        P: ::laserbeam::Complete<P>,
+    {
+        match self.state {
+            ::laserbeam::MaybeInvalidated::NotInvalidated(path)
+            | ::laserbeam::MaybeInvalidated::ChildInvalidated(path) => {
+                ::laserbeam::Complete::complete(path)
+            }
+            ::laserbeam::MaybeInvalidated::Invalidated(completed) => completed,
+        }
+    }
+}
+
+/// Lifts a bind handler into the scheduled shape via `AscendState::exclusive`.
+/// `#[bind(X => foo)]` is `#[post(X => exclusive(foo))]`.
+pub fn exclusive<Ev, P, E, H>(
+    handler: H,
+) -> impl for<'a, 'c> FnOnce(
+    &Ev,
+    AscendState<'a, 'c, P>,
+) -> (Vec<E>, ControlFlow<::laserbeam::Completed<P>, AscendState<'a, 'c, P>>)
+where
+    P: ::laserbeam::HasStop,
+    H: FnOnce(&Ev, Node<P, ()>) -> (Vec<E>, ::laserbeam::Completed<P>),
+{
+    move |ev, st| match st.exclusive() {
+        Ok(path) => {
+            let (e, completed) = handler(ev, Node { parent: path, data: () });
+            (e, ControlFlow::Break(completed))
+        }
+        Err(st) => (Vec::new(), ControlFlow::Continue(st)),
+    }
+}
 ```
-
-A bind is not special: `#[bind(X => foo)]` desugars to `#[post(X => exclusive(foo))]`, where `exclusive` is a handler combinator that calls `foo` iff it can establish the claim and otherwise hands the path back. The macro is dumb: scheduled items get one emission shape, and the attribute kind only decides which adapter wraps the rhs tokens (`exclusive(rhs)` for `#[bind]`, `stays(rhs)` for `#[post]`). Binds appear only in the kept arm: an `Up` is only ever produced by a handler, every handler runs inside `exclusive`, so in any `Up` arm the claim is already taken and the wrapper could never fire.
 
 ## Landed baseline (no further change)
 
-`bind/src/lib.rs` already holds `Claim` (`try_take` stays if/else because it is `const fn` and `Option::replace` is not const; `exclusive` is added in change 3), the final `Dispatch` and `Descend` signatures, and the final free `dispatch`:
+`bind/src/lib.rs` already holds `Claim` (`try_take` stays if/else because it is `const fn` and `Option::replace` is not const), the final `Dispatch` and `Descend` signatures, and the final free `dispatch`:
 
 ```rust
 pub trait Dispatch<M: Bindings>: Place {
@@ -91,7 +201,7 @@ The check (`EventHandler` / `DerivedHandler` / `accumulate`) is untouched by eve
 
 ## The demo: `A → B`, everything the user writes
 
-`A` is the root and holds the layer `B`. `B` arms a return-home timer; every key while `B` is up pushes the deadline out; leaving `B` must cancel the timer, because the OS timer outlives the state that armed it and `Drop` cannot emit the cancel.
+`A` is the root and holds the layer `B`. `B` arms a return-home timer; every key while `B` is up pushes the deadline out; a leave must cancel the timer, because the OS timer outlives the active path and `Drop` cannot emit the cancel. One post owns the whole deadline story by matching the state.
 
 ```rust
 type APath<'a> = &'a mut A;
@@ -111,15 +221,13 @@ struct TimerGuard {
 }
 
 // #[bind], #[node], #[binds], #[resolve_into] are today's derive surface.
-// #[post] (alive arms, live path) and #[pre_post] (dropped arms, snap only)
-// are new in change 4. Opts are numbered in source order across all three
-// kinds: a bind is a post that claims, not a special case.
+// #[post] / #[pre_post] are new in change 4. Opts are numbered in source
+// order; #[bind(X => foo)] is #[post(X => exclusive(foo))].
 #[derive(Bind)]
 #[node(root)]
 #[binds(M)]
-#[bind(KeyEsc => flash)]                                               // opt_0
-#[post(AnyKey => rearm)]                                               // opt_1
-#[pre_post(AnyKey => (snap_return_home, cancel_return_home))]          // opt_2
+#[bind(KeyEsc => flash)]                                        // opt_0
+#[pre_post(AnyKey => (snap_return_home, return_home_deadline))] // opt_1
 struct A {
     #[resolve_into]
     b: B,
@@ -143,10 +251,10 @@ enum DemoEffect {
 struct M;
 ```
 
-The handlers and posts, all user-written:
+The handlers, all user-written:
 
 ```rust
-/// B's bind: go home. The layer is replaced, so B and the guard it holds drop.
+/// B's bind: go home. Everything below root leaves the active path.
 fn go_home<'a>(
     _ev: &KeyEvent,
     node: Node<BPath<'a>, ()>,
@@ -162,28 +270,36 @@ fn flash<'a>(
     (vec![DemoEffect::FlashOverlay], node.parent.complete())
 }
 
-/// A's post while B is alive: any key pushes B's return-home deadline out.
-/// `&mut Self::Path` at every depth, root included.
-fn rearm(a: &mut APath<'_>) -> Vec<DemoEffect> {
-    let fresh = TimerId::fresh();
-    let old = core::mem::replace(&mut a.b.return_home, TimerGuard { id: fresh });
-    vec![DemoEffect::CancelTimer(old.id), DemoEffect::ScheduleTimer(fresh)]
-}
-
-/// A's pre: runs before descending into B, while B still exists.
+/// A's pre: runs before descending into B, while the old timer id is live.
 fn snap_return_home(_ev: &KeyEvent, a: &A) -> TimerId {
     a.b.return_home.id
 }
 
-/// A's post when B dropped: the snap is all that is left of the timer.
-fn cancel_return_home(id: TimerId) -> Vec<DemoEffect> {
-    vec![DemoEffect::CancelTimer(id)]
+/// A's post: the whole return-home deadline, one handler over the state.
+/// B on the active path → push the deadline out. Anything invalidated → the
+/// snap is all that is left of the timer; cancel it.
+fn return_home_deadline<'a, 'c, 'x>(
+    (_ev, snapped): (&KeyEvent, TimerId),
+    mut st: AscendState<'a, 'c, APath<'x>>,
+) -> (
+    Vec<DemoEffect>,
+    ControlFlow<Completed<APath<'x>>, AscendState<'a, 'c, APath<'x>>>,
+) {
+    let effects = match &mut st.state {
+        MaybeInvalidated::NotInvalidated(a) => {
+            let fresh = TimerId::fresh();
+            a.b.return_home = TimerGuard { id: fresh };
+            vec![DemoEffect::CancelTimer(snapped), DemoEffect::ScheduleTimer(fresh)]
+        }
+        _ => vec![DemoEffect::CancelTimer(snapped)],
+    };
+    (effects, ControlFlow::Continue(st))
 }
 ```
 
-The user never writes an arm match and never sees `Stop`: which body runs on which arm is declared (`post` = alive, `pre_post` = dropped) and the macro emits the arms.
+`go_home` and `flash` are in the natural bind shape; `#[bind]` wraps them in `exclusive` and they never see the state. `return_home_deadline` is in the scheduled shape directly, matches `&mut st.state` (no moves, no rebuild), and hands `st` on. `Stop` never appears in user code.
 
-## Generated: B (target, after change 4)
+## Generated: B (target, leaf)
 
 ```rust
 impl Dispatch<M> for B {
@@ -207,21 +323,23 @@ impl Dispatch<M> for B {
             None
         };
 
+        let mut st = AscendState::new(MaybeInvalidated::NotInvalidated(path), claim);
+
         if let Some(ev) = opt_0 {
-            let (e, flow) = (::bind::exclusive(go_home))(ev, ::bind::Node { parent: path, data: () }, claim);
+            let (e, flow) = (::bind::exclusive(go_home))(ev, st);
             effs.extend(e);
-            path = match flow {
+            st = match flow {
                 ControlFlow::Break(completed) => return completed,
-                ControlFlow::Continue(p) => p,
+                ControlFlow::Continue(st) => st,
             };
         }
 
-        ::laserbeam::Complete::complete(path) // Here(b)
+        st.finish()
     }
 }
 ```
 
-## Generated: A (target, after change 4)
+## Generated: A (target)
 
 ```rust
 impl Dispatch<M> for A
@@ -237,7 +355,7 @@ where
     where
         Self: 'a,
     {
-        // Pre-descent, in source order: snaps and the schedule, final before B runs.
+        // Opts, source order, snapped before descent: the schedule is final.
         let opt_0: Option<&KeyEvent> = if let Ok(ev) = TryFrom::try_from(event) {
             let trigger = KeyEsc;
             if EventTrigger::is_matching(&trigger, ev) {
@@ -249,21 +367,10 @@ where
             None
         };
 
-        let opt_1: Option<&KeyEvent> = if let Ok(ev) = TryFrom::try_from(event) {
+        let opt_1: Option<(&KeyEvent, TimerId)> = if let Ok(ev) = TryFrom::try_from(event) {
             let trigger = AnyKey;
             if EventTrigger::is_matching(&trigger, ev) {
-                Some(ev)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        let opt_2: Option<TimerId> = if let Ok(ev) = TryFrom::try_from(event) {
-            let trigger = AnyKey;
-            if EventTrigger::is_matching(&trigger, ev) {
-                Some(snap_return_home(ev, path))
+                Some((ev, snap_return_home(ev, path)))
             } else {
                 None
             }
@@ -273,59 +380,41 @@ where
 
         let b_path = laserbeam::PathMut::from_fn(path, |a| &mut a.b, |a| &a.b);
 
-        match B::dispatch(b_path, event, effs, claim).into_inner() {
-            Stop::Here(b_path) => {
-                let mut path = b_path.into_parent();
-                if let Some(ev) = opt_0 {
-                    let (e, flow) = (::bind::exclusive(flash))(ev, ::bind::Node { parent: path, data: () }, claim);
-                    effs.extend(e);
-                    path = match flow {
-                        ControlFlow::Break(completed) => return completed,
-                        ControlFlow::Continue(p) => p,
-                    };
-                }
-                if let Some(ev) = opt_1 {
-                    let (e, flow) = (::bind::stays(rearm))(ev, ::bind::Node { parent: path, data: () }, claim);
-                    effs.extend(e);
-                    path = match flow {
-                        ControlFlow::Break(completed) => return completed,
-                        ControlFlow::Continue(p) => p,
-                    };
-                }
-                ::laserbeam::Complete::complete(path)
-            }
-            Stop::Up(path) => {
-                // B dropped; the leave stopped here at the root.
-                if let Some(id) = opt_2 {
-                    effs.extend(cancel_return_home(id));
-                }
-                ::laserbeam::Complete::complete(path)
-            }
+        let mut st = AscendState::new(
+            B::dispatch(b_path, event, effs, claim).into_inner().to_maybe_invalidated(),
+            claim,
+        );
+
+        if let Some(ev) = opt_0 {
+            let (e, flow) = (::bind::exclusive(flash))(ev, st);
+            effs.extend(e);
+            st = match flow {
+                ControlFlow::Break(completed) => return completed,
+                ControlFlow::Continue(st) => st,
+            };
         }
+
+        if let Some(payload) = opt_1 {
+            let (e, flow) = return_home_deadline(payload, st);
+            effs.extend(e);
+            st = match flow {
+                ControlFlow::Break(completed) => return completed,
+                ControlFlow::Continue(st) => st,
+            };
+        }
+
+        st.finish()
     }
 }
 ```
 
-A deeper tree gets the three-arm match from Model: alive posts in both live arms, snap-only posts in the gone-above arm, `Completed::up(above)` forwarding.
+The same body serves every node: only the `st` construction differs (leaf: `NotInvalidated(path)`; parent: the child call chained through `to_maybe_invalidated`), and that difference is one expression, not a shape.
 
 ## bind_macro (before / after)
 
-### Change 1 — emit `Completed`; forwarding matches
+### Change 1 — emit `Completed`; the linear body
 
-laserbeam gains one impl (compile-checked in the design scratch alongside `Completed::up`), so generated code can normalize an `Up` payload that is either the bare root path or already a `Completed` with one `Into::into`:
-
-```rust
-/// The root's completed leave as a conversion, so generated code normalizes an
-/// `Up` payload (the bare root path, or already a `Completed`) with one
-/// `Into::into`, whichever the parent slot holds.
-impl<'a, R> From<&'a mut R> for Completed<&'a mut R> {
-    fn from(root: &'a mut R) -> Self {
-        Completed::new(root)
-    }
-}
-```
-
-`dispatch_impl`, emitted signature and fallthrough, before:
+`dispatch_impl`, emitted signature and shape, before:
 
 ```rust
 fn dispatch<'a, 'c>(
@@ -356,71 +445,30 @@ where
     Self: 'a,
     <Self as ::bind::Place>::Path<'a>: ::laserbeam::HasStop,
 {
-    #recurse
-    #(#checks)*
-    ::laserbeam::Complete::complete(path)
+    #(#opts)*
+    let mut st = ::bind::AscendState::new(#state, claim);
+    #(#scheduled)*
+    st.finish()
 }
 ```
 
-The bind checks, before (claim landed; handler still returns bare effects; a fired bind ends dispatch with `None`):
-
-```rust
-if let ::core::option::Option::Some(ev) =
-    ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
-{
-    let trigger = #trigger;
-    if ::bind::EventTrigger::is_matching(&trigger, ev) {
-        if let ::core::option::Option::Some(()) = claim.try_take() {
-            *effs = ::core::iter::Iterator::collect(
-                ::core::iter::IntoIterator::into_iter(
-                    #handler(ev, ::bind::Node { parent: path, data: () }),
-                ),
-            );
-            return ::core::option::Option::None;
-        }
-    }
-}
-```
-
-After (a fired bind stays put until change 3 lets the handler say otherwise):
-
-```rust
-if let ::core::option::Option::Some(ev) =
-    ::core::result::Result::ok(::core::convert::TryFrom::try_from(event))
-{
-    let trigger = #trigger;
-    if ::bind::EventTrigger::is_matching(&trigger, ev) {
-        if let ::core::option::Option::Some(()) = claim.try_take() {
-            *effs = ::core::iter::Iterator::collect(
-                ::core::iter::IntoIterator::into_iter(
-                    #handler(ev, ::bind::Node { parent: path, data: () }),
-                ),
-            );
-            return ::laserbeam::Complete::complete(path);
-        }
-    }
-}
-```
-
-`dispatch_body`'s struct-child recurse, before (the `?` rides the `Option`):
+`#state` for a leaf: `::laserbeam::MaybeInvalidated::NotInvalidated(path)`. For a node with a child, from `dispatch_body` — before (the `?` rides the `Option`):
 
 ```rust
 let child = <#child as ::bind::Dispatch<#marker>>::dispatch(#child_path, event, effs, claim)?;
 path = #recover;
 ```
 
-After — forwarding only; the arm split for posts arrives in change 4. `#recover` is `Edge::recover_parent`, unchanged:
+After (the root/non-root split lives in laserbeam's two `to_maybe_invalidated` impls, not here; `Edge::recover_parent` is subsumed by the method's `into_parent`; the enum-child case emits the same per variant arm):
 
 ```rust
-path = match ::laserbeam::Completed::into_inner(
+::laserbeam::Completed::into_inner(
     <#child as ::bind::Dispatch<#marker>>::dispatch(#child_path, event, effs, claim),
-) {
-    ::laserbeam::Stop::Here(child) => #recover,
-    ::laserbeam::Stop::Up(rest) => return ::core::convert::Into::into(rest),
-};
+)
+.to_maybe_invalidated()
 ```
 
-`Into::into` covers both parent shapes: `rest` is `Completed<Self::Path>` at a non-root node (reflexive `From`) and the bare root path at a child of the root (the new laserbeam impl). The enum-child case applies the same transform inside each variant arm. `descend_impl`, before:
+`descend_impl`, before:
 
 ```rust
 match <#name as ::bind::Dispatch<#marker>>::dispatch(self, event, effs, claim) {
@@ -431,7 +479,7 @@ match <#name as ::bind::Dispatch<#marker>>::dispatch(self, event, effs, claim) {
 }
 ```
 
-After:
+After (`Into::into` covers both parent shapes via the laserbeam `From` impl; `derived_node_impl`'s fallthrough becomes `::laserbeam::Complete::complete(::bind::HasParent::into_parent(node))` the same way):
 
 ```rust
 match ::laserbeam::Completed::into_inner(
@@ -444,87 +492,42 @@ match ::laserbeam::Completed::into_inner(
 }
 ```
 
-Collapsing `Here(child)` into `Here(parent)` here matches today's `Continue` behavior; posts across derived edges are change 5's concern. `derived_node_impl`'s fallthrough transforms the same way: `Continue(HasParent::into_parent(node))` becomes `Complete::complete(HasParent::into_parent(node))`, hmm its parent is a path, so `::laserbeam::Complete::complete(::bind::HasParent::into_parent(node))`.
-
 ### Change 2 — opts before descent, source order
 
-Before: each check builds its trigger inline, after the recursion (the snippet above). After: one `opt_N` local per scheduling attribute, emitted before `#recurse`, numbered in source order across `#[bind]`, `#[post]`, `#[pre_post]` alike; the checks consume the opts:
+Before: each check builds its trigger inline, after the recursion. After: one opt local per scheduled attribute, emitted before the descent, numbered in source order; a `#[pre_post]` opt runs its pre here, which is the point, the snap reads pre-descent state:
 
 ```rust
-let opt_N: ::core::option::Option<_> =
-    match ::core::convert::TryFrom::try_from(event) {
-        ::core::result::Result::Ok(ev) => {
-            let trigger = #trigger;
-            if ::bind::EventTrigger::is_matching(&trigger, ev) {
-                ::core::option::Option::Some(ev)
-            } else {
-                ::core::option::Option::None
-            }
+let opt_N = match ::core::convert::TryFrom::try_from(event) {
+    ::core::result::Result::Ok(ev) => {
+        let trigger = #trigger;
+        if ::bind::EventTrigger::is_matching(&trigger, ev) {
+            ::core::option::Option::Some(#payload) // ev, or (ev, #pre(ev, &path))
+        } else {
+            ::core::option::Option::None
         }
-        ::core::result::Result::Err(_) => ::core::option::Option::None,
-    };
+    }
+    ::core::result::Result::Err(_) => ::core::option::Option::None,
+};
 ```
 
-A `#[pre_post]` opt's `Some` arm is `Some(#pre(ev, &path))` — the snap runs here, before the descent, which is the semantic point of this change: the schedule and its snaps are final before the child can mutate anything.
+### Change 3 — `AscendState` threading; one scheduled block
 
-### Change 3 — one scheduled-post shape; `exclusive` / `stays` adapters
-
-bind gains two free functions; they are the whole difference between a bind and a post. Both produce the one scheduled-post shape the macro calls:
+bind gains `AscendState` and `exclusive`; laserbeam gains `MaybeInvalidated` and `to_maybe_invalidated` (code above). The check emission, before: the change-1 `*effs = collect(..)` form. After, one kind-blind block per scheduled item; `#rhs` is the attribute's rhs tokens, wrapped as `::bind::exclusive(#tokens)` only for `#[bind]`, and the macro never looks inside:
 
 ```rust
-/// Wraps a bind handler into the scheduled-post shape: the handler runs iff
-/// the claim can be established; otherwise the path is handed back untouched.
-/// `#[bind(X => foo)]` is `#[post(X => exclusive(foo))]`.
-pub fn exclusive<Ev, P, D, E>(
-    handler: impl FnOnce(&Ev, Node<P, D>) -> (Vec<E>, ::laserbeam::Completed<P>),
-) -> impl FnOnce(&Ev, Node<P, D>, &mut Claim<'_>) -> (Vec<E>, ControlFlow<::laserbeam::Completed<P>, P>)
-where
-    P: ::laserbeam::HasStop,
-{
-    move |ev, node, claim| match claim.try_take() {
-        Some(()) => {
-            let (e, completed) = handler(ev, node);
-            (e, ControlFlow::Break(completed))
-        }
-        None => (Vec::new(), ControlFlow::Continue(node.parent)),
-    }
-}
-
-/// Wraps a plain effects post into the same shape: always runs, never claims,
-/// never moves focus. `#[post(X => f)]` schedules `stays(f)`.
-pub fn stays<Ev, P, D, E>(
-    post: impl FnOnce(&mut P) -> Vec<E>,
-) -> impl FnOnce(&Ev, Node<P, D>, &mut Claim<'_>) -> (Vec<E>, ControlFlow<::laserbeam::Completed<P>, P>)
-where
-    P: ::laserbeam::HasStop,
-{
-    move |_ev, mut node, _claim| {
-        let e = post(&mut node.parent);
-        (e, ControlFlow::Continue(node.parent))
-    }
-}
-```
-
-(`ControlFlow` is the combinator's return, not the dispatch surface: `Break` ends this node's dispatch with the handler's `Completed`, `Continue` is the path handed back.)
-
-The macro wraps the rhs tokens by attribute kind at parse time and emits one kind-blind block per scheduled item. Before: the change-1 check form above (`*effs = collect(..); return Complete::complete(path)`). After:
-
-```rust
-if let ::core::option::Option::Some(ev) = opt_N {
-    let (e, flow) = (#rhs)(ev, ::bind::Node { parent: path, data: () }, claim);
+if let ::core::option::Option::Some(payload) = opt_N {
+    let (e, flow) = (#rhs)(payload, st);
     ::core::iter::Extend::extend(effs, e);
-    path = match flow {
+    st = match flow {
         ::core::ops::ControlFlow::Break(completed) => return completed,
-        ::core::ops::ControlFlow::Continue(p) => p,
+        ::core::ops::ControlFlow::Continue(st) => st,
     };
 }
 ```
 
-`#rhs` is `::bind::exclusive(#tokens)` for `#[bind]` and `::bind::stays(#tokens)` for `#[post]`; nothing downstream of parsing knows which kind it is.
+Every bind handler in mercury and the bind tests migrates mechanically: `-> impl IntoIterator<Item = E>` becomes `-> (Vec<E>, Completed<Path>)`, `path.complete()` appended where the body stays put.
 
-Every bind handler in mercury and the bind tests changes signature mechanically: `-> impl IntoIterator<Item = E>` becomes `-> (Vec<E>, Completed<Path>)`, with `path.complete()` appended to every body that stays put. Posts are `fn(&mut Self::Path) -> Vec<E>` at every depth, root included.
-
-### Change 4 — `#[post]` / `#[pre_post]`
+### Change 4 — `#[post]` / `#[pre_post]` parsing
 
 Registration, before / after:
 
@@ -540,18 +543,11 @@ Registration, before / after:
 )]
 ```
 
-Parsing, beside `Binding` (whose `Parse` the `Post` form reuses):
+Parsing, beside `Binding` (whose `Parse` the plain `#[post]` form reuses):
 
 ```rust
-/// One `trigger => handler` pair from `#[post(..)]`: runs on the alive arms
-/// with the live path.
-struct Post {
-    trigger: Expr,
-    handler: Expr,
-}
-
-/// One `trigger => (pre, post)` pair from `#[pre_post(..)]`: pre snaps before
-/// descent, post runs on the dropped arms with the snap.
+/// One `trigger => (pre, post)` pair from `#[pre_post(..)]`: pre runs in the
+/// opt, before descent; its snap rides the opt payload into the post.
 struct PrePost {
     trigger: Expr,
     pre: Expr,
@@ -570,95 +566,68 @@ impl syn::parse::Parse for PrePost {
         Ok(Self { trigger, pre, post })
     }
 }
-
-fn posts(attrs: &[syn::Attribute]) -> syn::Result<Vec<Post>>;        // mirrors binds()
-fn pre_posts(attrs: &[syn::Attribute]) -> syn::Result<Vec<PrePost>>; // mirrors binds()
 ```
 
-The struct-child recurse grows from change 1's forwarding into the full arms. Before: the change-1 `path = match … return Into::into(rest)` form. After, non-root:
+All three attribute kinds feed one scheduled list in source order; the differences are confined to parse time (which payload the opt captures, and whether the rhs tokens get the `exclusive` wrap). `claimed_triggers` does not change: only `#[bind]` triggers claim, so posts are exempt from the duplicate-trigger check.
 
-```rust
-match ::laserbeam::Completed::into_inner(
-    <#child as ::bind::Dispatch<#marker>>::dispatch(#child_path, event, effs, claim),
-) {
-    ::laserbeam::Stop::Here(child) => {
-        let mut path = #recover;
-        #(#alive_posts)*
-        #(#checks)*
-        ::laserbeam::Complete::complete(path)
-    }
-    ::laserbeam::Stop::Up(rest) => match ::laserbeam::Completed::into_inner(rest) {
-        ::laserbeam::Stop::Here(mut path) => {
-            #(#dropped_posts)*
-            ::laserbeam::Complete::complete(path)
-        }
-        ::laserbeam::Stop::Up(above) => {
-            #(#dropped_posts)*
-            ::laserbeam::Completed::up(above)
-        }
-    },
-}
-```
+### Change 5 — derived-edge posts
 
-Root: one `Up` arm, `dropped_posts` then `Complete::complete(path)` (the payload is the bare root path). Each `alive_post` is `if opt_N { Extend::extend(effs, #handler(path or &mut path)); }` (bare `path` at the root, `&mut path` on a `PathMut`); each `dropped_post` is `if let Some(snap) = opt_N { Extend::extend(effs, #post(snap)); }`.
-
-`claimed_triggers` does not change: posts and pre_posts never claim, so they are exempt from the duplicate-trigger check.
-
-### Change 5 — remaining refinements
-
-Here-only path-mutation posts; posts across derived-child edges (where `Descend`'s `Here` collapse currently hides child-alive from the caller).
+Posts across derived-child edges, where `Descend`'s `Here` collapse currently hides child-alive from the caller.
 
 ## Walks
 
 ### KeyH: B goes home
 
 ```text
-B:  claim take; go_home returns node.parent.into_parent().complete() → Up(a)
-A:  Up(path); cancel_return_home(snapped id) → [CancelTimer]
-    return path.complete()
+B:  exclusive(go_home): claim take → Up(a)
+A:  st.state = ChildInvalidated(path)
+    exclusive(flash): not NotInvalidated → passes through
+    return_home_deadline: not NotInvalidated → [CancelTimer(snapped)]
+    st.finish() → complete(path)
 ```
 
 ### Any other key: B stays
 
 ```text
 B:  fallthrough → Here(b)
-A:  Here(b) → path = b.into_parent(); rearm(path)
-    → [CancelTimer(old), ScheduleTimer(fresh)]
-    KeyEsc additionally: flash claims → [FlashOverlay], returns Here
+A:  st.state = NotInvalidated(b.into_parent())
+    KeyEsc only: exclusive(flash) claims → [FlashOverlay], returns Here
+    return_home_deadline: NotInvalidated → [CancelTimer(old), ScheduleTimer(fresh)]
+    st.finish() → complete(path)
 ```
 
-`rearm` runs whether or not anything claimed: posts are scheduled by their trigger, not by the claim.
+Posts run whether or not anything claimed: they are scheduled by their trigger, not by the claim.
 
 ## Rules
 
 1. No stubs.
-2. Arms `Here` / `Up`; three outcomes at a non-root parent; forwarding without inspection is `return Into::into(rest)`.
+2. Between nodes: `Completed` / `Stop`, `Here` / `Up`. Inside a node: `AscendState`, built once from the child's answer via `to_maybe_invalidated`, threaded through every scheduled item, finished with `st.finish()`. `Stop` never appears in user code.
 3. Every dispatch returns `Completed<Self::Path>` (derived levels: `Completed<Self::Parent>`); no ascent associated type.
-4. Opts are snapped before descent, one per scheduling attribute, numbered in source order; a bind is a post that claims, not a special case. The schedule is final; ascent runs every scheduled post.
-5. `#[bind(X => foo)]` desugars to `#[post(X => exclusive(foo))]`; `#[post(X => f)]` schedules `stays(f)`; one emission shape, the attribute kind decides only the wrapper. Bind handlers return `(effects, Completed<Self::Path>)` and staying put is `path.complete()`; posts are `fn(&mut Self::Path) -> Vec<E>`.
-6. Posts and pre_posts never claim and are exempt from the duplicate-trigger check.
-7. The user writes triggers, handlers, pres, and posts; the macro writes every arm match. `Stop` never appears in user code.
-8. Generated code spells laserbeam items fully qualified; handwritten handlers `use laserbeam::Complete;`.
+4. Opts are snapped before descent, one per scheduled attribute, in source order. The schedule is final; every scheduled item runs, and its body decides what each `MaybeInvalidated` branch means.
+5. One scheduled-handler shape: `(Payload, AscendState<P>) -> (Vec<E>, ControlFlow<Completed<P>, AscendState<P>>)`. `#[bind(X => foo)]` is `#[post(X => exclusive(foo))]`; the rhs is otherwise opaque to the macro.
+6. The claim lives inside `AscendState` (`st.claim()`, `st.exclusive()`); only binds claim, so posts are exempt from the duplicate-trigger check.
+7. Generated code spells laserbeam and bind items fully qualified; handwritten handlers `use laserbeam::Complete;`.
 
 ## Tests
 
 - KeyH / any-key walks on the A/B expansion, asserting the exact effect
   sequences above
-- three-arm coverage on a three-level tree (kept / stopped-at-mid / gone-above)
+- a three-level tree: `Invalidated(Completed::up(..))` forwards through
+  `st.finish()` unchanged
 - claim trap door: KeyEsc bound at A fires only when B did not claim
-- posts fire without a claim (rearm on an unbound key)
-- pre_post snap reads pre-descent state even when the descent mutates it
+- posts run without a claim, and on every branch of `MaybeInvalidated`
+- pre snap reads pre-descent state even when the descent mutates it
 
 ## Ordered changes
 
 Prefactors first, each independently shippable. The macro deltas per change are in "bind_macro (before / after)".
 
-### 1 — macro emits `Completed`: signature, fallthrough `complete()`, forwarding matches, `descend_impl`/`derived_node_impl`; laserbeam `From<&mut R> for Completed<&mut R>`
+### 1 — macro emits `Completed`: signature, linear body, `descend_impl`/`derived_node_impl`; laserbeam `From<&mut R> for Completed<&mut R>`
 
-### 2 — opts before descent, source order, pre_post snaps run here
+### 2 — opts before descent, source order
 
-### 3 — bind handlers return `(effects, Completed<Path>)`; mercury/tests signatures migrate
+### 3 — laserbeam `MaybeInvalidated` + `to_maybe_invalidated`; bind `AscendState` + `exclusive`; one scheduled block per item; bind handlers return `(effects, Completed)`
 
-### 4 — `#[post]` / `#[pre_post]`: registration, parsing, full arm emission, check exemption
+### 4 — `#[post]` / `#[pre_post]`: registration, parsing, payload capture
 
-### 5 — Here-only path posts; derived-edge posts
+### 5 — derived-edge posts
