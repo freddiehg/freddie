@@ -222,8 +222,6 @@ pub enum WindowError {
     NotMainThread,
     /// The Accessibility permission has not been granted.
     NotTrusted,
-    /// Nothing is frontmost, or the frontmost app has no focused window.
-    NoFocusedWindow,
     /// Nothing with that id is being observed: the window closed, or it never reported an
     /// id to begin with.
     UnknownWindow,
@@ -236,7 +234,6 @@ impl std::fmt::Display for WindowError {
         f.write_str(match self {
             Self::NotMainThread => "freddie_windows::watch must run on the main thread",
             Self::NotTrusted => "Accessibility is not granted",
-            Self::NoFocusedWindow => "no focused window",
             Self::UnknownWindow => "no such window",
             Self::NotWatching => "not watching windows",
         })
