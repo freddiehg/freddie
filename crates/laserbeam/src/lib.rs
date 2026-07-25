@@ -377,6 +377,31 @@ pub enum Stop<H, U> {
     Up(U),
 }
 
+/// A child of the root, unwrapped: the `Up` payload is the bare root path.
+impl<'a, N, R> Stop<PathMut<N, &'a mut R>, &'a mut R> {
+    /// The child's leave, as the state it leaves behind at the PARENT: stopping
+    /// at the child leaves the parent standing one step up.
+    #[must_use]
+    pub fn to_maybe_invalidated(self) -> MaybeInvalidated<&'a mut R> {
+        match self {
+            Self::Here(child) => MaybeInvalidated::NotInvalidated(child.into_parent()),
+            Self::Up(root) => MaybeInvalidated::Invalidated(root.complete()),
+        }
+    }
+}
+
+/// A child of a non-root, unwrapped: the `Up` payload is the parent's own leave.
+impl<N, N2, Q: Above> Stop<PathMut<N, PathMut<N2, Q>>, Completed<PathMut<N2, Q>>> {
+    /// The child's leave, as the state it leaves behind at the PARENT.
+    #[must_use]
+    pub fn to_maybe_invalidated(self) -> MaybeInvalidated<PathMut<N2, Q>> {
+        match self {
+            Self::Here(child) => MaybeInvalidated::NotInvalidated(child.into_parent()),
+            Self::Up(rest) => MaybeInvalidated::Invalidated(rest),
+        }
+    }
+}
+
 /// What a completed leave hands upward once it has peeled past a child of
 /// this path: the root path itself, or the completed leave from this path.
 pub trait Above {
@@ -393,16 +418,61 @@ impl<N, P: Above> Above for PathMut<N, P> {
 
 /// A path's stop layer: stopped here, or went above. A root path can only
 /// stop at itself, so its layer is the bare path.
-pub trait HasStop {
+pub trait HasStop: Sized {
     type Stop;
+
+    /// A completed leave, as the state it leaves behind at this path.
+    ///
+    /// A leave that stopped here left the path standing, so the path comes back
+    /// out; one that went above destroyed it, and the completed leave is handed
+    /// on for whoever is still holding the path type to forward.
+    fn to_maybe_invalidated(completed: Completed<Self>) -> MaybeInvalidated<Self>;
 }
 
 impl<N, P: Above> HasStop for PathMut<N, P> {
     type Stop = Stop<Self, P::Up>;
+
+    fn to_maybe_invalidated(completed: Completed<Self>) -> MaybeInvalidated<Self> {
+        match completed.into_inner() {
+            Stop::Here(path) => MaybeInvalidated::NotInvalidated(path),
+            Stop::Up(rest) => MaybeInvalidated::Invalidated(Completed::up(rest)),
+        }
+    }
 }
 
 impl<'a, R> HasStop for &'a mut R {
     type Stop = &'a mut R;
+
+    fn to_maybe_invalidated(completed: Completed<Self>) -> MaybeInvalidated<Self> {
+        MaybeInvalidated::NotInvalidated(completed.into_inner())
+    }
+}
+
+/// Have we destroyed the path we need?
+///
+/// What a node holds of its own path once the descent below it has run: the
+/// child either left it standing, or completed a leave that peeled past it.
+///
+/// No derives, for the reason [`Stop`] has none: paths are neither `Debug` nor
+/// `PartialEq`.
+pub enum MaybeInvalidated<P: HasStop> {
+    /// No: here it is.
+    NotInvalidated(P),
+    /// Yes: the completed leave, ready to forward. A [`Stop::Here`] inside it
+    /// means the leave stopped at this path, so the path is recoverable.
+    Invalidated(Completed<P>),
+}
+
+impl<P: HasStop + Complete<P>> MaybeInvalidated<P> {
+    /// The leave this state completes to: the path completing where it stands,
+    /// or the leave that already went past it.
+    #[must_use]
+    pub fn complete(self) -> Completed<P> {
+        match self {
+            Self::NotInvalidated(path) => path.complete(),
+            Self::Invalidated(completed) => completed,
+        }
+    }
 }
 
 /// A completed leave from origin `P`: where the peeling stopped.
@@ -421,6 +491,22 @@ impl<P: HasStop> Completed<P> {
     #[must_use]
     pub fn into_inner(self) -> P::Stop {
         self.stop
+    }
+
+    /// This leave, as the state it leaves behind at `P`.
+    #[must_use]
+    pub fn to_maybe_invalidated(self) -> MaybeInvalidated<P> {
+        P::to_maybe_invalidated(self)
+    }
+}
+
+/// The bare root path a leave from the root completes to, back as a leave.
+///
+/// A caller that has peeled past a child normalizes what it got, root path or
+/// completed leave, through one `Into`.
+impl<'a, R> From<&'a mut R> for Completed<&'a mut R> {
+    fn from(root: &'a mut R) -> Self {
+        Self::new(root)
     }
 }
 
@@ -824,5 +910,166 @@ mod complete_tests {
             root.hits = 4;
         }
         assert_eq!(app.hits, 4);
+    }
+}
+
+#[cfg(test)]
+mod maybe_invalidated_tests {
+    use crate::{Complete, Completed, MaybeInvalidated, PathMut, Stop};
+
+    struct App {
+        hits: u32,
+        layer: Layer,
+    }
+    struct Layer {
+        nav: Nav,
+    }
+    struct Nav {
+        hits: u32,
+    }
+
+    type AppPath<'a> = &'a mut App;
+    type LayerPath<'a> = PathMut<Layer, AppPath<'a>>;
+    type NavPath<'a> = PathMut<Nav, LayerPath<'a>>;
+
+    const fn tree(nav_hits: u32, app_hits: u32) -> App {
+        App {
+            hits: app_hits,
+            layer: Layer {
+                nav: Nav { hits: nav_hits },
+            },
+        }
+    }
+
+    fn layer_path(app: &mut App) -> LayerPath<'_> {
+        PathMut::from_fn(app, |a| &mut a.layer, |a| &a.layer)
+    }
+
+    fn nav_path(app: &mut App) -> NavPath<'_> {
+        PathMut::from_fn(
+            layer_path(app),
+            |lp| &mut lp.get_mut().nav,
+            |lp| &lp.get().nav,
+        )
+    }
+
+    /// The root's own descent: a child that stopped at itself leaves the root
+    /// standing, and one that went above hands the root back as a leave.
+    #[test]
+    fn a_root_reads_its_childs_leave_as_its_own_state() {
+        let mut app = tree(7, 0);
+        {
+            let stayed: Completed<LayerPath<'_>> = layer_path(&mut app).complete();
+            let MaybeInvalidated::NotInvalidated(root) = stayed.into_inner().to_maybe_invalidated()
+            else {
+                panic!("a child that stopped at itself leaves the root standing");
+            };
+            root.hits = 1;
+        }
+        assert_eq!(app.hits, 1);
+
+        {
+            let left: Completed<LayerPath<'_>> = layer_path(&mut app).into_parent().complete();
+            let MaybeInvalidated::Invalidated(completed) = left.into_inner().to_maybe_invalidated()
+            else {
+                panic!("a child that went above destroyed the root's descent");
+            };
+            completed.into_inner().hits = 2;
+        }
+        assert_eq!(app.hits, 2);
+    }
+
+    /// The same, one level down: the `Up` payload is the parent's own leave
+    /// rather than a bare root.
+    #[test]
+    fn a_layer_reads_its_childs_leave_as_its_own_state() {
+        let mut app = tree(7, 0);
+        {
+            let stayed: Completed<NavPath<'_>> = nav_path(&mut app).complete();
+            let MaybeInvalidated::NotInvalidated(layer) =
+                stayed.into_inner().to_maybe_invalidated()
+            else {
+                panic!("nav stopped at itself, so the layer stands");
+            };
+            assert_eq!(layer.get().nav.hits, 7);
+        }
+
+        {
+            let left: Completed<NavPath<'_>> = nav_path(&mut app).into_parent().complete();
+            let MaybeInvalidated::Invalidated(completed) = left.into_inner().to_maybe_invalidated()
+            else {
+                panic!("nav left, so the layer's descent is invalidated");
+            };
+            let Stop::Here(layer) = completed.into_inner() else {
+                panic!("the leave stopped at the layer");
+            };
+            assert_eq!(layer.get().nav.hits, 7);
+        }
+    }
+
+    /// The fold the generated code does after each scheduled item: a leave that
+    /// stopped here re-establishes the path, one that went above stays a leave.
+    #[test]
+    fn a_returned_leave_folds_back_into_the_state() {
+        let mut app = tree(7, 0);
+        {
+            let stayed: Completed<LayerPath<'_>> = layer_path(&mut app).complete();
+            let MaybeInvalidated::NotInvalidated(layer) = stayed.to_maybe_invalidated() else {
+                panic!("stopping here re-establishes the path");
+            };
+            assert_eq!(layer.get().nav.hits, 7);
+        }
+
+        {
+            let left: Completed<LayerPath<'_>> = layer_path(&mut app).into_parent().complete();
+            let MaybeInvalidated::Invalidated(completed) = left.to_maybe_invalidated() else {
+                panic!("going above stays a leave");
+            };
+            let Stop::Up(root) = completed.into_inner() else {
+                panic!("the leave still points above the layer");
+            };
+            root.hits = 3;
+        }
+        assert_eq!(app.hits, 3);
+    }
+
+    /// A leave from the root can only have stopped at the root, so the fold
+    /// there has one answer.
+    #[test]
+    fn a_leave_from_the_root_never_invalidates_it() {
+        let mut app = tree(0, 0);
+        {
+            let folded: Completed<AppPath<'_>> = Completed::from(&mut app);
+            let MaybeInvalidated::NotInvalidated(root) = folded.to_maybe_invalidated() else {
+                panic!("the root's own leave leaves the root standing");
+            };
+            root.hits = 4;
+        }
+        assert_eq!(app.hits, 4);
+    }
+
+    /// What a node ends its dispatch with: either branch completes to the leave
+    /// its caller reads.
+    #[test]
+    fn either_branch_completes() {
+        let mut app = tree(7, 0);
+        {
+            let here: Completed<LayerPath<'_>> =
+                MaybeInvalidated::NotInvalidated(layer_path(&mut app)).complete();
+            let Stop::Here(layer) = here.into_inner() else {
+                panic!("a standing path completes where it stands");
+            };
+            assert_eq!(layer.get().nav.hits, 7);
+        }
+
+        {
+            let left: Completed<LayerPath<'_>> = layer_path(&mut app).into_parent().complete();
+            let up: Completed<LayerPath<'_>> = MaybeInvalidated::Invalidated(left).complete();
+            let Stop::Up(root) = up.into_inner() else {
+                panic!("an invalidated state completes to the leave it holds");
+            };
+            root.hits = 5;
+        }
+        assert_eq!(app.hits, 5);
     }
 }
