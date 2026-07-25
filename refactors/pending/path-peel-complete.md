@@ -229,8 +229,10 @@ impl<P, Pk> Path<P, Pk>
 where
     Pk: Pack<P>,
 {
+    /// Finish the leave at the current focus. Runs the pack stack only — no further peels.
     pub fn complete(self) -> Pk::Out {
-        self.pack.pack(self.focus)
+        let Path { focus, pack } = self;
+        pack.pack(focus)
     }
 }
 
@@ -239,9 +241,10 @@ where
     Pk: PeelPack<Node, Parent>,
 {
     pub fn into_parent(self) -> Path<Parent, Pk::After> {
+        let Path { focus, pack } = self;
         Path {
-            focus: self.focus.into_parent(),
-            pack: self.pack.peel_pack(),
+            focus: focus.into_parent(),
+            pack: pack.peel_pack(),
         }
     }
 }
@@ -263,6 +266,165 @@ where
 Check: `after_first_peel` Out = `Result<Parent, Parent::Out>`.
 `AscentOut for Step<Node, Parent>` says `Out = Result<Parent, Parent::Out>`.
 **Same type.** First peel’s `complete()` type is exactly `<Step<Node, Parent> as AscentOut>::Out`.
+
+### Concrete `complete()` (what actually runs)
+
+`Path::complete` is only:
+
+```rust
+pub fn complete(self) -> Pk::Out {
+    let Path { focus, pack } = self;
+    pack.pack(focus)
+}
+```
+
+All nesting is in `Pack::pack`. Monomorphized bodies:
+
+```rust
+// --- AsHere<E>: stop here ---
+impl<P, E> Pack<P> for AsHere<E> {
+    type Out = Result<P, E>;
+    fn pack(self, path: P) -> Result<P, E> {
+        Ok(path)
+    }
+}
+
+// Path<P, AsHere<E>>::complete()
+//   = AsHere.pack(focus)
+//   = Ok(focus)
+
+// --- AsUp<Q, Inner>: this layer was skipped ---
+impl<Q, Inner, P> Pack<P> for AsUp<Q, Inner>
+where
+    Inner: Pack<P>,
+{
+    type Out = Result<Q, Inner::Out>;
+    fn pack(self, path: P) -> Result<Q, Inner::Out> {
+        let AsUp(inner, _) = self;
+        Err(inner.pack(path))
+    }
+}
+
+// Path<P, AsUp<Q, Inner>>::complete()
+//   = Err(inner.pack(focus))
+//   and inner.pack is again AsHere / AsUp / AsTerminal
+
+// --- AsTerminal: bare path is the whole Out ---
+impl<P> Pack<P> for AsTerminal {
+    type Out = P;
+    fn pack(self, path: P) -> P {
+        path
+    }
+}
+
+// Path<P, AsTerminal>::complete()
+//   = focus
+```
+
+### Worked: two peels then `complete` → `Err(Ok(a))`
+
+Spine: `CPath = Step<C, Step<B, A>>`, `A` terminal with `AscentOut::Out = A` (treat `A` like a root token for this example).
+
+```rust
+type BPath = Step<B, A>;
+type CPath = Step<C, BPath>;
+// <CPath as AscentOut>::Out = Result<BPath, Result<A, A>>
+//   (if A::Out = A)
+
+let c: CPath = Step::new(Step::new(a));
+
+// after_first_peel(c):
+//   focus = BPath
+//   pack  = AsHere::<Result<A, A>>   // Parent::Out = Result<A, A> when A::Out = A
+//   type  = Path<BPath, AsHere<Result<A, A>>>
+
+// Prefer Rest = A with bare terminal for clarity of Err(Ok) vs Err:
+// <BPath as AscentOut>::Out = Result<A, A> if A::Out = A
+// For bare-style Rest = A on first peel from C when BPath peels to A:
+// after_first_peel with Parent = BPath, Parent::Out = Result<A, A>
+```
+
+Cleaner spine `C → B → Root` with `Root::Out = Root`:
+
+```rust
+type BPath = Step<B, Root>;
+type CPath = Step<C, BPath>;
+// CPath::Out = Result<BPath, Result<Root, Root>>
+
+let c = Step::<C, _>::new(Step::<B, _>::new(Root));
+
+// 1) after_first_peel(c)
+let p0: Path<BPath, AsHere<Result<Root, Root>>> = Path {
+    focus: c.into_parent(),              // BPath
+    pack: AsHere(PhantomData),         // Rest = BPath::Out = Result<Root, Root>
+};
+// p0.complete() would be:
+//   AsHere.pack(b_path) = Ok(b_path)
+//   : Result<BPath, Result<Root, Root>>
+
+// 2) p0.into_parent()
+//    focus BPath = Step<B, Root> → Root
+//    pack AsHere<Result<Root, Root>> peels via PeelPack:
+//      After = AsUp<BPath, AsHere<Root>>
+let p1: Path<Root, AsUp<BPath, AsHere<Root>>> = Path {
+    focus: p0.focus.into_parent(),       // Root
+    pack: AsUp(AsHere(PhantomData), PhantomData),
+};
+
+// 3) p1.complete() — concrete expansion:
+pub fn complete(self) -> Result<BPath, Result<Root, Root>> {
+    // self: Path<Root, AsUp<BPath, AsHere<Root>>>
+    let Path { focus, pack } = self;
+    // pack: AsUp<BPath, AsHere<Root>>
+    // focus: Root
+    pack.pack(focus)
+}
+
+// pack.pack(focus) for AsUp:
+fn pack(self, path: Root) -> Result<BPath, Result<Root, Root>> {
+    let AsUp(inner, _) = self;           // inner: AsHere<Root>
+    Err(inner.pack(path))
+}
+
+// inner.pack for AsHere<Root>:
+fn pack(self, path: Root) -> Result<Root, Root> {
+    Ok(path)
+}
+
+// so complete() = Err(Ok(Root))
+```
+
+One peel only:
+
+```rust
+// p0.complete():
+fn complete(self) -> Result<BPath, Result<Root, Root>> {
+    let Path { focus, pack } = self;     // focus: BPath, pack: AsHere<Result<Root, Root>>
+    pack.pack(focus)                     // Ok(focus)
+}
+// = Ok(b_path)
+```
+
+Bare rest (`after_first_peel` with `Parent::Out = Root` when `BPath = Step<B, Root>` and we use `Out = Result<BPath, Root>` — requires `AscentOut` form `Result<P, P::Out>` with `Root::Out = Root` giving `Result<Root, Root>` for B; for true bare `Result<BPath, Root>` see optional `Rest` later). With current `AscentOut`:
+
+```rust
+// two peels from C, complete at Root with nested Result<Root, Root> inner:
+// complete() = Err(Ok(Root)) as above
+```
+
+Kill-style bare `Err(root)` uses `AsHere<Root>` on focus `Step<_, Root>` then one peel:
+
+```rust
+// Path at BPath = Step<B, Root>, pack AsHere<Root>
+// into_parent → Path<Root, AsUp<BPath, AsTerminal>>
+// complete():
+fn complete(self) -> Result<BPath, Root> {
+    let Path { focus, pack } = self;     // focus: Root, pack: AsUp<BPath, AsTerminal>
+    pack.pack(focus)
+}
+// AsUp::pack:
+//   Err(AsTerminal.pack(Root)) = Err(Root)
+```
 
 ### `ascend_to_root`
 
@@ -325,8 +487,13 @@ impl<Node, Parent, Pk> Path<Step<Node, Parent>, Pk>
 where
     Pk: PeelPack<Node, Parent>,
 {
-    /// Peel one step; caller chains or uses a macro to root.
-    pub fn into_parent(self) -> Path<Parent, Pk::After> { /* as above */ }
+    pub fn into_parent(self) -> Path<Parent, Pk::After> {
+        let Path { focus, pack } = self;
+        Path {
+            focus: focus.into_parent(),
+            pack: pack.peel_pack(),
+        }
+    }
 }
 ```
 
