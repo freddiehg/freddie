@@ -202,27 +202,88 @@ Posts when receiving `Up`: `invalidation.md`.
 
 ## Tests
 
+Build a real `App` tree; take paths via the same `PathMut::from_fn` the macro emits. Assert values and tree state with `assert_eq!` (destructure the doll; `PathMut` is not `PartialEq`).
+
 ```rust
-// smoke (annotation plays the dispatch return type)
-let _: NavAscent<'_> = nav.complete();
-let _: NavAscent<'_> = nav.into_parent().complete();
-let _: NavAscent<'_> = nav.into_parent().into_parent().complete();
-let _: LayerAscent<'_> = layer.into_parent().complete();
+#[test]
+fn nav_complete_at_nav() {
+    let mut app = app_nav_tree(/* nav.hits = 7 */);
+    let nav = nav_path(&mut app);
+    let out: NavAscent<'_> = nav.complete();
+    let Doll::Here(nav) = out else {
+        panic!("expected Here, got other arm");
+    };
+    assert_eq!(nav.get().hits, 7);
+    nav.get_mut().hits = 8;
+    assert_eq!(/* nav variant on app */.hits, 8);
+}
 
-// trybuild — must not compile
-nav.into_parent().into_parent().into_parent(); // no into_parent on &mut App
-let _: LayerAscent<'_> = nav.complete();       // off-chain: no impl
+#[test]
+fn nav_one_peel() {
+    let mut app = app_nav_tree(/* … */);
+    let nav = nav_path(&mut app);
+    let out: NavAscent<'_> = nav.into_parent().complete();
+    let Doll::Up(Doll::Here(layer)) = out else {
+        panic!("expected Up(Here(layer))");
+    };
+    // still the live Layer path
+    let _ = layer.get();
+}
 
-// unification — one return type across peel depths
-fn all_depths<'a>(nav: NavPath<'a>, branch: u8) -> NavAscent<'a> {
-    match branch {
-        0 => nav.complete(),
-        1 => nav.into_parent().complete(),
-        _ => nav.into_parent().into_parent().complete(),
+#[test]
+fn nav_two_peels_to_app() {
+    let mut app = app_nav_tree(/* app.hits = 0 */);
+    let nav = nav_path(&mut app);
+    let out: NavAscent<'_> = nav.into_parent().into_parent().complete();
+    let Doll::Up(Doll::Up(root)) = out else {
+        panic!("expected Up(Up(app))");
+    };
+    root.hits = 1;
+    assert_eq!(app.hits, 1);
+}
+
+#[test]
+fn layer_one_peel_to_app() {
+    let mut app = app_nav_tree(/* app.hits = 0 */);
+    let layer = layer_path(&mut app);
+    let out: LayerAscent<'_> = layer.into_parent().complete();
+    let Doll::Up(root) = out else {
+        panic!("expected Up(app)");
+    };
+    root.hits = 1;
+    assert_eq!(app.hits, 1);
+}
+
+#[test]
+fn all_peel_depths_are_nav_ascent() {
+    fn all_depths<'a>(nav: NavPath<'a>, branch: u8) -> NavAscent<'a> {
+        match branch {
+            0 => nav.complete(),
+            1 => nav.into_parent().complete(),
+            _ => nav.into_parent().into_parent().complete(),
+        }
+    }
+    let mut app = app_nav_tree(/* … */);
+    match all_depths(nav_path(&mut app), 0) {
+        Doll::Here(nav) => assert_eq!(nav.get().hits, /* expected */),
+        other => panic!("branch 0: {other:?}"),
+    }
+    match all_depths(nav_path(&mut app), 1) {
+        Doll::Up(Doll::Here(_)) => {}
+        other => panic!("branch 1: {other:?}"),
+    }
+    match all_depths(nav_path(&mut app), 2) {
+        Doll::Up(Doll::Up(root)) => {
+            root.hits = 9;
+            assert_eq!(app.hits, 9);
+        }
+        other => panic!("branch 2: {other:?}"),
     }
 }
 
-// usable paths: mutate via Here(nav) get_mut; mutate via Up(Up(app))
+// trybuild — must not compile
+// nav.into_parent().into_parent().into_parent();
+// let _: LayerAscent<'_> = nav.complete(); // off-chain
 ```
 
 ## Ordered changes
@@ -231,7 +292,7 @@ fn all_depths<'a>(nav: NavPath<'a>, branch: u8) -> NavAscent<'a> {
 
 ### 2 — Depth-keyed `Complete` impls in bind (depths 1..4)
 
-### 3 — Tests on App tree paths: smoke, trybuild over-peel + off-chain complete, unification, mut through recovered paths
+### 3 — Tests on App tree paths: assert_eq on hits / recovered paths; trybuild over-peel + off-chain complete; unification
 
 ### 4 — Derive emits ascent aliases only
 
