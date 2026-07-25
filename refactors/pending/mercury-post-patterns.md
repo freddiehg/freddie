@@ -1,66 +1,335 @@
-# Mercury under pre / post / invalidation
+# Mercury: one thing per handler
 
-Inventory of every behavior mercury has today, and which scheduled-handler shape owns it once `invalidation.md` is finished (change 5: linear `Completed` body + handler migration; change 6: `#[post]` / `#[pre_post]`). Not a redesign of mercury's product surface. The point is that nothing in mercury sits outside the schedule: every piece of work that currently lives in `Mercury::handle`, in a `Drop`, or as a side-effect of `set_layer` either becomes a scheduled item or is shown to be something else.
+Once `invalidation.md` finishes (change 5: linear body + signature migration; change 6: `#[post]` / `#[pre_post]`), every mercury behavior is a scheduled item. The schedule is how composition works: several small handlers on one trigger, not one fat handler that does several jobs.
 
-Patterns (from `invalidation.md`):
+## Rule
+
+A scheduled handler does exactly one thing. One of:
 
 ```text
-#[bind(T => h)]      =>  #[pre_post(T => (|_, _| (), exclusive(h)))]   claims; deepest wins
-#[post(T => h)]      =>  #[pre_post(T => (|_, _| (), h))]              no claim; always runs if T matched
-#[pre_post(T => (pre, post))]                                          snap before descent; post on ascent
+claim and act          exclusive bind: deepest wins; one user-facing action or one leave
+observe stay/leave     post / pre_post: no claim; one concern keyed on MaybeInvalidated
+record external truth  exclusive bind: one field assigned, stay
+fire a timer           exclusive bind: one timer id matched, one consequence
 ```
 
-Every handler is the one signature:
+Composition is source order on the node (and posts on ancestors). Not a helper that chains two mutations. Not a handler that emits a chord and also changes layer. Not `Mercury::handle` after the fact.
+
+```text
+#[bind(T => h)]      =>  exclusive(h)     claims
+#[post(T => h)]      =>  h                no claim; runs if T matched
+#[pre_post(T => (pre, post))]             snap before descent; post on ascent
+```
 
 ```rust
-FnOnce(&Ev, Snap, AscendState<'a, P>) -> (Vec<E>, Completed<P>)  // Snap = () without a pre
+FnOnce(&Ev, Snap, AscendState<'a, P>) -> (Vec<E>, Completed<P>)
 ```
 
-`MaybeInvalidated` is the post's input: stay is `NotInvalidated(path)`, leave is `Invalidated(c)`. Posts run whether or not anything claimed. A leave is data; nothing early-returns.
+Leave is data (`Invalidated`); every later item still runs and sees it. That is why a leave and a cancel can be two handlers: the leave peels, the cancel post matches `Invalidated`.
 
-## Downstream of invalidation
+Mutation methods on the root (`set_layer`, `placing`, `hide_overlay`) stay methods: each is one state write and returns the effects that write implies. Handlers call at most one of them. A handler that calls `set_layer` and also builds a `Foreground` effect, or places and also goes home, is two things.
 
-Framework still to land (in `invalidation.md`, ordered):
+## Downstream
 
 ```text
-change 5   Dispatch returns Completed; linear scheduled body; route folds; derived levels; every handler migrates
-change 6   #[post] / #[pre_post] parse and schedule
+invalidation change 5   Completed body; handler signature; derived levels
+invalidation change 6   #[post] / #[pre_post]
+timed-layer-wrapper.md  one timer owner; one pre_post; leaves the four copies
+multiple-children.md    needs posts-run-regardless
+also-binds / handler-kinds / exclusive-as-post   history; schedule replaces them
 ```
 
-Change 5 is blocked on the "Derived levels" section of that doc (AppLayer / SiteLayer use `#[derived_child]` / `#[derived_node]`).
+---
 
-Consumers that unstick once change 6 exists:
+## Unit handlers mercury needs
+
+Each unit is one function, one schedule slot, one job. Today's fat handlers are listed under "compose from".
+
+### Leave / enter layer
 
 ```text
-timed-layer-wrapper.md     return-home rearm is the A/B demo; wrapper owns one timer + one pre_post
-also-binds.md              superseded; posts are the non-claiming schedule slot also-bind was for
-handler-kinds.md           superseded by invalidation's schedule (kept only as history)
-exclusive-as-post.md       already the desugaring invalidation uses (exclusive is a post gate)
-multiple-children.md       two live #[resolve_into] fields; needs posts-run-regardless
-drop-emits-effects.md      orthogonal (RAII for visible counterparts); not a post
-timer-ids-on-root.md       orthogonal (ambient timer id source); arms still happen in posts
+go_home            set_layer(Home); leave
+enter_nav          set_layer(Nav); leave     // Nav::new arms its timer inside construction;
+enter_resize       set_layer(Resize); leave  // arm effect is returned by new and is part of
+enter_typing       set_layer(Typing); leave  // that one mutation, not a second handler job
+enter_inapp        set_layer(InApp); leave
+enter_site         set_layer(Site); leave
 ```
 
-Mercury work that is pure migration (no product change), once change 5 ships:
+`set_layer` is the one mutation: hide overlay, reset jk, open/close modifiers, `ShowLayer`. The handler's one job is "enter this layer" (or home). It does not also foreground an app or emit a key.
+
+### Foreground
+
+Nav's app keys today do navigating + enter inapp + Foreground in one body. Three units, one key. Posts that need the path stay put and are scheduled before the leave bind.
+
+```rust
+fn mark_navigating<'a, E, P>(
+    _ev: &E,
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>)
+where
+    P: HasAncestor<MercuryPath<'a>> + HasStop + Complete<P>,
+{
+    match st.state {
+        MaybeInvalidated::NotInvalidated(p) => {
+            // one job: watcher has not confirmed the new front app yet
+            p.ancestor().foreground.start_navigating();
+            (vec![], p.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![], c),
+    }
+}
+
+fn foreground_chrome<E, P: HasStop + Complete<P>>(
+    _ev: &E,
+    _snap: (),
+    st: AscendState<'_, P>,
+) -> (Vec<MercuryEffect>, Completed<P>) {
+    // one job: effect only
+    (vec![MercuryEffect::Foreground(App::Chrome)], st.complete())
+}
+```
 
 ```text
-every handler signature   Node -> AscendState, return (Vec, Completed)
-Mercury::handle rearm     delete; becomes the return-home pre_post
-Layer::rearm_timeout      delete with it
+// Nav KeyC — posts before the leave bind
+#[post(Key::KeyC.down() => mark_navigating, Key::KeyC.down() => foreground_chrome)]
+#[bind(Key::KeyC.down() => enter_inapp)]
 ```
 
-## Tree and schedule today
+Same triple for F/G/Z with different `foreground_*`.
+
+### Emit a chord / key
 
 ```text
-Mercury (root)
-  foreground, windows, typing_state, overlay
-  #[resolve_into] layer: Layer
-    Home | Nav | Resize | Typing | InApp | Site
-      InApp  --derived--> AppData::Chrome | Ghostty
-      Site   --derived--> SiteData::ClaudeAi
+tap_cmd_space      Tap(space, COMMAND)
+tap_cmd_l          Tap(l, COMMAND)
+tap_cmd_r          Tap(r, COMMAND)          // Chrome refresh
+tap_cmd_shift_o    Tap(o, COMMAND|SHIFT)    // claude.ai new chat
+tmux_prev          Tap(ctrl-a), Tap(p)
+tmux_next          Tap(ctrl-a), Tap(n)
+tmux_window(N)     Tap(ctrl-a), Tap(shifted digit)
 ```
 
-Root binds (all exclusive today):
+A tap-only handler never calls `set_layer`. Chrome refresh is only `tap_cmd_r` + stay (exclusive, so it claims).
+
+### Emit then enter typing
+
+Today: one handler does both. Split on the same key:
+
+```text
+// Chrome bare l
+#[post(Key::KeyL.down().bare() => tap_cmd_l)]
+#[bind(Key::KeyL.down().bare() => enter_typing)]
+
+// claude.ai n
+#[post(Key::KeyN.down() => tap_cmd_shift_o)]
+#[bind(Key::KeyN.down() => enter_typing)]
+
+// Nav space
+#[post(Key::Space.down() => tap_cmd_space)]
+#[bind(Key::Space.down() => enter_typing)]
+```
+
+Post runs whether or not the bind claims; both match the same trigger. Exclusive only enters typing. Order: post first so the tap is in the batch before the leave's flush, matching today's "tap then transition" ordering (Spotlight wants modifier downs from typing's open to land after the spotlight chord).
+
+### Place window then go home
+
+Today: `place` + `and_go_home`. Split:
+
+```text
+// Resize LeftArrow
+#[post(Key::LeftArrow.down() => left_half)]   // only SetFrame + pending timer; stay
+#[bind(Key::LeftArrow.down() => go_home)]     // claim + leave home
+```
+
+`left_half` / `right_half` / `maximize` / `restore_window` each only touch `windows`. They do not leave. `go_home` only leaves. Same for Ghostty digits:
+
+```text
+#[post(Key::Num1.down() => tmux_window_1)]
+#[bind(Key::Num1.down() => go_home)]
+```
+
+Walking tmux with j/k stays: exclusive that only emits, no go_home post.
+
+### Return-home deadline
+
+One pre_post, two arms, one concern ("the idle timer"):
+
+```text
+#[pre_post(AnyKey => (snap_return_home, return_home_deadline))]
+// pre:  snap old TimerId
+// post: NotInvalidated => cancel old + schedule fresh + rewrite guard
+//       Invalidated    => cancel old
+```
+
+This is the A/B demo. It is not folded into `go_home` or into each layer key. It is not `Mercury::handle`.
+
+Scheduled before exclusive binds on that node so the post sees the descent's stay/leave, not a later bind's.
+
+### Overlay
+
+```text
+show_overlay       ShowOverlay + arm dwell; stay
+hide_overlay       HideOverlay; clear guard; stay
+toggle_overlay     // NOT a unit — compose at bind site or keep as one
+                   // "toggle" is one user gesture; one handler that branches
+                   // on overlay.is_some() is still one job: toggle
+```
+
+Dwell fire is only `hide_overlay`. Layer change hide stays inside `set_layer` (that mutation's implied effect), not a second handler.
+
+### Root recorders
+
+```text
+record_front_app   foreground.set_front_app; stay
+record_tab_url     foreground.set_tab_url; stay
+record_windows     windows.record; stay
+```
+
+Each is already one thing. Stay exclusive binds.
+
+### Root timers
+
+```text
+jk_timeout         replay(jk.interrupt()); stay
+placement_settled  windows.forget_pending(); stay
+hide_overlay       (dwell) as above
+```
+
+### Quit
+
+Today: open modifiers + Kill. Split if both are effects of one user gesture "quit":
+
+```text
+// one job "quit the program": Kill is the act; opening modifiers is required
+// cleanup so the OS is not left with stranded downs — same as set_layer's flush
+// belonging to the mutation. Keep as one handler that: held.open() then Kill.
+quit
+```
+
+Do not split open and Kill into two schedule slots: an open without Kill is not a behavior, and Kill without open is a bug. One handler, one gesture.
+
+### Root AnyKey (passthrough)
+
+Today `maybe_pass_through` does four jobs. Split by concern; claim stays on the passthrough policy:
+
+```text
+// root — AnyKey; source order; only the claiming bind is exclusive
+#[post(AnyKey => track_held_modifiers)]     // held.apply if modifier; always; no claim
+#[bind(AnyKey => pass_or_swallow)]          // claim; passthrough: jk + emit; command: empty
+```
+
+`track_held_modifiers` must run for keys a deeper layer claimed too (a modifier pressed in nav). That is exactly a post: no claim, runs on match, deepest claim still works. Today's bug-shaped coupling — tracking only on miss — goes away.
+
+```rust
+fn track_held_modifiers(
+    ev: &KeyEvent,
+    _snap: (),
+    st: AscendState<'_, MercuryPath<'_>>,
+) -> (Vec<MercuryEffect>, Completed<MercuryPath<'_>>) {
+    match st.state {
+        MaybeInvalidated::NotInvalidated(root) => {
+            if ev.key.is_modifier() {
+                root.typing_state.held.apply(ev);
+            }
+            (vec![], root.complete())
+        }
+        MaybeInvalidated::Invalidated(c) => (vec![], c),
+    }
+}
+```
+
+`pass_or_swallow` still owns jk advance, emit, and enter home on Completed — that is still three outcomes of one policy ("what does an unbound key do in this layer"). Further splitting jk into its own post is optional: the run is one state machine, one handler is fine.
+
+```text
+// optional further split later
+#[post(AnyKey => track_held_modifiers)]
+#[bind(AnyKey => advance_jk_or_emit)]   // only the passthrough policy
+```
+
+---
+
+## Fat handlers today → units
+
+```text
+to_home                         go_home
+to_nav / to_resize / ...        enter_*
+to_typing                       enter_typing
+open_chrome (etc.)              mark_navigating + foreground_chrome + enter_inapp
+open_spotlight                  tap_cmd_space + enter_typing
+focus_address_bar               tap_cmd_l + enter_typing
+new_chat                        tap_cmd_shift_o + enter_typing
+refresh                         tap_cmd_r
+previous_window / next_window   tmux_prev / tmux_next
+window_N                        tmux_window(N) + go_home
+maximize / left_half / ...      place unit + go_home
+restore_window                  restore unit + go_home
+and_go_home / and_go_home_from  deleted; composition is the schedule
+maybe_pass_through              track_held_modifiers + pass_or_swallow
+Mercury::handle rearm           return_home_deadline pre_post
+Layer::rearm_timeout            deleted
+set_layer                       stays (one mutation); handlers call it once
+```
+
+---
+
+## Schedule sketches
+
+### Timed layer (nav), after units
+
+Source order is the whole attribute list. pre_post first so the deadline sees the descent. Pure-effect and mark posts for a key sit before that key's leave bind so they still see `NotInvalidated` when they need the path. Pure-effect posts may also sit after a leave (they use `st.complete()` and ignore the path).
+
+```rust
+#[derive(Bind)]
+#[node(parent = LayerPath)]
+#[binds(MercuryStruct)]
+#[pre_post(AnyKey => (snap_return_home, return_home_deadline))]
+#[post(
+    Key::KeyC.down() => mark_navigating,
+    Key::KeyC.down() => foreground_chrome,
+    Key::KeyF.down() => mark_navigating,
+    Key::KeyF.down() => foreground_finder,
+    Key::KeyG.down() => mark_navigating,
+    Key::KeyG.down() => foreground_ghostty,
+    Key::KeyZ.down() => mark_navigating,
+    Key::KeyZ.down() => foreground_zed,
+    Key::Space.down() => tap_cmd_space,
+)]
+#[bind(
+    |p| p.get().home_timeout.trigger() => go_home,
+    Key::Escape.down() => go_home,
+    Key::KeyO.down() => toggle_overlay,
+    Key::KeyT.down() => enter_typing,
+    Key::KeyC.down() => enter_inapp,
+    Key::KeyF.down() => enter_inapp,
+    Key::KeyG.down() => enter_inapp,
+    Key::KeyZ.down() => enter_inapp,
+    Key::Space.down() => enter_typing,
+)]
+struct NavLayer { home_timeout: TimerGuard }
+```
+
+### Chrome derived leaf
+
+```rust
+#[bind(Key::KeyR.down() => tap_cmd_r)]
+#[post(Key::KeyL.down().bare() => tap_cmd_l)]
+#[bind(Key::KeyL.down().bare() => enter_typing)]
+#[bind(Key::KeyL.down().with(SHIFT) => copy_url)]
+#[bind(Key::KeyL.down().with(COMMAND) => copy_host)]
+```
+
+### Resize
+
+```rust
+#[pre_post(AnyKey => (snap_return_home, return_home_deadline))]
+#[post(Key::LeftArrow.down() => left_half)]
+#[bind(Key::LeftArrow.down() => go_home)]
+// same for right, up, r(restore), ...
+```
+
+### Root
 
 ```rust
 #[bind(
@@ -71,291 +340,51 @@ Root binds (all exclusive today):
     |p| p.typing_state.jk.window_timer().map(TimerGuard::trigger) => jk_timeout,
     |p| p.overlay_timer().map(TimerGuard::trigger) => hide_overlay,
     |p| p.windows.pending_timer().map(TimerGuard::trigger) => placement_settled,
-    AnyKey => maybe_pass_through,
 )]
+#[post(AnyKey => track_held_modifiers)]
+#[bind(AnyKey => pass_or_swallow)]
 ```
 
-Imperative, outside dispatch:
+`handle` is only dispatch:
 
 ```rust
-// Mercury::handle, after bind::dispatch
-if handled && Key(_) && layer discriminant unchanged {
-    effects.push(layer.rearm_timeout());  // Cancel+Schedule by replacing TimerGuard
+pub fn handle(&mut self, event: &MercuryEvent) -> (Vec<MercuryEffect>, bool) {
+    bind::dispatch::<MercuryStruct, Self, _>(self, event)
 }
 ```
 
-That block is the first post target. Everything else already is a bind.
-
 ---
 
-## 1. Return-home deadline
-
-What. Nav, Resize, InApp, Site idle out after `RETURN_TO_HOME_TIMEOUT`. Activity that keeps you in the layer pushes the deadline out. Leaving cancels the OS timer (the guard drops).
-
-Today.
-
-```rust
-// each timed layer
-pub struct NavLayer { home_timeout: TimerGuard }
-// arm in new(); bind firing to to_home
-// Layer::rearm_timeout + Mercury::handle push a fresh schedule after a staying key
-```
-
-Target. One `#[pre_post]` on the node that owns the guard (the A/B demo in `invalidation.md`, or the wrapper in `timed-layer-wrapper.md`). Pre snaps the old id before descent; post matches the state:
-
-```rust
-#[pre_post(AnyKey => (snap_return_home, return_home_deadline))]
-// NotInvalidated => Cancel(old) + Schedule(fresh), rewrite guard
-// Invalidated    => Cancel(old) only
-```
-
-Scheduled before any exclusive bind on that node (source order), so the post sees the descent's answer, not a later bind's.
-
-Where the guard lives is a separate decision: four copies (today) or one wrapper (`timed-layer-wrapper.md`). The schedule shape is the same either way.
-
-What this deletes: `Layer::rearm_timeout`, the `before`/`after` discriminant check in `handle`, and (if the wrapper lands) the four timer fields and four firing binds.
-
----
-
-## 2. Layer transitions that leave
-
-What. Exclusive binds that replace `layer` and return home or enter another layer.
+## What is not a separate handler
 
 ```text
-Escape / idle fire                              to_home              -> Home
-Home n / InApp n                                to_nav               -> Nav (+ arm timer)
-Home r                                          to_resize            -> Resize (+ arm)
-Home t / InApp t / Site t / Resize t / Nav t    to_typing            -> Typing
-Home i                                          to_inapp             -> InApp (+ arm)
-Home u / InApp s                                to_site              -> Site (+ arm)
-Nav app keys                                    open_*               -> InApp (+ arm + Foreground + navigating)
-Nav space                                       open_spotlight       -> Typing (+ cmd-space)
-Resize arrows / r                               place / restore      -> Home (+ SetFrame)
-Ghostty digits                                  window_N             -> Home (+ tmux taps)
-Chrome bare l                                   focus_address_bar    -> Typing (+ cmd-l)
-claude.ai n                                     new_chat             -> Typing (+ cmd-shift-o)
-jk completed                                    maybe_pass_through   -> Home
-```
+set_layer's overlay hide / jk reset / open-close / ShowLayer
+    one mutation's implied effects; not scheduled items
 
-Target. Still `#[bind]` (exclusive). Body leaves via `into_parent` / `set_layer` and returns `Completed`. The leave is what makes later posts on ancestors see `Invalidated`.
+TimerGuard Drop cancel
+    OS cancel; the return-home pre_post is the explicit cancel-on-leave form
+    for the idle timer (Drop alone cannot push CancelTimer into the batch)
 
-```rust
-fn to_home<'x>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>) {
-    match st.state {
-        MaybeInvalidated::NotInvalidated(path) => {
-            let root = path.into_ancestor(); // or into_parent chain + set_layer
-            let effects = go_home(root);
-            // leave: the Completed that records the peel
-            ...
-        }
-        MaybeInvalidated::Invalidated(c) => (vec![], c),
-    }
-}
-```
+app_data / site_data
+    resolve inputs, not handlers
 
-Exact leave spelling follows the change-5 handler migration; the point is exclusive + leave, not a post.
-
-`and_go_home` / `and_go_home_from` stay as helpers that produce effects; the schedule slot is still the exclusive bind.
-
----
-
-## 3. Layer transitions that stay
-
-What. Actions that keep you in the active layer so they can be repeated.
-
-```text
-Chrome r          refresh          Tap(cmd-r)
-Ghostty j/k       previous/next    tmux prefix + key
-o (many layers)   toggle_overlay   Show/Hide overlay + dwell timer
-```
-
-Target. `#[bind]`, `st.complete()` on both arms (or only NotInvalidated if Invalidated is unreachable for a leaf that never leaves from these). Stay is what makes the return-home post rearm.
-
----
-
-## 4. External truth, recorded at the root
-
-What. Watchers and sockets push state mercury already holds a field for. Idempotent assign.
-
-```text
-Foregrounded   record_front_app     foreground.set_front_app
-Tabbed         record_tab_url       foreground.set_tab_url
-Windowed       record_windows       windows.record
-```
-
-Target. `#[bind]` at the root (exclusive: the event is "handled" so nothing else claims it). Bodies stay put: `st.complete()`, empty effects. No post needed; there is no leave/cancel story.
-
-These never rearm return-home: they are not `Key` events, and the rearm post is keyed on `AnyKey` / keys only.
-
----
-
-## 5. Root catch-all: modifiers, passthrough, jk
-
-What. `AnyKey => maybe_pass_through` at the root, last resort after every layer miss.
-
-```text
-every key          held.apply if modifier
-command layer      swallow (empty effects)
-passthrough layer  feed jk run:
-                     Advanced (opening)  arm jk window timer
-                     Advanced            nothing
-                     Passed              replay swallowed + emit this key
-                     Completed           set_layer(Home)
-```
-
-Target. Still `#[bind(AnyKey => ...)]` exclusive. It is the claim that means "this key was handled by mercury" for pass-through policy (free `dispatch` returns the claim bool). A post must not replace it: posts do not claim, and unclaimed keys pass to the OS.
-
-Held-modifier tracking lives here for unbound keys. Bound keys in command layers never reach it; that is why open/close on layer change exists (section 9).
-
----
-
-## 6. Overlay show / hide / dwell
-
-What. One overlay across all layers. Root holds `overlay: Option<TimerGuard>`.
-
-```text
-o (toggle)           toggle_overlay   show content + arm dwell, or hide
-dwell fire           hide_overlay     HideOverlay, drop guard
-set_layer            hide_overlay     always, before flush
-```
-
-Target.
-
-```text
-toggle_overlay   #[bind] on each layer that has o; stays or leaves unchanged
-hide_overlay     #[bind] on root matching the live guard's trigger; stays
-set_layer hide   stays inside set_layer (not a post): layer change is the mutation that implies hide
-```
-
-`drop-emits-effects.md` is the related open: forgetting `HideOverlay` on a path that clears `overlay` is a bug RAII cannot fix because `Drop` returns nothing. That is not a pre/post problem.
-
----
-
-## 7. Window placement settle
-
-What. A `SetFrame` is followed by several AX reports. While `pending` is live, those reports do not clear `restore`. A timer ends the wait.
-
-```text
-placing / restoring    set pending + SetFrame + Schedule(PLACEMENT_SETTLE)
-placement_settled      forget_pending
-user move (not ours)   windows.record clears restore
-```
-
-Target. `#[bind]` at root for the timer fire. Arming stays in `Windows::asking_for` (called from resize handlers). No post: cancel is Drop of the guard when a new placement replaces pending or the window closes out from under it; there is no "rearm on activity" story.
-
----
-
-## 8. jk window timer
-
-What. In typing, a started `jk` run waits `JK_TIMEOUT` for the next key; on fire, swallowed keys replay.
-
-```text
-arm in maybe_pass_through on Advanced+opening
-fire: jk_timeout => replay(interrupt())
-```
-
-Target. Keep as root `#[bind]` on the guard trigger. Arming stays inside the exclusive AnyKey body (it is the run that opens, not a post keyed on descent). No separate post.
-
----
-
-## 9. Layer change side effects (`set_layer`)
-
-What. The one writer of `layer`. Always produces:
-
-```text
-hide overlay if up
-jk sequence reset
-if leaving passthrough  held.close()   // UPs for held modifiers
-if entering passthrough held.open()    // DOWNs for held modifiers
-ShowLayer(name)
-```
-
-Target. Stays a method called from exclusive handlers that change layer. Not a post: it is the mutation those handlers perform, and the effects are part of their return. Posts on ancestors that need to know a leave happened already see `Invalidated` from the leave itself; they do not re-implement flush.
-
----
-
-## 10. Quit
-
-What. Home `q` and menu-bar Quit. Open held modifiers, then `Kill`.
-
-Target. `#[bind]` at home for `q`, at root for `Quit`. Stays put until `Kill` tears the process down. Exclusive so nothing else also acts.
-
----
-
-## 11. Derived app / site levels
-
-What. Levels that are not stored; rebuilt each dispatch from root truth.
-
-```text
-app_data(path)   confirmed() front app  -> Option<AppData>
-site_data(path)  confirmed Chrome URL   -> Option<SiteData>
-```
-
-Bindings on the derived leaves (Chrome, Ghostty, ClaudeAi) are ordinary exclusive binds once change 5 defines the derived handler's `AscendState<P>`.
-
-No post lives on a derived node today. A post that needed the derived path would be part of the derived-levels design, not this catalog.
-
----
-
-## 12. Copy URL / host
-
-What. Chrome `shift-l` / `cmd-l`: put URL text on the clipboard from model state, or fall back to AppleScript.
-
-Target. `#[bind]`, stay. Reads root; no leave.
-
----
-
-## Pattern checklist (what uses which slot)
-
-Exclusive bind (`#[bind]` / `exclusive`):
-
-```text
-every command key (layer transitions, app actions, overlay toggle, quit)
-root external events (foreground, tab, window)
-root timer fires (jk, overlay dwell, placement settle)
-root AnyKey catch-all (modifiers + passthrough + jk advance)
-```
-
-Post or pre_post (no claim; keys on stay vs leave):
-
-```text
-return-home deadline rearm/cancel     pre_post(AnyKey) on the timed node / wrapper
-```
-
-Not a scheduled handler:
-
-```text
-set_layer's flush, overlay hide, jk reset     method of the root
-TimerGuard Drop cancel                        OS cancel; demo's CancelTimer is the explicit form
-windows.record / placing                      state methods called from binds
-derived app_data / site_data                  resolve_into inputs, not handlers
-```
-
-Still outside the model (product debt, not schedule debt):
-
-```text
-held-keys.md              non-modifier stream balance across swallow/pass
-drop-emits-effects.md     HideOverlay if overlay field cleared without the method
-timer-ids-on-root.md      TimerIds field instead of static AtomicU64
+windows.placing / restoring
+    state methods; the place unit handler calls one of them
 ```
 
 ---
 
-## First consumer
-
-The return-home deadline (section 1) is the only behavior that *needs* `#[pre_post]` to leave `Mercury::handle`. Everything else is already a bind and migrates under change 5's signature rewrite.
-
-Order once change 6 is green:
+## Order of work (mercury, after change 6)
 
 ```text
-1. Migrate return-home rearm into a pre_post on each timed layer (or the wrapper)
-2. Delete Mercury::handle's rearm block and Layer::rearm_timeout
-3. Optionally fold the four layers into AndReturnHome (timed-layer-wrapper.md)
-4. Optionally multiple-children (two keyboards) once posts-at-branch-points is designed
+1. Unit handlers + schedule composition for leave/enter/tap/place
+   (delete and_go_home; split open_*; split focus_address_bar / new_chat / spotlight)
+2. return-home pre_post; delete handle rearm + Layer::rearm_timeout
+3. track_held_modifiers as root post; slim pass_or_swallow
+4. AndReturnHome wrapper (timed-layer-wrapper.md) — one pre_post site
+5. multiple-children when designed
 ```
 
-No other mercury behavior is blocked on posts. New features that key on stay-vs-leave (a which-key overlay that arms on enter and cancels on leave; a sticky-modifier timeout; anything with an OS resource that must cancel when the active path dies) use the same pre_post shape as return-home.
+Step 1 does not need pre_post if every split is post+bind on the same key; posts need change 6. Until then, fat handlers stay, signatures only migrate under change 5.
+
+The acceptance test for the whole migration: no handler in `crates/mercury/src/handlers/` both changes layer and emits a chord; no handler both places a window and goes home; no rearm outside a pre_post; `and_go_home` does not exist.
