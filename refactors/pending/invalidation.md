@@ -24,15 +24,10 @@ pub enum Mutation {
     MaybeDropped,
 }
 
-/// Proof `claim()` succeeded. Private constructor except via `claim`.
-#[derive(Clone, Copy, Debug)]
-pub struct Claimed {
-    _seal: (),
-}
-
 pub struct AscentState {
     invalidation_depth: u32,
-    claim: Option<Claimed>,
+    /// `Some(())` once exclusive has taken this event.
+    claim: Option<()>,
     /// Set only by `freeze_mutation`. What `mutation()` returns.
     frozen_mutation: Mutation,
 }
@@ -60,13 +55,13 @@ impl AscentState {
         self.frozen_mutation
     }
 
-    /// One-way trap door. `Some(Claimed)` if open (now taken). `None` if already taken.
-    pub fn claim(&mut self) -> Option<Claimed> {
+    /// One-way trap door. `Some(())` if open (now taken). `None` if already taken.
+    pub fn claim(&mut self) -> Option<()> {
         if self.claim.is_some() {
             None
         } else {
-            self.claim = Some(Claimed { _seal: () });
-            self.claim
+            self.claim = Some(());
+            Some(())
         }
     }
 
@@ -194,7 +189,7 @@ pub fn run_exclusive<P, E>(
 ) -> (P, Vec<E>) {
     match state.claim() {
         None => (path, Vec::new()),
-        Some(_claimed) => body(Node { parent: path, data: () }, state),
+        Some(()) => body(Node { parent: path, data: () }, state),
     }
 }
 
@@ -602,7 +597,7 @@ ASCENT Inner
   state = AscentState::new()
     depth 0, claim None, frozen Intact
   run_exclusive:
-    claim() → Some(Claimed)
+    claim() → Some(())
     inner_handler: invalidate(2)         // depth = 2; frozen still Intact
   return (InnerPath, state)
 
