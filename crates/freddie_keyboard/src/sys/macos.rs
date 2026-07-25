@@ -141,6 +141,9 @@ const fn flag_for(key: Key) -> Option<CGEventFlags> {
         Key::ShiftLeft | Key::ShiftRight => CGEventFlags::CGEventFlagShift,
         Key::AltLeft | Key::AltRight => CGEventFlags::CGEventFlagAlternate,
         Key::ControlLeft | Key::ControlRight => CGEventFlags::CGEventFlagControl,
+        // Caps lock is FlagsChanged on the wire; without this the tap Keeps it and the OS
+        // toggles AlphaShift while the model never sees the key.
+        Key::CapsLock => CGEventFlags::CGEventFlagAlphaShift,
         _ => return None,
     })
 }
@@ -852,6 +855,10 @@ mod tests {
         assert_eq!(
             flag_for(Key::AltRight),
             Some(CGEventFlags::CGEventFlagAlternate)
+        );
+        assert_eq!(
+            flag_for(Key::CapsLock),
+            Some(CGEventFlags::CGEventFlagAlphaShift)
         );
         assert_eq!(flag_for(Key::KeyA), None);
         assert_eq!(flag_for(Key::Escape), None);
