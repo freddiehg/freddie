@@ -13,70 +13,82 @@ Core: unwind peels while wrapping into a nested `Result` doll whose type is know
 
 No dispatch, claim, posts. Simpler peel spine than laserbeam is fine; same mechanics.
 
-## Do we know the type of `path.ascend_to_root().complete()` for all paths?
+## The type posts need
 
-**Not from the value alone, and not from a free `Out` parameter you invent at the call site.**
-**Yes, if the path’s static type carries a type-level spine** — then `Out` is an associated type of that spine.
+When a child leaves, the parent runs posts. The parent must know the type of the value the child returned:
 
-| Starting path type (static) | `Out` = type of `ascend_to_root().complete()` |
-| --- | --- |
-| Root `R` | `R` (already there; identity) |
-| `Step<N, P>` peels to `P` | `Result<P, <P as AscentOut>::Out>` |
+```text
+Result<MyPath, Result<ParentPath, Result<GrandParentPath, …>>>
+```
 
-Recursive definition:
+That is the child’s leave doll. From child path `Step<Child, MyPath>` (parent focus = `MyPath`):
+
+```text
+<Step<Child, MyPath> as AscentOut>::Out
+  = Result<MyPath, <MyPath as AscentOut>::Out>
+  = Result<MyPath, Result<ParentPath, Result<GrandParentPath, …>>>
+```
+
+Unpack:
+
+```text
+Ok(my_path)  →  Here — posts run with MyPath
+Err(rest)    →  Up   — rest : Result<ParentPath, Result<GrandParentPath, …>>
+```
+
+After Here posts, this node leaves with one thinner doll:
+
+```text
+<MyPath as AscentOut>::Out
+  = Result<ParentPath, Result<GrandParentPath, …>>
+```
+
+Same type family; posts need the **child’s** `AscentOut::Out` as the type of what they unpack.
+
+## Do we know that type for all paths?
+
+**Yes**, if the path type is a spine (`Root`, `Step<N, P>`, later `PathMut` nest): it is `<Path as AscentOut>::Out`.
+
+**No**, if the parent chain is not in the type — there is nothing to form the nest from.
+
+### Type family
 
 ```rust
-/// What `ascend_to_root().complete()` returns when leave starts at `Self`.
+/// Doll returned when leave starts at this path type.
 pub trait AscentOut {
     type Out;
 }
 
-// Terminal focus (root of the tree).
 impl AscentOut for Root {
     type Out = Root;
 }
 
-// One peel layer: Ok(parent) if we stop after one peel; Err(rest) if we go further.
-// rest is parent’s full ascent-to-root doll.
+/// Ok(parent) if stop after one peel; Err(parent’s full doll) if go further.
 impl<N, P: AscentOut> AscentOut for Step<N, P> {
     type Out = Result<P, P::Out>;
 }
 ```
 
-Examples:
+Unrolling (`MyPath = Step<B, Root>`, child = `Step<C, MyPath>`):
 
-```rust
-// Root
-// Out = Root
+```text
+Root::Out                              = Root
 
-// Step<B, Root>
-// Out = Result<Root, Root>
-//   one peel + complete → Ok(root)
-//   (cannot peel past root)
+Step<B, Root>::Out                     = Result<Root, Root>
+                                       // = Result<ParentPath, …> for B
 
-// Step<C, Step<B, Root>>
-// Out = Result<Step<B, Root>, Result<Root, Root>>
-//   one peel + complete → Ok(b)
-//   two peels + complete → Err(Ok(root))   // inner AsHere on Root
-//   with bare-terminal packing (AsTerminal) on last layer:
-//   Out = Result<Step<B, Root>, Root>
-//   two peels + complete → Err(root)
+Step<C, Step<B, Root>>::Out            = Result<Step<B, Root>, Result<Root, Root>>
+                                       // = Result<MyPath, Result<ParentPath, …>>
+                                       // = type of child return / what post unpacks at B
 ```
-
-So: **for every path type that implements `AscentOut`, yes — `Out` is `<ThatPath as AscentOut>::Out`.**
-For an arbitrary unsized/`dyn` path with no spine in the type: **no** — there is nothing to compute `Out` from.
 
 ### How we get the type
 
-1. **Type family on the path type** (above): `AscentOut::Out`. This is the answer for all well-typed spines.
-2. **Derive / node place** (invalidation later): each node’s laserbeam path type is a known nest of `PathMut` (or `Step`); the derive names `type Ascent = Ascent<<Path as AscentOut>::Out>` or the equivalent `Result` nest. Same computation, fixed per node.
-3. **Not** inference from `complete()` alone without `AscentOut` / pack: `complete()` returns `Pk::Out`, and the pack must have been built for that path’s spine. The pack is how the value-level unwind mirrors the type-level doll.
+1. Associated type: `<ChildPath as AscentOut>::Out` (unpack / posts), `<MyPath as AscentOut>::Out` (my leave after posts).
+2. Derive: each `Place::Path` is already a known nest; emit the same `Result` chain (or `type Ascent<'a> = …` alias). No runtime.
+3. Not a free type parameter on the post function, and not inferred without the spine.
 
-`after_first_peel::<N, P, Rest>` that takes `Rest` by hand is only OK when the caller already knows `Rest = <P as AscentOut>::Out`. Prefer:
-
-```rust
-after_first_peel(path)  // Rest inferred as <Parent as AscentOut>::Out
-```
+Value-level pack/`complete` must return exactly that associated type (`after_first_peel` sets `Rest = Parent::Out` so `Pack::Out = <Step<N,Parent> as AscentOut>::Out`).
 
 ## Simpler path (this prefactor)
 
