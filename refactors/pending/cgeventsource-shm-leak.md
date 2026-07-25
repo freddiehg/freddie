@@ -13,7 +13,7 @@ Two long-lived private sources, one per thread that builds events:
 - the effect loop's `Emitter` holds one
 - the tap thread holds one for `Decision::Remap`
 
-Each is created once, when that thread starts building events. Neither is shared across threads (posting mutates source state). Fixed cost: two sources ≈ 32KB for the life of the process.
+Each is created once, when that thread starts building events. Neither is shared across threads (posting mutates source state). Fixed cost: two sources ≈ 32KB for the life of the process. If either cannot be created, `run_tap` fails with `CaptureError`, the same way a tap that cannot install does.
 
 `keyboard_event` takes a borrow of the source. It never calls `CGEventSource::new`. Flags are set to exactly `to_cg(flags) | intrinsic_flags(key)`, never merged with `event.get_flags() & !MODIFIERS`.
 
@@ -68,6 +68,8 @@ fn keyboard_event(
     flags: ModifierFlags,
 ) -> Result<CGEvent, EmitError> {
     let code = to_code(key).ok_or(EmitError::Unmappable(key))?;
+    // `new_keyboard_event` takes the source by value; the clone is a CFRetain of the same
+    // source, not a second mapping.
     let event = CGEvent::new_keyboard_event(source.clone(), code, press == PressType::Down)
         .map_err(|_| EmitError::Post)?;
     let intrinsic = intrinsic_flags(key);
@@ -224,20 +226,32 @@ fn intrinsic_flags_marks_only_the_navigation_cluster() {
     assert_eq!(intrinsic_flags(Key::KeyA), CGEventFlags::empty());
 }
 
-// Posting mutates the source. After an arrow, a later chord built from the same source must
-// still post without NumericPad, or Spotlight's cmd-space stops matching. Change 1 makes this
-// hold; Change 2 relies on it for the long-lived sources.
+// Posting mutates the source: the probe below is born carrying NumericPad. A later chord
+// built from the same source must still post without it, or Spotlight's cmd-space stops
+// matching. Change 1 makes this hold; Change 2 relies on it for the long-lived sources.
+//
+// The post is real and reaches the session, so the posted half is the release: nothing acts
+// on a key-up that had no down.
 #[test]
 fn posting_an_arrow_does_not_poison_a_later_chord() {
     let source = private_source();
-    let arrow =
-        keyboard_event(&source, Key::UpArrow, PressType::Down, ModifierFlags::empty())
-            .expect("arrow");
+    let arrow = keyboard_event(&source, Key::UpArrow, PressType::Up, ModifierFlags::empty())
+        .expect("an arrow");
     arrow.post(CGEventTapLocation::Session);
+
+    // Born from the source after the post, before any set_flags: carries NumericPad, which
+    // proves the source was poisoned. Without this the assertions below pass vacuously.
+    let probe = CGEvent::new_keyboard_event(source.clone(), KeyCode::SPACE, true)
+        .expect("a probe event");
+    assert!(
+        probe
+            .get_flags()
+            .contains(CGEventFlags::CGEventFlagNumericPad)
+    );
 
     let space =
         keyboard_event(&source, Key::Space, PressType::Down, ModifierFlags::COMMAND)
-            .expect("space");
+            .expect("a space");
     assert!(
         !space
             .get_flags()
@@ -253,7 +267,7 @@ File: `crates/freddie_keyboard/src/sys/macos.rs`. Depends on Change 1.
 
 ### Tap thread
 
-Inside `run_tap`'s spawned thread, before `CGEventTap::with_enabled`, create the remap source once and capture it in the callback.
+Inside `run_tap`'s spawned thread, before `CGEventTap::with_enabled`, create the remap source once and capture it in the callback. If it cannot be created, the thread sends `Err(())` on the ready channel and returns before the tap installs, so `run_tap` fails with `CaptureError` through the same path an uninstallable tap takes.
 
 Before (after Change 1): each remap calls `CGEventSource::new`.
 
@@ -261,7 +275,10 @@ After:
 
 ```rust
 let thread = std::thread::spawn(move || {
-    let remap_source = CGEventSource::new(CGEventSourceStateID::Private).ok();
+    let Ok(remap_source) = CGEventSource::new(CGEventSourceStateID::Private) else {
+        let _ = signal.send(Err(()));
+        return;
+    };
     let outcome = CGEventTap::with_enabled(
         // ... same location, placement, options, event types ...
         |_proxy, kind, event| {
@@ -269,19 +286,15 @@ let thread = std::thread::spawn(move || {
             match decide(&input, on_key.borrow_mut()(input.clone(), event)) {
                 Decision::Pass => CallbackResult::Keep,
                 Decision::Drop => CallbackResult::Drop,
-                Decision::Remap(out) => match remap_source.as_ref() {
-                    Some(source) => match keyboard_event(source, out.key, out.press, out.flags) {
+                Decision::Remap(out) => {
+                    match keyboard_event(&remap_source, out.key, out.press, out.flags) {
                         Ok(event) => CallbackResult::Replace(event),
                         Err(e) => {
                             tracing::warn!(key = ?out.key, error = %e, "dropped a remapped key");
                             CallbackResult::Drop
                         }
-                    },
-                    None => {
-                        tracing::warn!(key = ?out.key, "dropped a remapped key; no event source");
-                        CallbackResult::Drop
                     }
-                },
+                }
             }
         },
         || {
@@ -295,11 +308,9 @@ let thread = std::thread::spawn(move || {
 });
 ```
 
-If `remap_source` is `None`, remaps drop with a warn for the life of the run. The tap still installs: pass-through keys do not need a source.
-
 ### Emitter
 
-After the tap is ready, create the emitter's source once. Failure to create it is `CaptureError`: without an emitter source, mercury cannot re-emit, and intercept is useless.
+After the tap is ready, create the emitter's source once. Failure to create it is `CaptureError`: an `Emitter` that cannot build events has no working `emit`, and `run_tap` returns both halves or neither.
 
 Before (end of `run_tap`):
 
@@ -327,11 +338,11 @@ fn post(&self, key: Key, press: PressType, flags: ModifierFlags) -> Result<(), E
 }
 ```
 
-`CGEventSource::new` appears in exactly two places after this change: once in the tap thread for remaps, once when building the `Emitter`. Not inside `keyboard_event`.
+Outside tests, `CGEventSource::new` appears in exactly two places after this change: once in the tap thread for remaps, once when building the `Emitter`. Not inside `keyboard_event`. Tests still build throwaway sources (`private_source()`, and the tag test's inline one).
 
 ## Call sites
 
-Only `crates/freddie_keyboard/src/sys/macos.rs`. Mercury calls `Emitter::emit` / `Emitter::tap`; those signatures do not change. No mercury, daemon, or effect changes.
+Only `crates/freddie_keyboard/src/sys/macos.rs`. Mercury calls `Emitter::emit` / `Emitter::tap`; those signatures do not change. `Emitter` gains a `CGEventSource` field, and `CGEventSource` is not `Send`, so `Emitter` stops being `Send`; mercury compiles unchanged because the daemon calls `intercept` and drains the effect channel on the same worker thread, under a current-thread runtime's `block_on`. No mercury, daemon, or effect changes.
 
 ## Verification
 
@@ -352,4 +363,4 @@ By hand, after `mercury restart` (old process cannot unmap what it already mappe
 ## Ordered commits
 
 1. Change 1: `intrinsic_flags`, `keyboard_event(&CGEventSource, ...)`, stop merging birth flags, tests.
-2. Change 2: one source on the tap, one on `Emitter`; `CGEventSource::new` only at those two sites.
+2. Change 2: one source on the tap, one on `Emitter`; `CGEventSource::new` only at those two sites outside tests.
