@@ -4,10 +4,12 @@ Not done. Standalone.
 
 Descent schedules which pre/posts/binds run. That set is final. Ascent runs every scheduled post leaf to root.
 
-- **`AscentState`**: live hop counter + claim. Owned by the dispatch machine. Constructed at the leaf. Threaded as `&mut AscentState` through framework code and into exclusive bodies (`run_exclusive`). **Not** an argument to posts.
-- **`AscentStateSnapshot`**: frozen at `state.snapshot()` on entry to framework `into_parent` (after the child has fully returned, so any deeper `claim` / `invalidate` is already on the live state). **This is what posts receive** (`&AscentStateSnapshot`). Freezes both facts a post may read:
+- **`AscentState`**: live hop counter + claim. Constructed at the leaf. Threaded as `&mut AscentState` through framework code and into **exclusive** bodies. Exclusive must take `&mut AscentState`: `run_exclusive` try-takes via `claim`, and the body must call `invalidate(N)` on the live object. A snapshot cannot do that.
+- **`AscentStateSnapshot`**: frozen at `state.snapshot()` on entry to framework `into_parent` (after the child has returned, so deeper `claim` / `invalidate` are already applied). **Posts only** get `&AscentStateSnapshot`:
   - `snap.mutation() -> Intact | MaybeDropped`
-  - `snap.claimed() -> bool` (deeper exclusive already took this event)
+  - `snap.claimed() -> bool` (read-only: deeper exclusive already took this event)
+
+Two roles, two types. Posts do not get `AscentState`. Exclusive does not get only a snapshot.
 
 ## Types (`crates/bind`)
 
