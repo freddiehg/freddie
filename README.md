@@ -48,7 +48,7 @@ mercury uninstall
 I would recommend you, in addition to starting `mercury`, run `mercury logs`. This will allow you to see the state after every event. As of the commit of this writing, it boots up into this state:
 
 ```
-Mercury { foreground: Foreground { app: Ghostty, navigating: false }, typing_state: TypingState { held: HeldModifiers {}, jk: KeySequence {} }, overlay: None, layer: Typing(TypingLayer) }
+Mercury { foreground: Foreground { app: Ghostty, navigating: false }, windows: Windows, held: HeldModifiers {}, overlay: None, layer: Typing(TypingLayer { jk: KeySequence {} }) }
 ```
 
 If you read that state closely, you'll see it booted up into the typing layer. You can also see this by examining the menu bar item, which should show a mercury icon and the string "Typing".

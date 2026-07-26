@@ -91,7 +91,7 @@ The keyboard is not held by anything that outlives the process. Dropping the `In
 What does not clean itself up is the app's idea of which modifiers are held. A command layer swallows the real modifier downs, so the app underneath was never told about them. `mercury stop` sends SIGTERM, which the daemon routes into the event channel as the same `Quit` the menu bar's item sends, and the quit handler emits the held modifiers' downs before it asks to die:
 
 ```rust
-let mut effects = root.typing_state.held.open();
+let mut effects = root.held.open();
 effects.push(MercuryEffect::Kill);
 ```
 

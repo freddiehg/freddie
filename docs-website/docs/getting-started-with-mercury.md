@@ -40,7 +40,7 @@ Run `mercury logs` alongside it. Every dispatched event writes one record carryi
 As of this writing it boots into this state:
 
 ```
-Mercury { foreground: Foreground { app: Ghostty, navigating: false }, typing_state: TypingState { held: HeldModifiers {}, jk: KeySequence {} }, overlay: None, layer: Typing(TypingLayer) }
+Mercury { foreground: Foreground { app: Ghostty, navigating: false }, windows: Windows, held: HeldModifiers {}, overlay: None, layer: Typing(TypingLayer { jk: KeySequence {} }) }
 ```
 
 Read that closely and you can see it booted into the typing layer. The menu bar item says the same thing, showing a mercury icon and the word "Typing".
