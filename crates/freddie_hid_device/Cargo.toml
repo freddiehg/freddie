@@ -23,4 +23,5 @@ nursery = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
 multiple_crate_versions = "allow"
 cargo_common_metadata = "allow"
+missing_const_for_fn = "allow"
 empty_structs_with_brackets = "deny"
