@@ -9,7 +9,7 @@ use std::fmt;
 use std::time::Duration;
 
 use bind::Bind;
-use freddie::{KeySequence, TimerFired, TimerGuard, timer_effect_and_guard};
+use freddie::{TimerFired, TimerGuard, timer_effect_and_guard};
 use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 use freddie_windows::{Frame, Monitor, Snapshot, WindowChange, WindowFrame, WindowId};
 use laserbeam::PathMut;
@@ -39,7 +39,8 @@ pub use nav::NavLayer;
 pub use resize::ResizeLayer;
 pub use return_home::{AndReturnHome, ReturnHomeLayers};
 pub use site::{ClaudeAiSite, SiteData, SiteLayer};
-pub use typing::TypingLayer;
+pub(crate) use typing::arm_jk_timeout;
+pub use typing::{JK_TIMEOUT, TypingLayer};
 
 /// How long a chooser layer sits idle before returning home.
 pub const RETURN_TO_HOME_TIMEOUT: Duration = Duration::from_secs(10);
@@ -57,22 +58,6 @@ pub(crate) fn arm_return_home() -> (TimerGuard, MercuryEffect) {
 /// How long the overlay stays up before its hide timer fires.
 pub const OVERLAY_DWELL: Duration = Duration::from_secs(10);
 
-/// How long a `jk` run waits for its next key before what it swallowed types itself.
-///
-/// It bounds how long a `j` stays invisible, so shorter is better, but it has to cover a
-/// deliberately typed `jk` (down, up, down) rather than only a rolled one, which is far faster.
-pub const JK_TIMEOUT: Duration = Duration::from_millis(200);
-
-/// Arm a run's window: the guard cancels it on drop, the effect schedules it. The delay is the
-/// run's own, read off the sequence, so this does not restate the policy.
-///
-/// `pub(crate)` for the same reason `arm_return_home` is: the handlers that call it are not
-/// children of this module.
-pub(crate) fn arm_jk_timeout(window: Duration) -> (TimerGuard, MercuryEffect) {
-    let (guard, effect) = timer_effect_and_guard(window, |id| MercuryEvent::Timer(TimerFired(id)));
-    (guard, MercuryEffect::Timer(effect))
-}
-
 #[derive(Bind, Debug)]
 #[node(root)]
 #[binds(MercuryStruct)]
@@ -81,30 +66,25 @@ pub(crate) fn arm_jk_timeout(window: Duration) -> (TimerGuard, MercuryEffect) {
     Tabbed => record_tab_url,
     Windowed => record_windows,
     Quit => quit,
-    // Only this run's window: a firing from a run that has since ended matches nothing, so the
-    // handler never sees it.
-    |mercury_path| mercury_path.typing_state.jk.window_timer().map(TimerGuard::trigger) => jk_timeout,
     // Only the showing that is up: a dwell from one already replaced matches nothing.
     |mercury_path| mercury_path.overlay_timer().map(TimerGuard::trigger) => hide_overlay,
     // Only the placement still outstanding: a firing from one already landed matches nothing.
     |mercury_path| mercury_path.windows.pending_timer().map(TimerGuard::trigger) => placement_settled,
 )]
-// `o` binds once, here, because the overlay is the root's own field. The typing gate rides the
-// trigger rather than the handler: in typing an `o` is an `o`, so the trigger is absent there and
-// the key falls through to the passthrough bind below.
-#[bind(
-    |mercury_path| (!matches!(mercury_path.layer, Layer::Typing(_))).then(|| Key::KeyO.down())
-        => toggle_overlay,
-)]
+// `o` binds once, here, because the overlay is the root's own field. In typing an `o` is an `o`:
+// typing's own catch-all claims the key before the root's items run, so this bind never fires
+// there.
+#[bind(Key::KeyO.down() => toggle_overlay)]
 #[post(AnyKey => track_held_modifiers)]
-#[bind(AnyKey => pass_or_swallow)]
 pub struct Mercury {
     /// The frontmost app and whether a nav is in flight. See [`Foreground`].
     pub foreground: Foreground,
     /// Every window mercury knows about, and the monitors they sit on. See [`Windows`].
     pub windows: Windows,
-    /// The state the passthrough (typing) behavior needs. See [`TypingState`].
-    pub typing_state: TypingState,
+    /// The physical truth about which modifier keys are down, kept current by the
+    /// `track_held_modifiers` post on every key in every layer. Entering and leaving typing
+    /// reads it to synchronize the app's modifier view. See [`HeldModifiers`].
+    pub held: HeldModifiers,
     /// The overlay currently up, if any: the guard for its pending hide. The overlay is an
     /// external window driven by effects, so this is its only trace in the model, held at the root
     /// because there is one overlay across all layers. The root's binding names it, so a firing
@@ -493,8 +473,9 @@ pub enum Layer {
 }
 
 impl Layer {
-    /// A passthrough layer re-emits every key the active layer did not bind. Typing is the only
-    /// one; add more by returning true for them.
+    /// A passthrough layer hands every key to the app, so entering and leaving one synchronizes
+    /// the app's view of the held modifiers (see [`Mercury::set_layer`]). Typing is the only one;
+    /// add more by returning true for them.
     #[must_use]
     pub const fn is_passthrough(&self) -> bool {
         matches!(self, Self::Typing(_))
@@ -543,6 +524,7 @@ impl Layer {
 /// The root's path is `&mut Self`; naming it lets the root's children say `parent = MercuryPath`.
 pub type MercuryPath<'a> = &'a mut Mercury;
 pub type LayerPath<'a> = PathMut<Layer, MercuryPath<'a>>;
+pub type TypingLayerPath<'a> = PathMut<TypingLayer, LayerPath<'a>>;
 pub type AndReturnHomePath<'a> = PathMut<AndReturnHome, LayerPath<'a>>;
 pub type ReturnHomeLayersPath<'a> = PathMut<ReturnHomeLayers, AndReturnHomePath<'a>>;
 pub type AppLayerPath<'a> = PathMut<AppLayer, ReturnHomeLayersPath<'a>>;
@@ -552,16 +534,15 @@ impl Mercury {
     /// The layer a fresh mercury boots into: Typing, the passthrough layer, so a fresh mercury
     /// (and one launched at login) leaves the keyboard working rather than swallowing everything
     /// in Home. See launch-at-login.
-    const fn boot_layer() -> Layer {
+    fn boot_layer() -> Layer {
         Layer::Typing(TypingLayer::new())
     }
 
     /// The title the status item shows before the first layer change.
     ///
     /// The main thread paints this when it creates the status item, before the model that would
-    /// otherwise hand it over exists. A literal rather than `boot_layer().name()`, which const
-    /// eval will not run because `Layer` has a destructor; `boot_title_matches_the_boot_layer`
-    /// keeps the two from drifting.
+    /// otherwise hand it over exists. A literal rather than `boot_layer().name()`, which is not a
+    /// const expression; `boot_title_matches_the_boot_layer` keeps the two from drifting.
     pub const BOOT_TITLE: &'static str = "Typing";
 
     /// The model at boot, told what the sources already know.
@@ -574,7 +555,7 @@ impl Mercury {
         Self {
             foreground: Foreground::new(front_app),
             windows,
-            typing_state: TypingState::default(),
+            held: HeldModifiers::default(),
             overlay: None,
             layer: Self::boot_layer(),
         }
@@ -651,41 +632,14 @@ impl Mercury {
         let before_passthrough = self.layer.is_passthrough();
         let after_passthrough = into.is_passthrough();
         self.layer = into;
-        self.typing_state.jk = KeySequence::new(JK, Some(JK_TIMEOUT));
         let mut effects = self.hide_overlay();
         effects.extend(match (before_passthrough, after_passthrough) {
-            (true, false) => self.typing_state.held.close(),
-            (false, true) => self.typing_state.held.open(),
+            (true, false) => self.held.close(),
+            (false, true) => self.held.open(),
             _ => Vec::new(),
         });
         effects.push(MercuryEffect::ShowLayer(self.layer.name()));
         effects
-    }
-}
-
-/// The keys that leave typing for home.
-const JK: &[Key] = &[Key::KeyJ, Key::KeyK];
-
-/// The state the passthrough (typing) behavior needs. It lives at the root, so it outlives the
-/// layer.
-#[derive(Debug)]
-pub struct TypingState {
-    /// The physical truth about which modifier keys are down, updated by [`maybe_pass_through`] on
-    /// every modifier event in every layer. It has to outlive the layer, because entering and
-    /// leaving a passthrough layer reads it to synchronize the app's modifier view. See
-    /// [`HeldModifiers`].
-    pub held: HeldModifiers,
-    /// The `jk` run. Replaced with a fresh one on every layer change, so a hold never outlives the
-    /// layer it was typed in.
-    pub jk: KeySequence,
-}
-
-impl Default for TypingState {
-    fn default() -> Self {
-        Self {
-            held: HeldModifiers::default(),
-            jk: KeySequence::new(JK, Some(JK_TIMEOUT)),
-        }
     }
 }
 

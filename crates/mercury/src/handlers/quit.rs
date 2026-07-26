@@ -26,7 +26,7 @@ where
     MercuryPath<'a>: Complete<P>,
 {
     let root: MercuryPath<'a> = st.state.into_ancestor();
-    let mut effects = root.typing_state.held.open();
+    let mut effects = root.held.open();
     effects.push(MercuryEffect::Kill);
     (effects, root.complete())
 }

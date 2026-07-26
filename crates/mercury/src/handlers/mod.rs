@@ -28,6 +28,7 @@ mod resize;
 mod return_home;
 mod root;
 mod tab;
+mod typing;
 mod window;
 
 pub(crate) use app::*;
@@ -40,4 +41,5 @@ pub(crate) use resize::*;
 pub(crate) use return_home::*;
 pub(crate) use root::*;
 pub(crate) use tab::*;
+pub(crate) use typing::*;
 pub(crate) use window::*;

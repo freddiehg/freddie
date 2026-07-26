@@ -499,9 +499,9 @@ fn a_pending_nav_binds_nothing_until_the_foreground_event() {
     assert!(m.foreground.navigating());
     assert_eq!(m.foreground.app(), App::Ghostty);
     // Ghostty's `j` does not apply, even though Ghostty is still the (stale) front app.
-    assert_eq!(m.handle(&key(Key::KeyJ)), (in_app(vec![]), true));
+    assert_eq!(m.handle(&key(Key::KeyJ)), (in_app(vec![]), false));
     // Chrome's `r` does not apply yet either: nothing binds while the nav is pending.
-    assert_eq!(m.handle(&key(Key::KeyR)), (in_app(vec![]), true));
+    assert_eq!(m.handle(&key(Key::KeyR)), (in_app(vec![]), false));
 
     let _ = m.handle(&foreground(App::Chrome)); // the watcher catches up
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
@@ -646,10 +646,10 @@ fn the_ls_are_chromes_alone() {
     let mut m = home();
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
-    assert_eq!(m.handle(&key(Key::KeyL)), (in_app(vec![]), true));
+    assert_eq!(m.handle(&key(Key::KeyL)), (in_app(vec![]), false));
     assert_eq!(
         m.handle(&key_with(Key::KeyL, ModifierFlags::SHIFT)),
-        (in_app(vec![]), true)
+        (in_app(vec![]), false)
     );
 }
 
@@ -684,7 +684,10 @@ fn claude_ai_n_starts_a_new_chat_and_enters_typing() {
 fn n_is_claude_ais_alone() {
     let mut m = site_showing("https://www.x.com/asdfasdf");
     // Swallowed, and the site layer treats the keypress as activity: its return-home timer resets.
-    assert_eq!(m.handle(&key(Key::KeyN)), (vec![return_home_timer()], true));
+    assert_eq!(
+        m.handle(&key(Key::KeyN)),
+        (vec![return_home_timer()], false)
+    );
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Site(_))));
 }
 
@@ -757,13 +760,13 @@ fn inapp_other_app_ignores_keys() {
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert!(matches!(m.foreground.app(), App::Zed | App::Other));
-    assert_eq!(m.handle(&key(Key::KeyR)), (in_app(vec![]), true));
+    assert_eq!(m.handle(&key(Key::KeyR)), (in_app(vec![]), false));
 }
 
 #[test]
 fn unbound_key_is_none() {
     let mut m = home();
-    assert_eq!(m.handle(&key(Key::KeyX)), (vec![], true));
+    assert_eq!(m.handle(&key(Key::KeyX)), (vec![], false));
 }
 
 // ---- ghostty: j/k walk tmux's windows, digits jump to one ----
@@ -824,8 +827,8 @@ fn j_and_k_are_unbound_in_chrome_in_app() {
     let mut m = home();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
-    assert_eq!(m.handle(&key(Key::KeyJ)), (in_app(vec![]), true));
-    assert_eq!(m.handle(&key(Key::KeyK)), (in_app(vec![]), true));
+    assert_eq!(m.handle(&key(Key::KeyJ)), (in_app(vec![]), false));
+    assert_eq!(m.handle(&key(Key::KeyK)), (in_app(vec![]), false));
 }
 
 // Foregrounding Ghostty while in-app retargets to its layer, so its bindings
@@ -940,12 +943,12 @@ fn inapp_activity_resets_the_return_home_timer() {
 #[test]
 fn the_digits_are_unbound_outside_ghostty() {
     let mut m = home();
-    assert_eq!(m.handle(&key(Key::Num1)), (vec![], true));
+    assert_eq!(m.handle(&key(Key::Num1)), (vec![], false));
 
     let mut m = home();
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
-    assert_eq!(m.handle(&key(Key::Num1)), (in_app(vec![]), true));
+    assert_eq!(m.handle(&key(Key::Num1)), (in_app(vec![]), false));
 }
 
 // ---- resize: `r` from home, then the arrows place the focused window ----
@@ -1071,9 +1074,9 @@ fn placing_twice_re_enters_resize() {
 #[test]
 fn the_arrows_are_unbound_in_home() {
     let mut m = home();
-    assert_eq!(m.handle(&key(Key::UpArrow)), (vec![], true));
-    assert_eq!(m.handle(&key(Key::LeftArrow)), (vec![], true));
-    assert_eq!(m.handle(&key(Key::RightArrow)), (vec![], true));
+    assert_eq!(m.handle(&key(Key::UpArrow)), (vec![], false));
+    assert_eq!(m.handle(&key(Key::LeftArrow)), (vec![], false));
+    assert_eq!(m.handle(&key(Key::RightArrow)), (vec![], false));
 }
 
 // `r` is Chrome's refresh in the in-app layer, and resize's entry from home. The
@@ -1177,12 +1180,12 @@ fn the_inapp_layers_bindings_follow_the_root_with_no_resync() {
     m.foreground.set_front_app(App::Ghostty);
 
     // Chrome's `r` is gone and Ghostty's `j` is live, with no re-entry and no resync.
-    assert_eq!(m.handle(&key(Key::KeyR)), (in_app(vec![]), true));
+    assert_eq!(m.handle(&key(Key::KeyR)), (in_app(vec![]), false));
     assert!(m.handle(&key(Key::KeyJ)).1);
 
     // An app with no bindings has no level at all.
     m.foreground.set_front_app(App::Zed);
-    assert_eq!(m.handle(&key(Key::KeyJ)), (in_app(vec![]), true));
+    assert_eq!(m.handle(&key(Key::KeyJ)), (in_app(vec![]), false));
 }
 
 // In the in-app layer, foregrounding a different app retargets the layer to it, so
@@ -1200,7 +1203,7 @@ fn foreground_retargets_the_inapp_layer() {
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert!(matches!(m.foreground.app(), App::Zed | App::Other));
     // Chrome's refresh is gone now that Chrome is not the front app.
-    assert_eq!(m.handle(&key(Key::KeyR)), (in_app(vec![]), true));
+    assert_eq!(m.handle(&key(Key::KeyR)), (in_app(vec![]), false));
 }
 
 // Foregrounding Chrome again while in-app restores its bindings.
@@ -1269,15 +1272,22 @@ fn typing() -> Mercury {
     Mercury::new(App::Other, Windows::default())
 }
 
+// The jk run, which lives on the typing layer, so asking for it in any other layer is a test bug.
+fn jk(m: &Mercury) -> &freddie::KeySequence {
+    match m.layer() {
+        Layer::Typing(t) => &t.jk,
+        other => panic!("not in typing: {other:?}"),
+    }
+}
+
 #[test]
 fn jk_typed_one_key_at_a_time_leaves_for_home() {
     let mut m = typing();
     assert_eq!(m.handle(&key(Key::KeyJ)), (vec![jk_timer()], true));
-    assert!(!m.typing_state.jk.is_idle());
+    assert!(!jk(&m).is_idle());
     assert_eq!(m.handle(&up(Key::KeyJ)), (vec![], true));
     assert_eq!(m.handle(&key(Key::KeyK)), (vec![shows("Home")], true));
     assert!(matches!(m.layer(), Layer::Home(_)));
-    assert!(m.typing_state.jk.is_idle());
 }
 
 #[test]
@@ -1289,8 +1299,8 @@ fn jk_rolled_leaves_for_home_and_the_ups_land_in_home() {
     assert_eq!(m.handle(&key(Key::KeyJ)), (vec![jk_timer()], true));
     assert_eq!(m.handle(&key(Key::KeyK)), (vec![shows("Home")], true));
     assert!(matches!(m.layer(), Layer::Home(_)));
-    assert_eq!(m.handle(&up(Key::KeyJ)), (vec![], true));
-    assert_eq!(m.handle(&up(Key::KeyK)), (vec![], true));
+    assert_eq!(m.handle(&up(Key::KeyJ)), (vec![], false));
+    assert_eq!(m.handle(&up(Key::KeyK)), (vec![], false));
 }
 
 #[test]
@@ -1347,7 +1357,7 @@ fn a_j_carrying_a_modifier_never_opens_the_run() {
             true
         )
     );
-    assert!(m.typing_state.jk.is_idle());
+    assert!(jk(&m).is_idle());
 }
 
 #[test]
@@ -1364,7 +1374,7 @@ fn a_modifier_arriving_mid_run_breaks_it() {
             true
         )
     );
-    assert!(m.typing_state.jk.is_idle());
+    assert!(jk(&m).is_idle());
 }
 
 #[test]
@@ -1383,7 +1393,7 @@ fn a_held_js_auto_repeat_breaks_the_run() {
             true
         )
     );
-    assert!(m.typing_state.jk.is_idle());
+    assert!(jk(&m).is_idle());
     assert_eq!(m.handle(&key(Key::KeyK)), (passed(Key::KeyK), true));
     assert!(matches!(m.layer(), Layer::Typing(_)));
 }
@@ -1411,13 +1421,12 @@ fn escape_in_typing_breaks_the_run_and_reaches_the_app() {
 
 #[test]
 fn leaving_typing_abandons_a_held_j() {
-    // The layer change replaces the run, and the j is dropped rather than typed: the app never saw
-    // its down, and its up will be swallowed by the command layer.
+    // The layer change drops the run with the layer, and the j is dropped rather than typed: the
+    // app never saw its down, and its up will be swallowed by the command layer.
     let mut m = typing();
     assert_eq!(m.handle(&key(Key::KeyJ)), (vec![jk_timer()], true));
     assert_eq!(m.handle(&key(Key::KeyK)), (vec![shows("Home")], true));
     assert!(matches!(m.layer(), Layer::Home(_)));
-    assert!(m.typing_state.jk.is_idle());
 }
 
 #[test]
@@ -1454,7 +1463,7 @@ fn a_half_typed_run_types_itself_when_the_window_elapses() {
         m.handle(&fired(timer_id(&opened))),
         (vec![emit(Key::KeyJ, PressType::Down)], true)
     );
-    assert!(m.typing_state.jk.is_idle());
+    assert!(jk(&m).is_idle());
     // The k that follows is an ordinary k, not the second half of anything.
     assert_eq!(m.handle(&key(Key::KeyK)), (passed(Key::KeyK), true));
     assert!(matches!(m.layer(), Layer::Typing(_)));
@@ -1494,7 +1503,7 @@ fn a_firing_from_a_run_that_ended_matches_nothing() {
         (vec![], false),
         "no binding matches a stale firing"
     );
-    assert!(!m.typing_state.jk.is_idle(), "the live run is untouched");
+    assert!(!jk(&m).is_idle(), "the live run is untouched");
 
     assert_eq!(
         m.handle(&fired(second)),

@@ -14,7 +14,7 @@
 //!   Spotlight and lands in typing, so the name types itself.
 //! - [`ResizeLayer`] (`r` from home): the arrows place the focused window, up to maximize and
 //!   left and right to the halves, then it goes back to home.
-//! - [`TypingLayer`]: `escape` goes home, any other key passes through.
+//! - [`TypingLayer`]: `jk` leaves for home, any other key passes through.
 //! - [`AppLayer`] (in-app): like home, `n` enters nav and `t` enters typing; on top of that it
 //!   stores NO app. A derived child fn reads `root.foregrounded` on
 //!   every dispatch and builds the app's level from it, so there is one copy of the
@@ -27,9 +27,9 @@
 //! nav and resize are one-shot choosers: resize returns home, and nav lands in the in-app layer
 //! for the app it chose.
 //!
-//! `escape` goes back to the home layer from every sub-layer, and is a no-op in home (it
-//! re-enters home). Typing binds it explicitly so its catch-all does not shadow the go-home
-//! binding. From home, `q` quits, so `escape` then `q` is the way out of any layer.
+//! `escape` goes back to the home layer from every command sub-layer, and is a no-op in home (it
+//! re-enters home). In typing it passes through like any other key; `jk` is the way out. From
+//! home, `q` quits, so `escape` then `q` leaves any command layer.
 //!
 //! A foreground event records which app is frontmost at the root. Handlers either mutate the
 //! state through the path they are handed (the layer transitions) or return inert
@@ -62,5 +62,5 @@ pub use state::{
     AndReturnHome, AppData, AppLayer, ChromeApp, ClaudeAiSite, Foreground, ForegroundedApp,
     ForegroundedChrome, GhosttyApp, HomeLayer, JK_TIMEOUT, Layer, Mercury, NavLayer, OVERLAY_DWELL,
     PLACEMENT_SETTLE, RETURN_TO_HOME_TIMEOUT, ResizeLayer, ReturnHomeLayers, SiteData, SiteLayer,
-    TypingLayer, TypingState, Windows, foreground, key, quit_event, tab,
+    TypingLayer, Windows, foreground, key, quit_event, tab,
 };
