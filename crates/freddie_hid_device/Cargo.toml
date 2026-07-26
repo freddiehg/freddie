@@ -1,6 +1,6 @@
 [package]
 name = "freddie_hid_device"
-description = "CGEvent source-device identity and IOKit resolve for freddie."
+description = "CGEvent source-device identity, IOKit resolve, and HIDSystem Caps Lock latch for freddie."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
