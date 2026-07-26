@@ -1,0 +1,45 @@
+[package]
+name = "freddie_displays"
+description = "Display-topology watching for freddie (the macOS display source)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tracing = "0.1"
+block2 = "0.6"
+objc2 = "0.6"
+core-graphics = { version = "0.25", features = ["link"] }
+objc2-app-kit = { version = "0.3", features = [
+    "NSScreen",
+    "NSApplication",
+    "NSResponder",
+    "NSWorkspace",
+    "NSGraphics",
+] }
+objc2-foundation = { version = "0.3", features = [
+    "NSString",
+    "NSNotification",
+    "NSDictionary",
+    "NSArray",
+    "NSValue",
+] }
+
+# Not `workspace = true`: the workspace forbids `unsafe_code`, and `forbid` cannot
+# be relaxed from inside the crate. Observing the notification centers needs unsafe
+# (extern statics and the observer registration), each allowed at its call site
+# with a SAFETY comment. Every other lint matches the workspace.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+multiple_crate_versions = "allow"
+cargo_common_metadata = "allow"
+missing_const_for_fn = "allow"
+# Matches the workspace table, which this crate does not inherit.
+empty_structs_with_brackets = "deny"
