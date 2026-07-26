@@ -315,7 +315,11 @@ where
             None => categorize(None),
             Some(id) => by_source
                 .entry(id)
-                .or_insert_with(|| categorize(Some(resolve(id))))
+                .or_insert_with(|| {
+                    let resolved = resolve(id);
+                    tracing::debug!(source_id = id.0, resolved = ?resolved, "new key source");
+                    categorize(Some(resolved))
+                })
                 .clone(),
         };
         on_key((input, class))
@@ -376,7 +380,7 @@ fn run_tap(
                 // Logged only. (Our own emits are tagged and returned above.)
                 let source_pid =
                     event.get_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID);
-                tracing::trace!(?input, source_pid, "tap");
+                tracing::debug!(?input, source_pid, "tap");
                 match decide(&input, on_key.borrow_mut()(input.clone(), event)) {
                     Decision::Pass => CallbackResult::Keep,
                     Decision::Drop => CallbackResult::Drop,
