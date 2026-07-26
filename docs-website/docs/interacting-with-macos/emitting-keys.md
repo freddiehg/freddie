@@ -84,16 +84,18 @@ out.push(emit(ev.key, ev.press, ev.flags));
 
 `Layer::is_passthrough` is the one test, and typing is the only layer it holds for.
 
-## Why an emitted key does not come back
+## Why an emitted key does not re-enter the model
 
-Posting an event puts it back at the top of the tap chain, so `mercury`'s own output arrives at `mercury`'s own tap. The emitter stamps a tag on everything it posts, and the callback checks that before anything else:
+Without a filter, every emit would re-enter the same tap, become another event, dispatch, emit again, and loop. Posting puts the event back at the head of the session tap chain, so the interceptor would otherwise treat its own output as a new physical key.
+
+`intercept` builds one random tag for both halves. The emitter stamps it onto every post (`EventField::EVENT_SOURCE_USER_DATA`). The tap checks it before anything else and, on a match, returns `CallbackResult::Keep`: the event continues to the rest of the system (and eventually the front app), but the app callback never runs and the model never sees it.
 
 ```rust
 if tag.marks(event) {
-    return CallbackResult::Keep; // our own emit
+    return CallbackResult::Keep; // our own emit — pass through, do not re-handle
 }
 ```
 
-The tag is an `i64` written into `EventField::EVENT_SOURCE_USER_DATA`, and it is random per process rather than a well-known constant. Two freddie processes sharing a constant would each wave the other's output through as if it were their own.
+Physical input has no tag, so it is still sent to the model as before. The tag is per-process random rather than a well-known constant, so two freddie processes do not each wave the other's output through as if it were their own.
 
-The tag stops a process from eating its own output. It does not stop two remappers with inverse maps from feeding each other, since neither one's tag matches the other's. A returned event never re-enters the top of the chain, so the remap-by-return path is loop-free without a tag at all; only the emitter needs one.
+The filter only breaks the self-loop. It does not stop two remappers with inverse maps from feeding each other, since neither tag matches the other. A returned event (remap-by-return from the callback) never re-enters the top of the chain, so that path is loop-free without a tag; only the emitter needs one.

@@ -31,11 +31,13 @@ CGEventTap::with_enabled(
 
 The system keeps an ordered list of the active taps at that location, and every key runs through them in turn. A callback returns the event to pass it, a different event to replace it, or nothing to drop it, and the result feeds the next tap and then the app. `with_enabled` does the run-loop wiring inside `core-graphics`, so nothing in the crate is `unsafe` and it stays under the workspace's `forbid(unsafe_code)`.
 
-The alternative is the HID layer, which is what Karabiner runs on: a DriverKit system extension seizes the physical keyboard and posts to a separate virtual device, so output is never input. It buys two things the tap cannot give. It sits below secure input, so remaps keep working in password fields and in apps that call `EnableSecureEventInput`, where a session tap sees nothing. And it is correct across processes: a tap that re-posts its output can loop against another remapper that re-posts back, which no tag prevents.
+A session tap also sees what it posts. Emitting a key puts it back at the top of the chain, so without a filter the daemon would intercept its own output, dispatch it again, emit again, and loop. `freddie_keyboard` stamps every emit with a per-process tag and, at the start of the tap callback, passes any tagged event through (`CallbackResult::Keep`) without calling the app's handler or turning it into a model event. Physical keys have no tag and are handled as usual. The tag and the emit path are shared halves of one `intercept` call; see [Emitting Keys](./emitting-keys.md).
+
+The alternative is the HID layer, which is what Karabiner runs on: a DriverKit system extension seizes the physical keyboard and posts to a separate virtual device, so output is never input. It buys two things the tap cannot give. It sits below secure input, so remaps keep working in password fields and in apps that call `EnableSecureEventInput`, where a session tap sees nothing. And it is correct across processes: a tap that re-posts its output can loop against another remapper that re-posts back, which no tag prevents (each process only skips its own tag).
 
 The tap wins on cost. It is one userland process, safe Rust over `core-graphics`, no driver and no root, gated only on Accessibility and Input Monitoring, which the user grants in System Settings. The HID route is a C++ system extension, code-signed with HID entitlements Apple has to approve, notarized, plus a root daemon to drive the virtual device. Both sit behind the same crate API, so the swap stays possible without the model noticing.
 
-Staying alive is a matter of keeping the callback fast. macOS disables a tap whose callback takes too long, and `freddie_keyboard` does not turn it back on. `mercury`'s callback does one channel send and returns:
+Staying alive is a matter of keeping the callback fast. macOS disables a tap whose callback takes too long, and `freddie_keyboard` does not turn it back on. After the own-emit check, `mercury`'s handler does one channel send and returns:
 
 ```rust
 freddie_keyboard::intercept(move |ev| {
@@ -44,7 +46,7 @@ freddie_keyboard::intercept(move |ev| {
 });
 ```
 
-`None` swallows the key. Everything after that is the model's, and the effect loop puts back whatever should reach the app.
+`None` swallows the key. Everything after that is the model's, and the effect loop puts back whatever should reach the app. Those re-emits are tagged, so when they hit the tap again they are filtered out of the model path and only continue down the system chain to the front app.
 
 ## Modifier flags
 
