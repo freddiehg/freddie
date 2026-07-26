@@ -66,6 +66,18 @@ This is distinct from total handling of values the outside world owns. An OS cal
 
 Tests may `expect` with a reason that names an invariant the test itself established (a fixture it built, an env the harness sets). Production code is not a test fixture.
 
+## Booleans
+
+`bool` is almost always the wrong reach in freddie. Prefer an enum whose variants name the states. A boolean is two anonymous cases; an enum makes those cases part of the type, so call sites match on meaning rather than on `true`/`false`, and a third state is a new variant instead of a second flag or a comment.
+
+So when a design proposes a `bool` field, parameter, or return type, three things happen every time:
+
+- Question whether it is needed at all. Most of the time the two cases have names (`Enabled`/`Disabled`, `Open`/`Closed`, `Foreground`/`Background`) and belong as variants of an enum, not as `true`/`false` on a field called `is_*`.
+- Default to the enum. Write that version first and only fall back to a `bool` when the value is genuinely a pure yes/no with no domain names worth carrying — not merely because a flag is shorter to type.
+- Raise it with the user, every single time, before it goes into a planning doc or into code. There are no exceptions to this. Name the `bool`, say what the two cases mean, and wait for the user's decision if an enum is not the obvious replacement.
+
+This is the same maintainability rule as "make impossible states unrepresentable." A field that only exists when a flag is set is not `flag: bool` plus `payload: Option<T>`; it is `Option<T>`, or an enum with a payload-bearing variant. Two booleans that cannot both be true are not two fields; they are one enum.
+
 ## Tests
 
 The standard for the model is exhaustive: every key in every reachable state, asserting exactly what dispatch produces. The model is a pure function of state and event, so the full table is checkable and doubles as documentation of the keymap. Not all of it exists yet; new bindings should extend toward it rather than test only the happy path.
@@ -152,7 +164,7 @@ Do not put anything in `bind` unless it is specifically about binding handlers t
 
 ## Coding standards
 
-- Maintainability is the most important standard. And that specifically means one thing: make impossible states unrepresentable and use the correct underlying representation or building blocks. If a field is not used when a boolean is true/false, use an option, for example.
+- Maintainability is the most important standard. And that specifically means one thing: make impossible states unrepresentable and use the correct underlying representation or building blocks. Prefer enums over booleans (see Booleans above). If a field is not used when a flag is one way or the other, use an `Option` or a sum type, not a `bool` plus a spare field.
 - If we have to do extra refactoring work to maintain the above, we should do the extra work. If we need to refactor large parts of freddie in order to have the right building blocks, then we will do that.
 - Prefer the structurally correct solution to the easy one, even when the easy one is fast. A method that performs well but fits nothing around it, adding ambient state or composing poorly with how the rest of the system hands work around, is not worth its local simplicity. Find the version that reuses the seams the model already has and generalizes to the next problem, and do the work to reach it; the right structure is what lets us build far more complicated things on top. What `freddie_overlay` used to do — GCD into a `thread_local` panel table — is the anti-pattern: easy and prompt, but ambient and sharing no mechanism with any other main-thread hand-off. The structured version it uses now, a channel drained on the main loop's `on_wake` and woken on send, is more code and is correct, and it is prompt too, so speed is never the reason to take the shortcut.
 - If we need a more performant, but less idiomatic impl, then create a newtype/struct/enum that encapsulates the ugly complexity but exposes an idiomatic API.
