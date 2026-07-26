@@ -379,8 +379,21 @@ fn run_tap(
                 tracing::trace!(?input, source_pid, "tap");
                 match decide(&input, on_key.borrow_mut()(input.clone(), event)) {
                     Decision::Pass => CallbackResult::Keep,
-                    Decision::Drop => CallbackResult::Drop,
+                    Decision::Drop => {
+                        // CapsLock is a latch (AlphaShift), not a hold. Dropping the FlagsChanged
+                        // at HeadInsert still leaves the session latch flipped on modern macOS:
+                        // the HID path has already toggled it. Reverse immediately on this thread
+                        // before any later synthetic key (Escape, Control) posts, so alone-Esc
+                        // and Caps-as-Control do not leave the LED / caps mode on.
+                        if key == Key::CapsLock && press == PressType::Down {
+                            undo_caps_latch(&remap_source, tag);
+                        }
+                        CallbackResult::Drop
+                    }
                     Decision::Remap(out) => {
+                        if key == Key::CapsLock && press == PressType::Down {
+                            undo_caps_latch(&remap_source, tag);
+                        }
                         match keyboard_event(&remap_source, out.key, out.press, out.flags) {
                             Ok(event) => CallbackResult::Replace(event),
                             Err(e) => {
@@ -536,6 +549,30 @@ fn from_cg(flags: CGEventFlags) -> ModifierFlags {
         out.set(portable, flags.contains(native));
     }
     out
+}
+
+/// Flip session `AlphaShift` back after a suppressed `CapsLock` down.
+///
+/// Physical `CapsLock` toggles the latch even when the CG event is `Drop`ped. A delayed
+/// `CGEventPost` from the model is too late (and can race alone-Escape). Post here, on the tap
+/// thread, tagged so this interceptor does not re-handle it. `HID` so the latch sees the reverse
+/// the way a keyboard would, not only session-level clients.
+fn undo_caps_latch(source: &CGEventSource, tag: Tag) {
+    match keyboard_event(
+        source,
+        Key::CapsLock,
+        PressType::Down,
+        ModifierFlags::empty(),
+    ) {
+        Ok(event) => {
+            tag.stamp(&event);
+            event.post(CGEventTapLocation::HID);
+            tracing::debug!("undid CapsLock AlphaShift latch");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "could not undo CapsLock AlphaShift latch");
+        }
+    }
 }
 
 /// Synthesizes keys through the interceptor's tag, so they are not re-handled.
