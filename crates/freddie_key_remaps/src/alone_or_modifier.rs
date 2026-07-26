@@ -8,7 +8,7 @@ use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 /// No timer. Alone vs modifier is only whether another key arrived before release.
 ///
 /// Examples:
-/// - hold `CapsLock`, alone Escape, modifier Control
+/// - hold `Escape`, alone Escape, modifier Control (laptop Caps remapped to Esc in System Settings)
 /// - hold `ShiftLeft`, alone `(`, modifier Shift
 /// - hold `ShiftRight`, alone `)`, modifier Shift
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -32,7 +32,7 @@ enum Role {
 }
 
 impl fmt::Debug for AloneOrModifier {
-    /// Only the live phase: `AloneOrModifier { CapsLock: Pending }`. Idle is empty braces.
+    /// Only the live phase: `AloneOrModifier { Escape: Pending }`. Idle is empty braces.
     ///
     /// Hold/alone/modifier config never changes for a given machine, so printing it on every
     /// dispatch would repeat the definition rather than the state that moved.
@@ -64,11 +64,14 @@ impl AloneOrModifier {
         }
     }
 
-    /// `CapsLock` alone → Escape; held with other keys → Control.
+    /// `Escape` alone → Escape; held with other keys → Control.
+    ///
+    /// For a laptop Caps key, remap Caps → Escape in System Settings so the physical key never
+    /// arrives as `CapsLock` (no `HIDSystem` latch). frebbie then dual-roles that Escape.
     #[must_use]
-    pub const fn caps_esc_control() -> Self {
+    pub const fn escape_control() -> Self {
         Self::new(
-            Key::CapsLock,
+            Key::Escape,
             Key::Escape,
             ModifierFlags::empty(),
             Key::ControlLeft,
@@ -192,7 +195,7 @@ mod tests {
 
     #[test]
     fn alone_is_escape() {
-        let mut c = AloneOrModifier::caps_esc_control();
+        let mut c = AloneOrModifier::escape_control();
         assert!(c.on_hold(PressType::Down).is_empty());
         assert!(c.is_pending());
         let out = c.on_hold(PressType::Up);
@@ -207,7 +210,7 @@ mod tests {
 
     #[test]
     fn with_other_key_is_control() {
-        let mut c = AloneOrModifier::caps_esc_control();
+        let mut c = AloneOrModifier::escape_control();
         assert!(c.on_hold(PressType::Down).is_empty());
         let prefix = c.promote_if_pending();
         assert_eq!(prefix.len(), 1);
@@ -250,17 +253,17 @@ mod tests {
 
     #[test]
     fn idle_up_is_noop() {
-        let mut c = AloneOrModifier::caps_esc_control();
+        let mut c = AloneOrModifier::escape_control();
         assert!(c.on_hold(PressType::Up).is_empty());
     }
 
     #[test]
     fn debug_prints_phase_only() {
-        let mut c = AloneOrModifier::caps_esc_control();
+        let mut c = AloneOrModifier::escape_control();
         assert_eq!(format!("{c:?}"), "AloneOrModifier {}");
         let _ = c.on_hold(PressType::Down);
-        assert_eq!(format!("{c:?}"), "AloneOrModifier { CapsLock: Pending }");
+        assert_eq!(format!("{c:?}"), "AloneOrModifier { Escape: Pending }");
         let _ = c.promote_if_pending();
-        assert_eq!(format!("{c:?}"), "AloneOrModifier { CapsLock: AsModifier }");
+        assert_eq!(format!("{c:?}"), "AloneOrModifier { Escape: AsModifier }");
     }
 }

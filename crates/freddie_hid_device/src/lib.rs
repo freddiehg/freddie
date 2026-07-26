@@ -1,12 +1,12 @@
 //! `CGEvent` source-device identity and `IOKit` resolve.
 //!
 //! Private SPI: `CGEventCopyIOHIDEvent` / `IOHIDEventGetSenderID`. Public `IOKit` for
-//! registry property walks and the `HIDSystem` modifier-lock latch. macOS only.
+//! registry property walks. macOS only.
 
 #![cfg(target_os = "macos")]
 
 use std::ffi::c_void;
-use std::os::raw::{c_char, c_int};
+use std::os::raw::c_char;
 
 use core_foundation::base::{CFGetTypeID, CFRelease, CFTypeID, CFTypeRef, TCFType};
 use core_foundation::boolean::{CFBooleanGetTypeID, kCFBooleanTrue};
@@ -14,14 +14,12 @@ use core_foundation::number::{CFNumber, CFNumberGetTypeID};
 use core_foundation::string::{CFString, CFStringGetTypeID};
 use core_graphics::event::CGEvent;
 use foreign_types_shared::ForeignType;
-use io_kit_sys::types::{IO_OBJECT_NULL, io_connect_t, io_object_t, io_registry_entry_t};
+use io_kit_sys::types::{IO_OBJECT_NULL, io_object_t, io_registry_entry_t};
 use io_kit_sys::{
     IOObjectRelease, IORegistryEntryCreateCFProperty, IORegistryEntryGetParentEntry,
-    IORegistryEntryIDMatching, IOServiceClose, IOServiceGetMatchingService, IOServiceMatching,
-    IOServiceOpen, kIOMasterPortDefault,
+    IORegistryEntryIDMatching, IOServiceGetMatchingService, kIOMasterPortDefault,
 };
-use mach2::kern_return::{KERN_SUCCESS, kern_return_t};
-use mach2::traps::mach_task_self;
+use mach2::kern_return::KERN_SUCCESS;
 
 /// Registry entry id of the originating HID service. Stable while the device stays attached;
 /// a replug yields a new one.
@@ -31,90 +29,10 @@ pub struct SourceId(pub u64);
 type CGEventRef = *const c_void;
 type IOHIDEventRef = *mut c_void;
 
-/// `kIOHIDCapsLockState` — selector for [`IOHIDSetModifierLockState`].
-const IOHID_CAPS_LOCK_STATE: c_int = 0x0000_0001;
-
-/// `kIOHIDParamConnectType` — user client type for `HIDSystem` parameter access.
-const IOHID_PARAM_CONNECT_TYPE: u32 = 1;
-
 #[expect(unsafe_code)]
 unsafe extern "C" {
     fn CGEventCopyIOHIDEvent(event: CGEventRef) -> IOHIDEventRef;
     fn IOHIDEventGetSenderID(event: IOHIDEventRef) -> u64;
-
-    /// Force the session Caps Lock (and LED) on or off. A `CGEventPost` of `CapsLock` does not
-    /// drive this latch on modern macOS; this is the public `HIDSystem` API that does.
-    fn IOHIDSetModifierLockState(
-        handle: io_connect_t,
-        selector: c_int,
-        state: bool,
-    ) -> kern_return_t;
-}
-
-/// Why [`set_caps_lock`] failed.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum CapsLockError {
-    /// No `IOHIDSystem` service in the registry.
-    NoHidSystem,
-    /// `IOServiceOpen` for the parameter user client failed.
-    OpenFailed,
-    /// `IOHIDSetModifierLockState` returned a non-success kern return.
-    SetFailed,
-}
-
-/// Force the session Caps Lock latch (and keyboard LED) on or off.
-///
-/// Physical `CapsLock` still toggles this latch even when a `CGEventTap` drops the event.
-/// Posting a synthetic `CapsLock` via CoreGraphics does not reverse it; this call does.
-///
-/// # Errors
-///
-/// Returns [`CapsLockError`] when the `HIDSystem` user client cannot be opened or the set fails.
-pub fn set_caps_lock(on: bool) -> Result<(), CapsLockError> {
-    // SAFETY: IOServiceMatching returns +1 dict consumed by IOServiceGetMatchingService;
-    // service is +1 or null.
-    #[expect(unsafe_code)]
-    let service = unsafe {
-        IOServiceGetMatchingService(
-            kIOMasterPortDefault,
-            IOServiceMatching(c"IOHIDSystem".as_ptr().cast::<c_char>()),
-        )
-    };
-    if service == IO_OBJECT_NULL {
-        return Err(CapsLockError::NoHidSystem);
-    }
-    let mut connect: io_connect_t = IO_OBJECT_NULL;
-    // SAFETY: open parameter user client on this task; connect out-param written on success.
-    #[expect(unsafe_code)]
-    let open_kr = unsafe {
-        IOServiceOpen(
-            service,
-            mach_task_self(),
-            IOHID_PARAM_CONNECT_TYPE,
-            &raw mut connect,
-        )
-    };
-    // SAFETY: release the +1 service either way.
-    #[expect(unsafe_code)]
-    unsafe {
-        let _ = IOObjectRelease(service);
-    }
-    if open_kr != KERN_SUCCESS || connect == IO_OBJECT_NULL {
-        return Err(CapsLockError::OpenFailed);
-    }
-    // SAFETY: connect is a live param user client from IOServiceOpen above.
-    #[expect(unsafe_code)]
-    let set_kr = unsafe { IOHIDSetModifierLockState(connect, IOHID_CAPS_LOCK_STATE, on) };
-    // SAFETY: close the user client we opened.
-    #[expect(unsafe_code)]
-    unsafe {
-        let _ = IOServiceClose(connect);
-    }
-    if set_kr == KERN_SUCCESS {
-        Ok(())
-    } else {
-        Err(CapsLockError::SetFailed)
-    }
 }
 
 /// Source HID service of a `CGEvent`, or `None` for an injected/synthetic event.
@@ -284,16 +202,5 @@ fn with_prop<T>(
         }
         current = parent;
         owned = Some(parent);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn set_caps_lock_off_reaches_hidsystem() {
-        // Does not assert prior latch state; only that the user client opens and accepts off.
-        set_caps_lock(false).expect("IOHIDSetModifierLockState(false)");
     }
 }

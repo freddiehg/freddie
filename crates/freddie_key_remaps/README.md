@@ -5,7 +5,7 @@ Shareable, pure keyboard remaps for freddie consumers. No effects, no timers, no
 ## Current exports
 
 - `AloneOrModifier` — physical hold key alone → tap (key + flags); held with another key → modifier + flag.
-  - `caps_esc_control()` — CapsLock → Escape / Control
+  - `escape_control()` — Escape → Escape / Control (after System Settings Caps → Escape)
   - `left_shift_open_paren()` — left shift → `(` / Shift
   - `right_shift_close_paren()` — right shift → `)` / Shift
   - `AloneOrModifier::new(hold, alone, alone_flags, modifier, flag)` for other dual-roles

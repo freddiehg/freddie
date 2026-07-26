@@ -379,19 +379,8 @@ fn run_tap(
                 tracing::trace!(?input, source_pid, "tap");
                 match decide(&input, on_key.borrow_mut()(input.clone(), event)) {
                     Decision::Pass => CallbackResult::Keep,
-                    Decision::Drop => {
-                        // CapsLock is a latch (AlphaShift), not a hold. Dropping the FlagsChanged
-                        // at HeadInsert still leaves the HIDSystem latch flipped: the driver has
-                        // already toggled it. Clear it via IOHID before Escape/Control posts.
-                        if key == Key::CapsLock && press == PressType::Down {
-                            clear_caps_latch();
-                        }
-                        CallbackResult::Drop
-                    }
+                    Decision::Drop => CallbackResult::Drop,
                     Decision::Remap(out) => {
-                        if key == Key::CapsLock && press == PressType::Down {
-                            clear_caps_latch();
-                        }
                         match keyboard_event(&remap_source, out.key, out.press, out.flags) {
                             Ok(event) => CallbackResult::Replace(event),
                             Err(e) => {
@@ -547,18 +536,6 @@ fn from_cg(flags: CGEventFlags) -> ModifierFlags {
         out.set(portable, flags.contains(native));
     }
     out
-}
-
-/// Force Caps Lock off after a suppressed `CapsLock` down.
-///
-/// Physical `CapsLock` toggles the `HIDSystem` latch even when the CG event is `Drop`ped.
-/// `CGEventPost` of `CapsLock` does not reverse that latch; [`freddie_hid_device::set_caps_lock`]
-/// (`IOHIDSetModifierLockState`) does.
-fn clear_caps_latch() {
-    match freddie_hid_device::set_caps_lock(false) {
-        Ok(()) => tracing::debug!("cleared CapsLock HIDSystem latch"),
-        Err(e) => tracing::warn!(?e, "could not clear CapsLock HIDSystem latch"),
-    }
 }
 
 /// Synthesizes keys through the interceptor's tag, so they are not re-handled.
