@@ -272,6 +272,15 @@ impl Key {
         }
     }
 
+    /// A trigger matching this key going either direction.
+    ///
+    /// For a handler that preserves the event's press, so a mapping's down and up rows collapse
+    /// into one.
+    #[must_use]
+    pub const fn press(self) -> KeyEitherPress {
+        KeyEitherPress { key: self }
+    }
+
     /// Whether this is a modifier key tracked as held: control, command, alt, or shift, left or
     /// right. Caps lock (a lock) and fn (no variant) are not modifiers here.
     #[must_use]
@@ -442,6 +451,13 @@ impl KeyGroup {
             press: PressType::Up,
         }
     }
+
+    /// A trigger matching this group's keys going either direction, as [`Key::press`] does for
+    /// one key.
+    #[must_use]
+    pub const fn press(self) -> KeyGroupEitherPress {
+        KeyGroupEitherPress { group: self }
+    }
 }
 
 impl EventTrigger for KeyGroup {
@@ -555,6 +571,99 @@ impl EventTrigger for KeyChord {
 
     fn is_matching(&self, event: &KeyEvent) -> bool {
         self.key == event.key && self.press == event.press && self.flags == event.flags
+    }
+}
+
+/// A trigger matching a key going either direction, from [`Key::press`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct KeyEitherPress {
+    pub key: Key,
+}
+
+impl EventTrigger for KeyEitherPress {
+    type Event = KeyEvent;
+
+    fn is_matching(&self, event: &KeyEvent) -> bool {
+        self.key == event.key
+    }
+}
+
+impl KeyEitherPress {
+    /// A trigger matching either press only when exactly `flags` are held.
+    #[must_use]
+    pub const fn with(self, flags: ModifierFlags) -> KeyEitherChord {
+        KeyEitherChord {
+            key: self.key,
+            flags,
+        }
+    }
+
+    /// A trigger matching either press only when no modifier is held.
+    #[must_use]
+    pub const fn bare(self) -> KeyEitherChord {
+        self.with(ModifierFlags::empty())
+    }
+}
+
+/// A key going either direction with exactly these modifiers held, from [`KeyEitherPress::with`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct KeyEitherChord {
+    pub key: Key,
+    pub flags: ModifierFlags,
+}
+
+impl EventTrigger for KeyEitherChord {
+    type Event = KeyEvent;
+
+    fn is_matching(&self, event: &KeyEvent) -> bool {
+        self.key == event.key && event.flags == self.flags
+    }
+}
+
+/// A trigger matching a group's keys going either direction, from [`KeyGroup::press`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct KeyGroupEitherPress {
+    pub group: KeyGroup,
+}
+
+impl EventTrigger for KeyGroupEitherPress {
+    type Event = KeyEvent;
+
+    fn is_matching(&self, event: &KeyEvent) -> bool {
+        self.group.contains(event.key)
+    }
+}
+
+impl KeyGroupEitherPress {
+    /// A trigger matching either press only when exactly `flags` are held.
+    #[must_use]
+    pub const fn with(self, flags: ModifierFlags) -> KeyGroupEitherChord {
+        KeyGroupEitherChord {
+            group: self.group,
+            flags,
+        }
+    }
+
+    /// A trigger matching either press only when no modifier is held.
+    #[must_use]
+    pub const fn bare(self) -> KeyGroupEitherChord {
+        self.with(ModifierFlags::empty())
+    }
+}
+
+/// A group's keys going either direction with exactly these modifiers held, from
+/// [`KeyGroupEitherPress::with`].
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct KeyGroupEitherChord {
+    pub group: KeyGroup,
+    pub flags: ModifierFlags,
+}
+
+impl EventTrigger for KeyGroupEitherChord {
+    type Event = KeyEvent;
+
+    fn is_matching(&self, event: &KeyEvent) -> bool {
+        self.group.contains(event.key) && event.flags == self.flags
     }
 }
 
