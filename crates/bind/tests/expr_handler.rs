@@ -33,10 +33,10 @@ fn expression_handler_is_called() {
     // "x" has length 1, plus 10.
     assert_eq!(
         bind::dispatch::<Demo, ExprRoot, _>(&mut root, &key("x")),
-        (vec![11], true)
+        vec![11]
     );
     assert_eq!(
         bind::dispatch::<Demo, ExprRoot, _>(&mut root, &key("y")),
-        (vec![], false)
+        vec![]
     );
 }

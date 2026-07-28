@@ -485,13 +485,8 @@ pub trait Dispatch<M: Bindings>: Place {
 }
 
 /// Dispatches `event` against the tree at `path` (the root's `&mut Root`),
-/// returning what it produced and whether anything claimed the event.
-///
-/// The effects are always the caller's to perform: a scheduled item runs on its
-/// trigger, not on the claim, so an event nothing claimed can still have produced
-/// some. The bool is the only answer to "was this handled", which is what a
-/// consumer that decides whether to pass the event on asks.
-pub fn dispatch<'a, M, N, E>(path: N::Path<'a>, event: &M::Event) -> (Vec<E>, bool)
+/// returning what it produced. The effects are the caller's to perform.
+pub fn dispatch<'a, M, N, E>(path: N::Path<'a>, event: &M::Event) -> Vec<E>
 where
     M: Bindings<Output = Vec<E>>,
     N: Dispatch<M> + 'a,
@@ -501,7 +496,7 @@ where
     let mut claim_slot = None;
     let mut claim = Claim::new(&mut claim_slot);
     let _path = <N as Dispatch<M>>::dispatch(path, event, &mut effs, &mut claim);
-    (effs, claim.is_taken())
+    effs
 }
 
 // The real event loop is bespoke: its queue and its wait-when-empty differ per
@@ -540,17 +535,16 @@ where
     }
 
     /// Processes exactly one queued event. `None` means the queue was empty;
-    /// otherwise it is what [`dispatch`] returned for the event: its effects, and
-    /// whether anything claimed it.
+    /// otherwise it is what [`dispatch`] returned for the event: its effects.
     #[expect(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> Option<(Vec<E>, bool)> {
+    pub fn next(&mut self) -> Option<Vec<E>> {
         let event = self.queue.pop_front()?;
         Some(dispatch::<M, N, E>(&mut *self.root, &event))
     }
 
-    /// Queues `event` and processes one event, returning its effects and whether
-    /// anything claimed it. There is no empty case: the queue is non-empty after
-    /// queueing, so there is always an event to process.
+    /// Queues `event` and processes one event, returning its effects. There is
+    /// no empty case: the queue is non-empty after queueing, so there is always
+    /// an event to process.
     ///
     /// The event processed is the front of the queue, which is `event` only when
     /// the queue was empty; if earlier follow-ups are still queued, one of them
@@ -559,7 +553,7 @@ where
     /// # Panics
     ///
     /// Never: the queue is non-empty after queueing; the `expect` asserts it.
-    pub fn process_event(&mut self, event: M::Event) -> (Vec<E>, bool) {
+    pub fn process_event(&mut self, event: M::Event) -> Vec<E> {
         // Field ops inlined rather than calling `queue_event`/`next`, which the
         // impl's HRTB bound would otherwise force to `'static`.
         self.queue.push_back(event);

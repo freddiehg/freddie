@@ -318,11 +318,8 @@ fn dispatch_event(
     event: &MercuryEvent,
     effect_tx: &UnboundedSender<MercuryEffect>,
 ) {
-    // Unhandled is fine: the tap delivers every key, not only those the current layer binds.
-    // Its effects are performed either way; only whether it was bound is dropped here, and
-    // nothing downstream asks.
     let start = Instant::now();
-    let (effects, _handled) = state.handle(event);
+    let effects = state.handle(event);
     let duration_us = u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX);
     info!(event = ?event, effects = ?effects, duration_us, state = ?state, "dispatch");
     for effect in effects {

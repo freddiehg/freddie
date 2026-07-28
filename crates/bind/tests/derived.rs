@@ -182,10 +182,7 @@ fn root(tab: Option<&str>) -> Root {
 #[test]
 fn a_derived_level_binds_its_own_keys_and_reaches_the_tree_through_parent() {
     let mut r = root(Some("inbox"));
-    assert_eq!(
-        dispatch::<Demo, Root, _>(&mut r, &key("r")),
-        (vec![1], true)
-    );
+    assert_eq!(dispatch::<Demo, Root, _>(&mut r, &key("r")), vec![1]);
     assert_eq!(r.layer.log, "inbox"); // the LAYER's real state, written from the derived level
     assert_eq!(r.app.as_ref().unwrap().tab, "inbox"); // the tree is untouched by `data`
 }
@@ -193,10 +190,7 @@ fn a_derived_level_binds_its_own_keys_and_reaches_the_tree_through_parent() {
 #[test]
 fn a_derived_level_can_have_a_derived_child() {
     let mut r = root(Some("gmail"));
-    assert_eq!(
-        dispatch::<Demo, Root, _>(&mut r, &key("g")),
-        (vec![1], true)
-    );
+    assert_eq!(dispatch::<Demo, Root, _>(&mut r, &key("g")), vec![1]);
     assert_eq!(r.layer.log, "gmail7"); // own data, the parent level's data, and the layer
 }
 
@@ -204,32 +198,20 @@ fn a_derived_level_can_have_a_derived_child() {
 fn a_miss_hands_the_parent_back_at_every_level() {
     // The tab level misses `r`, so the app level's bind runs with its data intact.
     let mut r = root(Some("gmail"));
-    assert_eq!(
-        dispatch::<Demo, Root, _>(&mut r, &key("r")),
-        (vec![1], true)
-    );
+    assert_eq!(dispatch::<Demo, Root, _>(&mut r, &key("r")), vec![1]);
     assert_eq!(r.layer.log, "gmail");
 
     // Both derived levels miss `esc`, so the LAYER's bind runs with its path intact.
     let mut r = root(Some("gmail"));
-    assert_eq!(
-        dispatch::<Demo, Root, _>(&mut r, &key("esc")),
-        (vec![3], true)
-    );
+    assert_eq!(dispatch::<Demo, Root, _>(&mut r, &key("esc")), vec![3]);
     assert_eq!(r.layer.log, "e");
 }
 
 #[test]
 fn with_no_app_there_is_no_level_and_the_layer_still_works() {
     let mut r = root(None);
-    assert_eq!(
-        dispatch::<Demo, Root, _>(&mut r, &key("r")),
-        (vec![], false)
-    );
-    assert_eq!(
-        dispatch::<Demo, Root, _>(&mut r, &key("esc")),
-        (vec![3], true)
-    );
+    assert_eq!(dispatch::<Demo, Root, _>(&mut r, &key("r")), vec![]);
+    assert_eq!(dispatch::<Demo, Root, _>(&mut r, &key("esc")), vec![3]);
     assert_eq!(r.layer.log, "e");
 }
 
@@ -263,10 +245,7 @@ fn a_leave_from_a_derived_level_reaches_the_place_as_invalidated() {
     let mut r = root(Some("gmail"));
     // 9 from the leave, then 7 from the post's `Invalidated` arm: the post ran after it, on the
     // state it left behind, and did not touch the path.
-    assert_eq!(
-        dispatch::<Demo, Root, _>(&mut r, &key("q")),
-        (vec![9, 7], true)
-    );
+    assert_eq!(dispatch::<Demo, Root, _>(&mut r, &key("q")), vec![9, 7]);
     assert_eq!(r.layer.log, "", "the post's staying arm never ran");
 }
 
@@ -274,10 +253,7 @@ fn a_leave_from_a_derived_level_reaches_the_place_as_invalidated() {
 #[test]
 fn the_post_marks_the_layer_when_nothing_left() {
     let mut r = root(None);
-    assert_eq!(
-        dispatch::<Demo, Root, _>(&mut r, &key("q")),
-        (vec![], false)
-    );
+    assert_eq!(dispatch::<Demo, Root, _>(&mut r, &key("q")), vec![]);
     assert_eq!(r.layer.log, "s");
 }
 
@@ -372,27 +348,18 @@ const fn modes(mode: Option<bool>) -> Modes {
 #[test]
 fn the_live_variant_of_a_derived_enum_handles_the_key() {
     let mut m = modes(Some(true));
-    assert_eq!(
-        dispatch::<Demo, Modes, _>(&mut m, &key("m")),
-        (vec![1], true)
-    );
+    assert_eq!(dispatch::<Demo, Modes, _>(&mut m, &key("m")), vec![1]);
     assert_eq!(m.shell.log, "on");
 
     let mut m = modes(Some(false));
-    assert_eq!(
-        dispatch::<Demo, Modes, _>(&mut m, &key("m")),
-        (vec![1], true)
-    );
+    assert_eq!(dispatch::<Demo, Modes, _>(&mut m, &key("m")), vec![1]);
     assert_eq!(m.shell.log, "off");
 }
 
 #[test]
 fn no_mode_is_no_level_at_all() {
     let mut m = modes(None);
-    assert_eq!(
-        dispatch::<Demo, Modes, _>(&mut m, &key("m")),
-        (vec![], false)
-    );
+    assert_eq!(dispatch::<Demo, Modes, _>(&mut m, &key("m")), vec![]);
     assert_eq!(m.shell.log, "");
 }
 

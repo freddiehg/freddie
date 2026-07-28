@@ -35,15 +35,15 @@ fn positional_resolve_into_descends() {
     let mut root = TupleRoot(TupleMid(Box::new(TupleLeaf)));
     assert_eq!(
         bind::dispatch::<Demo, TupleRoot, _>(&mut root, &key("g")),
-        (vec![1], true)
+        vec![1]
     );
     assert_eq!(
         bind::dispatch::<Demo, TupleRoot, _>(&mut root, &key("esc")),
-        (vec![3], true)
+        vec![3]
     );
     assert_eq!(
         bind::dispatch::<Demo, TupleRoot, _>(&mut root, &key("zzz")),
-        (vec![], false)
+        vec![]
     );
 }
 

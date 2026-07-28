@@ -571,13 +571,10 @@ impl Mercury {
         }
     }
 
-    /// Dispatches one event, returning the effects it produced and whether the active state
-    /// bound it.
-    ///
-    /// The effects are the caller's to perform either way; the bool says whether anything
-    /// claimed the event, which is what a caller deciding to pass it on asks.
+    /// Dispatches one event, returning the effects it produced, which are the caller's to
+    /// perform.
     #[must_use]
-    pub fn handle(&mut self, event: &MercuryEvent) -> (Vec<MercuryEffect>, bool) {
+    pub fn handle(&mut self, event: &MercuryEvent) -> Vec<MercuryEffect> {
         bind::dispatch::<MercuryStruct, Self, _>(self, event)
     }
 

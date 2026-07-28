@@ -199,7 +199,7 @@ fn key_h_leaves_and_the_post_cancels_from_its_snap() {
     let mut a = demo(7);
     assert_eq!(
         dispatch::<M, A, _>(&mut a, &key("h")),
-        (vec![DemoEffect::CancelTimer(TimerId(7))], true)
+        vec![DemoEffect::CancelTimer(TimerId(7))]
     );
     assert_eq!(
         a.b.return_home.id,
@@ -215,13 +215,10 @@ fn an_unclaimed_key_still_rearms() {
     let mut a = demo(7);
     assert_eq!(
         dispatch::<M, A, _>(&mut a, &key("x")),
-        (
-            vec![
-                DemoEffect::CancelTimer(TimerId(7)),
-                DemoEffect::ScheduleTimer(TimerId(1)),
-            ],
-            false
-        )
+        vec![
+            DemoEffect::CancelTimer(TimerId(7)),
+            DemoEffect::ScheduleTimer(TimerId(1)),
+        ]
     );
     assert_eq!(a.b.return_home.id, TimerId(1), "the post rearmed it");
 }
@@ -232,14 +229,11 @@ fn a_post_and_a_bind_both_run_in_source_order() {
     let mut a = demo(7);
     assert_eq!(
         dispatch::<M, A, _>(&mut a, &key("esc")),
-        (
-            vec![
-                DemoEffect::CancelTimer(TimerId(7)),
-                DemoEffect::ScheduleTimer(TimerId(1)),
-                DemoEffect::FlashOverlay,
-            ],
-            true
-        )
+        vec![
+            DemoEffect::CancelTimer(TimerId(7)),
+            DemoEffect::ScheduleTimer(TimerId(1)),
+            DemoEffect::FlashOverlay,
+        ]
     );
 }
 
@@ -248,8 +242,7 @@ fn a_post_and_a_bind_both_run_in_source_order() {
 #[test]
 fn a_pre_snaps_before_the_descent_mutates() {
     let mut a = demo(7);
-    let (effects, claimed) = dispatch::<M, A, _>(&mut a, &key("bump"));
-    assert!(claimed);
+    let effects = dispatch::<M, A, _>(&mut a, &key("bump"));
     assert_eq!(
         effects,
         vec![
@@ -307,7 +300,7 @@ fn the_deepest_binding_takes_the_claim_and_the_ancestors_is_skipped() {
     };
     assert_eq!(
         dispatch::<M, Trap, _>(&mut trap, &key("t")),
-        (vec![DemoEffect::SawStanding], true),
+        vec![DemoEffect::SawStanding],
         "the child claimed, so the root's bind completed where it stood"
     );
 
@@ -318,7 +311,7 @@ fn the_deepest_binding_takes_the_claim_and_the_ancestors_is_skipped() {
     };
     assert_eq!(
         dispatch::<M, Trap, _>(&mut trap, &key("t")),
-        (vec![DemoEffect::FlashOverlay], true)
+        vec![DemoEffect::FlashOverlay]
     );
 }
 
@@ -427,10 +420,7 @@ fn a_leave_forwards_through_a_node_that_binds_nothing() {
     // re-establishes the root as standing, which the second post reports.
     assert_eq!(
         dispatch::<M, Top, _>(&mut top, &key("go")),
-        (
-            vec![DemoEffect::SawInvalidated, DemoEffect::SawStanding],
-            true
-        )
+        vec![DemoEffect::SawInvalidated, DemoEffect::SawStanding]
     );
 }
 
@@ -441,10 +431,7 @@ fn posts_run_without_a_claim_on_the_standing_branch() {
     };
     assert_eq!(
         dispatch::<M, Top, _>(&mut top, &key("nothing-binds-this")),
-        (
-            vec![DemoEffect::SawStanding, DemoEffect::SawStanding],
-            false
-        )
+        vec![DemoEffect::SawStanding, DemoEffect::SawStanding]
     );
 }
 
@@ -459,16 +446,13 @@ fn and_concatenates_effects_in_order() {
     };
     assert_eq!(
         dispatch::<M, Top, _>(&mut top, &key("pair")),
-        (
-            vec![
-                DemoEffect::FlashOverlay,
-                DemoEffect::CancelTimer(TimerId(0)),
-                // Top's two posts, which never claimed and ran anyway.
-                DemoEffect::SawStanding,
-                DemoEffect::SawStanding,
-            ],
-            true
-        )
+        vec![
+            DemoEffect::FlashOverlay,
+            DemoEffect::CancelTimer(TimerId(0)),
+            // Top's two posts, which never claimed and ran anyway.
+            DemoEffect::SawStanding,
+            DemoEffect::SawStanding,
+        ]
     );
 }
 
@@ -482,14 +466,11 @@ fn the_second_unit_sees_the_firsts_leave() {
     };
     assert_eq!(
         dispatch::<M, Top, _>(&mut top, &key("leave-then-look")),
-        (
-            vec![
-                DemoEffect::SawInvalidated,
-                DemoEffect::SawInvalidated,
-                DemoEffect::SawStanding,
-            ],
-            true
-        )
+        vec![
+            DemoEffect::SawInvalidated,
+            DemoEffect::SawInvalidated,
+            DemoEffect::SawStanding,
+        ]
     );
 }
 
@@ -502,15 +483,12 @@ fn and_nests() {
     };
     assert_eq!(
         dispatch::<M, Top, _>(&mut top, &key("nest")),
-        (
-            vec![
-                DemoEffect::FlashOverlay,
-                DemoEffect::CancelTimer(TimerId(0)),
-                DemoEffect::FlashOverlay,
-                DemoEffect::SawStanding,
-                DemoEffect::SawStanding,
-            ],
-            true
-        )
+        vec![
+            DemoEffect::FlashOverlay,
+            DemoEffect::CancelTimer(TimerId(0)),
+            DemoEffect::FlashOverlay,
+            DemoEffect::SawStanding,
+            DemoEffect::SawStanding,
+        ]
     );
 }

@@ -139,15 +139,15 @@ Test:
 fn typing_emits_only_ups_it_opened() {
     let mut m = home();
     let _ = m.handle(&key(Key::KeyT));
-    assert_eq!(m.handle(&up(Key::KeyT)).0, vec![]);
+    assert_eq!(m.handle(&up(Key::KeyT)), vec![]);
 
     let mut m = typing();
     assert_eq!(
-        m.handle(&key(Key::KeyG)).0,
+        m.handle(&key(Key::KeyG)),
         vec![emit(Key::KeyG, PressType::Down)]
     );
     assert_eq!(
-        m.handle(&up(Key::KeyG)).0,
+        m.handle(&up(Key::KeyG)),
         vec![emit(Key::KeyG, PressType::Up)]
     );
 }
