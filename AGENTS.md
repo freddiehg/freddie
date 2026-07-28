@@ -170,6 +170,11 @@ Do not put anything in `bind` unless it is specifically about binding handlers t
 - If we need a more performant, but less idiomatic impl, then create a newtype/struct/enum that encapsulates the ugly complexity but exposes an idiomatic API.
 - If a comment provides no more information than one would get by reading the code, do not include the comment.
 - A comment should not describe what wasn't done, ESPECIALLY if "we didn't do x" is more indicative of the fact that we either previously discussed doing X or in a previous iteration of a planning doc, you suggested doing X.
+- A comment must not describe what lives elsewhere unless a reader of this file has a concrete reason to expect it here. A doc comment names what the thing is and stops.
+- State lives on the node whose behavior it implements, encapsulated behind a type with named states. The root is not a grab-bag: a struct of loose flags serving several unrelated mechanisms is the anti-pattern, and a `#[expect(clippy::struct_excessive_bools)]` is a confession, not a waiver. Sequence memory (a hold is open, an up is owed a swallow) is a named enum owned by its mechanism. Root placement needs a stated reason (the state must survive layer changes, or serves every layer); "the gate happens to run at the root" is not one, and machinery that exists only to protect one layer's behavior belongs to that layer.
+- A responsibility shared by every layer binds once on the shared struct above them, never once per layer. The converse holds too: only universal responsibilities hoist. A row each layer decides for itself stays in the layer, even when several layers currently agree.
+- Bind tables are organized by handler: every row feeding one handler is adjacent, one device's arm beside the other's. Never organized by device class.
+- Overlay cards: one txt file per device per layer, the title naming the device, changed in the same commit as the binds they describe.
 - In JavaScript, a discriminated union takes exactly one form: `{ kind: "Type.Variant", value: T }`. The tag is always `kind`, its value is the dotted `Type.Variant` name, and the payload is always the single `value` field (never inline fields, never a bare variant name). Every variant that shares a `Type` prefix belongs to the same union, so `Type.` is how you read off which union a value is in.
 - No polling; wake on events. An idle system costs nothing: with no work it is asleep, not surfacing on a timer to check. Work arrives by waking whatever the consumer is parked on — the channel it `recv`s, or the OS wait it blocks in when that wait cannot be selected on (the main thread inside the AppKit run loop), which the producer wakes directly rather than polling beside. A loop that wakes every N milliseconds to look for work is polling even when it is dressed as a timeout or a run-loop slice, and that N is a latency floor paid in power for the life of the process. Delete it rather than shrink it, and prefer a wake that cannot be lost if it races the wait, so no timeout backstop is needed. `select!` or a woken channel is the shape; a bare timeout is a last resort the code justifies.
 - Never rely on discipline what we can enforce with newtypes.
@@ -178,6 +183,10 @@ Do not put anything in `bind` unless it is specifically about binding handlers t
 ### Wrapping an operating system API
 
 `docs/platform-apis.md` is what the `freddie_*` crates do when they hold something the OS gave them: which traits to claim and which to refuse, where `Drop` belongs, how a C callback reaches its state, and what the main thread is for. Read it before writing a new one or changing how an existing one holds a resource.
+
+## Audits
+
+When told to audit, the deliverable is the whole class fixed everywhere, not the instance that was quoted. Sweep every file the standard touches before reporting done; the failure mode is the user opening the most obvious place and finding the problem still there. An audit that only edits what was pointed at is not an audit.
 
 ## Coding standards: nits
 
