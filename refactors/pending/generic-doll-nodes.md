@@ -25,7 +25,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 becomes a set of narrower rejections — a derived level, a routed (multi-parent) child edge, and a node-level `where` clause stay non-generic, each with its own error — plus `let (impl_g, ty_g, _) = input.generics.split_for_impl();` in `place_impl`, `accumulate_impl`, and `dispatch_impl`, whose headers become:
 
 ```rust
-impl #impl_g ::bind::Place for #name #ty_g { ... }
+impl #impl_g ::laserbeam::HasPath for #name #ty_g { ... }
 impl #impl_g ::bind::EventHandler<#marker> for #name #ty_g #where_clause { ... }
 impl #impl_g ::bind::Dispatch<#marker> for #name #ty_g #where_clause { ... }
 ```
@@ -35,18 +35,18 @@ The generated bodies do not change. A generic impl typechecks against declared b
 ```rust
 where
     #child: 'static + ::bind::Dispatch<#marker>,   // EventHandler in accumulate's clause
-    for<'q> #child: ::bind::Place<
-        Path<'q> = ::laserbeam::PathMut<#child, <Self as ::bind::Place>::Path<'q>>,
+    for<'q> #child: ::laserbeam::HasPath<
+        Path<'q> = ::laserbeam::PathMut<#child, <Self as ::laserbeam::HasPath>::Path<'q>>,
     >,
 ```
 
-With that bound the compiler normalizes `<#child as Place>::Path` to the `PathMut` the body already builds, every inherent method resolves, and a `T` that does not fit fails at the instantiation with an ordinary trait error. The `'static` comes from the `for<'q>` binder; every node in both trees owns its data, so it costs nothing. This shape is verified end to end in a standalone mock (a generic shell over a GAT `Place`, the equality bound, an inherent `into_parent` resolving through the normalization, dispatch round-tripping).
+With that bound the compiler normalizes `<#child as HasPath>::Path` to the `PathMut` the body already builds, every inherent method resolves, and a `T` that does not fit fails at the instantiation with an ordinary trait error. The `'static` comes from the `for<'q>` binder; every node in both trees owns its data, so it costs nothing. This shape is verified end to end in a standalone mock (a generic shell over a GAT `HasPath`, the equality bound, an inherent `into_parent` resolving through the normalization, dispatch round-tripping).
 
 For `TypingLayer<Next>` the three impls expand to:
 
 ```rust
 #[automatically_derived]
-impl<Next> ::bind::Place for TypingLayer<Next> {
+impl<Next> ::laserbeam::HasPath for TypingLayer<Next> {
     type Path<'a>
         = ::laserbeam::PathMut<Self, LayerPath<'a>>
     where
@@ -57,8 +57,8 @@ impl<Next> ::bind::Place for TypingLayer<Next> {
 impl<Next> ::bind::EventHandler<FigaroStruct> for TypingLayer<Next>
 where
     Next: 'static + ::bind::EventHandler<FigaroStruct>,
-    for<'q> Next: ::bind::Place<
-        Path<'q> = ::laserbeam::PathMut<Next, <TypingLayer<Next> as ::bind::Place>::Path<'q>>,
+    for<'q> Next: ::laserbeam::HasPath<
+        Path<'q> = ::laserbeam::PathMut<Next, <TypingLayer<Next> as ::laserbeam::HasPath>::Path<'q>>,
     >,
 {
     fn accumulate<'a>(/* body unchanged */) -> /* unchanged */
@@ -71,14 +71,14 @@ where
 impl<Next> ::bind::Dispatch<FigaroStruct> for TypingLayer<Next>
 where
     Next: 'static + ::bind::Dispatch<FigaroStruct>,
-    for<'q> Next: ::bind::Place<
-        Path<'q> = ::laserbeam::PathMut<Next, <TypingLayer<Next> as ::bind::Place>::Path<'q>>,
+    for<'q> Next: ::laserbeam::HasPath<
+        Path<'q> = ::laserbeam::PathMut<Next, <TypingLayer<Next> as ::laserbeam::HasPath>::Path<'q>>,
     >,
 {
     fn dispatch<'a, 'c>(/* body unchanged */) -> /* unchanged */
     where
         Self: 'a,
-        <Self as ::bind::Place>::Path<'a>: ::laserbeam::HasStop,
+        <Self as ::laserbeam::HasPath>::Path<'a>: ::laserbeam::HasStop,
     { /* unchanged */ }
 }
 ```

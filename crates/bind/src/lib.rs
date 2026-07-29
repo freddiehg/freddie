@@ -244,7 +244,7 @@ pub trait Bindings {
 /// It hands the path back, again like [`Dispatch`], because a node that has descended still
 /// has its own triggers to insert.
 #[cfg(feature = "check")]
-pub trait EventHandler<M: Bindings>: Place {
+pub trait EventHandler<M: Bindings>: HasPath {
     /// Adds this node's triggers, and those of its active descendants, to `out`.
     ///
     /// # Errors
@@ -297,19 +297,7 @@ where
     Ok(out)
 }
 
-/// A place in the tree, and its path type. `#[derive(Bind)]` implements it for every node that
-/// IS in the tree, from the node's `#[laserbeam(path = P)]` or `#[laserbeam_root]`.
-///
-/// This is the one associated type dispatch needs, and it lives here rather than in laserbeam
-/// so that bind depends on laserbeam's TYPES (`laserbeam::PathMut`) but on none of its traits. A
-/// DERIVED level is not a place: it has no path, so it does not implement `Place`.
-pub trait Place {
-    /// This node's path type. The root's is `&'a mut Self`; every other node's is its declared
-    /// `laserbeam::PathMut` alias.
-    type Path<'a>
-    where
-        Self: 'a;
-}
+pub use ::laserbeam::HasPath;
 
 /// What a handler is given: a parent, plus the immutable data this level produced.
 ///
@@ -358,31 +346,31 @@ impl<N, P> HasParent for ::laserbeam::PathMut<N, P> {
 /// A place is its own; a [`Node`] flattens to its parent's, however many derived levels are
 /// stacked. That is what lets one handler shape serve both: ascent holds a path into the tree,
 /// never a `Node`, whose `data` is rebuilt from the tree on every dispatch and dies with it.
-pub trait HasPlace {
+pub trait HasTreePath {
     /// The place path this chain bottoms out at.
-    type Place;
+    type TreePath;
     /// Consumes this chain and returns that path, dropping every derived level's data.
-    fn into_place(self) -> Self::Place;
+    fn into_tree_path(self) -> Self::TreePath;
 }
 
-impl<R> HasPlace for &mut R {
-    type Place = Self;
-    fn into_place(self) -> Self {
+impl<R> HasTreePath for &mut R {
+    type TreePath = Self;
+    fn into_tree_path(self) -> Self {
         self
     }
 }
 
-impl<N, P> HasPlace for ::laserbeam::PathMut<N, P> {
-    type Place = Self;
-    fn into_place(self) -> Self {
+impl<N, P> HasTreePath for ::laserbeam::PathMut<N, P> {
+    type TreePath = Self;
+    fn into_tree_path(self) -> Self {
         self
     }
 }
 
-impl<Parent: HasPlace, Data> HasPlace for Node<Parent, Data> {
-    type Place = Parent::Place;
-    fn into_place(self) -> Parent::Place {
-        self.parent.into_place()
+impl<Parent: HasTreePath, Data> HasTreePath for Node<Parent, Data> {
+    type TreePath = Parent::TreePath;
+    fn into_tree_path(self) -> Parent::TreePath {
+        self.parent.into_tree_path()
     }
 }
 
@@ -444,29 +432,29 @@ macro_rules! self_trigger {
 /// Consumes a derived node, dispatches at that level, and surfaces at the place path beneath it.
 ///
 /// The derived counterpart of [`Dispatch`], and what replaces [`DispatchIntoParent`]: a derived
-/// level's scheduled items ascend at [`HasPlace::Place`], so its caller folds what comes back
+/// level's scheduled items ascend at [`HasTreePath::TreePath`], so its caller folds what comes back
 /// exactly as it folds a place child's leave.
 ///
 /// It exists because a derived-child caller cannot name the child's type. It calls this in
 /// method position on whatever the child function returned, and inference finds the impl.
-pub trait DispatchIntoPlace<M: Bindings>: HasPlace + Sized
+pub trait DispatchIntoTreePath<M: Bindings>: HasTreePath + Sized
 where
-    Self::Place: ::laserbeam::HasStop,
+    Self::TreePath: ::laserbeam::HasStop,
 {
     /// Runs this level's scheduled items for `event` into `effs` under `claim`, and returns
     /// the leave they completed to at the place beneath.
-    fn dispatch_into_place(
+    fn dispatch_into_tree_path(
         self,
         event: &M::Event,
         effs: &mut M::Output,
         claim: &mut Claim<'_>,
-    ) -> ::laserbeam::Completed<Self::Place>;
+    ) -> ::laserbeam::Completed<Self::TreePath>;
 }
 
 /// A derived level's half of THE CHECK. It does not ship, for the same reason
 /// [`EventHandler`] does not.
 ///
-/// A derived level has no [`Place`], so it cannot implement
+/// A derived level has no [`HasPath`] path, so it cannot implement
 /// `EventHandler`, whose signature is written in terms of `Self::Path`. It carries its
 /// triggers here instead.
 #[cfg(feature = "check")]
@@ -487,7 +475,7 @@ pub trait DerivedHandler<M: Bindings>: HasParent + Sized {
 ///
 /// What comes back says where the leave this dispatch produced stopped: at this path, or
 /// somewhere above it. Every item runs either way, so nothing here is control flow.
-pub trait Dispatch<M: Bindings>: Place {
+pub trait Dispatch<M: Bindings>: HasPath {
     /// Runs this node's scheduled items for `event` into `effs` under `claim`, and returns the
     /// leave they completed to.
     fn dispatch<'a, 'c>(
@@ -536,7 +524,7 @@ pub struct SimpleRunner<'a, M: Bindings, N> {
 impl<'a, M, N, E> SimpleRunner<'a, M, N>
 where
     M: Bindings<Output = Vec<E>>,
-    N: Dispatch<M> + for<'b> Place<Path<'b> = &'b mut N>,
+    N: Dispatch<M> + for<'b> HasPath<Path<'b> = &'b mut N>,
 {
     /// A runner over the tree rooted at `root`, with an empty queue.
     pub const fn new(root: &'a mut N) -> Self {
@@ -597,7 +585,7 @@ impl<M: Bindings, N> SimpleRunner<'_, M, N> {
 
 #[cfg(test)]
 mod has_place_tests {
-    use super::{HasPlace, Node};
+    use super::{HasTreePath, Node};
     use laserbeam::PathMut;
 
     struct Root {
@@ -611,7 +599,7 @@ mod has_place_tests {
     #[test]
     fn a_root_path_is_its_own_place() {
         let mut root = Root { layer: 7 };
-        let place: &mut Root = HasPlace::into_place(&mut root);
+        let place: &mut Root = HasTreePath::into_tree_path(&mut root);
         place.layer = 8;
         assert_eq!(root.layer, 8);
     }
@@ -620,7 +608,7 @@ mod has_place_tests {
     fn a_path_mut_is_its_own_place() {
         let mut root = Root { layer: 7 };
         {
-            let mut place: PathMut<u32, &mut Root> = HasPlace::into_place(path(&mut root));
+            let mut place: PathMut<u32, &mut Root> = HasTreePath::into_tree_path(path(&mut root));
             *place.get_mut() = 9;
         }
         assert_eq!(root.layer, 9);
@@ -634,7 +622,7 @@ mod has_place_tests {
                 parent: path(&mut root),
                 data: "derived",
             };
-            let mut place: PathMut<u32, &mut Root> = HasPlace::into_place(node);
+            let mut place: PathMut<u32, &mut Root> = HasTreePath::into_tree_path(node);
             *place.get_mut() = 10;
         }
         assert_eq!(root.layer, 10);
@@ -651,7 +639,7 @@ mod has_place_tests {
                 },
                 data: 3_u8,
             };
-            let mut place: PathMut<u32, &mut Root> = HasPlace::into_place(node);
+            let mut place: PathMut<u32, &mut Root> = HasTreePath::into_tree_path(node);
             *place.get_mut() = 11;
         }
         assert_eq!(root.layer, 11);

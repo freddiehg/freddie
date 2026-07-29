@@ -416,6 +416,17 @@ impl<N, P: Above> Above for PathMut<N, P> {
     type Up = Completed<Self>;
 }
 
+/// A node's path type. `bind`'s derive implements it for every node that IS in the tree, from
+/// the node's `#[node(parent = ..)]` or `#[node(root)]`; a derived level has no path and does
+/// not implement it.
+pub trait HasPath {
+    /// This node's path type. The root's is `&'a mut Self`; every other node's is its declared
+    /// [`PathMut`] alias.
+    type Path<'a>
+    where
+        Self: 'a;
+}
+
 /// A path's stop layer: stopped here, or went above. A root path can only
 /// stop at itself, so its layer is the bare path.
 pub trait HasStop: Sized {

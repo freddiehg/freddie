@@ -53,7 +53,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     // A DERIVED level is not a place in the tree. It has no `Resolve`, so it can have neither
     // `Dispatch` nor `EventHandler`, both of which take `Self::Path`. It implements
-    // `DispatchIntoPlace` on its `Node` instead, ascending at the place beneath it.
+    // `DispatchIntoTreePath` on its `Node` instead, ascending at the place beneath it.
     if let Some(parent) = derived_node_parent(&input.attrs)? {
         return derived_node_impl(input, name, &parent, &marker, &items);
     }
@@ -68,7 +68,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     })
 }
 
-/// Emits `impl bind::Place` for a place node: its path type, `PathMut<Self, Parent>` from
+/// Emits `impl laserbeam::HasPath` for a place node: its path type, `PathMut<Self, Parent>` from
 /// `#[node(parent = P)]`, or `&mut Self` for `#[node(root)]`. This is the associated type that
 /// `Dispatch`, `EventHandler`, and the
 /// place `DispatchIntoParent` impl all name.
@@ -86,7 +86,7 @@ fn place_impl(input: &DeriveInput, name: &Ident) -> syn::Result<TokenStream2> {
     };
     Ok(quote! {
         #[automatically_derived]
-        impl ::bind::Place for #name {
+        impl ::laserbeam::HasPath for #name {
             type Path<'a>
                 = #path_ty
             where
@@ -173,7 +173,7 @@ fn derived_enum_node_impl(
         single_field_ty(&v.fields)?; // one Data per variant
         reject_resolve_into(&v.fields)?;
         dispatch_arms.push(quote! {
-            #name::#vi(data) => ::bind::DispatchIntoPlace::<#marker>::dispatch_into_place(
+            #name::#vi(data) => ::bind::DispatchIntoTreePath::<#marker>::dispatch_into_tree_path(
                 ::bind::Node { parent, data },
                 event,
                 effs,
@@ -189,14 +189,14 @@ fn derived_enum_node_impl(
     }
     Ok(quote! {
         #[automatically_derived]
-        impl<'a> ::bind::DispatchIntoPlace<#marker> for ::bind::Node<#parent<'a>, #name> {
-            fn dispatch_into_place(
+        impl<'a> ::bind::DispatchIntoTreePath<#marker> for ::bind::Node<#parent<'a>, #name> {
+            fn dispatch_into_tree_path(
                 self,
                 event: &<#marker as ::bind::Bindings>::Event,
                 effs: &mut <#marker as ::bind::Bindings>::Output,
                 claim: &mut ::bind::Claim<'_>,
             ) -> ::laserbeam::Completed<
-                <::bind::Node<#parent<'a>, #name> as ::bind::HasPlace>::Place,
+                <::bind::Node<#parent<'a>, #name> as ::bind::HasTreePath>::TreePath,
             > {
                 let ::bind::Node { parent, data } = self;
                 match data { #(#dispatch_arms)* }
@@ -224,12 +224,12 @@ fn derived_enum_node_impl(
     })
 }
 
-/// Emits `DispatchIntoPlace` (and the check's half) for a DERIVED level: the same linear body a
+/// Emits `DispatchIntoTreePath` (and the check's half) for a DERIVED level: the same linear body a
 /// place emits, over `node` instead of `path`, ascending at the place beneath it.
 ///
 /// It never names its own node type, and it cannot name its place either: a level whose parent
 /// is another derived level knows only that parent's `Node` alias. Both are spelled through the
-/// `HasPlace` projection, which resolves because `#parent` is concrete at the impl.
+/// `HasTreePath` projection, which resolves because `#parent` is concrete at the impl.
 fn derived_node_impl(
     input: &DeriveInput,
     name: &Ident,
@@ -259,14 +259,14 @@ fn derived_node_impl(
     let triggers = claimed_triggers(items);
     Ok(quote! {
         #[automatically_derived]
-        impl<'a> ::bind::DispatchIntoPlace<#marker> for ::bind::Node<#parent<'a>, #name> {
-            fn dispatch_into_place(
+        impl<'a> ::bind::DispatchIntoTreePath<#marker> for ::bind::Node<#parent<'a>, #name> {
+            fn dispatch_into_tree_path(
                 self,
                 event: &<#marker as ::bind::Bindings>::Event,
                 effs: &mut <#marker as ::bind::Bindings>::Output,
                 claim: &mut ::bind::Claim<'_>,
             ) -> ::laserbeam::Completed<
-                <::bind::Node<#parent<'a>, #name> as ::bind::HasPlace>::Place,
+                <::bind::Node<#parent<'a>, #name> as ::bind::HasTreePath>::TreePath,
             > {
                 let node = self;
                 #(#opts)*
@@ -308,12 +308,12 @@ fn derived_node_impl(
 /// here and flattens to that same place, which is the identity for a place.
 ///
 /// The derive names no type it cannot see: `data`'s type comes from `f`'s return, and inference
-/// resolves `DispatchIntoPlace` from the `Node`.
+/// resolves `DispatchIntoTreePath` from the `Node`.
 fn derived_child_state(f: &Path, marker: &Path, place: &TokenStream2) -> TokenStream2 {
     quote! {
         match #f(&#place) {
             ::core::option::Option::Some(data) => ::laserbeam::Completed::to_maybe_invalidated(
-                ::bind::DispatchIntoPlace::<#marker>::dispatch_into_place(
+                ::bind::DispatchIntoTreePath::<#marker>::dispatch_into_tree_path(
                     ::bind::Node { parent: #place, data },
                     event,
                     effs,
@@ -321,7 +321,7 @@ fn derived_child_state(f: &Path, marker: &Path, place: &TokenStream2) -> TokenSt
                 ),
             ),
             ::core::option::Option::None => ::laserbeam::MaybeInvalidated::NotInvalidated(
-                ::bind::HasPlace::into_place(#place),
+                ::bind::HasTreePath::into_tree_path(#place),
             ),
         }
     }
@@ -335,7 +335,7 @@ fn derived_state(
     node: &TokenStream2,
 ) -> syn::Result<TokenStream2> {
     Ok(derived_child_fn(&input.attrs)?.map_or_else(
-        || quote!(::laserbeam::MaybeInvalidated::NotInvalidated(::bind::HasPlace::into_place(#node))),
+        || quote!(::laserbeam::MaybeInvalidated::NotInvalidated(::bind::HasTreePath::into_tree_path(#node))),
         |f| derived_child_state(&f, marker, node),
     ))
 }
@@ -408,10 +408,10 @@ fn accumulate_impl(
         #[expect(clippy::useless_conversion, clippy::implicit_hasher)]
         impl ::bind::EventHandler<#marker> for #name #where_clause {
             fn accumulate<'a>(
-                #binding: <Self as ::bind::Place>::Path<'a>,
+                #binding: <Self as ::laserbeam::HasPath>::Path<'a>,
                 out: &mut ::std::collections::HashSet<<#marker as ::bind::Bindings>::Trigger>,
             ) -> ::core::result::Result<
-                <Self as ::bind::Place>::Path<'a>,
+                <Self as ::laserbeam::HasPath>::Path<'a>,
                 ::bind::BindError,
             >
             where
@@ -533,14 +533,14 @@ fn dispatch_impl(
         #[automatically_derived]
         impl ::bind::Dispatch<#marker> for #name #where_clause {
             fn dispatch<'a, 'c>(
-                path: <Self as ::bind::Place>::Path<'a>,
+                path: <Self as ::laserbeam::HasPath>::Path<'a>,
                 event: &<#marker as ::bind::Bindings>::Event,
                 effs: &mut <#marker as ::bind::Bindings>::Output,
                 claim: &mut ::bind::Claim<'c>,
-            ) -> ::laserbeam::Completed<<Self as ::bind::Place>::Path<'a>>
+            ) -> ::laserbeam::Completed<<Self as ::laserbeam::HasPath>::Path<'a>>
             where
                 Self: 'a,
-                <Self as ::bind::Place>::Path<'a>: ::laserbeam::HasStop,
+                <Self as ::laserbeam::HasPath>::Path<'a>: ::laserbeam::HasStop,
             {
                 #(#opts)*
                 let #binding = #state;
