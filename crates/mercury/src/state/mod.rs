@@ -66,9 +66,7 @@ pub const OVERLAY_DWELL: Duration = Duration::from_secs(10);
     Tabbed => record_tab_url,
     Windowed => record_windows,
     Quit => quit,
-    // Only the showing that is up: a dwell from one already replaced matches nothing.
     |mercury_path| mercury_path.overlay_timer().map(TimerGuard::trigger) => hide_overlay,
-    // Only the placement still outstanding: a firing from one already landed matches nothing.
     |mercury_path| mercury_path.windows.pending_timer().map(TimerGuard::trigger) => placement_settled,
 )]
 // `o` binds once, here, because the overlay is the root's own field. In typing an `o` is an `o`:
@@ -87,8 +85,7 @@ pub struct Mercury {
     pub held: HeldModifiers,
     /// The overlay currently up, if any: the guard for its pending hide. The overlay is an
     /// external window driven by effects, so this is its only trace in the model, held at the root
-    /// because there is one overlay across all layers. The root's binding names it, so a firing
-    /// from a showing that was replaced matches nothing.
+    /// because there is one overlay across all layers.
     ///
     /// Private for the reason `layer` is: the effects a change implies come back from the method
     /// that made it.

@@ -38,8 +38,6 @@ pub(crate) fn arm_jk_timeout(window: Duration) -> (TimerGuard, MercuryEffect) {
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
-    // Only this run's window: a firing from a run that has since ended matches nothing, so the
-    // handler never sees it.
     |path| path.get().jk.window_timer().map(TimerGuard::trigger) => jk_timeout,
     AnyKey => pass_through,
 )]
