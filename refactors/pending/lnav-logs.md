@@ -2,19 +2,25 @@
 
 `mercury logs` renders records and follows the file, and that is all it does. There is no way to stop the scroll and read what just went past, no way to narrow to the records you care about, and no way to jump to the last error. Every one of those is a key press in [lnav](https://lnav.org), which reads JSON-lines logs natively, so `logs` stops being a renderer and becomes the thing that points lnav at the right file with the right format.
 
-Two JSON assets are shipped in `freddie_cli` and written to disk on every `logs`: a log format that teaches lnav the record envelope, and a keymap that binds the keys this change is about. Nothing else is written, and `~/.lnav` is never touched: lnav takes the directory from `-I` on the command line.
+One JSON file is shipped in `freddie_cli` and written to disk on every `logs`: a log format that teaches lnav the record envelope. There is no keymap, no theme, and no config of ours; every key is the one lnav ships with. Nothing else is written, and `~/.lnav` is never touched: lnav takes the directory from `-I` on the command line.
+
+The format is not decoration and cannot be dropped. Without it lnav still recognizes the file as JSON-lines and infers the timestamp, the level, and the target, but the only field it puts on screen is `message`, so a dispatch record renders as the word `dispatch` and its event, effects and duration are nowhere:
+
+```
+2026-07-27T12:49:05.273974+0100 [INFO ] (f::daemon ) -
+  message: dispatch
+```
 
 lnav is a new dependency of the `logs` verb. It is a `freddie_*` crate's to state: `logs` requires `lnav` on `PATH` (`brew install lnav`), and says so when it is missing. Every other verb is unaffected.
 
-The version this is written against is lnav 0.14.0. Two things below are version-sensitive and were checked against it rather than read out of the docs: `:prompt`, which is what a key press uses to open a command prompt prefilled without running it, and `lnav_views.paused`, whose stock toggle is broken and is corrected here. Everything else in this document was rendered from a live figaro log of 295,782 records, which lnav indexed in 0.27s and rendered headlessly in 1.4s, so the size these logs reach is not a reason to slice the file first.
+The version this is written against is lnav 0.14.0. Everything in this document was rendered from a live figaro log of 295,782 records, which lnav indexed in 0.27s and rendered headlessly in 1.4s, so the size these logs reach is not a reason to slice the file first.
 
 ## What the user does
 
 `mercury logs` opens lnav on `~/Library/Logs/mercury/mercury.log`, at the bottom, following.
 
-- `p` pauses and resumes. While paused the status line reads `‖ Paused` and new records queue up rather than scrolling past.
-- `f` opens `:filter-in `, prefilled. Type a regex, press Enter, and only matching records remain. The status line reads `1 of 1 enabled` and `N Lines not shown`.
-- `F` opens `:filter-out `, prefilled. Matching records go.
+- Scrolling up stops the scroll. `b` or `PgUp` goes back a page and the view stays where it is put while the daemon keeps writing; `G` returns to the bottom and picks up everything that arrived meanwhile. This is what stops the log running away while a record is being read, and it needs no key of ours.
+- `:` opens the command prompt. `:filter-in <regex>` leaves only matching records, `:filter-out <regex>` removes them. The status line then reads `1 of 1 enabled` and `N Lines not shown`.
 - `Ctrl-F` toggles every filter off and back on, so the full log is one key away.
 - `Tab` opens the filter panel, where filters are edited and deleted.
 - `/` searches, `n` and `N` walk the hits. Search highlights and jumps; it does not hide anything.
@@ -22,6 +28,8 @@ The version this is written against is lnav 0.14.0. Two things below are version
 - `x` shows and hides the fields the format hides, which is `state`.
 - `i` is a histogram of records over time, `;` is a SQL prompt over the log (`;SELECT * FROM freddie_log WHERE duration_us > 1000`).
 - `q` quits.
+
+lnav's `=` is documented as pausing the load of new file data, and in 0.14.0 it does not work: pressing it reports `SQL statement failed: Expecting an integer for column number 12` and the view keeps loading. Nothing here uses it, and scrolling up is the pause.
 
 lnav keeps a session per file, so the filters and the position from the last `mercury logs` are restored by the next one, and it says so on the status line. `Ctrl-R` resets the session and shows the whole log again.
 
@@ -41,9 +49,7 @@ The Rust renderer's three cosmetic touches go, because lnav's line format has no
 
 `mercury logs > file` no longer follows: with stdout not a terminal, `logs` runs `lnav -n`, which renders the whole file and exits. A pipeline that wants to follow uses `--json`.
 
-## The assets
-
-### `crates/freddie_cli/lnav/format.json`
+## The format: `crates/freddie_cli/lnav/format.json`
 
 The record envelope is `freddie_cli::logging`'s, so the format is the crate's own. `hide-extra` is `false`, so a field no call site had when this was written still appears, as an indented line under the record rather than being dropped. The fields named in `line-format` are the ones that recur across freddie's own crates; each carries a `prefix` and an empty `default-value`, and lnav drops the prefix when the value is empty, so a record renders on one line with exactly the fields it has.
 
@@ -128,48 +134,16 @@ A field the format does not name renders as its own indented line, so nothing is
   some_new_field: whatever the call site passed
 ```
 
-### `crates/freddie_cli/lnav/config.freddie.json`
+## Change 1: ship the format and write it out
 
-The bindings go into lnav's own `default` keymap rather than a keymap of ours, so a key this file does not name keeps the binding lnav ships. The command each key runs is what lnav's own keymap runs for the equivalent default, with one correction: lnav's stock `=` runs `UPDATE lnav_views SET paused = 1 - paused` across every view, and the second press of it fails with `Expecting an integer for column number 12`. `WHERE name = 'log'` is the log view alone, and toggles both ways.
+The file lands at `crates/freddie_cli/lnav/format.json`, is embedded with `include_str!`, and is written into a directory of the daemon's own on every `logs`. Written every time rather than once: a rebuilt binary carrying a new format has to win over the copy an older one left, and an idempotent write is how that happens without a version to compare.
 
-Keys are lnav's hex encoding of the UTF-8 bytes: `x70` is `p`, `x66` is `f`, `x46` is `F`.
-
-```json
-{
-  "$schema": "https://lnav.org/schemas/config-v1.schema.json",
-  "ui": {
-    "keymap-defs": {
-      "default": {
-        "x70": {
-          "command": ";UPDATE lnav_views SET paused = 1 - paused WHERE name = 'log'",
-          "alt-msg": "p resumes"
-        },
-        "x66": {
-          "command": ":prompt command : 'filter-in '",
-          "alt-msg": "a regex; only matching records stay"
-        },
-        "x46": {
-          "command": ":prompt command : 'filter-out '",
-          "alt-msg": "a regex; matching records go"
-        }
-      }
-    }
-  }
-}
-```
-
-`p` was lnav's row-details toggle, which this takes. `x`, the hidden-fields toggle, is untouched and is what `--include-state` reaches for once lnav is up.
-
-## Change 1: ship the assets and write them out
-
-The two files land under `crates/freddie_cli/lnav/`, are embedded with `include_str!`, and are written into a directory of the daemon's own on every `logs`. Written every time rather than once: a rebuilt binary carrying a new format has to win over the copy an older one left, and an idempotent write is how that happens without a version to compare.
-
-The layout is the one lnav's `-I` scans. A format lives at `<dir>/formats/<name>/format.json`, and a config beside it at `<dir>/formats/<name>/config.<name>.json`.
+The layout is the one lnav's `-I` scans: a format lives at `<dir>/formats/<name>/format.json`.
 
 `instance.rs`, after `log_file`:
 
 ```rust
-    /// The directory `logs` writes lnav's format and keymap into, and hands to lnav with `-I`.
+    /// The directory `logs` writes lnav's format into, and hands to lnav with `-I`.
     ///
     /// Under the log directory because it belongs to the same daemon the log does, and because
     /// lnav reads it only when it is named on a command line: nothing else scans it, and a file
@@ -186,24 +160,17 @@ The layout is the one lnav's `-I` scans. A format lives at `<dir>/formats/<name>
 /// lnav's format for the record envelope `logging` writes.
 const LNAV_FORMAT: &str = include_str!("../lnav/format.json");
 
-/// The keys `logs` binds on top of lnav's own keymap.
-const LNAV_CONFIG: &str = include_str!("../lnav/config.freddie.json");
-
 /// What lnav calls the format, which is what `:show-fields` and a SQL query name it by.
 const LNAV_FORMAT_NAME: &str = "freddie_log";
 
-/// Write lnav's format and keymap where lnav will read them, and answer with the directory to
-/// hand it. Rewritten on every call, so a newer binary's format replaces an older one's.
-fn write_lnav_assets(instance: &Instance) -> io::Result<PathBuf> {
+/// Write lnav's format where lnav will read it, and answer with the directory to hand it.
+/// Rewritten on every call, so a newer binary's format replaces an older one's.
+fn write_lnav_format(instance: &Instance) -> io::Result<PathBuf> {
     let dir = instance.lnav_dir();
     let format_dir = dir.join("formats").join(LNAV_FORMAT_NAME);
     std::fs::create_dir_all(&format_dir)?;
     std::fs::write(format_dir.join("format.json"), LNAV_FORMAT)?;
-    std::fs::write(
-        format_dir.join(format!("config.{LNAV_FORMAT_NAME}.json")),
-        LNAV_CONFIG,
-    )?;
-    debug!("wrote lnav assets to {}", dir.display());
+    debug!("wrote lnav's format to {}", dir.display());
     Ok(dir)
 }
 ```
@@ -354,14 +321,13 @@ pub(crate) fn logs(instance: &Instance, view: LogsView) -> ExitCode {
     }
 }
 
-/// Hand the terminal to lnav, with the format and keymap it needs and the flags this invocation
-/// asked for.
+/// Hand the terminal to lnav, with the format it needs and the flags this invocation asked for.
 ///
 /// Replaces this process rather than spawning one: lnav owns the terminal, its exit status is the
 /// verb's, and there is nothing left for this process to do once lnav is up. `-n` when stdout is
 /// not a terminal, which renders the file and exits rather than driving a screen that is a pipe.
 fn view_in_lnav(instance: &Instance, path: &Path, view: LogsView) -> ExitCode {
-    let assets = match write_lnav_assets(instance) {
+    let lnav_dir = match write_lnav_format(instance) {
         Ok(dir) => dir,
         Err(e) => {
             warn!("{}: could not write lnav's format: {e}", instance.display_name());
@@ -370,7 +336,7 @@ fn view_in_lnav(instance: &Instance, path: &Path, view: LogsView) -> ExitCode {
     };
 
     let mut command = Command::new("lnav");
-    command.arg("-I").arg(&assets);
+    command.arg("-I").arg(&lnav_dir);
     if !std::io::stdout().is_terminal() {
         command.arg("-n");
     }
@@ -502,7 +468,7 @@ mod tests {
 
     use tracing::Level;
 
-    use super::{LNAV_CONFIG, LNAV_FORMAT, Record, show_record};
+    use super::{LNAV_FORMAT, Record, show_record};
 
     const DISPATCH: &str = r#"{"pid":1,"timestamp":"2026-07-21T09:14:02.114Z","level":"INFO","message":"dispatch","event":"Key(KeyR)","effects":"[]","state":"Mercury { .. }","target":"mercury::daemon"}"#;
 
@@ -534,12 +500,11 @@ mod tests {
         );
     }
 
-    // The two assets are what lnav parses, so a comma out of place is a broken `logs`, and the
-    // build is where that should be caught rather than the first run after it.
+    // The format is what lnav parses, so a comma out of place is a broken `logs`, and the build is
+    // where that should be caught rather than the first run after it.
     #[test]
-    fn the_lnav_assets_are_json() {
+    fn the_lnav_format_is_json() {
         serde_json::from_str::<serde_json::Value>(LNAV_FORMAT).expect("the format is json");
-        serde_json::from_str::<serde_json::Value>(LNAV_CONFIG).expect("the config is json");
     }
 }
 ```
@@ -567,7 +532,7 @@ And, two paragraphs on, before:
 After:
 
 ```
-`mercury logs` opens the log in lnav (`brew install lnav`), following, with a format that renders one record per line. `p` pauses, `f` and `F` filter records in and out by regex, `/` searches, `e` and `w` jump to the next error and warning, `x` shows the state field, and `;` is SQL over the records. The state is left out until asked for: it is the whole model under `Debug`, which is most of a dispatch record. `mercury logs --include-state` starts with it shown, and `mercury logs --json` skips lnav and gives the records as stored, following as they arrive.
+`mercury logs` opens the log in lnav (`brew install lnav`), following, with a format that renders one record per line. The keys are lnav's own: `b` scrolls back and holds the view still while the daemon keeps writing, `G` returns to the bottom, `:filter-in` and `:filter-out` narrow by regex, `/` searches, `e` and `w` jump to the next error and warning, `x` shows the state field, and `;` is SQL over the records. The state is left out until asked for: it is the whole model under `Debug`, which is most of a dispatch record. `mercury logs --include-state` starts with it shown, and `mercury logs --json` skips lnav and gives the records as stored, following as they arrive.
 ```
 
 `CLAUDE.md`, in "Nothing is printed", before:
@@ -593,7 +558,7 @@ After:
 ```markdown
 Run `mercury logs` alongside it. Every dispatched event writes one record carrying the event, the effects it produced, and the resulting state.
 
-It opens the log in [lnav](https://lnav.org), so it needs one installed (`brew install lnav`). lnav follows the file, and the keys are its own: `p` pauses the scroll, `f` and `F` filter records in and out by regular expression, `/` searches and `n` walks the hits, `e` and `w` jump to the next error and warning, `x` shows the model state a record carries, and `q` quits. `mercury logs --json` skips lnav and writes the records as they are stored, for `jq`.
+It opens the log in [lnav](https://lnav.org), so it needs one installed (`brew install lnav`). lnav follows the file, and the keys are lnav's own: `b` scrolls back and holds the view still while records keep arriving, `G` returns to the bottom, `:filter-in` and `:filter-out` narrow by regular expression, `/` searches and `n` walks the hits, `e` and `w` jump to the next error and warning, `x` shows the model state a record carries, and `q` quits. `mercury logs --json` skips lnav and writes the records as they are stored, for `jq`.
 ```
 
 The boot-state snippet below it is still what a record carries, so it stays.

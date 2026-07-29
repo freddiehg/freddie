@@ -29,7 +29,36 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let (impl_generics, ty_generics, struct_where) = input.generics.split_for_impl();
 ```
 
-with `#impl_generics`, `#name #ty_generics`, and `struct_where`'s predicates threaded into every emitted impl. The derive already computes its own per-child where-clauses from the `#[resolve_into]` field's type and the enum variants' types; with a parameter in that position the same computation emits the parameter, so no new bound logic exists. For `TypingLayer<Next>` the three impls expand to:
+with `#impl_generics`, `#name #ty_generics` threaded into every emitted impl (landed as a prefactor; non-generic nodes are unaffected). The per-child `Dispatch`/`EventHandler` bounds the derive already computes emit the parameter unchanged. That alone is not enough: three pieces of the generated body resolve only for a concrete child, and laserbeam grows one trait to cover them.
+
+### 1a. laserbeam: the child fold as a trait
+
+The generated dispatch folds the child's leave into the parent's state through `Stop::to_maybe_invalidated`, which today exists as inherent impls on the two concrete `Stop<PathMut<..>>` shapes; the child-path construction ends in `.into()` (an identity `From` for a concrete child); and the accumulate recover calls `PathMut::into_parent` inherently. For a child that is a type parameter, all three need trait paths:
+
+```rust
+/// A child path that folds into its parent's state: what the derive's descent needs from a
+/// `#[resolve_into]` child whose type is a parameter.
+pub trait ChildOf<Parent: HasStop>: HasStop + Sized {
+    /// Build the child's path over its parent's, `PathMut::from_fn` under a trait name.
+    fn descend(parent: Parent) -> Self;
+    /// The child's leave, as the state it leaves behind at the parent
+    /// (`Stop::to_maybe_invalidated` under a trait name).
+    fn fold(completed: Completed<Self>) -> MaybeInvalidated<Parent>;
+}
+```
+
+implemented in laserbeam for the two shapes the inherent impls cover today (a child of the root, a child of a non-root), with the inherent impls delegating to it. The derive's generic-child emission uses `ChildOf` for descent, fold, and recover, and bounds it:
+
+```rust
+impl<Next> ::bind::Dispatch<M> for TypingLayer<Next>
+where
+    Next: ::bind::Dispatch<M>,
+    for<'q> <Next as ::bind::Place>::Path<'q>:
+        ::laserbeam::ChildOf<<TypingLayer<Next> as ::bind::Place>::Path<'q>>,
+{ ... }
+```
+
+The `for<'q>` form makes the parameter effectively `'static`, which every node in both trees already is (they own their data). `descend` closes over the field projection, so `ChildOf` is implemented via the same `from_fn` closures `Edge` emits today; the derive passes them through. For `TypingLayer<Next>` the three impls expand to:
 
 ```rust
 #[automatically_derived]
