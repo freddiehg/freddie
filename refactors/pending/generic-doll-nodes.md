@@ -8,44 +8,7 @@ Layer::Typing(TypingLayer<KinesisRemaps<NumberRemaps<SymbolRemaps>>>)
 
 Inserting, removing, or reordering a shell is then an edit to that one spelling and the affected `parent =` attributes, never to the inner shells' structs. The parent stays an attribute: a shell is generic over what it contains, and its position in the tree is the position's business.
 
-Rust checks a generic impl at its definition against declared bounds, and the derive's generated body performs three operations on the child's path that today resolve through inherent impls on concrete types: the `.into()` building the child path, `Stop::to_maybe_invalidated` folding the child's leave into the parent's state, and `PathMut::into_parent` in accumulate's recover. A bound cannot name an inherent method, so the fold pair moves behind a laserbeam trait; the build needs only a `From` bound. With those bounds emitted, a `T` that does not fit fails at the instantiation with an ordinary trait error.
-
-## Change 1: laserbeam — the fold behind a trait
-
-`crates/laserbeam/src/lib.rs`. The two inherent `to_maybe_invalidated` impls keep their bodies; the trait gives them a name a bound can use, and carries the ascent beside the fold.
-
-```rust
-/// A path that folds its completed leave into its parent's state, and ascends to that parent.
-/// What the derive's descent uses at a `#[resolve_into]` edge whose child is a type parameter.
-pub trait FoldsInto<Parent>: Sized {
-    /// The leave this path completed to, as the state it leaves behind at the parent.
-    fn fold(completed: Completed<Self>) -> MaybeInvalidated<Parent>;
-    /// The parent, one level up (`PathMut::into_parent` under a trait name).
-    fn ascend(self) -> Parent;
-}
-
-/// A child of the root.
-impl<'a, N, R> FoldsInto<&'a mut R> for PathMut<N, &'a mut R> {
-    fn fold(completed: Completed<Self>) -> MaybeInvalidated<&'a mut R> {
-        completed.into_inner().to_maybe_invalidated()
-    }
-    fn ascend(self) -> &'a mut R {
-        self.into_parent()
-    }
-}
-
-/// A child of a non-root.
-impl<N, N2, Q: Above> FoldsInto<PathMut<N2, Q>> for PathMut<N, PathMut<N2, Q>> {
-    fn fold(completed: Completed<Self>) -> MaybeInvalidated<PathMut<N2, Q>> {
-        completed.into_inner().to_maybe_invalidated()
-    }
-    fn ascend(self) -> PathMut<N2, Q> {
-        self.into_parent()
-    }
-}
-```
-
-## Change 2: `bind_macro` accepts generic place nodes
+## Change 1: `bind_macro` accepts generic place nodes
 
 `crates/bind_macro/src/lib.rs`. The rejection in `expand` is deleted and the split generics thread through the three emitted impls:
 
@@ -67,15 +30,19 @@ impl #impl_g ::bind::EventHandler<#marker> for #name #ty_g #where_clause { ... }
 impl #impl_g ::bind::Dispatch<#marker> for #name #ty_g #where_clause { ... }
 ```
 
-The child-edge emission stays one code path for concrete children. When the `#[resolve_into]` field's type names one of the node's type parameters, the edge emits through the trait instead:
+The generated bodies do not change. A generic impl typechecks against declared bounds, and the body's three child-path operations (the identity `.into()` after `from_fn`, the `Stop` fold, `into_parent` in accumulate's recover) are inherent methods on the concrete `PathMut`/`Stop` shapes — so the one thing the derive adds, for a `#[resolve_into]` child whose type names a node parameter, is the equality that makes the opaque type concrete. Any correctly parented node satisfies it definitionally, because the child's own derive emitted exactly that `Path`:
 
-- descent: unchanged construction, with the identity conversion named — the impl's where clause gains
-  `for<'q> <#child as ::bind::Place>::Path<'q>: ::core::convert::From<::laserbeam::PathMut<#child, <Self as ::bind::Place>::Path<'q>>>`;
-- fold: `::laserbeam::FoldsInto::fold(<#child as ::bind::Dispatch<#marker>>::dispatch(#child_path, event, effs, claim))` in place of `Completed::into_inner(..).to_maybe_invalidated()`, with
-  `for<'q> <#child as ::bind::Place>::Path<'q>: ::laserbeam::FoldsInto<<Self as ::bind::Place>::Path<'q>>` in the where clause;
-- recover (accumulate): `::laserbeam::FoldsInto::ascend(child)` in place of `child.into_parent()`, with the same `FoldsInto` bound beside the existing `#child: EventHandler<#marker>`.
+```rust
+where
+    #child: 'static + ::bind::Dispatch<#marker>,   // EventHandler in accumulate's clause
+    for<'q> #child: ::bind::Place<
+        Path<'q> = ::laserbeam::PathMut<#child, <Self as ::bind::Place>::Path<'q>>,
+    >,
+```
 
-The `for<'q>` form makes the parameter effectively `'static`; every node in both trees owns its data, so this costs nothing. For `TypingLayer<Next>` the three impls expand to:
+With that bound the compiler normalizes `<#child as Place>::Path` to the `PathMut` the body already builds, every inherent method resolves, and a `T` that does not fit fails at the instantiation with an ordinary trait error. The `'static` comes from the `for<'q>` binder; every node in both trees owns its data, so it costs nothing. This shape is verified end to end in a standalone mock (a generic shell over a GAT `Place`, the equality bound, an inherent `into_parent` resolving through the normalization, dispatch round-tripping).
+
+For `TypingLayer<Next>` the three impls expand to:
 
 ```rust
 #[automatically_derived]
@@ -89,30 +56,30 @@ impl<Next> ::bind::Place for TypingLayer<Next> {
 #[automatically_derived]
 impl<Next> ::bind::EventHandler<FigaroStruct> for TypingLayer<Next>
 where
-    Next: ::bind::EventHandler<FigaroStruct>,
-    for<'q> <Next as ::bind::Place>::Path<'q>:
-        ::core::convert::From<::laserbeam::PathMut<Next, <Self as ::bind::Place>::Path<'q>>>
-        + ::laserbeam::FoldsInto<<Self as ::bind::Place>::Path<'q>>,
+    Next: 'static + ::bind::EventHandler<FigaroStruct>,
+    for<'q> Next: ::bind::Place<
+        Path<'q> = ::laserbeam::PathMut<Next, <TypingLayer<Next> as ::bind::Place>::Path<'q>>,
+    >,
 {
-    fn accumulate<'a>(/* body as today, recover via FoldsInto::ascend */) -> /* unchanged */
+    fn accumulate<'a>(/* body unchanged */) -> /* unchanged */
     where
         Self: 'a,
-    { /* unchanged otherwise */ }
+    { /* unchanged */ }
 }
 
 #[automatically_derived]
 impl<Next> ::bind::Dispatch<FigaroStruct> for TypingLayer<Next>
 where
-    Next: ::bind::Dispatch<FigaroStruct>,
-    for<'q> <Next as ::bind::Place>::Path<'q>:
-        ::core::convert::From<::laserbeam::PathMut<Next, <Self as ::bind::Place>::Path<'q>>>
-        + ::laserbeam::FoldsInto<<Self as ::bind::Place>::Path<'q>>,
+    Next: 'static + ::bind::Dispatch<FigaroStruct>,
+    for<'q> Next: ::bind::Place<
+        Path<'q> = ::laserbeam::PathMut<Next, <TypingLayer<Next> as ::bind::Place>::Path<'q>>,
+    >,
 {
-    fn dispatch<'a, 'c>(/* body as today, fold via FoldsInto::fold */) -> /* unchanged */
+    fn dispatch<'a, 'c>(/* body unchanged */) -> /* unchanged */
     where
         Self: 'a,
         <Self as ::bind::Place>::Path<'a>: ::laserbeam::HasStop,
-    { /* unchanged otherwise */ }
+    { /* unchanged */ }
 }
 ```
 
@@ -177,7 +144,7 @@ fn a_generic_shell_dispatches_into_its_parameter() {
 }
 ```
 
-## Change 3: figaro's dolls take their child
+## Change 2: figaro's dolls take their child
 
 The chain is `TypingLayer { remaps: KinesisRemaps }` → `KinesisRemaps { next: NumberRemaps }` → `NumberRemaps { next: SymbolRemaps }` → `SymbolRemaps`, plus `AlwaysOnRemaps { next: Layer }` at the top; every edge is single-parent. Each shell gains the parameter; `SymbolRemaps` is the leaf and stays as it is.
 
@@ -246,7 +213,7 @@ pub struct AlwaysOnRemaps<Next> {
 
 with `Figaro { input: AlwaysOnRemaps<Layer> }`, `pub type AlwaysOnRemapsPath<'a> = PathMut<AlwaysOnRemaps<Layer>, FigaroPath<'a>>`, and `AlwaysOnRemaps::new(next: Next)` unchanged in body.
 
-## Change 4: mercury's doll takes its child
+## Change 3: mercury's doll takes its child
 
 `AndReturnHome { layers: ReturnHomeLayers, guard: TimerGuard }` is the same shape with data beside the child; the child position goes generic:
 
