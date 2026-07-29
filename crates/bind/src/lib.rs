@@ -114,6 +114,23 @@ impl<'a, P: ::laserbeam::HasStop> AscendState<'a, P> {
     }
 }
 
+/// Binds a handler that needs its path: `Trigger => if_not_invalidated(handler)`.
+///
+/// The handler receives the path itself instead of an [`AscendState`]; when the path was
+/// invalidated, it completes where it stands with no effects and the handler never runs.
+pub fn if_not_invalidated<Ev, Snap, P, E, H>(
+    handler: H,
+) -> impl for<'a> FnOnce(Ev, Snap, AscendState<'a, P>) -> (Vec<E>, ::laserbeam::Completed<P>)
+where
+    P: ::laserbeam::HasStop,
+    H: FnOnce(Ev, Snap, P) -> (Vec<E>, ::laserbeam::Completed<P>),
+{
+    move |ev, snap, st| match st.state {
+        ::laserbeam::MaybeInvalidated::NotInvalidated(p) => handler(ev, snap, p),
+        ::laserbeam::MaybeInvalidated::Invalidated(c) => (Vec::new(), c),
+    }
+}
+
 /// The claim gate, shape-preserving: `handler` runs iff the claim is won, and
 /// otherwise the state completes where it stands.
 ///

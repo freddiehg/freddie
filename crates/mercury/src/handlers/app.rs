@@ -7,7 +7,7 @@
 
 use bind::AscendState;
 use freddie_keys::{Key, ModifierFlags};
-use laserbeam::{Complete, Completed, HasAncestor, HasStop, MaybeInvalidated};
+use laserbeam::{Complete, Completed, HasAncestor, HasStop};
 
 use crate::MercuryEffect;
 use crate::effect::{Copied, UrlPart, tap};
@@ -55,39 +55,21 @@ pub(crate) fn tap_cmd_shift_o<E, P: HasStop + Complete<P>>(
 ///
 /// A stayer that reads the tree: it reaches the root by shared reference, so the path it was
 /// handed is still there to complete at.
-pub(crate) fn copy_url<'a, E, P>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
+pub(crate) fn copy_url<'a, E, P>(_ev: &E, _snap: (), path: P) -> (Vec<MercuryEffect>, Completed<P>)
 where
     P: HasAncestor<MercuryPath<'a>> + HasStop + Complete<P>,
 {
-    match st.state {
-        MaybeInvalidated::NotInvalidated(path) => {
-            let effects = copy(path.ancestor(), UrlPart::Whole);
-            (effects, path.complete())
-        }
-        MaybeInvalidated::Invalidated(c) => (Vec::new(), c),
-    }
+    let effects = copy(path.ancestor(), UrlPart::Whole);
+    (effects, path.complete())
 }
 
 /// `cmd-l` in Chrome: the front tab's host, onto the clipboard.
-pub(crate) fn copy_host<'a, E, P>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
+pub(crate) fn copy_host<'a, E, P>(_ev: &E, _snap: (), path: P) -> (Vec<MercuryEffect>, Completed<P>)
 where
     P: HasAncestor<MercuryPath<'a>> + HasStop + Complete<P>,
 {
-    match st.state {
-        MaybeInvalidated::NotInvalidated(path) => {
-            let effects = copy(path.ancestor(), UrlPart::Host);
-            (effects, path.complete())
-        }
-        MaybeInvalidated::Invalidated(c) => (Vec::new(), c),
-    }
+    let effects = copy(path.ancestor(), UrlPart::Host);
+    (effects, path.complete())
 }
 
 /// Copy `part` of the front tab's URL.

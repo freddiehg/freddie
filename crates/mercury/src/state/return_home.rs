@@ -1,4 +1,4 @@
-use bind::Bind;
+use bind::{Bind, if_not_invalidated};
 use freddie::TimerGuard;
 
 #[allow(clippy::wildcard_imports)]
@@ -25,7 +25,7 @@ use super::{
 #[derive(Bind, Debug)]
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
-#[post(AnyKey => home_deadline)]
+#[post(AnyKey => if_not_invalidated(home_deadline))]
 #[bind(|path| path.get().guard.trigger() => go_home)]
 pub struct AndReturnHome {
     #[resolve_into]

@@ -1,8 +1,7 @@
 //! The return-home deadline: the one concern the wrapper node owns.
 
-use bind::AscendState;
 use freddie_keys::KeyEvent;
-use laserbeam::{Complete, Completed, MaybeInvalidated};
+use laserbeam::{Complete, Completed};
 
 use crate::MercuryEffect;
 use crate::state::{AndReturnHomePath, arm_return_home};
@@ -17,14 +16,9 @@ use crate::state::{AndReturnHomePath, arm_return_home};
 pub(crate) fn home_deadline<'x>(
     _ev: &KeyEvent,
     _snap: (),
-    st: AscendState<'_, AndReturnHomePath<'x>>,
+    mut p: AndReturnHomePath<'x>,
 ) -> (Vec<MercuryEffect>, Completed<AndReturnHomePath<'x>>) {
-    match st.state {
-        MaybeInvalidated::NotInvalidated(mut p) => {
-            let (guard, arm) = arm_return_home();
-            p.get_mut().guard = guard;
-            (vec![arm], p.complete())
-        }
-        MaybeInvalidated::Invalidated(c) => (vec![], c),
-    }
+    let (guard, arm) = arm_return_home();
+    p.get_mut().guard = guard;
+    (vec![arm], p.complete())
 }

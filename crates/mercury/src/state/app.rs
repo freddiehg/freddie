@@ -1,4 +1,4 @@
-use bind::{Bind, and};
+use bind::{Bind, and, if_not_invalidated};
 use freddie_keys::{Key, ModifierFlags};
 use laserbeam::HasAncestor;
 
@@ -82,8 +82,8 @@ fn app_data<'a, P: HasAncestor<MercuryPath<'a>>>(path: &P) -> Option<AppData> {
 #[bind(
     Key::KeyR.down() => tap_cmd_r,
     Key::KeyL.down().bare() => and!(tap_cmd_l, enter_typing),
-    Key::KeyL.down().with(ModifierFlags::SHIFT) => copy_url,
-    Key::KeyL.down().with(ModifierFlags::COMMAND) => copy_host,
+    Key::KeyL.down().with(ModifierFlags::SHIFT) => if_not_invalidated(copy_url),
+    Key::KeyL.down().with(ModifierFlags::COMMAND) => if_not_invalidated(copy_host),
 )]
 pub struct ChromeApp;
 

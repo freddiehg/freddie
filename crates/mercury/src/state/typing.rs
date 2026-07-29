@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use bind::Bind;
+use bind::{Bind, if_not_invalidated};
 use freddie::{KeySequence, TimerFired, TimerGuard, timer_effect_and_guard};
 use freddie_keys::Key;
 
@@ -38,8 +38,8 @@ pub(crate) fn arm_jk_timeout(window: Duration) -> (TimerGuard, MercuryEffect) {
 #[node(parent = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
-    |path| path.get().jk.window_timer().map(TimerGuard::trigger) => jk_timeout,
-    AnyKey => pass_through,
+    |path| path.get().jk.window_timer().map(TimerGuard::trigger) => if_not_invalidated(jk_timeout),
+    AnyKey => if_not_invalidated(pass_through),
 )]
 pub struct TypingLayer {
     /// The `jk` run. Built fresh on entry and dropped with the layer, so a hold never outlives
