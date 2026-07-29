@@ -38,6 +38,12 @@ Implementation begins only after the explicit permission above. Starting an impl
 - `git stash` the half-finished work while we settle it, if that leaves a cleaner tree to discuss against. Say what you stashed and what state it is in, so nothing is lost while the doc is being corrected.
 - Do not paper over the gap by choosing the easy version, leaving a TODO, or narrowing the step so it fits. Those hide the decision instead of surfacing it.
 
+## Workarounds a deferred solution would obviate
+
+Some problems already have their fix: a long-term solution we have planned and deliberately not built yet. The virtual HID backend is the standing example (`refactors/past/cgevent-vs-hid.md` frames it as the known upgrade behind the `intercept` seam): secure input blinding the tap, re-posted output re-entering the shared event stream, and the rest of the CGEventTap class all stop existing when it lands.
+
+When a bug is in that position, raise it with the user before writing a workaround, every time. Most likely we do not want to solve the bug yet: the patch is code the deferred solution deletes, and it tends to spread — state, special cases, and tests shaped around a problem that is scheduled to disappear. This is a general rule, not a virtual HID special case: whenever a long-term but currently deferred solution would obviate the issue, be careful about adding patches that solution would throw away. Name the deferred solution, say what the workaround would cost, and let the user decide whether the bug is worth patching now.
+
 ## Shared state and interior mutability
 
 `Arc`, `Rc`, `Mutex`, `RwLock`, `Cell`, `RefCell`, `OnceCell`/`OnceLock`, `lazy_static`, `thread_local!`, and atomics are almost always the wrong reach in freddie. The model is a pure function of state and event running on one thread; the state lives in one place, and a handler that wants a value already holds it. So when a design proposes any of these, three things happen every time:
