@@ -103,7 +103,7 @@ pub struct A {
 }
 
 #[derive(Bind)]
-#[node(parent = APath)]
+#[node(parent_path = APath)]
 #[binds(M)]
 #[bind(Key("h") => go_home, Key("bump") => bump_timer)]
 pub struct B {
@@ -268,7 +268,7 @@ pub struct Trap {
 }
 
 #[derive(Bind)]
-#[node(parent = TrapPath)]
+#[node(parent_path = TrapPath)]
 #[binds(M)]
 #[bind(|p: &TrapChildPath| p.parent().open.then_some(Key("t")) => trap_child)]
 pub struct TrapChild;
@@ -330,7 +330,7 @@ pub struct Top {
 /// The middle node binds nothing, so a leave from the leaf passes straight through its
 /// `state.complete()` on the way to `Top`.
 #[derive(Bind)]
-#[node(parent = TopPath)]
+#[node(parent_path = TopPath)]
 #[binds(M)]
 pub struct Mid {
     #[resolve_into]
@@ -338,7 +338,7 @@ pub struct Mid {
 }
 
 #[derive(Bind)]
-#[node(parent = MidPath)]
+#[node(parent_path = MidPath)]
 #[binds(M)]
 #[bind(
     Key("go") => leaf_home,

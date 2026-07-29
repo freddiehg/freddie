@@ -15,12 +15,12 @@ use laserbeam::PathMut;
 struct TupleRoot(#[resolve_into] TupleMid);
 
 #[derive(Bind)]
-#[node(parent = TupleRootPath)]
+#[node(parent_path = TupleRootPath)]
 #[binds(Demo)]
 struct TupleMid(#[resolve_into] Box<TupleLeaf>);
 
 #[derive(Bind)]
-#[node(parent = TupleMidPath)]
+#[node(parent_path = TupleMidPath)]
 #[binds(Demo)]
 #[bind(Keyboard("g") => ignore)]
 struct TupleLeaf;

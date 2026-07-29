@@ -12,7 +12,7 @@ use super::LayerPath;
 pub(crate) const OVERLAY: &str = include_str!("overlays/home.txt");
 
 #[derive(Bind, Debug)]
-#[node(parent = LayerPath)]
+#[node(parent_path = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
     Key::Escape.down() => go_home,

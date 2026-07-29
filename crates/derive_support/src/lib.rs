@@ -131,7 +131,7 @@ pub fn is_root(attrs: &[syn::Attribute]) -> bool {
                 if m.path.is_ident("root") {
                     root = true;
                     Ok(())
-                } else if m.path.is_ident("parent") {
+                } else if m.path.is_ident("parent_path") {
                     let _: Path = m.value()?.parse()?;
                     Ok(())
                 } else {
@@ -146,7 +146,7 @@ pub fn is_root(attrs: &[syn::Attribute]) -> bool {
     false
 }
 
-/// The parent path named by `#[node(parent = P)]`. `None` for `#[node(root)]`, whose path is
+/// The parent path named by `#[node(parent_path = P)]`. `None` for `#[node(root)]`, whose path is
 /// `&mut Self`, or when there is no `#[node(..)]` at all.
 ///
 /// # Errors
@@ -158,7 +158,7 @@ pub fn node_parent(attrs: &[syn::Attribute]) -> syn::Result<Option<Path>> {
             let mut parent = None;
             let mut root = false;
             attr.parse_nested_meta(|m| {
-                if m.path.is_ident("parent") {
+                if m.path.is_ident("parent_path") {
                     parent = Some(m.value()?.parse()?);
                     Ok(())
                 } else if m.path.is_ident("root") {

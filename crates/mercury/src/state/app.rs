@@ -30,7 +30,7 @@ pub(crate) const fn overlay_for(app: App) -> &'static str {
 /// builds the app's level from it on every dispatch. There is nothing to keep in sync and
 /// nothing to go stale.
 #[derive(Bind, Debug)]
-#[node(parent = ReturnHomeLayersPath)]
+#[node(parent_path = ReturnHomeLayersPath)]
 #[binds(MercuryStruct)]
 #[derived_child(app_data)]
 #[bind(
@@ -51,7 +51,7 @@ impl AppLayer {
 /// The app's level, which is not in the tree. Several possible levels, so the data is an enum;
 /// an app with no bindings is not a variant, and [`app_data`] returns `None` for it.
 #[derive(Bind, Debug)]
-#[derived_node(parent = AppLayerPath)]
+#[derived_node(parent_path = AppLayerPath)]
 #[binds(MercuryStruct)]
 pub enum AppData {
     Chrome(ChromeApp),
@@ -75,7 +75,7 @@ fn app_data<'a, P: HasAncestor<MercuryPath<'a>>>(path: &P) -> Option<AppData> {
 /// Chrome's level. A unit: mercury tracks nothing per Chrome app. It stops being one when it
 /// carries something (a tab name).
 #[derive(Bind, Debug)]
-#[derived_node(parent = AppLayerPath)]
+#[derived_node(parent_path = AppLayerPath)]
 #[binds(MercuryStruct)]
 // `l` is bound at three modifier combinations, so all three are chords: a plain `KeyPress` ignores
 // the flags, and any two of these would then match the same event.
@@ -96,7 +96,7 @@ impl ChromeApp {
 
 /// Ghostty's level, where `j` and `k` walk tmux's panes.
 #[derive(Bind, Debug)]
-#[derived_node(parent = AppLayerPath)]
+#[derived_node(parent_path = AppLayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
     Key::KeyJ.down() => tmux_prev,

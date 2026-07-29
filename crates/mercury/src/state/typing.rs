@@ -35,7 +35,7 @@ pub(crate) fn arm_jk_timeout(window: Duration) -> (TimerGuard, MercuryEffect) {
 /// The typing layer. Its catch-all runs every key through the `jk` run and passes it through,
 /// because typing is a passthrough layer. `jk` is the way out.
 #[derive(Bind, Debug)]
-#[node(parent = LayerPath)]
+#[node(parent_path = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
     |path| path.get().jk.window_timer().map(TimerGuard::trigger) => if_not_invalidated(jk_timeout),

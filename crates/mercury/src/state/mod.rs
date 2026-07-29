@@ -457,7 +457,7 @@ impl Foreground {
 }
 
 #[derive(Bind, Debug, derive_more::From)]
-#[node(parent = MercuryPath)]
+#[node(parent_path = MercuryPath)]
 #[binds(MercuryStruct)]
 // This node binds nothing. `escape` leaves for home from every layer that binds keys as commands,
 // but NOT from typing, where it is a key the app is waiting for, so it is bound per layer and

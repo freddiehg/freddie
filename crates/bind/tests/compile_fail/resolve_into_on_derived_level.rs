@@ -28,12 +28,12 @@ struct Root {
 }
 
 #[derive(Bind)]
-#[node(parent = RootPath)]
+#[node(parent_path = RootPath)]
 #[binds(Demo)]
 struct Shell;
 
 #[derive(Bind)]
-#[derived_node(parent = ShellPath)]
+#[derived_node(parent_path = ShellPath)]
 #[binds(Demo)]
 struct Level {
     #[resolve_into]

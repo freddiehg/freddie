@@ -1,6 +1,6 @@
 //! A level that is not in the tree.
 //!
-//! `#[derived_child(f)]` on a node whose child is no field; `#[derived_node(parent = ..)]` on
+//! `#[derived_child(f)]` on a node whose child is no field; `#[derived_node(parent_path = ..)]` on
 //! the struct that child fn returns. `f` is `fn(&Parent) -> Option<Data>`: a shared reference,
 //! so it cannot mutate, and it never holds the parent, so it cannot lose it.
 //!
@@ -31,7 +31,7 @@ pub struct Chrome {
 }
 
 #[derive(Bind)]
-#[node(parent = RootPath)]
+#[node(parent_path = RootPath)]
 #[binds(Demo)]
 #[derived_child(app_data)]
 #[post(Keyboard("q") => log_leave)]
@@ -42,7 +42,7 @@ pub struct Shell {
 
 /// A derived level. Not in the tree; `app_data` builds it.
 #[derive(Bind)]
-#[derived_node(parent = ShellPath)]
+#[derived_node(parent_path = ShellPath)]
 #[binds(Demo)]
 #[derived_child(tab_data)]
 #[pre_post(Keyboard("r") => (snap_tab, exclusive(on_r)))]
@@ -53,7 +53,7 @@ pub struct AppData {
 
 /// A derived level UNDER a derived level. Its parent is a `Node`, not a `PathMut`.
 #[derive(Bind)]
-#[derived_node(parent = AppNode)]
+#[derived_node(parent_path = AppNode)]
 #[binds(Demo)]
 #[pre_post(Keyboard("g") => (snap_tab_thread, exclusive(on_g)))]
 pub struct TabData {
@@ -271,7 +271,7 @@ pub struct Modes {
 }
 
 #[derive(Bind)]
-#[node(parent = ModesPath)]
+#[node(parent_path = ModesPath)]
 #[binds(Demo)]
 #[derived_child(mode_data)]
 pub struct ModeShell {
@@ -279,7 +279,7 @@ pub struct ModeShell {
 }
 
 #[derive(Bind)]
-#[derived_node(parent = ModeShellPath)]
+#[derived_node(parent_path = ModeShellPath)]
 #[binds(Demo)]
 pub enum ModeData {
     On(OnMode),
@@ -287,13 +287,13 @@ pub enum ModeData {
 }
 
 #[derive(Bind)]
-#[derived_node(parent = ModeShellPath)]
+#[derived_node(parent_path = ModeShellPath)]
 #[binds(Demo)]
 #[bind(Keyboard("m") => on_mode_on)]
 pub struct OnMode;
 
 #[derive(Bind)]
-#[derived_node(parent = ModeShellPath)]
+#[derived_node(parent_path = ModeShellPath)]
 #[binds(Demo)]
 #[bind(Keyboard("m") => on_mode_off)]
 pub struct OffMode;

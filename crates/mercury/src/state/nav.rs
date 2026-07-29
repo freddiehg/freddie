@@ -12,7 +12,7 @@ use super::ReturnHomeLayersPath;
 pub(crate) const OVERLAY: &str = include_str!("overlays/nav.txt");
 
 #[derive(Bind, Debug)]
-#[node(parent = ReturnHomeLayersPath)]
+#[node(parent_path = ReturnHomeLayersPath)]
 #[binds(MercuryStruct)]
 #[bind(
     Key::Escape.down() => go_home,

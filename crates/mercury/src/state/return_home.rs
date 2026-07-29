@@ -23,7 +23,7 @@ use super::{
 /// does nothing, where on a leaf it would run before that leaf's binds and rearm a layer about to
 /// die.
 #[derive(Bind, Debug)]
-#[node(parent = LayerPath)]
+#[node(parent_path = LayerPath)]
 #[binds(MercuryStruct)]
 #[post(AnyKey => if_not_invalidated(home_deadline))]
 #[bind(|path| path.get().guard.trigger() => go_home)]
@@ -60,7 +60,7 @@ impl AndReturnHome {
 /// Which return-home layer is active. `derive_more::From` gives each leaf an
 /// `Into<ReturnHomeLayers>`, so `AndReturnHome::new(NavLayer::new())` and the like construct it.
 #[derive(Bind, Debug, derive_more::From)]
-#[node(parent = AndReturnHomePath)]
+#[node(parent_path = AndReturnHomePath)]
 #[binds(MercuryStruct)]
 pub enum ReturnHomeLayers {
     Nav(NavLayer),

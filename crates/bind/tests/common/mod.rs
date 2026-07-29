@@ -190,7 +190,7 @@ pub struct App {
 }
 
 #[derive(Bind)]
-#[node(parent = AppPath)]
+#[node(parent_path = AppPath)]
 #[binds(Demo)]
 #[bind(Keyboard("f1") => on_f1)]
 pub enum Layer {
@@ -199,7 +199,7 @@ pub enum Layer {
 }
 
 #[derive(Bind)]
-#[node(parent = LayerPath)]
+#[node(parent_path = LayerPath)]
 #[binds(Demo)]
 #[bind(Keyboard("g") => on_g, Foreground("Slack") => on_slack)]
 pub struct Nav {
@@ -207,7 +207,7 @@ pub struct Nav {
 }
 
 #[derive(Bind)]
-#[node(parent = LayerPath)]
+#[node(parent_path = LayerPath)]
 #[binds(Demo)]
 #[bind(Keyboard("bksp") => on_bksp)]
 pub struct Typing {
@@ -217,7 +217,7 @@ pub struct Typing {
 }
 
 #[derive(Bind)]
-#[node(parent = TypingPath)]
+#[node(parent_path = TypingPath)]
 #[binds(Demo)]
 #[bind(Keyboard("d") => on_d)]
 pub struct Deep {
@@ -242,7 +242,7 @@ pub struct Clash {
 }
 
 #[derive(Bind)]
-#[node(parent = ClashPath)]
+#[node(parent_path = ClashPath)]
 #[binds(Demo)]
 #[bind(Keyboard("dup") => ignore)]
 pub struct ClashChild;
@@ -266,7 +266,7 @@ pub enum Media {
 }
 
 #[derive(Bind)]
-#[node(parent = MediaPath)]
+#[node(parent_path = MediaPath)]
 #[binds(Demo)]
 #[bind(Keyboard("a") => ignore)]
 pub struct Album {
@@ -275,7 +275,7 @@ pub struct Album {
 }
 
 #[derive(Bind)]
-#[node(parent = MediaPath)]
+#[node(parent_path = MediaPath)]
 #[binds(Demo)]
 #[bind(Keyboard("s") => ignore)]
 pub struct Song {
@@ -284,7 +284,7 @@ pub struct Song {
 }
 
 #[derive(Bind)]
-#[node(parent = TitleParent)]
+#[node(parent_path = TitleParent)]
 #[binds(Demo)]
 #[bind(Keyboard("t") => on_title, Keyboard("home") => title_home)]
 pub struct Title {
@@ -418,7 +418,7 @@ pub struct Armed {
 /// Its second binding reads the level ABOVE through `parent`, which is what a shared path buys:
 /// the child answers with what its root is waiting for.
 #[derive(Bind)]
-#[node(parent = ArmedPath)]
+#[node(parent_path = ArmedPath)]
 #[binds(Demo)]
 #[bind(
     // An `Option` trigger: absent when the node holds nothing, and absent matches nothing.

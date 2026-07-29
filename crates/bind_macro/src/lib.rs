@@ -69,7 +69,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 }
 
 /// Emits `impl laserbeam::HasPath` for a place node: its path type, `PathMut<Self, Parent>` from
-/// `#[node(parent = P)]`, or `&mut Self` for `#[node(root)]`. This is the associated type that
+/// `#[node(parent_path = P)]`, or `&mut Self` for `#[node(root)]`. This is the associated type that
 /// `Dispatch`, `EventHandler`, and the
 /// place `DispatchIntoParent` impl all name.
 fn place_impl(input: &DeriveInput, name: &Ident) -> syn::Result<TokenStream2> {
@@ -79,7 +79,7 @@ fn place_impl(input: &DeriveInput, name: &Ident) -> syn::Result<TokenStream2> {
         let parent = node_parent(&input.attrs)?.ok_or_else(|| {
             syn::Error::new(
                 input.ident.span(),
-                "a bind node needs `#[node(parent = ..)]` or `#[node(root)]`",
+                "a bind node needs `#[node(parent_path = ..)]` or `#[node(root)]`",
             )
         })?;
         quote!(::laserbeam::PathMut<Self, #parent<'a>>)
@@ -95,7 +95,7 @@ fn place_impl(input: &DeriveInput, name: &Ident) -> syn::Result<TokenStream2> {
     })
 }
 
-/// The parent path named by `#[derived_node(parent = Alias)]`, if this level is not a place.
+/// The parent path named by `#[derived_node(parent_path = Alias)]`, if this level is not a place.
 ///
 /// The derive is on the level's own struct and cannot see its parent, so it has to be told.
 /// With the parent and its own name it can build `Node<ParentPath<'a>, Self>` itself, which is
@@ -112,15 +112,15 @@ fn derived_node_parent(attrs: &[syn::Attribute]) -> syn::Result<Option<Path>> {
             }
             let mut parent = None;
             attr.parse_nested_meta(|meta| {
-                if meta.path.is_ident("parent") {
+                if meta.path.is_ident("parent_path") {
                     parent = Some(meta.value()?.parse::<Path>()?);
                     Ok(())
                 } else {
-                    Err(meta.error("expected `parent = Alias`"))
+                    Err(meta.error("expected `parent_path = Alias`"))
                 }
             })?;
             found = Some(parent.ok_or_else(|| {
-                syn::Error::new(attr.span(), "`#[derived_node]` needs `parent = Alias`")
+                syn::Error::new(attr.span(), "`#[derived_node]` needs `parent_path = Alias`")
             })?);
         }
     }

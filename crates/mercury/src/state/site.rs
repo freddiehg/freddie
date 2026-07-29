@@ -28,7 +28,7 @@ pub(crate) const fn overlay_for(site: Option<Site>) -> &'static str {
 /// It stores no site: [`site_data`] reads the front tab's URL from the root on every dispatch, so
 /// switching tabs while sitting in this layer changes what is bound with no event of its own.
 #[derive(Bind, Debug)]
-#[node(parent = ReturnHomeLayersPath)]
+#[node(parent_path = ReturnHomeLayersPath)]
 #[binds(MercuryStruct)]
 #[derived_child(site_data)]
 #[bind(
@@ -47,7 +47,7 @@ impl SiteLayer {
 /// The site's level, which is not in the tree. A site with no bindings is not a variant, and
 /// [`site_data`] returns `None` for it.
 #[derive(Bind, Debug)]
-#[derived_node(parent = SiteLayerPath)]
+#[derived_node(parent_path = SiteLayerPath)]
 #[binds(MercuryStruct)]
 pub enum SiteData {
     ClaudeAi(ClaudeAiSite),
@@ -69,7 +69,7 @@ fn site_data<'a, P: HasAncestor<MercuryPath<'a>>>(path: &P) -> Option<SiteData> 
 
 /// claude.ai's level, where `n` starts a new chat.
 #[derive(Bind, Debug)]
-#[derived_node(parent = SiteLayerPath)]
+#[derived_node(parent_path = SiteLayerPath)]
 #[binds(MercuryStruct)]
 #[bind(Key::KeyN.down() => and!(tap_cmd_shift_o, enter_typing))]
 pub struct ClaudeAiSite;
