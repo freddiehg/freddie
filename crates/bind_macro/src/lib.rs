@@ -41,10 +41,10 @@ pub fn derive_bind(input: TokenStream) -> TokenStream {
 }
 
 fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
-    if !input.generics.params.is_empty() {
+    if input.generics.where_clause.is_some() {
         return Err(syn::Error::new(
             input.generics.span(),
-            "bind nodes may not be generic",
+            "a bind node may not carry its own where clause",
         ));
     }
     let name = &input.ident;
@@ -55,6 +55,12 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     // `Dispatch` nor `EventHandler`, both of which take `Self::Path`. It implements
     // `DispatchIntoTreePath` on its `Node` instead, ascending at the place beneath it.
     if let Some(parent) = derived_node_parent(&input.attrs)? {
+        if !input.generics.params.is_empty() {
+            return Err(syn::Error::new(
+                input.generics.span(),
+                "a derived level may not be generic",
+            ));
+        }
         return derived_node_impl(input, name, &parent, &marker, &items);
     }
 
@@ -84,9 +90,10 @@ fn place_impl(input: &DeriveInput, name: &Ident) -> syn::Result<TokenStream2> {
         })?;
         quote!(::laserbeam::PathMut<Self, #parent<'a>>)
     };
+    let (impl_g, ty_g, _) = input.generics.split_for_impl();
     Ok(quote! {
         #[automatically_derived]
-        impl ::laserbeam::HasPath for #name {
+        impl #impl_g ::laserbeam::HasPath for #name #ty_g {
             type Path<'a>
                 = #path_ty
             where
@@ -391,22 +398,19 @@ fn accumulate_impl(
 ) -> syn::Result<TokenStream2> {
     let root = is_root(&input.attrs);
     let (recurse, children, needs_mut) = accumulate_body(input, name, marker, root)?;
-    let where_clause = if children.is_empty() {
-        quote!()
-    } else {
-        quote!(where #(#children: ::bind::EventHandler<#marker>,)*)
-    };
+    let where_clause = child_where_clause(input, &children, &quote!(::bind::EventHandler<#marker>));
     let binding = if needs_mut {
         quote!(mut path)
     } else {
         quote!(path)
     };
+    let (impl_g, ty_g, _) = input.generics.split_for_impl();
     let triggers = claimed_triggers(items);
     Ok(quote! {
         ::bind::check_only! {
         #[automatically_derived]
         #[expect(clippy::useless_conversion, clippy::implicit_hasher)]
-        impl ::bind::EventHandler<#marker> for #name #where_clause {
+        impl #impl_g ::bind::EventHandler<#marker> for #name #ty_g #where_clause {
             fn accumulate<'a>(
                 #binding: <Self as ::laserbeam::HasPath>::Path<'a>,
                 out: &mut ::std::collections::HashSet<<#marker as ::bind::Bindings>::Trigger>,
@@ -448,6 +452,7 @@ fn accumulate_body(
             None => Ok((quote!(), Vec::new(), false)),
             Some((field, child_ty, route)) => {
                 let (child, boxed) = unbox(&child_ty);
+                reject_routed_generic(input, child, route.as_ref())?;
                 let edge = Edge {
                     parent: name,
                     is_root: root,
@@ -518,20 +523,17 @@ fn dispatch_impl(
     let root = is_root(&input.attrs);
     let path = quote!(path);
     let (state, children) = dispatch_state(input, name, marker, root, &path)?;
-    let where_clause = if children.is_empty() {
-        quote!()
-    } else {
-        quote!(where #(#children: ::bind::Dispatch<#marker>,)*)
-    };
+    let where_clause = child_where_clause(input, &children, &quote!(::bind::Dispatch<#marker>));
     let opts = items.iter().enumerate().map(|(i, it)| opt(i, it, &path));
     let blocks = items
         .iter()
         .enumerate()
         .map(|(i, it)| scheduled_block(i, it));
     let binding = state_binding(items);
+    let (impl_g, ty_g, _) = input.generics.split_for_impl();
     Ok(quote! {
         #[automatically_derived]
-        impl ::bind::Dispatch<#marker> for #name #where_clause {
+        impl #impl_g ::bind::Dispatch<#marker> for #name #ty_g #where_clause {
             fn dispatch<'a, 'c>(
                 path: <Self as ::laserbeam::HasPath>::Path<'a>,
                 event: &<#marker as ::bind::Bindings>::Event,
@@ -549,6 +551,74 @@ fn dispatch_impl(
             }
         }
     })
+}
+
+/// The where clause bounding each child by `bound`, plus, for a child whose type names one of
+/// the node's type parameters, the path equality that lets the generated body treat the child's
+/// opaque path as the `PathMut` it builds. Any correctly parented node satisfies the equality
+/// definitionally, because the child's own derive emitted exactly that `Path`.
+fn child_where_clause(
+    input: &DeriveInput,
+    children: &[Type],
+    bound: &TokenStream2,
+) -> TokenStream2 {
+    if children.is_empty() {
+        return quote!();
+    }
+    let params: Vec<&Ident> = input.generics.type_params().map(|p| &p.ident).collect();
+    let preds = children.iter().map(|child| {
+        if mentions_param(child, &params) {
+            quote! {
+                #child: 'static + #bound,
+                for<'q> #child: ::laserbeam::HasPath<
+                    Path<'q> = ::laserbeam::PathMut<
+                        #child,
+                        <Self as ::laserbeam::HasPath>::Path<'q>,
+                    >,
+                >,
+            }
+        } else {
+            quote!(#child: #bound,)
+        }
+    });
+    quote!(where #(#preds)*)
+}
+
+/// A routed (multi-parent) child edge stays concrete: the route recover names the parent
+/// variant, which has no generic story yet.
+fn reject_routed_generic(
+    input: &DeriveInput,
+    child: &Type,
+    route: Option<&Route>,
+) -> syn::Result<()> {
+    let params: Vec<&Ident> = input.generics.type_params().map(|p| &p.ident).collect();
+    if route.is_some() && mentions_param(child, &params) {
+        return Err(syn::Error::new(
+            child.span(),
+            "a routed (multi-parent) child may not be generic",
+        ));
+    }
+    Ok(())
+}
+
+/// Whether `ty`'s tokens name any of `params`.
+fn mentions_param(ty: &Type, params: &[&Ident]) -> bool {
+    fn walk(ts: TokenStream2, params: &[&Ident], hit: &mut bool) {
+        for tt in ts {
+            match tt {
+                ::proc_macro2::TokenTree::Ident(i) => {
+                    if params.iter().any(|p| **p == i) {
+                        *hit = true;
+                    }
+                }
+                ::proc_macro2::TokenTree::Group(g) => walk(g.stream(), params, hit),
+                _ => {}
+            }
+        }
+    }
+    let mut hit = false;
+    walk(quote!(#ty), params, &mut hit);
+    hit
 }
 
 /// The state binding: `mut` only when a scheduled item will rebind it, so a node with nothing
@@ -586,6 +656,7 @@ fn dispatch_state(
             )),
             Some((field, child_ty, route)) => {
                 let (child, boxed) = unbox(&child_ty);
+                reject_routed_generic(input, child, route.as_ref())?;
                 let edge = Edge {
                     parent: name,
                     is_root: root,
