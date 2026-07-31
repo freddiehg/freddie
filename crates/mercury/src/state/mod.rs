@@ -466,7 +466,7 @@ impl Foreground {
 pub enum Layer {
     Home(HomeLayer),
     Typing(TypingLayer),
-    ReturnHome(AndReturnHome),
+    ReturnHome(AndReturnHome<ReturnHomeLayers>),
 }
 
 impl Layer {
@@ -522,7 +522,7 @@ impl Layer {
 pub type MercuryPath<'a> = &'a mut Mercury;
 pub type LayerPath<'a> = PathMut<Layer, MercuryPath<'a>>;
 pub type TypingLayerPath<'a> = PathMut<TypingLayer, LayerPath<'a>>;
-pub type AndReturnHomePath<'a> = PathMut<AndReturnHome, LayerPath<'a>>;
+pub type AndReturnHomePath<'a> = PathMut<AndReturnHome<ReturnHomeLayers>, LayerPath<'a>>;
 pub type ReturnHomeLayersPath<'a> = PathMut<ReturnHomeLayers, AndReturnHomePath<'a>>;
 pub type AppLayerPath<'a> = PathMut<AppLayer, ReturnHomeLayersPath<'a>>;
 pub type SiteLayerPath<'a> = PathMut<SiteLayer, ReturnHomeLayersPath<'a>>;

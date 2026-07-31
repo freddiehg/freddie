@@ -27,19 +27,19 @@ use super::{
 #[binds(MercuryStruct)]
 #[post(AnyKey => if_not_invalidated(home_deadline))]
 #[bind(|path| path.get().guard.trigger() => go_home)]
-pub struct AndReturnHome {
+pub struct AndReturnHome<Next> {
     #[resolve_into]
-    layers: ReturnHomeLayers,
+    layers: Next,
     /// Read by the trigger matching its firing, and held for its `Drop`: dropping the guard
     /// cancels the return-home timer, which is how every rearm and every layer swap cancels.
     pub(crate) guard: TimerGuard,
 }
 
-impl AndReturnHome {
+impl<Next> AndReturnHome<Next> {
     /// Enter a return-home layer with its timer armed, returning the wrapper and the effect that
     /// schedules it.
     #[must_use]
-    pub(crate) fn new(layers: impl Into<ReturnHomeLayers>) -> (Self, MercuryEffect) {
+    pub(crate) fn new(layers: impl Into<Next>) -> (Self, MercuryEffect) {
         let (guard, timer) = arm_return_home();
         (
             Self {
@@ -52,7 +52,7 @@ impl AndReturnHome {
 
     /// `pub` because the integration test crate reads it to assert which layer is active.
     #[must_use]
-    pub const fn layers(&self) -> &ReturnHomeLayers {
+    pub const fn layers(&self) -> &Next {
         &self.layers
     }
 }
