@@ -376,13 +376,22 @@ impl Windows {
 
 /// The frontmost app, and whether a navigation is in flight.
 ///
-/// While `navigating`, `app` is the PREVIOUS app: a nav choice foregrounded a new one, but the
-/// watcher has not reported it yet, so the in-app level binds nothing until it does (see
-/// [`app_data`]). The fields are private; the handlers drive it through the methods below.
+/// A newtype over [`ForegroundState`] so the state can only move through the methods below: a
+/// handler cannot construct a `Navigating` or forget that [`set_front_app`](Self::set_front_app)
+/// ends one.
 #[derive(Debug)]
-pub struct Foreground {
-    app: ForegroundedApp,
-    navigating: bool,
+pub struct Foreground(ForegroundState);
+
+/// What the model believes about the front app.
+#[derive(Debug)]
+enum ForegroundState {
+    /// The watcher's last report stands: this app is frontmost.
+    Confirmed(ForegroundedApp),
+    /// A nav choice foregrounded a new app, but the watcher has not reported it yet, so the
+    /// in-app level binds nothing until it does (see [`app_data`]). The payload is the identity
+    /// of the app being left; whatever it carried (a tab URL) went with the window nobody is
+    /// looking at.
+    Navigating(App),
 }
 
 impl Foreground {
@@ -392,33 +401,31 @@ impl Foreground {
     /// `App::Other`, and the in-app layer would resolve against the wrong app.
     #[must_use]
     pub const fn new(app: App) -> Self {
-        Self {
-            app: ForegroundedApp::from_identity(app),
-            navigating: false,
-        }
+        Self(ForegroundState::Confirmed(ForegroundedApp::from_identity(
+            app,
+        )))
     }
 
-    /// A nav choice foregrounded an app; the watcher has not confirmed it, so `app` stays stale
-    /// until it does. From the nav handlers, and undone by [`set_front_app`](Self::set_front_app).
-    pub const fn start_navigating(&mut self) {
-        self.navigating = true;
+    /// A nav choice foregrounded an app; the watcher has not confirmed it, so [`app`](Self::app)
+    /// answers the app being left until it does. From the nav handlers, and undone by
+    /// [`set_front_app`](Self::set_front_app).
+    pub fn start_navigating(&mut self) {
+        if let ForegroundState::Confirmed(app) = &self.0 {
+            self.0 = ForegroundState::Navigating(app.identity());
+        }
     }
 
     /// The watcher reported the front app: record it and end any pending navigation. From
     /// [`record_front_app`](crate::handlers).
     pub fn set_front_app(&mut self, app: App) {
-        self.app = ForegroundedApp::from_identity(app);
-        self.navigating = false;
+        self.0 = ForegroundState::Confirmed(ForegroundedApp::from_identity(app));
     }
 
     /// The tab source reported the front tab's URL. Kept only while Chrome is the confirmed front
     /// app: a URL arriving while anything else is up describes a window nobody is looking at, and
     /// one arriving mid-navigation belongs to the app being left.
     pub fn set_tab_url(&mut self, url: String) {
-        if self.navigating {
-            return;
-        }
-        if let ForegroundedApp::Chrome(chrome) = &mut self.app {
+        if let ForegroundState::Confirmed(ForegroundedApp::Chrome(chrome)) = &mut self.0 {
             chrome.url = Some(url);
         }
     }
@@ -426,8 +433,8 @@ impl Foreground {
     /// The confirmed front Chrome, or `None` whenever anything else is up or a nav is in flight.
     #[must_use]
     pub const fn confirmed_chrome(&self) -> Option<&ForegroundedChrome> {
-        match (&self.app, self.navigating) {
-            (ForegroundedApp::Chrome(chrome), false) => Some(chrome),
+        match &self.0 {
+            ForegroundState::Confirmed(ForegroundedApp::Chrome(chrome)) => Some(chrome),
             _ => None,
         }
     }
@@ -436,23 +443,26 @@ impl Foreground {
     /// gap does not reach the old app's bindings.
     #[must_use]
     pub const fn confirmed(&self) -> Option<App> {
-        if self.navigating {
-            None
-        } else {
-            Some(self.app.identity())
+        match &self.0 {
+            ForegroundState::Confirmed(app) => Some(app.identity()),
+            ForegroundState::Navigating(_) => None,
         }
     }
 
-    /// The app the model believes is frontmost. Stale while [`navigating`](Self::navigating).
+    /// The app the model believes is frontmost: the confirmed one, or the one being left while a
+    /// nav is in flight.
     #[must_use]
     pub const fn app(&self) -> App {
-        self.app.identity()
+        match &self.0 {
+            ForegroundState::Confirmed(app) => app.identity(),
+            ForegroundState::Navigating(app) => *app,
+        }
     }
 
     /// Whether a nav choice is still awaiting the watcher's confirmation.
     #[must_use]
     pub const fn navigating(&self) -> bool {
-        self.navigating
+        matches!(self.0, ForegroundState::Navigating(_))
     }
 }
 
