@@ -192,6 +192,15 @@ Do not put anything in `bind` unless it is specifically about binding handlers t
 
 `docs/platform-apis.md` is what the `freddie_*` crates do when they hold something the OS gave them: which traits to claim and which to refuse, where `Drop` belongs, how a C callback reaches its state, and what the main thread is for. Read it before writing a new one or changing how an existing one holds a resource.
 
+## Handlers are bound where they are valid
+
+A handler should only be bound in a state in which it is valid, and its signature should carry exactly what it is entitled to use. The consequences:
+
+- A handler that matched is valid to call. The machinery — triggers, the claim gate, which node the row sits on — decides whether a handler runs; the body must not re-check preconditions the tree already encodes. A handler that opens by testing whether it should have been called is bound on the wrong node or behind the wrong trigger.
+- A handler does not clean up unrelated state. When every handler carries the same boilerplate arm (the 28 identical `Invalidated => (vec![], c)` arms that became `if_not_invalidated`), the arm is the caller's job, not the handlers'.
+- The signature is the entitlement. A bind-row handler receives its live path, because that is the only state it can legitimately act on; it does not receive a maybe it must unwrap. Posts are the one shape that receives `AscendState`, because they run whether or not the node survived, and what to do about a dead node is genuinely per-post meaning.
+- Branching on a mode flag inside a handler is the same defect one level up: the modes should be nodes (or derived substates), and the handler bound only in the mode where it applies.
+
 ## Audits
 
 When told to audit, the deliverable is the whole class fixed everywhere, not the instance that was quoted. Sweep every file the standard touches before reporting done; the failure mode is the user opening the most obvious place and finding the problem still there. An audit that only edits what was pointed at is not an audit.
