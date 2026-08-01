@@ -433,9 +433,20 @@ where
 #[cfg(feature = "check")]
 pub trait AccumulateDerivedTriggers<M: Bindings>: Sized {
     /// The level above, which `accumulate` hands back: a
-    /// [`laserbeam::PathMut`](::laserbeam::PathMut) when it is a place
-    /// (`DerivedLevel<SiteLayerPath<'a>, ClaudeAiSite>` hands back `SiteLayerPath<'a>`), a
-    /// [`DerivedLevel`] when the level above is derived too.
+    /// [`laserbeam::PathMut`](::laserbeam::PathMut) when the level above is a place, a
+    /// [`DerivedLevel`] when it is derived too.
+    ///
+    /// Two examples from mercury's tree:
+    ///
+    /// - claude.ai's site level is rebuilt as `DerivedLevel<SiteLayerPath<'a>, ClaudeAiSite>`,
+    ///   so its `Parent` is `SiteLayerPath<'a>`: accumulating its triggers hands back the site
+    ///   layer's path, and the walk continues from there.
+    /// - Chrome's in-app level is rebuilt as `DerivedLevel<AppLayerPath<'a>, ChromeApp>`, so
+    ///   its `Parent` is `AppLayerPath<'a>`, even though `ChromeApp` was derived from the
+    ///   root's foreground: the data came from anywhere, the parent is where the level sits.
+    ///
+    /// A derived level stacked on another derived level would have
+    /// `Parent = DerivedLevel<..>`, and the walk peels one level per `accumulate`.
     type Parent;
 
     /// Adds this level's triggers to `out` and hands the PARENT back.
