@@ -1,7 +1,6 @@
 //! The program's one way out, shared by home's `q` and the menu bar's Quit.
 
-use bind::AscendState;
-use laserbeam::{Completed, CompletesTo, HasStop, IntoAncestor, MaybeInvalidated};
+use laserbeam::{Completed, CompletesTo, HasStop, IntoAncestor};
 
 use crate::MercuryEffect;
 use crate::state::MercuryPath;
@@ -15,17 +14,12 @@ use crate::state::MercuryPath;
 /// Emit the held modifiers' downs first. In a command layer their real downs were swallowed, so
 /// the app does not know they are held; once the grab is released no further down is coming, so
 /// tell it now, before `Kill`, or it is left thinking a physically-held modifier is up.
-pub(crate) fn quit<'a, E, P>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
+pub(crate) fn quit<'a, E, P>(_ev: &E, _snap: (), p: P) -> (Vec<MercuryEffect>, Completed<P>)
 where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    P: HasStop + IntoAncestor<MercuryPath<'a>>,
     MercuryPath<'a>: CompletesTo<P>,
 {
-    let root: MercuryPath<'a> = st.state.into_ancestor();
+    let root: MercuryPath<'a> = p.into_ancestor();
     let mut effects = root.held.open();
     effects.push(MercuryEffect::Kill);
     (effects, root.complete())

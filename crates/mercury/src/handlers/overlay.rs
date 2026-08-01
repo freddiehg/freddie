@@ -1,7 +1,6 @@
 //! Showing and hiding the overlay: `o` toggles the active layer's keymap, and the hide timer
 //! takes it down on its own.
 
-use bind::AscendState;
 use freddie::TimerFired;
 use freddie_keys::KeyEvent;
 use laserbeam::{Completed, CompletesTo};
@@ -21,9 +20,9 @@ use crate::state::MercuryPath;
 pub(crate) fn toggle_overlay<'x>(
     _ev: &KeyEvent,
     _snap: (),
-    st: AscendState<'_, MercuryPath<'x>>,
+    p: MercuryPath<'x>,
 ) -> (Vec<MercuryEffect>, Completed<MercuryPath<'x>>) {
-    let root: MercuryPath<'x> = st.state.into_ancestor();
+    let root: MercuryPath<'x> = p;
     let effects = root.toggle_overlay();
     (effects, root.complete())
 }
@@ -33,8 +32,8 @@ pub(crate) fn toggle_overlay<'x>(
 pub(crate) fn hide_overlay<'x>(
     _ev: &TimerFired,
     _snap: (),
-    st: AscendState<'_, MercuryPath<'x>>,
+    p: MercuryPath<'x>,
 ) -> (Vec<MercuryEffect>, Completed<MercuryPath<'x>>) {
-    let root: MercuryPath<'x> = st.state.into_ancestor();
+    let root: MercuryPath<'x> = p;
     (root.hide_overlay(), root.complete())
 }

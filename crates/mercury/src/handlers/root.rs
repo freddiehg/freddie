@@ -1,11 +1,11 @@
 //! The root's `AnyKey` post: tracking the held modifiers.
 
-use bind::AscendState;
 use freddie_keys::KeyEvent;
 use laserbeam::{Completed, CompletesTo};
 
 use crate::MercuryEffect;
 use crate::state::MercuryPath;
+use bind::AscendState;
 
 /// Every key, claimed or not: keep `held` true.
 ///

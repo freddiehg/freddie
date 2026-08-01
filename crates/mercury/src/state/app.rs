@@ -34,10 +34,10 @@ pub(crate) const fn overlay_for(app: App) -> &'static str {
 #[binds(MercuryStruct)]
 #[derived_child(app_data)]
 #[bind(
-    Key::Escape.down() => go_home,
-    Key::KeyN.down() => enter_nav,
-    Key::KeyS.down() => enter_site,
-    Key::KeyT.down() => enter_typing,
+    Key::Escape.down() => if_not_invalidated(go_home),
+    Key::KeyN.down() => if_not_invalidated(enter_nav),
+    Key::KeyS.down() => if_not_invalidated(enter_site),
+    Key::KeyT.down() => if_not_invalidated(enter_typing),
 )]
 pub struct AppLayer;
 
@@ -80,8 +80,8 @@ fn app_data<'a, P: HasAncestor<MercuryPath<'a>>>(path: &P) -> Option<AppData> {
 // `l` is bound at three modifier combinations, so all three are chords: a plain `KeyPress` ignores
 // the flags, and any two of these would then match the same event.
 #[bind(
-    Key::KeyR.down() => tap_cmd_r,
-    Key::KeyL.down().bare() => and!(tap_cmd_l, enter_typing),
+    Key::KeyR.down() => if_not_invalidated(tap_cmd_r),
+    Key::KeyL.down().bare() => if_not_invalidated(and!(tap_cmd_l, enter_typing)),
     Key::KeyL.down().with(ModifierFlags::SHIFT) => if_not_invalidated(copy_url),
     Key::KeyL.down().with(ModifierFlags::COMMAND) => if_not_invalidated(copy_host),
 )]
@@ -99,18 +99,18 @@ impl ChromeApp {
 #[derived_node(parent_path = AppLayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
-    Key::KeyJ.down() => tmux_prev,
-    Key::KeyK.down() => tmux_next,
-    Key::Num1.down() => and!(tmux_window(Key::Num1), go_home),
-    Key::Num2.down() => and!(tmux_window(Key::Num2), go_home),
-    Key::Num3.down() => and!(tmux_window(Key::Num3), go_home),
-    Key::Num4.down() => and!(tmux_window(Key::Num4), go_home),
-    Key::Num5.down() => and!(tmux_window(Key::Num5), go_home),
-    Key::Num6.down() => and!(tmux_window(Key::Num6), go_home),
-    Key::Num7.down() => and!(tmux_window(Key::Num7), go_home),
-    Key::Num8.down() => and!(tmux_window(Key::Num8), go_home),
-    Key::Num9.down() => and!(tmux_window(Key::Num9), go_home),
-    Key::Num0.down() => and!(tmux_window(Key::Num0), go_home),
+    Key::KeyJ.down() => if_not_invalidated(tmux_prev),
+    Key::KeyK.down() => if_not_invalidated(tmux_next),
+    Key::Num1.down() => if_not_invalidated(and!(tmux_window(Key::Num1), go_home)),
+    Key::Num2.down() => if_not_invalidated(and!(tmux_window(Key::Num2), go_home)),
+    Key::Num3.down() => if_not_invalidated(and!(tmux_window(Key::Num3), go_home)),
+    Key::Num4.down() => if_not_invalidated(and!(tmux_window(Key::Num4), go_home)),
+    Key::Num5.down() => if_not_invalidated(and!(tmux_window(Key::Num5), go_home)),
+    Key::Num6.down() => if_not_invalidated(and!(tmux_window(Key::Num6), go_home)),
+    Key::Num7.down() => if_not_invalidated(and!(tmux_window(Key::Num7), go_home)),
+    Key::Num8.down() => if_not_invalidated(and!(tmux_window(Key::Num8), go_home)),
+    Key::Num9.down() => if_not_invalidated(and!(tmux_window(Key::Num9), go_home)),
+    Key::Num0.down() => if_not_invalidated(and!(tmux_window(Key::Num0), go_home)),
 )]
 pub struct GhosttyApp;
 

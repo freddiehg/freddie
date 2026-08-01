@@ -1,4 +1,4 @@
-use bind::Bind;
+use bind::{Bind, if_not_invalidated};
 use freddie_keys::Key;
 
 use crate::MercuryStruct;
@@ -15,13 +15,13 @@ pub(crate) const OVERLAY: &str = include_str!("overlays/home.txt");
 #[node(parent_path = LayerPath)]
 #[binds(MercuryStruct)]
 #[bind(
-    Key::Escape.down() => go_home,
-    Key::KeyN.down() => enter_nav,
-    Key::KeyR.down() => enter_resize,
-    Key::KeyT.down() => enter_typing,
-    Key::KeyI.down() => enter_inapp,
-    Key::KeyU.down() => enter_site,
-    Key::KeyQ.down() => quit,
+    Key::Escape.down() => if_not_invalidated(go_home),
+    Key::KeyN.down() => if_not_invalidated(enter_nav),
+    Key::KeyR.down() => if_not_invalidated(enter_resize),
+    Key::KeyT.down() => if_not_invalidated(enter_typing),
+    Key::KeyI.down() => if_not_invalidated(enter_inapp),
+    Key::KeyU.down() => if_not_invalidated(enter_site),
+    Key::KeyQ.down() => if_not_invalidated(quit),
 )]
 pub struct HomeLayer;
 

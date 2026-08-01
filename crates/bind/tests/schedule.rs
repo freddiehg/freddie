@@ -6,7 +6,7 @@
 //! path and `Drop` cannot emit the cancel. One post owns the whole deadline story by matching the
 //! state, and it is scheduled before the bind because it keys on what the descent did.
 
-use bind::{AscendState, Bind, Bindings, EventTrigger, and, dispatch};
+use bind::{AscendState, Bind, Bindings, EventTrigger, and, dispatch, if_not_invalidated};
 use laserbeam::{Completed, CompletesTo, HasStop, IntoAncestor, MaybeInvalidated, PathMut};
 
 // ---- what the app owns: events, triggers, effects ----
@@ -341,11 +341,11 @@ pub struct Mid {
 #[node(parent_path = MidPath)]
 #[binds(M)]
 #[bind(
-    Key("go") => leaf_home,
+    Key("go") => if_not_invalidated(leaf_home),
     // One gesture, composed from its units at the bind site.
-    Key("pair") => and!(emits_flash, emits_cancel),
-    Key("nest") => and!(emits_flash, emits_cancel, emits_flash),
-    Key("leave-then-look") => and!(leaf_home, witness_leaf),
+    Key("pair") => if_not_invalidated(and!(emits_flash, emits_cancel)),
+    Key("nest") => if_not_invalidated(and!(emits_flash, emits_cancel, emits_flash)),
+    Key("leave-then-look") => if_not_invalidated(and!(leaf_home, witness_leaf)),
 )]
 pub struct Leaf;
 
@@ -357,45 +357,37 @@ pub type LeafPath<'a> = PathMut<Leaf, MidPath<'a>>;
 fn emits_flash<P: HasStop + CompletesTo<P>>(
     _ev: &KeyEvent,
     _snap: (),
-    st: AscendState<'_, P>,
+    p: P,
 ) -> (Vec<DemoEffect>, Completed<P>) {
-    (vec![DemoEffect::FlashOverlay], st.complete())
+    (vec![DemoEffect::FlashOverlay], p.complete())
 }
 
 fn emits_cancel<P: HasStop + CompletesTo<P>>(
     _ev: &KeyEvent,
     _snap: (),
-    st: AscendState<'_, P>,
+    p: P,
 ) -> (Vec<DemoEffect>, Completed<P>) {
-    (vec![DemoEffect::CancelTimer(TimerId(0))], st.complete())
+    (vec![DemoEffect::CancelTimer(TimerId(0))], p.complete())
 }
 
-/// Reports the state it was handed at the LEAF, which is how a second unit says what the first
-/// one did to the path they share.
+/// A unit after a leave: it runs only if the chain is still standing, so its effect is the
+/// witness that `and` kept going.
 fn witness_leaf<'x>(
     _ev: &KeyEvent,
     _snap: (),
-    st: AscendState<'_, LeafPath<'x>>,
+    p: LeafPath<'x>,
 ) -> (Vec<DemoEffect>, Completed<LeafPath<'x>>) {
-    match st.state {
-        MaybeInvalidated::NotInvalidated(leaf) => (vec![DemoEffect::SawStanding], leaf.complete()),
-        MaybeInvalidated::Invalidated(c) => (vec![DemoEffect::SawInvalidated], c),
-    }
+    (vec![DemoEffect::SawStanding], p.complete())
 }
 
-/// The leaf's leave, the same shape `go_home` has on the demo tree: it ends at the root, so it
-/// does not match the state at all.
-fn leaf_home<'x, P>(
-    _ev: &KeyEvent,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<DemoEffect>, Completed<P>)
+/// The leaf's leave, the same shape `go_home` has on the demo tree: it ends at the root.
+fn leaf_home<'x, P>(_ev: &KeyEvent, _snap: (), p: P) -> (Vec<DemoEffect>, Completed<P>)
 where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<TopPath<'x>>,
+    P: HasStop + IntoAncestor<TopPath<'x>>,
     TopPath<'x>: CompletesTo<P>,
 {
-    (vec![], st.state.into_ancestor::<TopPath<'x>>().complete())
+    let root: TopPath<'x> = p.into_ancestor();
+    (vec![], root.complete())
 }
 
 /// Reports which branch it was handed, and leaves the state exactly as it found it.
@@ -456,21 +448,16 @@ fn and_concatenates_effects_in_order() {
     );
 }
 
-/// `a` leaves; `b` is handed what `a` left rather than the path `a` was handed, so it takes its
-/// invalidated arm and forwards the leave. The enclosing dispatch then folds that leave at each
-/// node above, which `Top`'s posts report: gone, then standing again at the root.
+/// `a` leaves, so the chain ends: `b` never runs on the node `a` destroyed, and only the
+/// enclosing dispatch's posts see the leave — gone at `Mid`, standing again at the root.
 #[test]
-fn the_second_unit_sees_the_firsts_leave() {
+fn a_leave_ends_the_chain() {
     let mut top = Top {
         mid: Mid { leaf: Leaf },
     };
     assert_eq!(
         dispatch::<M, Top, _>(&mut top, &key("leave-then-look")),
-        vec![
-            DemoEffect::SawInvalidated,
-            DemoEffect::SawInvalidated,
-            DemoEffect::SawStanding,
-        ]
+        vec![DemoEffect::SawInvalidated, DemoEffect::SawStanding,]
     );
 }
 

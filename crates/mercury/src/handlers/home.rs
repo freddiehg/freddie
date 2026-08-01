@@ -17,8 +17,7 @@
 //! Each is generic over the event and the path, so any trigger and any node that reaches the
 //! root can bind it from its own place in the tree.
 
-use bind::AscendState;
-use laserbeam::{Completed, CompletesTo, HasStop, IntoAncestor, MaybeInvalidated};
+use laserbeam::{Completed, CompletesTo, HasStop, IntoAncestor};
 
 use crate::MercuryEffect;
 use crate::state::{
@@ -28,17 +27,12 @@ use crate::state::{
 /// `escape` anywhere, and a layer's idle-timeout: go back to the home layer.
 ///
 /// Typing has to bind `escape` explicitly, because a plain escape passes through there.
-pub(crate) fn go_home<'a, E, P>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
+pub(crate) fn go_home<'a, E, P>(_ev: &E, _snap: (), p: P) -> (Vec<MercuryEffect>, Completed<P>)
 where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    P: HasStop + IntoAncestor<MercuryPath<'a>>,
     MercuryPath<'a>: CompletesTo<P>,
 {
-    let root: MercuryPath<'a> = st.state.into_ancestor();
+    let root: MercuryPath<'a> = p.into_ancestor();
     let effects = root.set_layer(HomeLayer::new());
     (effects, root.complete())
 }
@@ -46,17 +40,12 @@ where
 /// `n`: enter the nav layer. Bound from home and from the in-app layer.
 ///
 /// Nav arms an idle-timeout, so its constructor also hands back the effect that schedules it.
-pub(crate) fn enter_nav<'a, E, P>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
+pub(crate) fn enter_nav<'a, E, P>(_ev: &E, _snap: (), p: P) -> (Vec<MercuryEffect>, Completed<P>)
 where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    P: HasStop + IntoAncestor<MercuryPath<'a>>,
     MercuryPath<'a>: CompletesTo<P>,
 {
-    let root: MercuryPath<'a> = st.state.into_ancestor();
+    let root: MercuryPath<'a> = p.into_ancestor();
     let (wrapped, timer) = AndReturnHome::new(NavLayer::new());
     let mut effects = root.set_layer(wrapped);
     effects.push(timer);
@@ -65,33 +54,23 @@ where
 
 /// `t`: enter the typing layer. Bound from home, from the in-app layer, and from the app and
 /// site levels below it, whose own handlers end there too.
-pub(crate) fn enter_typing<'a, E, P>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
+pub(crate) fn enter_typing<'a, E, P>(_ev: &E, _snap: (), p: P) -> (Vec<MercuryEffect>, Completed<P>)
 where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    P: HasStop + IntoAncestor<MercuryPath<'a>>,
     MercuryPath<'a>: CompletesTo<P>,
 {
-    let root: MercuryPath<'a> = st.state.into_ancestor();
+    let root: MercuryPath<'a> = p.into_ancestor();
     let effects = root.set_layer(TypingLayer::new());
     (effects, root.complete())
 }
 
 /// `i` in home: enter the in-app layer for whatever app is foregrounded.
-pub(crate) fn enter_inapp<'a, E, P>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
+pub(crate) fn enter_inapp<'a, E, P>(_ev: &E, _snap: (), p: P) -> (Vec<MercuryEffect>, Completed<P>)
 where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    P: HasStop + IntoAncestor<MercuryPath<'a>>,
     MercuryPath<'a>: CompletesTo<P>,
 {
-    let root: MercuryPath<'a> = st.state.into_ancestor();
+    let root: MercuryPath<'a> = p.into_ancestor();
     let (wrapped, timer) = AndReturnHome::new(AppLayer::new());
     let mut effects = root.set_layer(wrapped);
     effects.push(timer);
@@ -102,17 +81,12 @@ where
 ///
 /// Next to `i` under the same finger, because the two are neighbours in meaning as well: `i` is
 /// what the frontmost app can do, `u` is what the site in its front tab can do.
-pub(crate) fn enter_site<'a, E, P>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
+pub(crate) fn enter_site<'a, E, P>(_ev: &E, _snap: (), p: P) -> (Vec<MercuryEffect>, Completed<P>)
 where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    P: HasStop + IntoAncestor<MercuryPath<'a>>,
     MercuryPath<'a>: CompletesTo<P>,
 {
-    let root: MercuryPath<'a> = st.state.into_ancestor();
+    let root: MercuryPath<'a> = p.into_ancestor();
     let (wrapped, timer) = AndReturnHome::new(SiteLayer::new());
     let mut effects = root.set_layer(wrapped);
     effects.push(timer);
@@ -120,17 +94,12 @@ where
 }
 
 /// `r` in home: enter the resize layer.
-pub(crate) fn enter_resize<'a, E, P>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
+pub(crate) fn enter_resize<'a, E, P>(_ev: &E, _snap: (), p: P) -> (Vec<MercuryEffect>, Completed<P>)
 where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    P: HasStop + IntoAncestor<MercuryPath<'a>>,
     MercuryPath<'a>: CompletesTo<P>,
 {
-    let root: MercuryPath<'a> = st.state.into_ancestor();
+    let root: MercuryPath<'a> = p.into_ancestor();
     let (wrapped, timer) = AndReturnHome::new(ResizeLayer::new());
     let mut effects = root.set_layer(wrapped);
     effects.push(timer);

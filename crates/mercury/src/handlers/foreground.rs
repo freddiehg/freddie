@@ -1,6 +1,5 @@
 //! The foreground source's one handler.
 
-use bind::AscendState;
 use laserbeam::{Completed, CompletesTo};
 
 use crate::state::MercuryPath;
@@ -15,9 +14,9 @@ use crate::{ForegroundEvent, MercuryEffect};
 pub(crate) fn record_front_app<'x>(
     ev: &ForegroundEvent,
     _snap: (),
-    st: AscendState<'_, MercuryPath<'x>>,
+    p: MercuryPath<'x>,
 ) -> (Vec<MercuryEffect>, Completed<MercuryPath<'x>>) {
-    let root: MercuryPath<'x> = st.state.into_ancestor();
+    let root: MercuryPath<'x> = p;
     root.foreground.set_front_app(ev.app);
     (Vec::new(), root.complete())
 }

@@ -26,7 +26,7 @@ use super::{
 #[node(parent_path = LayerPath)]
 #[binds(MercuryStruct)]
 #[post(AnyKey => if_not_invalidated(home_deadline))]
-#[bind(|path| path.get().guard.trigger() => go_home)]
+#[bind(|path| path.get().guard.trigger() => if_not_invalidated(go_home))]
 pub struct AndReturnHome<Next> {
     #[resolve_into]
     layers: Next,

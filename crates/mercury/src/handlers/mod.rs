@@ -14,7 +14,7 @@
 //!
 //! What a unit touches decides its shape. A pure effect is branch-free and completes where it
 //! stands. A unit that writes the root consumes the state to get there
-//! (`st.state.into_ancestor()`, total on both branches) and completes at the root, which is what
+//! (`p.into_ancestor()`, total on both branches) and completes at the root, which is what
 //! tells everything above it that the layer it was bound on is gone. A unit that only reads the
 //! tree reaches up by shared reference and stays.
 

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
 
-use bind::Bind;
+use bind::{Bind, if_not_invalidated};
 use freddie::{TimerFired, TimerGuard, timer_effect_and_guard};
 use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 use freddie_windows::{Frame, Monitor, Snapshot, WindowChange, WindowFrame, WindowId};
@@ -62,17 +62,17 @@ pub const OVERLAY_DWELL: Duration = Duration::from_secs(10);
 #[node(root)]
 #[binds(MercuryStruct)]
 #[bind(
-    Foregrounded => record_front_app,
-    Tabbed => record_tab_url,
-    Windowed => record_windows,
-    Quit => quit,
-    |mercury_path| mercury_path.overlay_timer().map(TimerGuard::trigger) => hide_overlay,
-    |mercury_path| mercury_path.windows.pending_timer().map(TimerGuard::trigger) => placement_settled,
+    Foregrounded => if_not_invalidated(record_front_app),
+    Tabbed => if_not_invalidated(record_tab_url),
+    Windowed => if_not_invalidated(record_windows),
+    Quit => if_not_invalidated(quit),
+    |mercury_path| mercury_path.overlay_timer().map(TimerGuard::trigger) => if_not_invalidated(hide_overlay),
+    |mercury_path| mercury_path.windows.pending_timer().map(TimerGuard::trigger) => if_not_invalidated(placement_settled),
 )]
 // `o` binds once, here, because the overlay is the root's own field. In typing an `o` is an `o`:
 // typing's own catch-all claims the key before the root's items run, so this bind never fires
 // there.
-#[bind(Key::KeyO.down() => toggle_overlay)]
+#[bind(Key::KeyO.down() => if_not_invalidated(toggle_overlay))]
 #[post(AnyKey => track_held_modifiers)]
 pub struct Mercury {
     /// The frontmost app and whether a nav is in flight. See [`Foreground`].

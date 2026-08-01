@@ -5,7 +5,6 @@
 //! and the in-app layer would swallow it; Chrome's `r` is `tap_cmd_r` alone, because refreshing
 //! repeats and the layer stays.
 
-use bind::AscendState;
 use freddie_keys::{Key, ModifierFlags};
 use laserbeam::{Completed, CompletesTo, HasAncestor, HasStop};
 
@@ -18,18 +17,18 @@ use crate::state::{Mercury, MercuryPath};
 pub(crate) fn tap_cmd_r<E, P: HasStop + CompletesTo<P>>(
     _ev: &E,
     _snap: (),
-    st: AscendState<'_, P>,
+    p: P,
 ) -> (Vec<MercuryEffect>, Completed<P>) {
-    (vec![tap(Key::KeyR, ModifierFlags::COMMAND)], st.complete())
+    (vec![tap(Key::KeyR, ModifierFlags::COMMAND)], p.complete())
 }
 
 /// Chrome's address bar: cmd-l.
 pub(crate) fn tap_cmd_l<E, P: HasStop + CompletesTo<P>>(
     _ev: &E,
     _snap: (),
-    st: AscendState<'_, P>,
+    p: P,
 ) -> (Vec<MercuryEffect>, Completed<P>) {
-    (vec![tap(Key::KeyL, ModifierFlags::COMMAND)], st.complete())
+    (vec![tap(Key::KeyL, ModifierFlags::COMMAND)], p.complete())
 }
 
 /// claude.ai's new chat: cmd-shift-o, the site's own shortcut.
@@ -40,14 +39,14 @@ pub(crate) fn tap_cmd_l<E, P: HasStop + CompletesTo<P>>(
 pub(crate) fn tap_cmd_shift_o<E, P: HasStop + CompletesTo<P>>(
     _ev: &E,
     _snap: (),
-    st: AscendState<'_, P>,
+    p: P,
 ) -> (Vec<MercuryEffect>, Completed<P>) {
     (
         vec![tap(
             Key::KeyO,
             ModifierFlags::COMMAND | ModifierFlags::SHIFT,
         )],
-        st.complete(),
+        p.complete(),
     )
 }
 
@@ -111,18 +110,18 @@ fn tmux(flags: ModifierFlags, command: Key) -> Vec<MercuryEffect> {
 pub(crate) fn tmux_prev<E, P: HasStop + CompletesTo<P>>(
     _ev: &E,
     _snap: (),
-    st: AscendState<'_, P>,
+    p: P,
 ) -> (Vec<MercuryEffect>, Completed<P>) {
-    (tmux(ModifierFlags::empty(), Key::KeyP), st.complete())
+    (tmux(ModifierFlags::empty(), Key::KeyP), p.complete())
 }
 
 /// `k` in Ghostty: tmux's next window.
 pub(crate) fn tmux_next<E, P: HasStop + CompletesTo<P>>(
     _ev: &E,
     _snap: (),
-    st: AscendState<'_, P>,
+    p: P,
 ) -> (Vec<MercuryEffect>, Completed<P>) {
-    (tmux(ModifierFlags::empty(), Key::KeyN), st.complete())
+    (tmux(ModifierFlags::empty(), Key::KeyN), p.complete())
 }
 
 /// Jump to a tmux window by its digit.
@@ -136,6 +135,6 @@ pub(crate) fn tmux_next<E, P: HasStop + CompletesTo<P>>(
 /// it while `tmux_prev` and `tmux_next` are bound alone.
 pub(crate) fn tmux_window<E, P: HasStop + CompletesTo<P>>(
     digit: Key,
-) -> impl Fn(&E, (), AscendState<'_, P>) -> (Vec<MercuryEffect>, Completed<P>) {
-    move |_ev, (), st| (tmux(ModifierFlags::SHIFT, digit), st.complete())
+) -> impl Fn(&E, (), P) -> (Vec<MercuryEffect>, Completed<P>) {
+    move |_ev, (), p| (tmux(ModifierFlags::SHIFT, digit), p.complete())
 }

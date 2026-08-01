@@ -5,12 +5,11 @@
 //! `windows`, which lives on the root, so each ends there, and the `go_home` after it ends there
 //! too: two root-enders compose, since the state-level `into_ancestor` is total on both branches.
 
-use bind::AscendState;
 use freddie_windows::{Frame, WindowFrame};
-use laserbeam::{Completed, CompletesTo, HasStop, IntoAncestor, MaybeInvalidated};
+use laserbeam::{Completed, CompletesTo, HasStop, IntoAncestor};
 
 use crate::MercuryEffect;
-use crate::state::{Mercury, MercuryPath, Windows};
+use crate::state::{HomeLayer, Mercury, MercuryPath, Windows};
 
 /// The whole visible frame.
 const fn maximized(visible: Frame) -> Frame {
@@ -34,48 +33,36 @@ const fn right_of(visible: Frame) -> Frame {
     }
 }
 
-pub(crate) fn maximize<'a, E, P>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
+pub(crate) fn maximize<'a, E, P>(_ev: &E, _snap: (), p: P) -> (Vec<MercuryEffect>, Completed<P>)
 where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    P: HasStop + IntoAncestor<MercuryPath<'a>>,
     MercuryPath<'a>: CompletesTo<P>,
 {
-    let root: MercuryPath<'a> = st.state.into_ancestor();
-    let effects = place(root, maximized);
+    let root: MercuryPath<'a> = p.into_ancestor();
+    let mut effects = place(root, maximized);
+    effects.extend(root.set_layer(HomeLayer::new()));
     (effects, root.complete())
 }
 
-pub(crate) fn left_half<'a, E, P>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
+pub(crate) fn left_half<'a, E, P>(_ev: &E, _snap: (), p: P) -> (Vec<MercuryEffect>, Completed<P>)
 where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    P: HasStop + IntoAncestor<MercuryPath<'a>>,
     MercuryPath<'a>: CompletesTo<P>,
 {
-    let root: MercuryPath<'a> = st.state.into_ancestor();
-    let effects = place(root, left_of);
+    let root: MercuryPath<'a> = p.into_ancestor();
+    let mut effects = place(root, left_of);
+    effects.extend(root.set_layer(HomeLayer::new()));
     (effects, root.complete())
 }
 
-pub(crate) fn right_half<'a, E, P>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
+pub(crate) fn right_half<'a, E, P>(_ev: &E, _snap: (), p: P) -> (Vec<MercuryEffect>, Completed<P>)
 where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    P: HasStop + IntoAncestor<MercuryPath<'a>>,
     MercuryPath<'a>: CompletesTo<P>,
 {
-    let root: MercuryPath<'a> = st.state.into_ancestor();
-    let effects = place(root, right_of);
+    let root: MercuryPath<'a> = p.into_ancestor();
+    let mut effects = place(root, right_of);
+    effects.extend(root.set_layer(HomeLayer::new()));
     (effects, root.complete())
 }
 
@@ -86,19 +73,15 @@ fn place(root: &mut Mercury, within: impl Fn(Frame) -> Frame) -> Vec<MercuryEffe
     target(&root.windows, within).map_or_else(Vec::new, |target| root.windows.placing(target))
 }
 
-/// Put the focused window back where it was before it was placed.
-pub(crate) fn restore<'a, E, P>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
+/// Put the focused window back where it was before it was placed, and return home.
+pub(crate) fn restore<'a, E, P>(_ev: &E, _snap: (), p: P) -> (Vec<MercuryEffect>, Completed<P>)
 where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    P: HasStop + IntoAncestor<MercuryPath<'a>>,
     MercuryPath<'a>: CompletesTo<P>,
 {
-    let root: MercuryPath<'a> = st.state.into_ancestor();
-    let effects = root.windows.restoring();
+    let root: MercuryPath<'a> = p.into_ancestor();
+    let mut effects = root.windows.restoring();
+    effects.extend(root.set_layer(HomeLayer::new()));
     (effects, root.complete())
 }
 

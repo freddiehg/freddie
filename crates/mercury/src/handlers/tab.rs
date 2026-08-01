@@ -1,6 +1,5 @@
 //! The tab source's one handler.
 
-use bind::AscendState;
 use laserbeam::{Completed, CompletesTo};
 
 use crate::state::MercuryPath;
@@ -15,9 +14,9 @@ use crate::{MercuryEffect, TabEvent};
 pub(crate) fn record_tab_url<'x>(
     ev: &TabEvent,
     _snap: (),
-    st: AscendState<'_, MercuryPath<'x>>,
+    p: MercuryPath<'x>,
 ) -> (Vec<MercuryEffect>, Completed<MercuryPath<'x>>) {
-    let root: MercuryPath<'x> = st.state.into_ancestor();
+    let root: MercuryPath<'x> = p;
     root.foreground.set_tab_url(ev.url.clone());
     (Vec::new(), root.complete())
 }

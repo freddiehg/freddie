@@ -1,9 +1,9 @@
-use bind::{Bind, and};
+use bind::{Bind, and, if_not_invalidated};
 use freddie_keys::Key;
 
-use crate::MercuryStruct;
 #[allow(clippy::wildcard_imports)]
 use crate::handlers::*;
+use crate::{App, MercuryStruct};
 
 use super::ReturnHomeLayersPath;
 
@@ -15,13 +15,13 @@ pub(crate) const OVERLAY: &str = include_str!("overlays/nav.txt");
 #[node(parent_path = ReturnHomeLayersPath)]
 #[binds(MercuryStruct)]
 #[bind(
-    Key::Escape.down() => go_home,
-    Key::KeyT.down() => enter_typing,
-    Key::KeyC.down() => and!(mark_navigating, foreground_chrome, enter_inapp),
-    Key::KeyF.down() => and!(mark_navigating, foreground_finder, enter_inapp),
-    Key::KeyG.down() => and!(mark_navigating, foreground_ghostty, enter_inapp),
-    Key::KeyZ.down() => and!(mark_navigating, foreground_zed, enter_inapp),
-    Key::Space.down() => and!(tap_cmd_space, enter_typing),
+    Key::Escape.down() => if_not_invalidated(go_home),
+    Key::KeyT.down() => if_not_invalidated(enter_typing),
+    Key::KeyC.down() => if_not_invalidated(open(App::Chrome)),
+    Key::KeyF.down() => if_not_invalidated(open(App::Finder)),
+    Key::KeyG.down() => if_not_invalidated(open(App::Ghostty)),
+    Key::KeyZ.down() => if_not_invalidated(open(App::Zed)),
+    Key::Space.down() => if_not_invalidated(and!(tap_cmd_space, enter_typing)),
 )]
 pub struct NavLayer;
 

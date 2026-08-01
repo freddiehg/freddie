@@ -1,56 +1,37 @@
-//! Nav-layer units: mark a navigation in flight, foreground an app, and the Spotlight chord.
+//! Nav-layer handlers: the app chooser and the Spotlight chord.
 //!
-//! Picking an app is one gesture of three units, `and!(mark_navigating, foreground_x,
-//! enter_inapp)`: the flag, the effect, and the layer. The app is not recorded here; the watcher
-//! reports the app that actually comes up, and [`record_front_app`](super::record_front_app)
-//! records it and clears the flag. Until then the in-app level is empty (see
-//! [`app_data`](crate::state)), so the old app's bindings do not apply in the gap.
+//! A choice marks the navigation in flight, asks for the app, and enters the in-app layer. The
+//! app is not recorded here; the watcher reports the app that actually comes up, and
+//! [`record_front_app`](super::record_front_app) records it and clears the flag. Until then the
+//! in-app level is empty (see [`app_data`](crate::state)), so the old app's bindings do not
+//! apply in the gap.
 
-use bind::AscendState;
 use freddie_keys::{Key, ModifierFlags};
-use laserbeam::{Completed, CompletesTo, HasStop, IntoAncestor, MaybeInvalidated};
+use laserbeam::{Completed, CompletesTo, HasStop, IntoAncestor};
 
 use crate::effect::tap;
-use crate::state::MercuryPath;
+use crate::state::{AndReturnHome, AppLayer, MercuryPath};
 use crate::{App, MercuryEffect};
 
 /// The navigation is in flight: the watcher has not confirmed the new front app yet.
 ///
 /// It writes `foreground`, which lives on the root, so it ends there. Its gesture ends at the
 /// root anyway, since `enter_inapp` follows it, so the ending is truthful.
-pub(crate) fn mark_navigating<'a, E, P>(
-    _ev: &E,
-    _snap: (),
-    st: AscendState<'_, P>,
-) -> (Vec<MercuryEffect>, Completed<P>)
+/// A nav choice: mark the navigation in flight, ask for `app`, and enter the in-app layer.
+pub(crate) fn open<'a, E, P>(app: App) -> impl Fn(&E, (), P) -> (Vec<MercuryEffect>, Completed<P>)
 where
-    P: HasStop,
-    MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
+    P: HasStop + IntoAncestor<MercuryPath<'a>>,
     MercuryPath<'a>: CompletesTo<P>,
 {
-    let root: MercuryPath<'a> = st.state.into_ancestor();
-    root.foreground.start_navigating();
-    (vec![], root.complete())
-}
-
-/// One unit per app: the effect and nothing else, so it runs on any state.
-macro_rules! foreground_unit {
-    ($($handler:ident => $app:ident),* $(,)?) => {$(
-        pub(crate) fn $handler<E, P: HasStop + CompletesTo<P>>(
-            _ev: &E,
-            _snap: (),
-            st: AscendState<'_, P>,
-        ) -> (Vec<MercuryEffect>, Completed<P>) {
-            (vec![MercuryEffect::Foreground(App::$app)], st.complete())
-        }
-    )*};
-}
-
-foreground_unit! {
-    foreground_chrome => Chrome,
-    foreground_finder => Finder,
-    foreground_ghostty => Ghostty,
-    foreground_zed => Zed,
+    move |_ev, _snap, p| {
+        let root: MercuryPath<'a> = p.into_ancestor();
+        root.foreground.start_navigating();
+        let mut effects = vec![MercuryEffect::Foreground(app)];
+        let (wrapped, timer) = AndReturnHome::new(AppLayer::new());
+        effects.extend(root.set_layer(wrapped));
+        effects.push(timer);
+        (effects, root.complete())
+    }
 }
 
 /// Spotlight's own chord. It is not a [`foreground_unit`]: Spotlight is a text field rather than
@@ -60,7 +41,7 @@ foreground_unit! {
 pub(crate) fn tap_cmd_space<E, P: HasStop + CompletesTo<P>>(
     _ev: &E,
     _snap: (),
-    st: AscendState<'_, P>,
+    p: P,
 ) -> (Vec<MercuryEffect>, Completed<P>) {
-    (vec![tap(Key::Space, ModifierFlags::COMMAND)], st.complete())
+    (vec![tap(Key::Space, ModifierFlags::COMMAND)], p.complete())
 }

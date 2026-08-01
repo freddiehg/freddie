@@ -1,6 +1,5 @@
 //! The window source's one handler.
 
-use bind::AscendState;
 use freddie::TimerFired;
 use laserbeam::{Completed, CompletesTo};
 
@@ -14,9 +13,9 @@ use crate::{MercuryEffect, WindowEvent};
 pub(crate) fn record_windows<'x>(
     ev: &WindowEvent,
     _snap: (),
-    st: AscendState<'_, MercuryPath<'x>>,
+    p: MercuryPath<'x>,
 ) -> (Vec<MercuryEffect>, Completed<MercuryPath<'x>>) {
-    let root: MercuryPath<'x> = st.state.into_ancestor();
+    let root: MercuryPath<'x> = p;
     root.windows.record(&ev.change);
     (Vec::new(), root.complete())
 }
@@ -26,9 +25,9 @@ pub(crate) fn record_windows<'x>(
 pub(crate) fn placement_settled<'x>(
     _ev: &TimerFired,
     _snap: (),
-    st: AscendState<'_, MercuryPath<'x>>,
+    p: MercuryPath<'x>,
 ) -> (Vec<MercuryEffect>, Completed<MercuryPath<'x>>) {
-    let root: MercuryPath<'x> = st.state.into_ancestor();
+    let root: MercuryPath<'x> = p;
     root.windows.forget_pending();
     (Vec::new(), root.complete())
 }

@@ -1,4 +1,4 @@
-use bind::{Bind, and};
+use bind::{Bind, if_not_invalidated};
 use freddie_keys::Key;
 
 use crate::MercuryStruct;
@@ -17,12 +17,12 @@ pub(crate) const OVERLAY: &str = include_str!("overlays/resize.txt");
 #[node(parent_path = ReturnHomeLayersPath)]
 #[binds(MercuryStruct)]
 #[bind(
-    Key::Escape.down() => go_home,
-    Key::KeyT.down() => enter_typing,
-    Key::UpArrow.down() => and!(maximize, go_home),
-    Key::LeftArrow.down() => and!(left_half, go_home),
-    Key::RightArrow.down() => and!(right_half, go_home),
-    Key::KeyR.down() => and!(restore, go_home),
+    Key::Escape.down() => if_not_invalidated(go_home),
+    Key::KeyT.down() => if_not_invalidated(enter_typing),
+    Key::UpArrow.down() => if_not_invalidated(maximize),
+    Key::LeftArrow.down() => if_not_invalidated(left_half),
+    Key::RightArrow.down() => if_not_invalidated(right_half),
+    Key::KeyR.down() => if_not_invalidated(restore),
 )]
 pub struct ResizeLayer;
 

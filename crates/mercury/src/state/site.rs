@@ -1,4 +1,4 @@
-use bind::{Bind, and};
+use bind::{Bind, and, if_not_invalidated};
 use freddie_keys::Key;
 use laserbeam::HasAncestor;
 
@@ -32,8 +32,8 @@ pub(crate) const fn overlay_for(site: Option<Site>) -> &'static str {
 #[binds(MercuryStruct)]
 #[derived_child(site_data)]
 #[bind(
-    Key::Escape.down() => go_home,
-    Key::KeyT.down() => enter_typing,
+    Key::Escape.down() => if_not_invalidated(go_home),
+    Key::KeyT.down() => if_not_invalidated(enter_typing),
 )]
 pub struct SiteLayer;
 
@@ -71,5 +71,5 @@ fn site_data<'a, P: HasAncestor<MercuryPath<'a>>>(path: &P) -> Option<SiteData> 
 #[derive(Bind, Debug)]
 #[derived_node(parent_path = SiteLayerPath)]
 #[binds(MercuryStruct)]
-#[bind(Key::KeyN.down() => and!(tap_cmd_shift_o, enter_typing))]
+#[bind(Key::KeyN.down() => if_not_invalidated(and!(tap_cmd_shift_o, enter_typing)))]
 pub struct ClaudeAiSite;

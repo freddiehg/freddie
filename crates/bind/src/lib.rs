@@ -151,8 +151,10 @@ where
     }
 }
 
-/// Runs `a` then `b` as one handler: one claim, effects in order, `b` receiving
-/// the state `a` left behind.
+/// Runs `a` then `b` as one handler: effects in order, `b` on the path `a` left standing.
+///
+/// A unit that completes above this path ends the chain, so nothing runs on a node its
+/// predecessor destroyed.
 ///
 /// The schedule's fold, at expression level, so one user action composes from
 /// units at its bind site: `#[bind(K => and!(tap_cmd_l, enter_typing))]`. It
@@ -165,21 +167,24 @@ where
 pub fn and<Ev, Snap, P, E, A, B>(
     a: A,
     b: B,
-) -> impl for<'x> FnOnce(Ev, Snap, AscendState<'x, P>) -> (Vec<E>, ::laserbeam::Completed<P>)
+) -> impl FnOnce(Ev, Snap, P) -> (Vec<E>, ::laserbeam::Completed<P>)
 where
     Ev: Copy,
     Snap: Copy,
     P: ::laserbeam::HasStop,
-    A: for<'x> FnOnce(Ev, Snap, AscendState<'x, P>) -> (Vec<E>, ::laserbeam::Completed<P>),
-    B: for<'x> FnOnce(Ev, Snap, AscendState<'x, P>) -> (Vec<E>, ::laserbeam::Completed<P>),
+    A: FnOnce(Ev, Snap, P) -> (Vec<E>, ::laserbeam::Completed<P>),
+    B: FnOnce(Ev, Snap, P) -> (Vec<E>, ::laserbeam::Completed<P>),
 {
-    move |ev, snap, st| {
-        let AscendState { mut claim, state } = st;
-        let (mut effs, completed) = a(ev, snap, AscendState::new(state, claim.reborrow()));
-        let state = completed.to_maybe_invalidated();
-        let (e, completed) = b(ev, snap, AscendState::new(state, claim));
-        effs.extend(e);
-        (effs, completed)
+    move |ev, snap, p| {
+        let (mut effs, completed) = a(ev, snap, p);
+        match completed.to_maybe_invalidated() {
+            ::laserbeam::MaybeInvalidated::NotInvalidated(p) => {
+                let (e, completed) = b(ev, snap, p);
+                effs.extend(e);
+                (effs, completed)
+            }
+            ::laserbeam::MaybeInvalidated::Invalidated(completed) => (effs, completed),
+        }
     }
 }
 
