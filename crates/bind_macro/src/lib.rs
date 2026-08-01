@@ -214,15 +214,14 @@ fn derived_enum_node_impl(
         #[automatically_derived]
         #[expect(clippy::implicit_hasher)]
         impl<'a> ::bind::AccumulateDerivedTriggers<#marker> for ::bind::DerivedLevel<#parent<'a>, #name> {
+            type Parent = #parent<'a>;
+
             fn accumulate(
                 self,
                 out: &mut ::std::collections::HashSet<
                     <#marker as ::bind::Bindings>::Trigger,
                 >,
-            ) -> ::core::result::Result<
-                <Self as ::bind::HasParent>::Parent,
-                ::bind::BindError,
-            > {
+            ) -> ::core::result::Result<#parent<'a>, ::bind::BindError> {
                 let ::bind::DerivedLevel { parent, data } = self;
                 match data { #(#acc_arms)* }
             }
@@ -287,19 +286,18 @@ fn derived_node_impl(
         #[automatically_derived]
         #[expect(clippy::useless_conversion, clippy::implicit_hasher)]
         impl<'a> ::bind::AccumulateDerivedTriggers<#marker> for ::bind::DerivedLevel<#parent<'a>, #name> {
+            type Parent = #parent<'a>;
+
             fn accumulate(
                 self,
                 out: &mut ::std::collections::HashSet<<#marker as ::bind::Bindings>::Trigger>,
-            ) -> ::core::result::Result<
-                <Self as ::bind::HasParent>::Parent,
-                ::bind::BindError,
-            > {
+            ) -> ::core::result::Result<#parent<'a>, ::bind::BindError> {
                 let node = self;
                 #(
                     ::bind::insert_or_error(out, ::core::convert::Into::into(#triggers))?;
                 )*
                 #acc_descend
-                ::core::result::Result::Ok(::bind::HasParent::into_parent(node))
+                ::core::result::Result::Ok(node.parent)
             }
         }
         }
@@ -730,7 +728,7 @@ fn child_state(edge: &Edge<'_>, child: &Type, marker: &Path, place: &TokenStream
     quote! {
         match #leave {
             ::laserbeam::Stop::Here(child) => {
-                let #route::#parent(recovered) = ::bind::HasParent::into_parent(child) else {
+                let #route::#parent(recovered) = child.into_parent() else {
                     ::core::unreachable!()
                 };
                 ::laserbeam::MaybeInvalidated::NotInvalidated(recovered)

@@ -270,7 +270,7 @@ pub enum Media {
 #[binds(Demo)]
 #[bind(Keyboard("a") => ignore)]
 pub struct Album {
-    #[resolve_into(parent = TitleParent, up = TitleParentUp)]
+    #[resolve_into(route = TitleParent, up = TitleParentUp)]
     pub title: Title,
 }
 
@@ -279,7 +279,7 @@ pub struct Album {
 #[binds(Demo)]
 #[bind(Keyboard("s") => ignore)]
 pub struct Song {
-    #[resolve_into(parent = TitleParent, up = TitleParentUp)]
+    #[resolve_into(route = TitleParent, up = TitleParentUp)]
     pub title: Title,
 }
 

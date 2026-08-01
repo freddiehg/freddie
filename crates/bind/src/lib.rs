@@ -314,42 +314,6 @@ pub struct DerivedLevel<Parent, Data> {
     pub data: Data,
 }
 
-/// How a generated impl reaches the parent's type without naming it.
-///
-/// A node's derive sees one struct's tokens. When it descends into a child produced by a
-/// function it cannot know that function's return type, so it asks for `Self::Parent`
-/// instead of writing it.
-///
-/// Two shapes, one per impl, in mercury's tree:
-///
-/// - `PathMut<NavLayer, LayerPath<'a>>`, a place path: its `Parent` is `LayerPath<'a>`, and
-///   `into_parent` steps from nav's node up to the layer enum's path.
-/// - `DerivedLevel<SiteLayerPath<'a>, ClaudeAiSite>`, a derived level: its `Parent` is
-///   `SiteLayerPath<'a>`, and `into_parent` drops the rebuilt `ClaudeAiSite` data and lands on
-///   the site layer's path. A derived level stacked on another derived level has
-///   `Parent = DerivedLevel<..>`, and the chain peels one level per call.
-pub trait HasParent {
-    /// The parent's type: a [`laserbeam::PathMut`](::laserbeam::PathMut) when the level above is a
-    /// place, a [`DerivedLevel`] when it is derived.
-    type Parent;
-    /// Consumes this node and returns the parent, moving one level up.
-    fn into_parent(self) -> Self::Parent;
-}
-
-impl<Parent, Data> HasParent for DerivedLevel<Parent, Data> {
-    type Parent = Parent;
-    fn into_parent(self) -> Parent {
-        self.parent
-    }
-}
-
-impl<N, P> HasParent for ::laserbeam::PathMut<N, P> {
-    type Parent = P;
-    fn into_parent(self) -> P {
-        Self::into_parent(self)
-    }
-}
-
 /// The place path at the bottom of a parent chain: what a level ASCENDS at.
 ///
 /// A place is its own; a [`DerivedLevel`] flattens to its parent's, however many derived levels are
@@ -467,7 +431,13 @@ where
 /// `AccumulateTriggers`, whose signature is written in terms of `Self::Path`. It carries its
 /// triggers here instead.
 #[cfg(feature = "check")]
-pub trait AccumulateDerivedTriggers<M: Bindings>: HasParent + Sized {
+pub trait AccumulateDerivedTriggers<M: Bindings>: Sized {
+    /// The level above, which `accumulate` hands back: a
+    /// [`laserbeam::PathMut`](::laserbeam::PathMut) when it is a place
+    /// (`DerivedLevel<SiteLayerPath<'a>, ClaudeAiSite>` hands back `SiteLayerPath<'a>`), a
+    /// [`DerivedLevel`] when the level above is derived too.
+    type Parent;
+
     /// Adds this level's triggers to `out` and hands the PARENT back.
     ///
     /// # Errors

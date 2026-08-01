@@ -49,7 +49,7 @@ pub fn find_resolve_into(fields: &Fields) -> syn::Result<Option<ResolveInto>> {
     Ok(found)
 }
 
-/// The route named by `#[resolve_into(parent = Enum, up = UpEnum)]`, if present. A bare
+/// The route named by `#[resolve_into(route = Enum, up = UpEnum)]`, if present. A bare
 /// `#[resolve_into]` (or no attribute) is a single-parent child.
 ///
 /// # Errors
@@ -64,14 +64,14 @@ pub fn parent_route(attrs: &[syn::Attribute]) -> syn::Result<Option<Route>> {
     let mut up = None;
     if matches!(attr.meta, syn::Meta::List(_)) {
         attr.parse_nested_meta(|m| {
-            if m.path.is_ident("parent") {
+            if m.path.is_ident("route") {
                 parent = Some(m.value()?.parse()?);
                 Ok(())
             } else if m.path.is_ident("up") {
                 up = Some(m.value()?.parse()?);
                 Ok(())
             } else {
-                Err(m.error("expected `parent` or `up`"))
+                Err(m.error("expected `route` or `up`"))
             }
         })?;
     }
@@ -80,7 +80,7 @@ pub fn parent_route(attrs: &[syn::Attribute]) -> syn::Result<Option<Route>> {
         (Some(parent), Some(up)) => Ok(Some(Route { parent, up })),
         (Some(_), None) => Err(syn::Error::new(
             attr.span(),
-            "`#[resolve_into(parent = ..)]` needs `up = ..`, the route enum's `Above::Up` half",
+            "`#[resolve_into(route = ..)]` needs `up = ..`, the route enum's `Above::Up` half",
         )),
         (None, Some(_)) => Err(syn::Error::new(
             attr.span(),
