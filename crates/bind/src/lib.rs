@@ -319,6 +319,15 @@ pub struct DerivedLevel<Parent, Data> {
 /// A node's derive sees one struct's tokens. When it descends into a child produced by a
 /// function it cannot know that function's return type, so it asks for `Self::Parent`
 /// instead of writing it.
+///
+/// Two shapes, one per impl, in mercury's tree:
+///
+/// - `PathMut<NavLayer, LayerPath<'a>>`, a place path: its `Parent` is `LayerPath<'a>`, and
+///   `into_parent` steps from nav's node up to the layer enum's path.
+/// - `DerivedLevel<SiteLayerPath<'a>, ClaudeAiSite>`, a derived level: its `Parent` is
+///   `SiteLayerPath<'a>`, and `into_parent` drops the rebuilt `ClaudeAiSite` data and lands on
+///   the site layer's path. A derived level stacked on another derived level has
+///   `Parent = DerivedLevel<..>`, and the chain peels one level per call.
 pub trait HasParent {
     /// The parent's type: a [`laserbeam::PathMut`](::laserbeam::PathMut) when the level above is a
     /// place, a [`DerivedLevel`] when it is derived.
