@@ -25,7 +25,7 @@ where
 {
     move |_ev, _snap, p| {
         let root: MercuryPath<'a> = p.into_ancestor();
-        root.foreground.start_navigating();
+        root.foreground = None;
         let mut effects = vec![MercuryEffect::Foreground(app)];
         let (wrapped, timer) = AndReturnHome::new(AppLayer::new());
         effects.extend(root.set_layer(wrapped));

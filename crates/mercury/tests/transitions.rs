@@ -5,6 +5,7 @@
 
 use bind::SimpleRunner;
 use freddie_windows::{Frame, Monitor, WindowChange, WindowFrame, WindowId};
+use mercury::ForegroundedApp;
 use mercury::{
     App, Chord, Copied, HomeLayer, JK_TIMEOUT, Key, KeyEvent, Layer, Mercury, MercuryEffect,
     MercuryEvent, MercuryStruct, ModifierFlags, OVERLAY_DWELL, PLACEMENT_SETTLE, PressType,
@@ -18,6 +19,11 @@ use mercury::{
 fn boot_title_matches_the_boot_layer() {
     let booted = Mercury::new(App::Other, Windows::default());
     assert_eq!(booted.layer().name(), Mercury::BOOT_TITLE);
+}
+
+// The confirmed front app, `None` while a nav choice's foreground effect is in flight.
+fn front(m: &Mercury) -> Option<App> {
+    m.foreground.as_ref().map(ForegroundedApp::identity)
 }
 
 // Entering nav, resize, or the in-app layer arms the return-to-home timer; this is the effect
@@ -382,8 +388,7 @@ fn nav_c_foregrounds_chrome_and_enters_inapp() {
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     // The effect is inert: nothing is foregrounded until the watcher reports it, and
     // the navigation is pending until then.
-    assert_eq!(m.foreground.app(), App::Other);
-    assert!(m.foreground.navigating());
+    assert_eq!(front(&m), None);
 }
 
 // Every nav choice lands in the in-app layer, not just Chrome's.
@@ -409,10 +414,7 @@ fn every_nav_choice_enters_inapp() {
             matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))),
             "{app:?} left nav"
         );
-        assert!(
-            m.foreground.navigating(),
-            "{app:?} did not mark the nav pending"
-        );
+        assert!(front(&m).is_none(), "{app:?} did not mark the nav pending");
     }
 }
 
@@ -428,8 +430,7 @@ fn nav_space_opens_spotlight_and_enters_typing() {
     );
     assert!(matches!(m.layer(), Layer::Typing(_)));
     // Nothing was foregrounded, and no navigation is pending: Spotlight is not an app choice.
-    assert_eq!(m.foreground.app(), App::Other);
-    assert!(!m.foreground.navigating());
+    assert_eq!(front(&m), Some(App::Other));
     // Typing passes keys through, so what follows types itself into Spotlight.
     assert_eq!(m.handle(&key(Key::KeyC)), passed(Key::KeyC));
 }
@@ -451,14 +452,13 @@ fn n_c_then_foreground_then_r_refreshes_chrome() {
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
 
     let _ = m.handle(&foreground(App::Chrome)); // the watcher reports it
-    assert_eq!(m.foreground.app(), App::Chrome);
-    assert!(!m.foreground.navigating());
+    assert_eq!(front(&m), Some(App::Chrome));
     assert_eq!(m.handle(&key(Key::KeyR)), in_app(cmd_r()));
 }
 
-// While a nav is pending, the in-app level is empty: `foreground.app()` is still the old
-// app, so its bindings must not apply in the gap. A key pressed before the foreground
-// event lands is unbound; once the event lands, the chosen app's bindings apply.
+// While a nav is pending, the in-app level is empty: `foreground` is `None`, so neither the
+// old app's bindings nor the chosen one's apply in the gap. A key pressed before the
+// foreground event lands is unbound; once the event lands, the chosen app's bindings apply.
 #[test]
 fn a_pending_nav_binds_nothing_until_the_foreground_event() {
     let mut m = home();
@@ -467,8 +467,7 @@ fn a_pending_nav_binds_nothing_until_the_foreground_event() {
     let _ = m.handle(&key(Key::KeyN)); // home -> nav
     let _ = m.handle(&key(Key::KeyC)); // navigate to Chrome; the front app is still Ghostty
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
-    assert!(m.foreground.navigating());
-    assert_eq!(m.foreground.app(), App::Ghostty);
+    assert_eq!(front(&m), None);
     // Ghostty's `j` does not apply, even though Ghostty is still the (stale) front app.
     assert_eq!(m.handle(&key(Key::KeyJ)), in_app(vec![]));
     // Chrome's `r` does not apply yet either: nothing binds while the nav is pending.
@@ -476,8 +475,7 @@ fn a_pending_nav_binds_nothing_until_the_foreground_event() {
 
     let _ = m.handle(&foreground(App::Chrome)); // the watcher catches up
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
-    assert_eq!(m.foreground.app(), App::Chrome);
-    assert!(!m.foreground.navigating());
+    assert_eq!(front(&m), Some(App::Chrome));
     assert_eq!(m.handle(&key(Key::KeyR)), in_app(cmd_r()));
 }
 
@@ -485,7 +483,7 @@ fn a_pending_nav_binds_nothing_until_the_foreground_event() {
 fn foreground_records_the_app_without_changing_layer() {
     let mut m = home();
     assert_eq!(m.handle(&foreground(App::Zed)), vec![]);
-    assert_eq!(m.foreground.app(), App::Zed);
+    assert_eq!(front(&m), Some(App::Zed));
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
@@ -498,7 +496,7 @@ fn i_enters_inapp_for_the_foregrounded_app() {
         vec![shows("App"), return_home_timer()]
     );
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
-    assert_eq!(m.foreground.app(), App::Chrome);
+    assert_eq!(front(&m), Some(App::Chrome));
 }
 
 // Chrome in the in-app layer, with `url` reported for its front tab.
@@ -715,7 +713,7 @@ fn inapp_other_app_ignores_keys() {
     let _ = m.handle(&foreground(App::Zed));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
-    assert!(matches!(m.foreground.app(), App::Zed | App::Other));
+    assert!(matches!(front(&m), Some(App::Zed | App::Other)));
     assert_eq!(m.handle(&key(Key::KeyR)), in_app(vec![]));
 }
 
@@ -739,7 +737,7 @@ fn i_enters_ghostty_in_app_when_ghostty_is_frontmost() {
     let _ = m.handle(&foreground(App::Ghostty));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
-    assert_eq!(m.foreground.app(), App::Ghostty);
+    assert_eq!(front(&m), Some(App::Ghostty));
 }
 
 #[test]
@@ -758,7 +756,7 @@ fn ghostty_j_is_previous_window_and_k_is_next() {
     );
     // Still in Ghostty's layer, so windows can be walked without re-entering.
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
-    assert_eq!(m.foreground.app(), App::Ghostty);
+    assert_eq!(front(&m), Some(App::Ghostty));
 }
 
 // The command carries no modifiers. Emitting it inside the prefix chord would make tmux see
@@ -795,11 +793,11 @@ fn foregrounding_ghostty_retargets_the_inapp_layer() {
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
-    assert_eq!(m.foreground.app(), App::Chrome);
+    assert_eq!(front(&m), Some(App::Chrome));
 
     let _ = m.handle(&foreground(App::Ghostty));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
-    assert_eq!(m.foreground.app(), App::Ghostty);
+    assert_eq!(front(&m), Some(App::Ghostty));
     assert_eq!(
         m.handle(&key(Key::KeyJ)),
         in_app(tmux(ModifierFlags::empty(), Key::KeyP))
@@ -870,7 +868,7 @@ fn walking_stays_but_jumping_leaves() {
 
     let _ = m.handle(&key(Key::KeyJ));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
-    assert_eq!(m.foreground.app(), App::Ghostty);
+    assert_eq!(front(&m), Some(App::Ghostty));
     let _ = m.handle(&key(Key::Num3));
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
@@ -1035,7 +1033,7 @@ fn r_still_refreshes_chrome_in_app() {
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(m.handle(&key(Key::KeyR)), in_app(cmd_r()));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
-    assert_eq!(m.foreground.app(), App::Chrome);
+    assert_eq!(front(&m), Some(App::Chrome));
 }
 
 // ---- loop: driving a bind::SimpleRunner ----
@@ -1080,11 +1078,11 @@ fn foregrounding_chrome_is_reported_back() {
             return_home_timer(),
         ]
     );
-    assert_eq!(m.foreground.app(), App::Chrome);
+    assert_eq!(front(&m), Some(App::Chrome));
     // Nav landed in Chrome's in-app layer, and the reported-back event cleared the
     // pending flag so Chrome's bindings are live.
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
-    assert!(!m.foreground.navigating());
+    assert!(front(&m).is_some());
 }
 
 // ---- app navigation: name mapping and the in-app layer following the front app ----
@@ -1119,12 +1117,12 @@ fn reported_bundle_ids_map() {
 fn the_inapp_layers_bindings_follow_the_root_with_no_resync() {
     let mut m = home();
     let _ = m.handle(&key(Key::KeyI)); // enter the in-app layer
-    m.foreground.set_front_app(App::Chrome);
+    m.foreground = Some(ForegroundedApp::from_identity(App::Chrome));
     // Chrome binds `r`.
     assert_eq!(m.handle(&key(Key::KeyR)), in_app(cmd_r()));
 
     // Write the ROOT directly. Nothing touches the layer.
-    m.foreground.set_front_app(App::Ghostty);
+    m.foreground = Some(ForegroundedApp::from_identity(App::Ghostty));
 
     // Chrome's `r` is gone and Ghostty's `j` is live, with no re-entry and no resync.
     assert_eq!(m.handle(&key(Key::KeyR)), in_app(vec![]));
@@ -1134,7 +1132,7 @@ fn the_inapp_layers_bindings_follow_the_root_with_no_resync() {
     );
 
     // An app with no bindings has no level at all.
-    m.foreground.set_front_app(App::Zed);
+    m.foreground = Some(ForegroundedApp::from_identity(App::Zed));
     assert_eq!(m.handle(&key(Key::KeyJ)), in_app(vec![]));
 }
 
@@ -1146,12 +1144,12 @@ fn foreground_retargets_the_inapp_layer() {
     let _ = m.handle(&foreground(App::Chrome));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
-    assert_eq!(m.foreground.app(), App::Chrome);
+    assert_eq!(front(&m), Some(App::Chrome));
 
     assert_eq!(m.handle(&foreground(App::Zed)), vec![]);
-    assert_eq!(m.foreground.app(), App::Zed);
+    assert_eq!(front(&m), Some(App::Zed));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
-    assert!(matches!(m.foreground.app(), App::Zed | App::Other));
+    assert!(matches!(front(&m), Some(App::Zed | App::Other)));
     // Chrome's refresh is gone now that Chrome is not the front app.
     assert_eq!(m.handle(&key(Key::KeyR)), in_app(vec![]));
 }
@@ -1163,11 +1161,11 @@ fn foreground_back_to_chrome_restores_its_bindings() {
     let _ = m.handle(&foreground(App::Zed));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
-    assert!(matches!(m.foreground.app(), App::Zed | App::Other));
+    assert!(matches!(front(&m), Some(App::Zed | App::Other)));
 
     let _ = m.handle(&foreground(App::Chrome));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
-    assert_eq!(m.foreground.app(), App::Chrome);
+    assert_eq!(front(&m), Some(App::Chrome));
     assert_eq!(m.handle(&key(Key::KeyR)), in_app(cmd_r()));
 }
 
@@ -1180,7 +1178,7 @@ fn foreground_outside_inapp_does_not_change_layer() {
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Nav(_))));
 
     assert_eq!(m.handle(&foreground(App::Chrome)), vec![]);
-    assert_eq!(m.foreground.app(), App::Chrome);
+    assert_eq!(front(&m), Some(App::Chrome));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Nav(_))));
 }
 
@@ -1200,12 +1198,12 @@ fn inapp_follows_the_front_app_across_a_switch() {
         }
     }
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
-    assert_eq!(m.foreground.app(), App::Chrome);
+    assert_eq!(front(&m), Some(App::Chrome));
     // The user switches to Zed outside mercury; the watcher reports it.
     let _ = m.handle(&foreground(App::Zed));
-    assert_eq!(m.foreground.app(), App::Zed);
+    assert_eq!(front(&m), Some(App::Zed));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
-    assert!(matches!(m.foreground.app(), App::Zed | App::Other));
+    assert!(matches!(front(&m), Some(App::Zed | App::Other)));
 }
 
 // ---- jk: the sequence that leaves typing ----

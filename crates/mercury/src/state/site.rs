@@ -6,7 +6,7 @@ use laserbeam::HasAncestor;
 use crate::handlers::*;
 use crate::{MercuryStruct, Site};
 
-use super::{MercuryPath, ReturnHomeLayersPath, SiteLayerPath};
+use super::{ForegroundedApp, MercuryPath, ReturnHomeLayersPath, SiteLayerPath};
 
 pub(crate) const OVERLAY: &str = include_str!("overlays/site.txt");
 pub(crate) const CLAUDE_AI_OVERLAY: &str = include_str!("overlays/claude-ai.txt");
@@ -60,7 +60,12 @@ pub enum SiteData {
 /// key unbound rather than aimed at whatever site was there before.
 fn site_data<'a, P: HasAncestor<MercuryPath<'a>>>(path: &P) -> Option<SiteData> {
     let root = path.ancestor();
-    let url = root.foreground.confirmed_chrome()?.url.as_deref()?;
+    let url = root
+        .foreground
+        .as_ref()
+        .and_then(ForegroundedApp::chrome)?
+        .url
+        .as_deref()?;
     match Site::from_url(url) {
         Site::ClaudeAi => Some(SiteData::ClaudeAi(ClaudeAiSite)),
         Site::Other => None,

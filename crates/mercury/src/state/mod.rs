@@ -75,8 +75,10 @@ pub const OVERLAY_DWELL: Duration = Duration::from_secs(10);
 #[bind(Key::KeyO.down() => if_not_invalidated(toggle_overlay))]
 #[post(AnyKey => track_held_modifiers)]
 pub struct Mercury {
-    /// The frontmost app and whether a nav is in flight. See [`Foreground`].
-    pub foreground: Foreground,
+    /// The watcher-confirmed frontmost app, or `None` while a nav choice's `Foreground` effect is
+    /// in flight: the choice sets it to `None`, and the watcher's report sets it back to `Some`,
+    /// so nothing binds against the app being left in the gap.
+    pub foreground: Option<ForegroundedApp>,
     /// Every window mercury knows about, and the monitors they sit on. See [`Windows`].
     pub windows: Windows,
     /// The physical truth about which modifier keys are down, kept current by the
@@ -139,6 +141,15 @@ impl ForegroundedApp {
             Self::Ghostty => App::Ghostty,
             Self::Zed => App::Zed,
             Self::Other => App::Other,
+        }
+    }
+
+    /// The Chrome state, if this is Chrome.
+    #[must_use]
+    pub const fn chrome(&self) -> Option<&ForegroundedChrome> {
+        match self {
+            Self::Chrome(chrome) => Some(chrome),
+            _ => None,
         }
     }
 
@@ -374,98 +385,6 @@ impl Windows {
     }
 }
 
-/// The frontmost app, and whether a navigation is in flight.
-///
-/// A newtype over [`ForegroundState`] so the state can only move through the methods below: a
-/// handler cannot construct a `Navigating` or forget that [`set_front_app`](Self::set_front_app)
-/// ends one.
-#[derive(Debug)]
-pub struct Foreground(ForegroundState);
-
-/// What the model believes about the front app.
-#[derive(Debug)]
-enum ForegroundState {
-    /// The watcher's last report stands: this app is frontmost.
-    Confirmed(ForegroundedApp),
-    /// A nav choice foregrounded a new app, but the watcher has not reported it yet, so the
-    /// in-app level binds nothing until it does (see [`app_data`]). The payload is the identity
-    /// of the app being left; whatever it carried (a tab URL) went with the window nobody is
-    /// looking at.
-    Navigating(App),
-}
-
-impl Foreground {
-    /// The frontmost app at boot, with no navigation in flight.
-    ///
-    /// No `Default`: a `Foreground` that does not know which app is frontmost would answer
-    /// `App::Other`, and the in-app layer would resolve against the wrong app.
-    #[must_use]
-    pub const fn new(app: App) -> Self {
-        Self(ForegroundState::Confirmed(ForegroundedApp::from_identity(
-            app,
-        )))
-    }
-
-    /// A nav choice foregrounded an app; the watcher has not confirmed it, so [`app`](Self::app)
-    /// answers the app being left until it does. From the nav handlers, and undone by
-    /// [`set_front_app`](Self::set_front_app).
-    pub fn start_navigating(&mut self) {
-        if let ForegroundState::Confirmed(app) = &self.0 {
-            self.0 = ForegroundState::Navigating(app.identity());
-        }
-    }
-
-    /// The watcher reported the front app: record it and end any pending navigation. From
-    /// [`record_front_app`](crate::handlers).
-    pub fn set_front_app(&mut self, app: App) {
-        self.0 = ForegroundState::Confirmed(ForegroundedApp::from_identity(app));
-    }
-
-    /// The tab source reported the front tab's URL. Kept only while Chrome is the confirmed front
-    /// app: a URL arriving while anything else is up describes a window nobody is looking at, and
-    /// one arriving mid-navigation belongs to the app being left.
-    pub fn set_tab_url(&mut self, url: String) {
-        if let ForegroundState::Confirmed(ForegroundedApp::Chrome(chrome)) = &mut self.0 {
-            chrome.url = Some(url);
-        }
-    }
-
-    /// The confirmed front Chrome, or `None` whenever anything else is up or a nav is in flight.
-    #[must_use]
-    pub const fn confirmed_chrome(&self) -> Option<&ForegroundedChrome> {
-        match &self.0 {
-            ForegroundState::Confirmed(ForegroundedApp::Chrome(chrome)) => Some(chrome),
-            _ => None,
-        }
-    }
-
-    /// The confirmed front app, or `None` while a navigation is in flight, so a key pressed in the
-    /// gap does not reach the old app's bindings.
-    #[must_use]
-    pub const fn confirmed(&self) -> Option<App> {
-        match &self.0 {
-            ForegroundState::Confirmed(app) => Some(app.identity()),
-            ForegroundState::Navigating(_) => None,
-        }
-    }
-
-    /// The app the model believes is frontmost: the confirmed one, or the one being left while a
-    /// nav is in flight.
-    #[must_use]
-    pub const fn app(&self) -> App {
-        match &self.0 {
-            ForegroundState::Confirmed(app) => app.identity(),
-            ForegroundState::Navigating(app) => *app,
-        }
-    }
-
-    /// Whether a nav choice is still awaiting the watcher's confirmation.
-    #[must_use]
-    pub const fn navigating(&self) -> bool {
-        matches!(self.0, ForegroundState::Navigating(_))
-    }
-}
-
 #[derive(Bind, Debug, derive_more::From)]
 #[node(parent_path = MercuryPath)]
 #[binds(MercuryStruct)]
@@ -490,21 +409,24 @@ impl Layer {
 
     /// The keymap the overlay shows for this layer, read when `o` shows it.
     ///
-    /// `app` is the confirmed front app, which only the in-app layer reads. Typing never binds
-    /// `o`, so its arm is unreachable.
+    /// `foreground` is the confirmed front app, which only the in-app and site arms read; while a
+    /// nav is in flight they fall back to their generic cards. Typing never binds `o`, so its arm
+    /// is unreachable.
     #[must_use]
-    pub fn overlay_content(&self, foreground: &Foreground) -> &'static str {
+    pub fn overlay_content(&self, foreground: Option<&ForegroundedApp>) -> &'static str {
         match self {
             Self::Home(_) => home::OVERLAY,
             Self::Typing(_) => typing::OVERLAY,
             Self::ReturnHome(w) => match w.layers() {
                 ReturnHomeLayers::Nav(_) => nav::OVERLAY,
                 ReturnHomeLayers::Resize(_) => resize::OVERLAY,
-                ReturnHomeLayers::InApp(_) => app::overlay_for(foreground.app()),
+                ReturnHomeLayers::InApp(_) => {
+                    app::overlay_for(foreground.map_or(App::Other, ForegroundedApp::identity))
+                }
                 // The site layer's keymap is the front tab's, so it needs the URL, not just the app.
                 ReturnHomeLayers::Site(_) => site::overlay_for(
                     foreground
-                        .confirmed_chrome()
+                        .and_then(ForegroundedApp::chrome)
                         .and_then(|chrome| chrome.url.as_deref())
                         .map(Site::from_url),
                 ),
@@ -560,7 +482,7 @@ impl Mercury {
     #[must_use]
     pub fn new(front_app: App, windows: Windows) -> Self {
         Self {
-            foreground: Foreground::new(front_app),
+            foreground: Some(ForegroundedApp::from_identity(front_app)),
             windows,
             held: HeldModifiers::default(),
             overlay: None,
@@ -599,7 +521,7 @@ impl Mercury {
         if self.overlay.is_some() {
             return self.hide_overlay();
         }
-        let content = self.layer.overlay_content(&self.foreground);
+        let content = self.layer.overlay_content(self.foreground.as_ref());
         let (guard, effect) =
             timer_effect_and_guard(OVERLAY_DWELL, |id| MercuryEvent::Timer(TimerFired(id)));
         self.overlay = Some(guard);
