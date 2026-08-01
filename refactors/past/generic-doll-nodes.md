@@ -191,6 +191,13 @@ impl TypingStack {
 }
 ```
 
+`pending_double` moves with this change: it is typing-wide state (both device catch-alls flush it, and laptop keys never reach the Kinesis node), so the field, `PendingDouble`, `DoubleTap`, `DOUBLE_TAP_WINDOW`, `flush_pending`, and the double-tap window row and `double_timeout` handler all live on `TypingLayer`. The Kinesis double-tap rows reach the state by ascent (`p.into_parent()`), which is the direction handlers may reach; a generic shell's handler cannot touch a field of its parameter.
+
+Two consequences the expansion forces, both mechanical:
+
+- A handler bound on a generic shell is generic over the parameter it does not inspect (`pass_through<'x, Next: 'static>`, every closure-returning row constructor in `kinesis.rs`, `home_deadline` in mercury).
+- `TypingLayer::new()` cannot infer the parameter through `set_layer`, so call sites name the alias: `TypingStack::new()`.
+
 `KinesisRemaps` and `NumberRemaps` follow the same shape: the struct gains `<Next>`, its `#[resolve_into]` field is named `next` and typed `Next`, and its `new` takes the child it already takes. The path aliases name the concrete compositions:
 
 ```rust
@@ -200,7 +207,7 @@ pub type KinesisRemapsPath<'a> =
 pub type NumberRemapsPath<'a> = PathMut<NumberRemaps<SymbolRemaps>, KinesisRemapsPath<'a>>;
 ```
 
-`Layer::Typing(TypingLayer)` becomes `Layer::Typing(TypingStack)`, and every `TypingLayer::new()` call site (`boot_layer`, `to_typing`, the wispr entries, tests) compiles unchanged since the constructor lives on the alias. Handlers bind through the path aliases or `HasAncestor`/`IntoAncestor` bounds, so no handler signature changes; `p.get_mut().remaps` sites rename to `p.get_mut().next`.
+`Layer::Typing(TypingLayer)` becomes `Layer::Typing(TypingStack)`; `p.get_mut().remaps` sites rename to `p.get_mut().next`. Handlers bound through `HasAncestor`/`IntoAncestor` bounds are untouched.
 
 `src/model/always_on.rs`, the same move at the top of the tree:
 
