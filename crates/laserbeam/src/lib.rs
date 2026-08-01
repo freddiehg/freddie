@@ -419,11 +419,18 @@ impl<N, P: Above> Above for PathMut<N, P> {
 /// A node's path type.
 ///
 /// `bind`'s derive implements it for every node that IS in the tree, from the node's
-/// `#[node(parent_path = ..)]` or `#[node(root)]`; a derived level has no path and does not
-/// implement it.
+/// `#[node(parent_path = ..)]` or `#[node(root)]`.
 pub trait HasPath {
-    /// This node's path type. The root's is `&'a mut Self`; every other node's is its declared
-    /// [`PathMut`] alias.
+    /// This node's path type. The three node kinds, in mercury's tree:
+    ///
+    /// - The root, `#[node(root)]`: `Mercury`'s is `&'a mut Mercury` — the bare exclusive
+    ///   borrow, since there is nothing above to thread through.
+    /// - A node reached through `#[resolve_into]`, `#[node(parent_path = ..)]`: `TypingLayer`'s
+    ///   is `PathMut<TypingLayer, LayerPath<'a>>`, its declared `TypingLayerPath` alias — the
+    ///   node over its parent's path, recursively, so the whole ancestry rides along.
+    /// - A derived level (`ClaudeAiSite`) has no path and does not implement this trait: its
+    ///   data is rebuilt on every dispatch and dies with it, and it ascends at the place
+    ///   beneath it (`SiteLayerPath<'a>`), which is where a path exists.
     type Path<'a>
     where
         Self: 'a;
