@@ -200,7 +200,61 @@ After:
     }
 ```
 
-This narrows the one-record-per-dispatch promise, and it does so deliberately. The promise holds in full for every event that can change what the model does. Sample events buy out of it because their information content lives in the transitions they produce, and the transitions dispatch as their own events with full records. `trace` sits below the file's `debug` floor, so the samples cost nothing on disk unless a debugging session raises the floor to ask for them.
+This narrows the one-record-per-dispatch behavior, and it does so deliberately. The full record still accompanies every event that can change what the model does. Sample events buy out of it because their information content lives in the transitions they produce, and the transitions dispatch as their own events with full records. `trace` sits below the file's default `debug` floor, so the samples cost nothing on disk unless a debugging session asks for them.
+
+### the file's floor becomes configuration
+
+The file's floor today is `FILE_LEVEL = LevelFilter::DEBUG`, a constant in `freddie_cli`'s `logging.rs`, and the Logs contract reads that constant as a promise: the file is the record of the run, so a run is always reconstructable afterwards. That promise prices every hour of ordinary use at development-time verbosity. A daemon spends most of its life not being debugged, and in that life the file is a diagnostic buffer rather than a source of truth. It is also, concretely, a typing log: the dispatch records name every key pressed, so an always-full file keeps an on-disk transcript of everything typed outside secure input, which is a reason beyond cost to run quieter in practice.
+
+So the floor becomes configuration, mirroring how the terminal already works. `LOG_LEVEL` keeps filtering the terminal; a second variable filters the file, with the current behavior as its default:
+
+```rust
+/// The environment variable a daemon reads its file filter from. The same syntax as
+/// [`LOG_LEVEL`], so `warn` and `info,mercury=debug` are both accepted.
+pub const FILE_LOG_LEVEL: &str = "FILE_LOG_LEVEL";
+```
+
+`init`, before:
+
+```rust
+    let file = fmt::layer()
+        .json()
+        // …
+        .with_filter(FILE_LEVEL);
+```
+
+After:
+
+```rust
+    let file = fmt::layer()
+        .json()
+        // …
+        .with_filter(file_filter(&mut setup));
+```
+
+```rust
+/// What the file records: `FILE_LOG_LEVEL`, defaulting to `debug`.
+///
+/// The default keeps today's behavior, so an unconfigured daemon still writes the full record.
+/// A configured one writes what it was asked to: at `info` the file keeps the dispatch records
+/// and drops the performance details, and at `warn` it keeps only problems, which is the shape
+/// of a daemon that is installed rather than being worked on.
+fn file_filter(setup: &mut Vec<String>) -> EnvFilter {
+    let directives = std::env::var(FILE_LOG_LEVEL).unwrap_or_else(|_| "debug".to_owned());
+    EnvFilter::try_new(&directives).unwrap_or_else(|e| {
+        setup.push(format!(
+            "{FILE_LOG_LEVEL}={directives:?} is not a log filter ({e}); using debug"
+        ));
+        EnvFilter::new("debug")
+    })
+}
+```
+
+For a daemon launched from a shell, the variable travels the way `LOG_LEVEL` does. For the launchd agent, the plist's `EnvironmentVariables` dictionary carries it, and the install verb leaves it unset, so an installed daemon records in full until its owner decides otherwise.
+
+The write path does not change. Records that pass the filter are still formatted at the callsite and written straight through, so the panic hook's guarantee, that the record of a death reaches the disk before `abort`, survives at every level; what the level chooses is which records exist at all. The Logs sections in `AGENTS.md` and the README currently state that the file always records down to `debug`, and they change in the same commit to say the file records `FILE_LOG_LEVEL`, defaulting to `debug`.
+
+`RecordDetail` composes with the configurable floor rather than being replaced by it. The floor is a global choice about how much of a run to keep; `RecordDetail` is a per-event-class choice about what a sample is worth even when the floor is at its deepest. A quiet floor makes the sample question moot in daily use, and the moment a debugging session drops the floor to `trace`, the samples appear as one-line entries instead of full state dumps, which is exactly the depth they merit.
 
 ## an expensive derived value, if one appears
 
@@ -241,5 +295,6 @@ A `Cached` field is state on the model, and it carries the obligations state car
 ## changes
 
 1. Now: the rule, binding on every future source. A source that would otherwise dispatch at sample rate reduces before it sends, in the source by default, and at the gate when the reduction reads the model. This change lands no code, because no sample-rate source exists yet. mouse-mode.md's stage-one timers do not count as one: each tick carries real work in the form of a `MoveBy`, and the timer dies with the keyup.
-2. With the first sample-rate source: `RecordDetail`, the `record_detail` method with that source's variant as its first `Sample` arm, and the `dispatch_event` match, all as written above. If the source's reduction reads the model, the gate in `handle` and the mirror state land too, as written above; otherwise the source-side dedupe suffices and the model does not change.
-3. If a derived computation is measured to be expensive: `Cached` in `crates/freddie`, owned by the node whose computation it caches.
+2. Now, independently shippable: the configurable file floor. `FILE_LOG_LEVEL` and `file_filter` in `freddie_cli`'s `logging.rs` as written above, replacing the `FILE_LEVEL` constant, with the Logs wording in `AGENTS.md` and the README updated in the same commit.
+3. With the first sample-rate source: `RecordDetail`, the `record_detail` method with that source's variant as its first `Sample` arm, and the `dispatch_event` match, all as written above. If the source's reduction reads the model, the gate in `handle` and the mirror state land too, as written above; otherwise the source-side dedupe suffices and the model does not change.
+4. If a derived computation is measured to be expensive: `Cached` in `crates/freddie`, owned by the node whose computation it caches.
