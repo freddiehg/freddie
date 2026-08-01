@@ -1,4 +1,4 @@
-//! Complete / peel on the shared App tree: the five leaves from
+//! `CompletesTo` / peel on the shared App tree: the five leaves from
 //! `path-peel-complete`, built with the same `PathMut::from_fn` projections
 //! the derive emits.
 
@@ -7,7 +7,7 @@ mod common;
 use common::{
     AlbumPath, App, AppPath, Layer, LayerPath, MediaPath, Nav, NavPath, TitleParentUp, TitlePath,
 };
-use laserbeam::{Complete, Completed, PathMut, Stop};
+use laserbeam::{Completed, CompletesTo, PathMut, Stop};
 
 /// A route-parented path completes like any other, and its `Up` payload is the enum the
 /// consumer wrote: which route the leave took, carrying that parent's own leave.

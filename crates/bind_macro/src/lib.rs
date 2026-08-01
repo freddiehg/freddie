@@ -1,4 +1,4 @@
-//! Derive macro for `bind`: implements `EventHandler<M>` (accumulate) and
+//! Derive macro for `bind`: implements `AccumulateTriggers<M>` (accumulate) and
 //! `Dispatch<M>` (dispatch).
 //!
 //! `#[derive(Bind)]` reads `#[binds(Marker)]` for the marker and the node's scheduled items,
@@ -52,8 +52,8 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let items = scheduled(&input.attrs)?;
 
     // A DERIVED level is not a place in the tree. It has no `Resolve`, so it can have neither
-    // `Dispatch` nor `EventHandler`, both of which take `Self::Path`. It implements
-    // `DispatchIntoTreePath` on its `Node` instead, ascending at the place beneath it.
+    // `Dispatch` nor `AccumulateTriggers`, both of which take `Self::Path`. It implements
+    // `DispatchIntoTreePath` on its `DerivedLevel` instead, ascending at the place beneath it.
     if let Some(parent) = derived_node_parent(&input.attrs)? {
         if !input.generics.params.is_empty() {
             return Err(syn::Error::new(
@@ -76,7 +76,7 @@ fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
 /// Emits `impl laserbeam::HasPath` for a place node: its path type, `PathMut<Self, Parent>` from
 /// `#[node(parent_path = P)]`, or `&mut Self` for `#[node(root)]`. This is the associated type that
-/// `Dispatch`, `EventHandler`, and the
+/// `Dispatch`, `AccumulateTriggers`, and the
 /// place `DispatchIntoParent` impl all name.
 fn place_impl(input: &DeriveInput, name: &Ident) -> syn::Result<TokenStream2> {
     let path_ty = if is_root(&input.attrs) {
@@ -105,7 +105,7 @@ fn place_impl(input: &DeriveInput, name: &Ident) -> syn::Result<TokenStream2> {
 /// The parent path named by `#[derived_node(parent_path = Alias)]`, if this level is not a place.
 ///
 /// The derive is on the level's own struct and cannot see its parent, so it has to be told.
-/// With the parent and its own name it can build `Node<ParentPath<'a>, Self>` itself, which is
+/// With the parent and its own name it can build `DerivedLevel<ParentPath<'a>, Self>` itself, which is
 /// why no node alias is needed.
 fn derived_node_parent(attrs: &[syn::Attribute]) -> syn::Result<Option<Path>> {
     let mut found = None;
@@ -181,31 +181,31 @@ fn derived_enum_node_impl(
         reject_resolve_into(&v.fields)?;
         dispatch_arms.push(quote! {
             #name::#vi(data) => ::bind::DispatchIntoTreePath::<#marker>::dispatch_into_tree_path(
-                ::bind::Node { parent, data },
+                ::bind::DerivedLevel { parent, data },
                 event,
                 effs,
                 claim,
             ),
         });
         acc_arms.push(quote! {
-            #name::#vi(data) => ::bind::DerivedHandler::<#marker>::accumulate(
-                ::bind::Node { parent, data },
+            #name::#vi(data) => ::bind::AccumulateDerivedTriggers::<#marker>::accumulate(
+                ::bind::DerivedLevel { parent, data },
                 out,
             ),
         });
     }
     Ok(quote! {
         #[automatically_derived]
-        impl<'a> ::bind::DispatchIntoTreePath<#marker> for ::bind::Node<#parent<'a>, #name> {
+        impl<'a> ::bind::DispatchIntoTreePath<#marker> for ::bind::DerivedLevel<#parent<'a>, #name> {
             fn dispatch_into_tree_path(
                 self,
                 event: &<#marker as ::bind::Bindings>::Event,
                 effs: &mut <#marker as ::bind::Bindings>::Output,
                 claim: &mut ::bind::Claim<'_>,
             ) -> ::laserbeam::Completed<
-                <::bind::Node<#parent<'a>, #name> as ::bind::HasTreePath>::TreePath,
+                <::bind::DerivedLevel<#parent<'a>, #name> as ::bind::HasTreePath>::TreePath,
             > {
-                let ::bind::Node { parent, data } = self;
+                let ::bind::DerivedLevel { parent, data } = self;
                 match data { #(#dispatch_arms)* }
             }
         }
@@ -213,7 +213,7 @@ fn derived_enum_node_impl(
         ::bind::check_only! {
         #[automatically_derived]
         #[expect(clippy::implicit_hasher)]
-        impl<'a> ::bind::DerivedHandler<#marker> for ::bind::Node<#parent<'a>, #name> {
+        impl<'a> ::bind::AccumulateDerivedTriggers<#marker> for ::bind::DerivedLevel<#parent<'a>, #name> {
             fn accumulate(
                 self,
                 out: &mut ::std::collections::HashSet<
@@ -223,7 +223,7 @@ fn derived_enum_node_impl(
                 <Self as ::bind::HasParent>::Parent,
                 ::bind::BindError,
             > {
-                let ::bind::Node { parent, data } = self;
+                let ::bind::DerivedLevel { parent, data } = self;
                 match data { #(#acc_arms)* }
             }
         }
@@ -235,7 +235,7 @@ fn derived_enum_node_impl(
 /// place emits, over `node` instead of `path`, ascending at the place beneath it.
 ///
 /// It never names its own node type, and it cannot name its place either: a level whose parent
-/// is another derived level knows only that parent's `Node` alias. Both are spelled through the
+/// is another derived level knows only that parent's `DerivedLevel` alias. Both are spelled through the
 /// `HasTreePath` projection, which resolves because `#parent` is concrete at the impl.
 fn derived_node_impl(
     input: &DeriveInput,
@@ -266,14 +266,14 @@ fn derived_node_impl(
     let triggers = claimed_triggers(items);
     Ok(quote! {
         #[automatically_derived]
-        impl<'a> ::bind::DispatchIntoTreePath<#marker> for ::bind::Node<#parent<'a>, #name> {
+        impl<'a> ::bind::DispatchIntoTreePath<#marker> for ::bind::DerivedLevel<#parent<'a>, #name> {
             fn dispatch_into_tree_path(
                 self,
                 event: &<#marker as ::bind::Bindings>::Event,
                 effs: &mut <#marker as ::bind::Bindings>::Output,
                 claim: &mut ::bind::Claim<'_>,
             ) -> ::laserbeam::Completed<
-                <::bind::Node<#parent<'a>, #name> as ::bind::HasTreePath>::TreePath,
+                <::bind::DerivedLevel<#parent<'a>, #name> as ::bind::HasTreePath>::TreePath,
             > {
                 let node = self;
                 #(#opts)*
@@ -286,7 +286,7 @@ fn derived_node_impl(
         ::bind::check_only! {
         #[automatically_derived]
         #[expect(clippy::useless_conversion, clippy::implicit_hasher)]
-        impl<'a> ::bind::DerivedHandler<#marker> for ::bind::Node<#parent<'a>, #name> {
+        impl<'a> ::bind::AccumulateDerivedTriggers<#marker> for ::bind::DerivedLevel<#parent<'a>, #name> {
             fn accumulate(
                 self,
                 out: &mut ::std::collections::HashSet<<#marker as ::bind::Bindings>::Trigger>,
@@ -315,13 +315,13 @@ fn derived_node_impl(
 /// here and flattens to that same place, which is the identity for a place.
 ///
 /// The derive names no type it cannot see: `data`'s type comes from `f`'s return, and inference
-/// resolves `DispatchIntoTreePath` from the `Node`.
+/// resolves `DispatchIntoTreePath` from the `DerivedLevel`.
 fn derived_child_state(f: &Path, marker: &Path, place: &TokenStream2) -> TokenStream2 {
     quote! {
         match #f(&#place) {
             ::core::option::Option::Some(data) => ::laserbeam::Completed::to_maybe_invalidated(
                 ::bind::DispatchIntoTreePath::<#marker>::dispatch_into_tree_path(
-                    ::bind::Node { parent: #place, data },
+                    ::bind::DerivedLevel { parent: #place, data },
                     event,
                     effs,
                     claim,
@@ -348,7 +348,7 @@ fn derived_state(
 }
 
 /// A derived level cannot hang a place child: its `data` is rebuilt every dispatch and dies with
-/// it, so a place below it would have to fold through a `Node`, which is not a path.
+/// it, so a place below it would have to fold through a `DerivedLevel`, which is not a path.
 fn reject_resolve_into(fields: &Fields) -> syn::Result<()> {
     for f in fields {
         if let Some(attr) = f.attrs.iter().find(|a| a.path().is_ident("resolve_into")) {
@@ -368,8 +368,8 @@ fn derived_child_accumulate(f: &Path, marker: &Path, place: &TokenStream2) -> To
     quote! {
         let #place = match #f(&#place) {
             ::core::option::Option::Some(data) => {
-                ::bind::DerivedHandler::<#marker>::accumulate(
-                    ::bind::Node { parent: #place, data },
+                ::bind::AccumulateDerivedTriggers::<#marker>::accumulate(
+                    ::bind::DerivedLevel { parent: #place, data },
                     out,
                 )?
             }
@@ -385,7 +385,7 @@ fn derived_accumulate_descent(input: &DeriveInput, marker: &Path) -> syn::Result
     ))
 }
 
-/// Emits `impl EventHandler<M>`: insert this node's triggers, then recurse.
+/// Emits `impl AccumulateTriggers<M>`: insert this node's triggers, then recurse.
 ///
 /// It takes a path, exactly as `dispatch` does, and for the same reason: a level whose child
 /// is produced by a function needs a path to call that function with. The two bodies descend
@@ -398,7 +398,11 @@ fn accumulate_impl(
 ) -> syn::Result<TokenStream2> {
     let root = is_root(&input.attrs);
     let (recurse, children, needs_mut) = accumulate_body(input, name, marker, root)?;
-    let where_clause = child_where_clause(input, &children, &quote!(::bind::EventHandler<#marker>));
+    let where_clause = child_where_clause(
+        input,
+        &children,
+        &quote!(::bind::AccumulateTriggers<#marker>),
+    );
     let binding = if needs_mut {
         quote!(mut path)
     } else {
@@ -410,7 +414,7 @@ fn accumulate_impl(
         ::bind::check_only! {
         #[automatically_derived]
         #[expect(clippy::useless_conversion, clippy::implicit_hasher)]
-        impl #impl_g ::bind::EventHandler<#marker> for #name #ty_g #where_clause {
+        impl #impl_g ::bind::AccumulateTriggers<#marker> for #name #ty_g #where_clause {
             fn accumulate<'a>(
                 #binding: <Self as ::laserbeam::HasPath>::Path<'a>,
                 out: &mut ::std::collections::HashSet<<#marker as ::bind::Bindings>::Trigger>,
@@ -464,7 +468,7 @@ fn accumulate_body(
                 let recover = edge.recover_parent(&quote!(child));
                 let recurse = quote! {
                     let child =
-                        <#child as ::bind::EventHandler<#marker>>::accumulate(#child_path, out)?;
+                        <#child as ::bind::AccumulateTriggers<#marker>>::accumulate(#child_path, out)?;
                     path = #recover;
                 };
                 Ok((recurse, vec![child.clone()], true))
@@ -490,7 +494,7 @@ fn accumulate_body(
                 let recover = edge.recover_parent(&quote!(child));
                 arms.push(quote! {
                     Self::#vi(_) => {
-                        let child = <#child as ::bind::EventHandler<#marker>>::accumulate(
+                        let child = <#child as ::bind::AccumulateTriggers<#marker>>::accumulate(
                             #child_path,
                             out,
                         )?;

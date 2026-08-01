@@ -22,11 +22,11 @@ help: the trait `Bindings` is not implemented for `NotBindings`
   |
 5 | struct NotBindings;
   | ^^^^^^^^^^^^^^^^^^
-note: required by a bound in `EventHandler`
+note: required by a bound in `AccumulateTriggers`
  --> src/lib.rs
   |
-  | pub trait EventHandler<M: Bindings>: HasPath {
-  |                           ^^^^^^^^ required by this bound in `EventHandler`
+  | pub trait AccumulateTriggers<M: Bindings>: HasPath {
+  |                                 ^^^^^^^^ required by this bound in `AccumulateTriggers`
   = note: this error originates in the derive macro `Bind` (in Nightly builds, run with -Z macro-backtrace for more info)
 
 error[E0277]: the trait bound `NotBindings: Bindings` is not satisfied

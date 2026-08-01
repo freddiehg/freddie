@@ -8,7 +8,7 @@ mod common;
 
 use bind::{AscendState, Claim, exclusive};
 use common::{App, KeyEvent, Layer, LayerPath, Nav, NavPath};
-use laserbeam::{Complete, Completed, MaybeInvalidated, PathMut, Stop};
+use laserbeam::{Completed, CompletesTo, MaybeInvalidated, PathMut, Stop};
 
 const fn tree(nav_hits: u32) -> App {
     App {

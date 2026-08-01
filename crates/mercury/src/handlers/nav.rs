@@ -8,7 +8,7 @@
 
 use bind::AscendState;
 use freddie_keys::{Key, ModifierFlags};
-use laserbeam::{Complete, Completed, HasStop, IntoAncestor, MaybeInvalidated};
+use laserbeam::{Completed, CompletesTo, HasStop, IntoAncestor, MaybeInvalidated};
 
 use crate::effect::tap;
 use crate::state::MercuryPath;
@@ -26,7 +26,7 @@ pub(crate) fn mark_navigating<'a, E, P>(
 where
     P: HasStop,
     MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
+    MercuryPath<'a>: CompletesTo<P>,
 {
     let root: MercuryPath<'a> = st.state.into_ancestor();
     root.foreground.start_navigating();
@@ -36,7 +36,7 @@ where
 /// One unit per app: the effect and nothing else, so it runs on any state.
 macro_rules! foreground_unit {
     ($($handler:ident => $app:ident),* $(,)?) => {$(
-        pub(crate) fn $handler<E, P: HasStop + Complete<P>>(
+        pub(crate) fn $handler<E, P: HasStop + CompletesTo<P>>(
             _ev: &E,
             _snap: (),
             st: AscendState<'_, P>,
@@ -57,7 +57,7 @@ foreground_unit! {
 /// an app with in-app bindings, and it is opened with a chord rather than by foregrounding
 /// anything. The tap comes first in its gesture, so the modifier downs that typing's open emits
 /// land on Spotlight rather than on the app being left.
-pub(crate) fn tap_cmd_space<E, P: HasStop + Complete<P>>(
+pub(crate) fn tap_cmd_space<E, P: HasStop + CompletesTo<P>>(
     _ev: &E,
     _snap: (),
     st: AscendState<'_, P>,

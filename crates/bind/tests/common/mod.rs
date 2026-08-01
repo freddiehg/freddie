@@ -6,7 +6,7 @@
 #![expect(dead_code)]
 
 use bind::{AscendState, Bind, Bindings, EventTrigger};
-use laserbeam::{Above, Complete, Completed, HasStop, MaybeInvalidated, PathMut};
+use laserbeam::{Above, Completed, CompletesTo, HasStop, MaybeInvalidated, PathMut};
 
 // Two sources: a keyboard and the foregrounded app.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -170,7 +170,7 @@ pub fn on_armed<'x>(
 
 /// A handler for nodes a dispatch test never fires. It reads nothing, so it binds at any place:
 /// the bounds are the two every stayer needs, and neither names a node.
-pub fn ignore<P: HasStop + Complete<P>>(
+pub fn ignore<P: HasStop + CompletesTo<P>>(
     ev: &KeyEvent,
     _snap: (),
     st: AscendState<'_, P>,

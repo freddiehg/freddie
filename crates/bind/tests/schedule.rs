@@ -7,7 +7,7 @@
 //! state, and it is scheduled before the bind because it keys on what the descent did.
 
 use bind::{AscendState, Bind, Bindings, EventTrigger, and, dispatch};
-use laserbeam::{Complete, Completed, HasStop, IntoAncestor, MaybeInvalidated, PathMut};
+use laserbeam::{Completed, CompletesTo, HasStop, IntoAncestor, MaybeInvalidated, PathMut};
 
 // ---- what the app owns: events, triggers, effects ----
 
@@ -123,7 +123,7 @@ fn go_home<'x, P>(
 where
     P: HasStop,
     MaybeInvalidated<P>: IntoAncestor<APath<'x>>,
-    APath<'x>: Complete<P>,
+    APath<'x>: CompletesTo<P>,
 {
     (vec![], st.state.into_ancestor::<APath<'x>>().complete())
 }
@@ -354,7 +354,7 @@ pub type MidPath<'a> = PathMut<Mid, TopPath<'a>>;
 pub type LeafPath<'a> = PathMut<Leaf, MidPath<'a>>;
 
 /// Two effect-only units, distinguishable in the order they ran.
-fn emits_flash<P: HasStop + Complete<P>>(
+fn emits_flash<P: HasStop + CompletesTo<P>>(
     _ev: &KeyEvent,
     _snap: (),
     st: AscendState<'_, P>,
@@ -362,7 +362,7 @@ fn emits_flash<P: HasStop + Complete<P>>(
     (vec![DemoEffect::FlashOverlay], st.complete())
 }
 
-fn emits_cancel<P: HasStop + Complete<P>>(
+fn emits_cancel<P: HasStop + CompletesTo<P>>(
     _ev: &KeyEvent,
     _snap: (),
     st: AscendState<'_, P>,
@@ -393,7 +393,7 @@ fn leaf_home<'x, P>(
 where
     P: HasStop,
     MaybeInvalidated<P>: IntoAncestor<TopPath<'x>>,
-    TopPath<'x>: Complete<P>,
+    TopPath<'x>: CompletesTo<P>,
 {
     (vec![], st.state.into_ancestor::<TopPath<'x>>().complete())
 }

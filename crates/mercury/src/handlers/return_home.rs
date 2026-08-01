@@ -1,7 +1,7 @@
 //! The return-home deadline: the one concern the wrapper node owns.
 
 use freddie_keys::KeyEvent;
-use laserbeam::{Complete, Completed, PathMut};
+use laserbeam::{Completed, CompletesTo, PathMut};
 
 use crate::MercuryEffect;
 use crate::state::{AndReturnHome, LayerPath, arm_return_home};

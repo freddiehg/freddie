@@ -2,7 +2,7 @@
 
 use freddie::{KeySequenceOutcome, TimerFired};
 use freddie_keys::KeyEvent;
-use laserbeam::{Complete, Completed};
+use laserbeam::{Completed, CompletesTo};
 
 use crate::MercuryEffect;
 use crate::effect::{emit, replay};

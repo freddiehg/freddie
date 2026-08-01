@@ -476,7 +476,7 @@ pub enum MaybeInvalidated<P: HasStop> {
     Invalidated(Completed<P>),
 }
 
-impl<P: HasStop + Complete<P>> MaybeInvalidated<P> {
+impl<P: HasStop + CompletesTo<P>> MaybeInvalidated<P> {
     /// The leave this state completes to: the path completing where it stands,
     /// or the leave that already went past it.
     #[must_use]
@@ -642,7 +642,7 @@ where
 
 /// A completed leave from origin `P`: where the peeling stopped.
 ///
-/// [`Complete::complete`] and [`Completed::up`] construct one; `new` is private.
+/// [`CompletesTo::complete`] and [`Completed::up`] construct one; `new` is private.
 /// Consumers get [`into_inner`](Self::into_inner) to unwrap.
 pub struct Completed<P: HasStop> {
     stop: P::Stop,
@@ -779,7 +779,7 @@ impl<N, Par: Above> Completed<PathMut<N, Par>> {
 /// chain and one for a focus at the root. Unifying two distances needs a type
 /// that contains itself, which the occurs check rejects, so no phantom index
 /// is needed. Off-chain completes have no impl and do not compile.
-pub trait Complete<O: HasStop> {
+pub trait CompletesTo<O: HasStop> {
     fn complete(self) -> Completed<O>;
 }
 
@@ -792,26 +792,26 @@ macro_rules! up_wrap {
 }
 
 /// Stopping at the origin: zero peels, every depth, one impl.
-impl<N, P: Above> Complete<Self> for PathMut<N, P> {
+impl<N, P: Above> CompletesTo<Self> for PathMut<N, P> {
     fn complete(self) -> Completed<Self> {
         Completed::new(Stop::Here(self))
     }
 }
 
 /// Stopping at the root, for a leave that began there: the bare path.
-impl<'a, R> Complete<&'a mut R> for &'a mut R {
+impl<'a, R> CompletesTo<&'a mut R> for &'a mut R {
     fn complete(self) -> Completed<&'a mut R> {
         Completed::new(self)
     }
 }
 
-/// Two `Complete` impls per peel distance: focus still a path, and focus at
+/// Two `CompletesTo` impls per peel distance: focus still a path, and focus at
 /// the root. The origin in the trait parameter is the focus wrapped in one
 /// `PathMut` per skipped layer.
 macro_rules! complete_impls {
     ([$($done:ident),*]) => {};
     ([$($done:ident),*], $head:ident $(, $rest:ident)*) => {
-        impl<$($done,)* $head, N, P: Above> Complete<path_nest!(PathMut<N, P>, $($done,)* $head)>
+        impl<$($done,)* $head, N, P: Above> CompletesTo<path_nest!(PathMut<N, P>, $($done,)* $head)>
             for PathMut<N, P>
         {
             fn complete(self) -> Completed<path_nest!(PathMut<N, P>, $($done,)* $head)> {
@@ -819,7 +819,7 @@ macro_rules! complete_impls {
             }
         }
 
-        impl<'a, R, $($done,)* $head> Complete<path_nest!(&'a mut R, $($done,)* $head)>
+        impl<'a, R, $($done,)* $head> CompletesTo<path_nest!(&'a mut R, $($done,)* $head)>
             for &'a mut R
         {
             fn complete(self) -> Completed<path_nest!(&'a mut R, $($done,)* $head)> {
@@ -892,7 +892,7 @@ mod ancestor_tests {
 
 #[cfg(test)]
 mod complete_tests {
-    use crate::{Complete, Completed, HasStop, IntoAncestor, PathMut, Stop};
+    use crate::{Completed, CompletesTo, HasStop, IntoAncestor, PathMut, Stop};
 
     struct App {
         hits: u32,
@@ -1006,14 +1006,14 @@ mod complete_tests {
         assert_eq!(app.hits, 5);
     }
 
-    fn stay<P: Complete<P> + HasStop>(path: P) -> Completed<P> {
+    fn stay<P: CompletesTo<P> + HasStop>(path: P) -> Completed<P> {
         path.complete()
     }
 
     fn to_root<'a, P>(path: P) -> Completed<P>
     where
         P: IntoAncestor<AppPath<'a>> + HasStop,
-        AppPath<'a>: Complete<P>,
+        AppPath<'a>: CompletesTo<P>,
     {
         path.into_ancestor().complete()
     }
@@ -1159,7 +1159,7 @@ mod complete_tests {
 
 #[cfg(test)]
 mod maybe_invalidated_tests {
-    use crate::{Complete, Completed, MaybeInvalidated, PathMut, Stop};
+    use crate::{Completed, CompletesTo, MaybeInvalidated, PathMut, Stop};
 
     struct App {
         hits: u32,
@@ -1321,7 +1321,7 @@ mod maybe_invalidated_tests {
 #[cfg(test)]
 mod ancestors_through_a_leave_tests {
     use crate::{
-        Complete, Completed, HasAncestor, HasStop, IntoAncestor, MaybeInvalidated, PathMut,
+        Completed, CompletesTo, HasAncestor, HasStop, IntoAncestor, MaybeInvalidated, PathMut,
     };
 
     struct App {
@@ -1438,7 +1438,7 @@ mod ancestors_through_a_leave_tests {
         where
             P: HasStop,
             MaybeInvalidated<P>: IntoAncestor<AppPath<'a>>,
-            AppPath<'a>: Complete<P>,
+            AppPath<'a>: CompletesTo<P>,
         {
             let root: AppPath<'a> = state.into_ancestor();
             root.hits += 1;

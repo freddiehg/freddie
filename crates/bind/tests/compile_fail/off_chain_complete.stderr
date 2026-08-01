@@ -1,20 +1,20 @@
-error[E0277]: the trait bound `PathMut<Nav, PathMut<Layer, &mut App>>: laserbeam::Complete<PathMut<Layer, &mut App>>` is not satisfied
+error[E0277]: the trait bound `PathMut<Nav, PathMut<Layer, &mut App>>: CompletesTo<PathMut<Layer, &mut App>>` is not satisfied
   --> tests/compile_fail/off_chain_complete.rs:26:43
    |
 26 |     let _: Completed<LayerPath<'_>> = nav.complete();
-   |                                           ^^^^^^^^ the trait `laserbeam::Complete<PathMut<Layer, &mut App>>` is not implemented for `PathMut<Nav, PathMut<Layer, &mut App>>`
+   |                                           ^^^^^^^^ the trait `CompletesTo<PathMut<Layer, &mut App>>` is not implemented for `PathMut<Nav, PathMut<Layer, &mut App>>`
    |
-   = help: `PathMut<N, P>` implements trait `laserbeam::Complete<O>`:
-             laserbeam::Complete<PathMut<N, P>>
-             laserbeam::Complete<PathMut<N1, PathMut<N, P>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N, P>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N, P>>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N, P>>>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N, P>>>>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N, P>>>>>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N, P>>>>>>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N, P>>>>>>>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N9, PathMut<N, P>>>>>>>>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N9, PathMut<N10, PathMut<N, P>>>>>>>>>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N9, PathMut<N10, PathMut<N11, PathMut<N, P>>>>>>>>>>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N9, PathMut<N10, PathMut<N11, PathMut<N12, PathMut<N, P>>>>>>>>>>>>>>
+   = help: `PathMut<N, P>` implements trait `CompletesTo<O>`:
+             CompletesTo<PathMut<N, P>>
+             CompletesTo<PathMut<N1, PathMut<N, P>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N, P>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N, P>>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N, P>>>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N, P>>>>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N, P>>>>>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N, P>>>>>>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N, P>>>>>>>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N9, PathMut<N, P>>>>>>>>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N9, PathMut<N10, PathMut<N, P>>>>>>>>>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N9, PathMut<N10, PathMut<N11, PathMut<N, P>>>>>>>>>>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N9, PathMut<N10, PathMut<N11, PathMut<N12, PathMut<N, P>>>>>>>>>>>>>>

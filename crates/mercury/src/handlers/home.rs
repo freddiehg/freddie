@@ -18,7 +18,7 @@
 //! root can bind it from its own place in the tree.
 
 use bind::AscendState;
-use laserbeam::{Complete, Completed, HasStop, IntoAncestor, MaybeInvalidated};
+use laserbeam::{Completed, CompletesTo, HasStop, IntoAncestor, MaybeInvalidated};
 
 use crate::MercuryEffect;
 use crate::state::{
@@ -36,7 +36,7 @@ pub(crate) fn go_home<'a, E, P>(
 where
     P: HasStop,
     MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
+    MercuryPath<'a>: CompletesTo<P>,
 {
     let root: MercuryPath<'a> = st.state.into_ancestor();
     let effects = root.set_layer(HomeLayer::new());
@@ -54,7 +54,7 @@ pub(crate) fn enter_nav<'a, E, P>(
 where
     P: HasStop,
     MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
+    MercuryPath<'a>: CompletesTo<P>,
 {
     let root: MercuryPath<'a> = st.state.into_ancestor();
     let (wrapped, timer) = AndReturnHome::new(NavLayer::new());
@@ -73,7 +73,7 @@ pub(crate) fn enter_typing<'a, E, P>(
 where
     P: HasStop,
     MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
+    MercuryPath<'a>: CompletesTo<P>,
 {
     let root: MercuryPath<'a> = st.state.into_ancestor();
     let effects = root.set_layer(TypingLayer::new());
@@ -89,7 +89,7 @@ pub(crate) fn enter_inapp<'a, E, P>(
 where
     P: HasStop,
     MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
+    MercuryPath<'a>: CompletesTo<P>,
 {
     let root: MercuryPath<'a> = st.state.into_ancestor();
     let (wrapped, timer) = AndReturnHome::new(AppLayer::new());
@@ -110,7 +110,7 @@ pub(crate) fn enter_site<'a, E, P>(
 where
     P: HasStop,
     MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
+    MercuryPath<'a>: CompletesTo<P>,
 {
     let root: MercuryPath<'a> = st.state.into_ancestor();
     let (wrapped, timer) = AndReturnHome::new(SiteLayer::new());
@@ -128,7 +128,7 @@ pub(crate) fn enter_resize<'a, E, P>(
 where
     P: HasStop,
     MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
+    MercuryPath<'a>: CompletesTo<P>,
 {
     let root: MercuryPath<'a> = st.state.into_ancestor();
     let (wrapped, timer) = AndReturnHome::new(ResizeLayer::new());

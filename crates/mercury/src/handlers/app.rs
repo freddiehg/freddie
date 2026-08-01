@@ -7,7 +7,7 @@
 
 use bind::AscendState;
 use freddie_keys::{Key, ModifierFlags};
-use laserbeam::{Complete, Completed, HasAncestor, HasStop};
+use laserbeam::{Completed, CompletesTo, HasAncestor, HasStop};
 
 use crate::MercuryEffect;
 use crate::effect::{Copied, UrlPart, tap};
@@ -15,7 +15,7 @@ use crate::sources::host;
 use crate::state::{Mercury, MercuryPath};
 
 /// Chrome's refresh: cmd-r.
-pub(crate) fn tap_cmd_r<E, P: HasStop + Complete<P>>(
+pub(crate) fn tap_cmd_r<E, P: HasStop + CompletesTo<P>>(
     _ev: &E,
     _snap: (),
     st: AscendState<'_, P>,
@@ -24,7 +24,7 @@ pub(crate) fn tap_cmd_r<E, P: HasStop + Complete<P>>(
 }
 
 /// Chrome's address bar: cmd-l.
-pub(crate) fn tap_cmd_l<E, P: HasStop + Complete<P>>(
+pub(crate) fn tap_cmd_l<E, P: HasStop + CompletesTo<P>>(
     _ev: &E,
     _snap: (),
     st: AscendState<'_, P>,
@@ -37,7 +37,7 @@ pub(crate) fn tap_cmd_l<E, P: HasStop + Complete<P>>(
 /// A remap rather than an automation: nothing reaches into the page. The modifiers ride as flags
 /// on the one key event, which is what keeps a modifier the user is really holding from being
 /// stranded.
-pub(crate) fn tap_cmd_shift_o<E, P: HasStop + Complete<P>>(
+pub(crate) fn tap_cmd_shift_o<E, P: HasStop + CompletesTo<P>>(
     _ev: &E,
     _snap: (),
     st: AscendState<'_, P>,
@@ -57,7 +57,7 @@ pub(crate) fn tap_cmd_shift_o<E, P: HasStop + Complete<P>>(
 /// handed is still there to complete at.
 pub(crate) fn copy_url<'a, E, P>(_ev: &E, _snap: (), path: P) -> (Vec<MercuryEffect>, Completed<P>)
 where
-    P: HasAncestor<MercuryPath<'a>> + HasStop + Complete<P>,
+    P: HasAncestor<MercuryPath<'a>> + HasStop + CompletesTo<P>,
 {
     let effects = copy(path.ancestor(), UrlPart::Whole);
     (effects, path.complete())
@@ -66,7 +66,7 @@ where
 /// `cmd-l` in Chrome: the front tab's host, onto the clipboard.
 pub(crate) fn copy_host<'a, E, P>(_ev: &E, _snap: (), path: P) -> (Vec<MercuryEffect>, Completed<P>)
 where
-    P: HasAncestor<MercuryPath<'a>> + HasStop + Complete<P>,
+    P: HasAncestor<MercuryPath<'a>> + HasStop + CompletesTo<P>,
 {
     let effects = copy(path.ancestor(), UrlPart::Host);
     (effects, path.complete())
@@ -108,7 +108,7 @@ fn tmux(flags: ModifierFlags, command: Key) -> Vec<MercuryEffect> {
 }
 
 /// `j` in Ghostty: tmux's previous window. Bound alone, because walking windows repeats.
-pub(crate) fn tmux_prev<E, P: HasStop + Complete<P>>(
+pub(crate) fn tmux_prev<E, P: HasStop + CompletesTo<P>>(
     _ev: &E,
     _snap: (),
     st: AscendState<'_, P>,
@@ -117,7 +117,7 @@ pub(crate) fn tmux_prev<E, P: HasStop + Complete<P>>(
 }
 
 /// `k` in Ghostty: tmux's next window.
-pub(crate) fn tmux_next<E, P: HasStop + Complete<P>>(
+pub(crate) fn tmux_next<E, P: HasStop + CompletesTo<P>>(
     _ev: &E,
     _snap: (),
     st: AscendState<'_, P>,
@@ -134,7 +134,7 @@ pub(crate) fn tmux_next<E, P: HasStop + Complete<P>>(
 /// Parameterized, so one unit serves all ten digits: `and!(tmux_window(Key::Num1), go_home)`.
 /// Jumping is a choice rather than something you repeat, which is why `go_home` composes after
 /// it while `tmux_prev` and `tmux_next` are bound alone.
-pub(crate) fn tmux_window<E, P: HasStop + Complete<P>>(
+pub(crate) fn tmux_window<E, P: HasStop + CompletesTo<P>>(
     digit: Key,
 ) -> impl Fn(&E, (), AscendState<'_, P>) -> (Vec<MercuryEffect>, Completed<P>) {
     move |_ev, (), st| (tmux(ModifierFlags::SHIFT, digit), st.complete())

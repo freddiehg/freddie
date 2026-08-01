@@ -2,7 +2,7 @@
 
 use bind::AscendState;
 use freddie_keys::KeyEvent;
-use laserbeam::{Complete, Completed};
+use laserbeam::{Completed, CompletesTo};
 
 use crate::MercuryEffect;
 use crate::state::MercuryPath;

@@ -7,7 +7,7 @@
 
 use bind::AscendState;
 use freddie_windows::{Frame, WindowFrame};
-use laserbeam::{Complete, Completed, HasStop, IntoAncestor, MaybeInvalidated};
+use laserbeam::{Completed, CompletesTo, HasStop, IntoAncestor, MaybeInvalidated};
 
 use crate::MercuryEffect;
 use crate::state::{Mercury, MercuryPath, Windows};
@@ -42,7 +42,7 @@ pub(crate) fn maximize<'a, E, P>(
 where
     P: HasStop,
     MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
+    MercuryPath<'a>: CompletesTo<P>,
 {
     let root: MercuryPath<'a> = st.state.into_ancestor();
     let effects = place(root, maximized);
@@ -57,7 +57,7 @@ pub(crate) fn left_half<'a, E, P>(
 where
     P: HasStop,
     MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
+    MercuryPath<'a>: CompletesTo<P>,
 {
     let root: MercuryPath<'a> = st.state.into_ancestor();
     let effects = place(root, left_of);
@@ -72,7 +72,7 @@ pub(crate) fn right_half<'a, E, P>(
 where
     P: HasStop,
     MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
+    MercuryPath<'a>: CompletesTo<P>,
 {
     let root: MercuryPath<'a> = st.state.into_ancestor();
     let effects = place(root, right_of);
@@ -95,7 +95,7 @@ pub(crate) fn restore<'a, E, P>(
 where
     P: HasStop,
     MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
+    MercuryPath<'a>: CompletesTo<P>,
 {
     let root: MercuryPath<'a> = st.state.into_ancestor();
     let effects = root.windows.restoring();

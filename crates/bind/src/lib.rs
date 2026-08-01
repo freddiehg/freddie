@@ -7,7 +7,7 @@
 //! A trigger is usually a value, `Key::KeyR` or `Quit`. It may instead be a CLOSURE, which the
 //! derive calls with the state the node is bound on, for a trigger that depends on it: a place
 //! node's closure is handed `&Self::Path`, so the root's reads its fields directly and a deeper
-//! node's reads through `get` and `parent`, and a derived level's is handed `&Node`. It is shared,
+//! node's reads through `get` and `parent`, and a derived level's is handed `&DerivedLevel`. It is shared,
 //! so a trigger cannot write what it reads. The two forms are told apart syntactically, since a
 //! trait cannot do it: blanket impls for values and for closures overlap.
 //!
@@ -16,15 +16,15 @@
 //! [`Dispatch`] runs the handler the active state binds for a fired event. It is what a
 //! keystroke costs. [`dispatch()`] runs it from the root.
 //!
-//! [`EventHandler`] is THE CHECK, behind the `check` feature. It walks the same tree and
+//! [`AccumulateTriggers`] is THE CHECK, behind the `check` feature. It walks the same tree and
 //! collects every live bind's trigger into a set, erroring on a collision. It is a test.
 //! Nothing in a shipped binary calls it: the keyboard tap subscribes to event TYPES, not to
 //! individual keys, so there is no trigger set to register and no reason for it to exist at
 //! runtime.
 //!
-//! With `default-features = false` the check does not exist. [`EventHandler`],
+//! With `default-features = false` the check does not exist. [`AccumulateTriggers`],
 //! [`accumulate()`], and [`BindError`] are not compiled, and `#[derive(Bind)]` emits no
-//! `EventHandler` impl, because it wraps that impl in [`check_only!`].
+//! `AccumulateTriggers` impl, because it wraps that impl in [`check_only!`].
 #![expect(clippy::implicit_hasher)]
 
 #[cfg(feature = "check")]
@@ -108,7 +108,7 @@ impl<'a, P: ::laserbeam::HasStop> AscendState<'a, P> {
     #[must_use]
     pub fn complete(self) -> ::laserbeam::Completed<P>
     where
-        P: ::laserbeam::Complete<P>,
+        P: ::laserbeam::CompletesTo<P>,
     {
         self.state.complete()
     }
@@ -142,7 +142,7 @@ pub fn exclusive<Ev, Snap, P, E, H>(
     handler: H,
 ) -> impl for<'a> FnOnce(Ev, Snap, AscendState<'a, P>) -> (Vec<E>, ::laserbeam::Completed<P>)
 where
-    P: ::laserbeam::HasStop + ::laserbeam::Complete<P>,
+    P: ::laserbeam::HasStop + ::laserbeam::CompletesTo<P>,
     H: for<'a> FnOnce(Ev, Snap, AscendState<'a, P>) -> (Vec<E>, ::laserbeam::Completed<P>),
 {
     move |ev, snap, mut st| match st.claim() {
@@ -244,7 +244,7 @@ pub trait Bindings {
 /// It hands the path back, again like [`Dispatch`], because a node that has descended still
 /// has its own triggers to insert.
 #[cfg(feature = "check")]
-pub trait EventHandler<M: Bindings>: HasPath {
+pub trait AccumulateTriggers<M: Bindings>: HasPath {
     /// Adds this node's triggers, and those of its active descendants, to `out`.
     ///
     /// # Errors
@@ -285,15 +285,15 @@ pub fn insert_or_error<T: Eq + Hash>(out: &mut HashSet<T>, t: T) -> Result<(), B
 ///
 /// # Errors
 ///
-/// Propagates [`BindError::DuplicateTrigger`] from [`EventHandler::accumulate`].
+/// Propagates [`BindError::DuplicateTrigger`] from [`AccumulateTriggers::accumulate`].
 #[cfg(feature = "check")]
 pub fn accumulate<'a, M, N>(path: N::Path<'a>) -> Result<HashSet<M::Trigger>, BindError>
 where
     M: Bindings,
-    N: EventHandler<M> + 'a,
+    N: AccumulateTriggers<M> + 'a,
 {
     let mut out = HashSet::new();
-    <N as EventHandler<M>>::accumulate(path, &mut out)?;
+    <N as AccumulateTriggers<M>>::accumulate(path, &mut out)?;
     Ok(out)
 }
 
@@ -307,7 +307,7 @@ pub use ::laserbeam::HasPath;
 /// `parent` is a [`laserbeam::PathMut`](::laserbeam::PathMut) when the level above is a place, so
 /// `node.parent.get_mut()` reaches it. A `Path` ADDRESSES a place; this type CARRIES data.
 /// They both sit next to a parent, and that is the whole of the resemblance.
-pub struct Node<Parent, Data> {
+pub struct DerivedLevel<Parent, Data> {
     /// What the level above handed down.
     pub parent: Parent,
     /// The immutable data this level produced.
@@ -321,13 +321,13 @@ pub struct Node<Parent, Data> {
 /// instead of writing it.
 pub trait HasParent {
     /// The parent's type: a [`laserbeam::PathMut`](::laserbeam::PathMut) when the level above is a
-    /// place, a [`Node`] when it is derived.
+    /// place, a [`DerivedLevel`] when it is derived.
     type Parent;
     /// Consumes this node and returns the parent, moving one level up.
     fn into_parent(self) -> Self::Parent;
 }
 
-impl<Parent, Data> HasParent for Node<Parent, Data> {
+impl<Parent, Data> HasParent for DerivedLevel<Parent, Data> {
     type Parent = Parent;
     fn into_parent(self) -> Parent {
         self.parent
@@ -343,9 +343,9 @@ impl<N, P> HasParent for ::laserbeam::PathMut<N, P> {
 
 /// The place path at the bottom of a parent chain: what a level ASCENDS at.
 ///
-/// A place is its own; a [`Node`] flattens to its parent's, however many derived levels are
+/// A place is its own; a [`DerivedLevel`] flattens to its parent's, however many derived levels are
 /// stacked. That is what lets one handler shape serve both: ascent holds a path into the tree,
-/// never a `Node`, whose `data` is rebuilt from the tree on every dispatch and dies with it.
+/// never a `DerivedLevel`, whose `data` is rebuilt from the tree on every dispatch and dies with it.
 pub trait HasTreePath {
     /// The place path this chain bottoms out at.
     type TreePath;
@@ -367,7 +367,7 @@ impl<N, P> HasTreePath for ::laserbeam::PathMut<N, P> {
     }
 }
 
-impl<Parent: HasTreePath, Data> HasTreePath for Node<Parent, Data> {
+impl<Parent: HasTreePath, Data> HasTreePath for DerivedLevel<Parent, Data> {
     type TreePath = Parent::TreePath;
     fn into_tree_path(self) -> Parent::TreePath {
         self.parent.into_tree_path()
@@ -452,13 +452,13 @@ where
 }
 
 /// A derived level's half of THE CHECK. It does not ship, for the same reason
-/// [`EventHandler`] does not.
+/// [`AccumulateTriggers`] does not.
 ///
 /// A derived level has no [`HasPath`] path, so it cannot implement
-/// `EventHandler`, whose signature is written in terms of `Self::Path`. It carries its
+/// `AccumulateTriggers`, whose signature is written in terms of `Self::Path`. It carries its
 /// triggers here instead.
 #[cfg(feature = "check")]
-pub trait DerivedHandler<M: Bindings>: HasParent + Sized {
+pub trait AccumulateDerivedTriggers<M: Bindings>: HasParent + Sized {
     /// Adds this level's triggers to `out` and hands the PARENT back.
     ///
     /// # Errors
@@ -467,7 +467,7 @@ pub trait DerivedHandler<M: Bindings>: HasParent + Sized {
     fn accumulate(self, out: &mut HashSet<M::Trigger>) -> Result<Self::Parent, BindError>;
 }
 
-/// The dispatch half. `#[derive(Bind)]` implements it alongside [`EventHandler`].
+/// The dispatch half. `#[derive(Bind)]` implements it alongside [`AccumulateTriggers`].
 ///
 /// Each node descends into its active child first, then runs its own scheduled items, so a
 /// child's binding takes priority over an ancestor's. Effects collect into `effs`; the first
@@ -585,7 +585,7 @@ impl<M: Bindings, N> SimpleRunner<'_, M, N> {
 
 #[cfg(test)]
 mod has_place_tests {
-    use super::{HasTreePath, Node};
+    use super::{DerivedLevel, HasTreePath};
     use laserbeam::PathMut;
 
     struct Root {
@@ -618,7 +618,7 @@ mod has_place_tests {
     fn a_node_flattens_to_its_parent_path() {
         let mut root = Root { layer: 7 };
         {
-            let node = Node {
+            let node = DerivedLevel {
                 parent: path(&mut root),
                 data: "derived",
             };
@@ -632,8 +632,8 @@ mod has_place_tests {
     fn two_node_layers_flatten_to_the_same_place() {
         let mut root = Root { layer: 7 };
         {
-            let node = Node {
-                parent: Node {
+            let node = DerivedLevel {
+                parent: DerivedLevel {
                     parent: path(&mut root),
                     data: "outer",
                 },

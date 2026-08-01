@@ -1,20 +1,20 @@
-error[E0277]: the trait bound `PathMut<Nav, PathMut<Layer, &mut App>>: laserbeam::Complete<&mut App>` is not satisfied
+error[E0277]: the trait bound `PathMut<Nav, PathMut<Layer, &mut App>>: CompletesTo<&mut App>` is not satisfied
   --> tests/compile_fail/non_root_completes_root_leave.rs:26:41
    |
 26 |     let _: Completed<AppPath<'_>> = nav.complete();
-   |                                         ^^^^^^^^ the trait `laserbeam::Complete<&mut App>` is not implemented for `PathMut<Nav, PathMut<Layer, &mut App>>`
+   |                                         ^^^^^^^^ the trait `CompletesTo<&mut App>` is not implemented for `PathMut<Nav, PathMut<Layer, &mut App>>`
    |
-   = help: `PathMut<N, P>` implements trait `laserbeam::Complete<O>`:
-             laserbeam::Complete<PathMut<N, P>>
-             laserbeam::Complete<PathMut<N1, PathMut<N, P>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N, P>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N, P>>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N, P>>>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N, P>>>>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N, P>>>>>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N, P>>>>>>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N, P>>>>>>>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N9, PathMut<N, P>>>>>>>>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N9, PathMut<N10, PathMut<N, P>>>>>>>>>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N9, PathMut<N10, PathMut<N11, PathMut<N, P>>>>>>>>>>>>>
-             laserbeam::Complete<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N9, PathMut<N10, PathMut<N11, PathMut<N12, PathMut<N, P>>>>>>>>>>>>>>
+   = help: `PathMut<N, P>` implements trait `CompletesTo<O>`:
+             CompletesTo<PathMut<N, P>>
+             CompletesTo<PathMut<N1, PathMut<N, P>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N, P>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N, P>>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N, P>>>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N, P>>>>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N, P>>>>>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N, P>>>>>>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N, P>>>>>>>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N9, PathMut<N, P>>>>>>>>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N9, PathMut<N10, PathMut<N, P>>>>>>>>>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N9, PathMut<N10, PathMut<N11, PathMut<N, P>>>>>>>>>>>>>
+             CompletesTo<PathMut<N1, PathMut<N2, PathMut<N3, PathMut<N4, PathMut<N5, PathMut<N6, PathMut<N7, PathMut<N8, PathMut<N9, PathMut<N10, PathMut<N11, PathMut<N12, PathMut<N, P>>>>>>>>>>>>>>

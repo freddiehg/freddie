@@ -1,7 +1,7 @@
 //! The tab source's one handler.
 
 use bind::AscendState;
-use laserbeam::{Complete, Completed};
+use laserbeam::{Completed, CompletesTo};
 
 use crate::state::MercuryPath;
 use crate::{MercuryEffect, TabEvent};

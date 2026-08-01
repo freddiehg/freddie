@@ -2,7 +2,7 @@
 
 use bind::AscendState;
 use freddie::TimerFired;
-use laserbeam::{Complete, Completed};
+use laserbeam::{Completed, CompletesTo};
 
 use crate::state::MercuryPath;
 use crate::{MercuryEffect, WindowEvent};

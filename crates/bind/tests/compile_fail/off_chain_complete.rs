@@ -1,6 +1,6 @@
-// A focus deeper than the origin cannot complete that leave: no `Complete`
+// A focus deeper than the origin cannot complete that leave: no `CompletesTo`
 // impl (E0277).
-use laserbeam::{Complete, Completed, PathMut};
+use laserbeam::{CompletesTo, Completed, PathMut};
 
 struct App {
     layer: Layer,

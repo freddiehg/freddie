@@ -11,9 +11,9 @@ mod common;
 
 use std::fmt::Write as _;
 
-use bind::{AscendState, Bind, Node, accumulate, dispatch, exclusive};
+use bind::{AscendState, Bind, DerivedLevel, accumulate, dispatch, exclusive};
 use common::{Demo, DemoEvent, KeyEvent, Keyboard, kb};
-use laserbeam::{Complete, Completed, MaybeInvalidated, PathMut};
+use laserbeam::{Completed, CompletesTo, MaybeInvalidated, PathMut};
 use std::collections::HashSet;
 
 #[derive(Bind)]
@@ -51,7 +51,7 @@ pub struct AppData {
     pub tab: String,
 }
 
-/// A derived level UNDER a derived level. Its parent is a `Node`, not a `PathMut`.
+/// A derived level UNDER a derived level. Its parent is a `DerivedLevel`, not a `PathMut`.
 #[derive(Bind)]
 #[derived_node(parent_path = AppNode)]
 #[binds(Demo)]
@@ -62,8 +62,8 @@ pub struct TabData {
 
 pub type RootPath<'a> = &'a mut Root;
 pub type ShellPath<'a> = PathMut<Shell, RootPath<'a>>;
-pub type AppNode<'a> = Node<ShellPath<'a>, AppData>;
-pub type TabNode<'a> = Node<AppNode<'a>, TabData>;
+pub type AppNode<'a> = DerivedLevel<ShellPath<'a>, AppData>;
+pub type TabNode<'a> = DerivedLevel<AppNode<'a>, TabData>;
 
 pub enum R<'a> {
     Shell(ShellPath<'a>),
@@ -77,7 +77,7 @@ fn app_data(path: &ShellPath) -> Option<AppData> {
     })
 }
 
-/// A derived child fn on a DERIVED level. Same shape; `&Parent` is a `&Node`.
+/// A derived child fn on a DERIVED level. Same shape; `&Parent` is a `&DerivedLevel`.
 fn tab_data(node: &AppNode) -> Option<TabData> {
     (node.data.tab == "gmail").then_some(TabData { thread: 7 })
 }

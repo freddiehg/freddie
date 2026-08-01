@@ -1,7 +1,7 @@
 //! The program's one way out, shared by home's `q` and the menu bar's Quit.
 
 use bind::AscendState;
-use laserbeam::{Complete, Completed, HasStop, IntoAncestor, MaybeInvalidated};
+use laserbeam::{Completed, CompletesTo, HasStop, IntoAncestor, MaybeInvalidated};
 
 use crate::MercuryEffect;
 use crate::state::MercuryPath;
@@ -23,7 +23,7 @@ pub(crate) fn quit<'a, E, P>(
 where
     P: HasStop,
     MaybeInvalidated<P>: IntoAncestor<MercuryPath<'a>>,
-    MercuryPath<'a>: Complete<P>,
+    MercuryPath<'a>: CompletesTo<P>,
 {
     let root: MercuryPath<'a> = st.state.into_ancestor();
     let mut effects = root.held.open();
