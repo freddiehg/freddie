@@ -15,7 +15,6 @@ pub(crate) const OVERLAY: &str = include_str!("overlays/nav.txt");
 #[node(parent_path = ReturnHomeLayersPath)]
 #[binds(MercuryStruct)]
 #[bind(
-    Key::KeyT.down() => if_not_invalidated(enter_typing),
     Key::KeyC.down() => if_not_invalidated(open(App::Chrome)),
     Key::KeyF.down() => if_not_invalidated(open(App::Finder)),
     Key::KeyG.down() => if_not_invalidated(open(App::Ghostty)),

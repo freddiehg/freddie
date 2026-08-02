@@ -5,5 +5,4 @@
   g    ghostty
   z    zed
   spc  spotlight
-  t    typing
   esc  home

@@ -4,5 +4,4 @@
   ←    left half
   →    right half
   r    restore
-  t    typing
   esc  home
