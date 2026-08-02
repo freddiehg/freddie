@@ -200,6 +200,7 @@ A handler should only be bound in a state in which it is valid, and its signatur
 - A handler does not clean up unrelated state. When every handler carries the same boilerplate arm (the 28 identical `Invalidated => (vec![], c)` arms that became `if_not_invalidated`), the arm is the caller's job, not the handlers'.
 - The signature is the entitlement. A bind-row handler receives its live path, because that is the only state it can legitimately act on; it does not receive a maybe it must unwrap. Posts are the one shape that receives `AscendState`, because they run whether or not the node survived, and what to do about a dead node is genuinely per-post meaning.
 - Branching on a mode flag inside a handler is the same defect one level up: the modes should be nodes (or derived substates), and the handler bound only in the mode where it applies.
+- A handler is named for what it does, never for how it is triggered. The trigger already lives in the bind row, and one handler binds to different keys on different devices, so a key name in the handler is wrong on every other row that uses it. `n_home` (laptop `n`, but AltIns `h` on the Kinesis) is the canonical offense; its name is `escape_then_home`, the action it performs.
 
 ## Audits
 
