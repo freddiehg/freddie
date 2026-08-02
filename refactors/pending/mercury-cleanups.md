@@ -57,7 +57,7 @@ pub enum Layer {
 Two behavior notes, both matching figaro:
 
 - Escape in home now re-enters home (the root row fires; `set_layer(Home)` is idempotent) instead of home's own row doing the same thing. The `shows("Home")` assertion in any home-escape test keeps passing.
-- In a return-home layer, the escape is no longer claimed by the leaf, so `AndReturnHome`'s `home_deadline` post sees it during descent and rearms the deadline; the root's `go_home` then replaces the layer, dropping `AndReturnHome` and its guard, which cancels the rearmed timer. No timer survives.
+- In a return-home layer, the escape is no longer claimed by the leaf, so `AndReturnHome`'s `home_deadline` post sees it during descent and rearms the deadline; the root's `go_home` then replaces the layer, dropping `AndReturnHome` and its guard, which cancels the rearmed timer. No timer survives. `escape_goes_home_from_a_sublayer` and `escape_leaves_resize` assert exact effect vectors, so each gains the `return_home_timer()` ahead of its `shows("Home")`.
 
 ## Change 2: t → typing only from home and in-app
 

@@ -34,7 +34,6 @@ pub(crate) const fn overlay_for(app: App) -> &'static str {
 #[binds(MercuryStruct)]
 #[derived_child(app_data)]
 #[bind(
-    Key::Escape.down() => if_not_invalidated(go_home),
     Key::KeyN.down() => if_not_invalidated(enter_nav),
     Key::KeyS.down() => if_not_invalidated(enter_site),
     Key::KeyT.down() => if_not_invalidated(enter_typing),

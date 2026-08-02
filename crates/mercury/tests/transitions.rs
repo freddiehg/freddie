@@ -245,7 +245,12 @@ fn escape_goes_home_from_a_sublayer() {
     let mut m = home();
     let _ = m.handle(&key(Key::KeyN));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Nav(_))));
-    assert_eq!(m.handle(&key(Key::Escape)), vec![shows("Home")]);
+    // The deadline post rearms during descent; the root's go_home then drops the layer and its
+    // guard, cancelling the rearmed timer at performance.
+    assert_eq!(
+        m.handle(&key(Key::Escape)),
+        vec![return_home_timer(), shows("Home")]
+    );
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
 
@@ -978,7 +983,11 @@ fn escape_leaves_resize() {
     let _ = m.handle(&key(Key::KeyR));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Resize(_))));
 
-    assert_eq!(m.handle(&key(Key::Escape)), vec![shows("Home")]);
+    // The rearm precedes; go_home drops its guard, so the timer is cancelled at performance.
+    assert_eq!(
+        m.handle(&key(Key::Escape)),
+        vec![return_home_timer(), shows("Home")]
+    );
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
 

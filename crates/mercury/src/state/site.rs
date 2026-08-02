@@ -32,7 +32,6 @@ pub(crate) const fn overlay_for(site: Option<Site>) -> &'static str {
 #[binds(MercuryStruct)]
 #[derived_child(site_data)]
 #[bind(
-    Key::Escape.down() => if_not_invalidated(go_home),
     Key::KeyT.down() => if_not_invalidated(enter_typing),
 )]
 pub struct SiteLayer;

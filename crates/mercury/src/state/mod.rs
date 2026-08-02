@@ -69,10 +69,12 @@ pub const OVERLAY_DWELL: Duration = Duration::from_secs(10);
     |mercury_path| mercury_path.overlay_timer().map(TimerGuard::trigger) => if_not_invalidated(hide_overlay),
     |mercury_path| mercury_path.windows.pending_timer().map(TimerGuard::trigger) => if_not_invalidated(placement_settled),
 )]
-// `o` binds once, here, because the overlay is the root's own field. In typing an `o` is an `o`:
-// typing's own catch-all claims the key before the root's items run, so this bind never fires
-// there.
-#[bind(Key::KeyO.down() => if_not_invalidated(toggle_overlay))]
+// `o` and escape bind once, here: in typing, its catch-all claims both keys before the root's
+// rows run, so an `o` is an `o` and an escape is the app's.
+#[bind(
+    Key::KeyO.down() => if_not_invalidated(toggle_overlay),
+    Key::Escape.down() => if_not_invalidated(go_home),
+)]
 #[post(AnyKey => track_held_modifiers)]
 pub struct Mercury {
     /// The watcher-confirmed frontmost app, or `None` while a nav choice's `Foreground` effect is
@@ -388,10 +390,6 @@ impl Windows {
 #[derive(Bind, Debug, derive_more::From)]
 #[node(parent_path = MercuryPath)]
 #[binds(MercuryStruct)]
-// This node binds nothing. `escape` leaves for home from every layer that binds keys as commands,
-// but NOT from typing, where it is a key the app is waiting for, so it is bound per layer and
-// typing simply does not have it. The return-home firing is bound the same way, by whichever layer
-// set that timer, so it matches only its own.
 pub enum Layer {
     Home(HomeLayer),
     Typing(TypingLayer),

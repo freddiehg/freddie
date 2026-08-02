@@ -17,7 +17,6 @@ pub(crate) const OVERLAY: &str = include_str!("overlays/resize.txt");
 #[node(parent_path = ReturnHomeLayersPath)]
 #[binds(MercuryStruct)]
 #[bind(
-    Key::Escape.down() => if_not_invalidated(go_home),
     Key::KeyT.down() => if_not_invalidated(enter_typing),
     Key::UpArrow.down() => if_not_invalidated(maximize),
     Key::LeftArrow.down() => if_not_invalidated(left_half),
