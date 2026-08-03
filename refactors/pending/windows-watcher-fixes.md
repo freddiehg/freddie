@@ -2,9 +2,9 @@
 
 The watcher stops doing two jobs. Today its callback both notices a change and fetches the new value — reading the app synchronously on the main run loop — and it decides report relevance by asking the OS who is frontmost. After this doc it only notices: every report carries what the source already holds, the consumer's model requests each missing value as a read effect, and the read's result comes back as an event that must bring the matching token half home (`freddie_sync`).
 
-The criterion, which `figaro/refactors/pending/sync-fixes.md` states as doctrine: an event carries the value when the source holds it or the callback can produce it synchronously, because then no gap exists between knowing-it-changed and knowing-it; a cross-process read is asynchronous by refusal to block the callback, so its gap is modeled — `Pending` with the held half, the read effect with the riding half, `commit` as the meeting. Frames and the focused window are cross-process reads; the monitor list is a synchronous in-process read, so `Screens` keeps its value in the event.
+The criterion, which both repos' AGENTS.md state as doctrine: an event carries the value when the source holds it or the callback can produce it synchronously, because then no gap exists between knowing-it-changed and knowing-it; a cross-process read is asynchronous by refusal to block the callback, so its gap is modeled — `Pending` with the held half, the read effect with the riding half, `commit` as the meeting. Frames and the focused window are cross-process reads; the monitor list is a synchronous in-process read, so `Screens` keeps its value in the event.
 
-mercury's consumer half is below; figaro's is `sync-fixes.md` change 3, which lands after this doc's change 1.
+mercury's consumer half is below; figaro's is `figaro/refactors/pending/window-sync.md`, which lands after this doc's change 1.
 
 ## Change 1: facts out, reads on demand of the model
 
@@ -80,7 +80,7 @@ pub fn focused_window_of(pid: Pid) -> Option<WindowId>;
 
 ## Change 2 (mercury): the model mints, requests, and commits
 
-`ForegroundEvent` gains the pid, mirrored as `FrontApp { pid, app }`, with the mechanical respells and the constructor's added pid, exactly as figaro's `sync-fixes.md` change 2 spells it for figaro.
+`ForegroundEvent` gains the pid, mirrored as `FrontApp { pid, app }`, with the mechanical respells and the constructor's added pid, exactly as figaro's `foreground-pid.md` spells it for figaro.
 
 The root gains the mint, and the windows model holds the gaps:
 

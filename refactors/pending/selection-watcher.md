@@ -1,6 +1,6 @@
 # the selection watcher
 
-Two freddie changes: the per-app observer scaffolding extracted from `freddie_windows`, and `freddie_selection` built on it — a watcher that reports facts, and a read the consumer's effect performers call. The figaro consumer half — the map, the minting, the read effect, the projection — is `figaro/refactors/pending/read-selection.md`, which lands after this doc and after `figaro/refactors/pending/sync-fixes.md`'s pid mirror.
+Two freddie changes: the per-app observer scaffolding extracted from `freddie_windows`, and `freddie_selection` built on it — a watcher that reports facts, and a read the consumer's effect performers call. The figaro consumer half — the map, the minting, the read effect, the projection — is `figaro/refactors/pending/read-selection.md`, which lands after this doc and after `figaro/refactors/pending/foreground-pid.md`.
 
 ## Change 1 (prefactor): `freddie_ax_observer`
 
