@@ -3,13 +3,11 @@
 pub mod always_equal;
 pub mod drop_guard;
 pub mod sequence;
-pub mod sync;
 pub mod timer;
 
 pub use always_equal::AlwaysEqual;
 pub use drop_guard::{DropGuard, drop_guard};
 pub use sequence::{KeySequence, KeySequenceOutcome};
-pub use sync::{GenerationMinter, HeldGeneration, RidingGeneration, Synced};
 pub use timer::{
     TimerEffect, TimerFired, TimerGuard, TimerId, TimerTrigger, timer_effect_and_guard,
 };

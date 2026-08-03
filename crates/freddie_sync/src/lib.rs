@@ -1,4 +1,4 @@
-//! [`Synced`]: the two-phase sync of a mirrored value, and the correlation token that pairs a
+//! The two-phase sync of a mirrored value: [`Synced`], and the correlation token that pairs a
 //! read with the placeholder awaiting it.
 
 /// The placeholder's half of a correlation token: minted only beside its [`RidingGeneration`]

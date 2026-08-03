@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/freddie",
+    "crates/freddie_sync",
     "crates/laserbeam",
     "crates/derive_support",
     "crates/bind",
