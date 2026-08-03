@@ -1,6 +1,6 @@
 # Multiple children
 
-Downstream of `refactors/past/invalidation.md`, which has landed; the shapes below are the ones in laserbeam and bind today, and the one laserbeam addition (`descend_sibling`, change 3) is a method over machinery that landed with `completed-ancestors.md`. The concrete target is figaro's typing layer: the russian-doll chain `TypingLayer<KinesisRemaps<NumberRemaps<SymbolRemaps>>>` becomes one flat struct with three child fields, and the doll pattern for typing is deleted. The other consumers are `ideas.md`'s two-keyboards case ("Two keyboards, two independent layers. ... Wants multiple `#[resolve_into]`") and the overlay that binds keys while open (`mercury-post-patterns.md`, which `invalidation-granularity.md` also leans on this doc for); both are root branches, and only they are gated by the open questions at the bottom. Changes 1 and 2 are shippable prefactors; the typing flattening waits only on changes 3 and 4.
+Downstream of `refactors/past/invalidation.md`, which has landed; the shapes below are the ones in laserbeam and bind today, and the one laserbeam addition (`descend`, change 3) is a method over machinery that landed with `completed-ancestors.md`. The concrete target is figaro's typing layer: the russian-doll chain `TypingLayer<KinesisRemaps<NumberRemaps<SymbolRemaps>>>` becomes one flat struct with three child fields, and the doll pattern for typing is deleted. The other consumers are `ideas.md`'s two-keyboards case ("Two keyboards, two independent layers. ... Wants multiple `#[resolve_into]`") and the overlay that binds keys while open (`mercury-post-patterns.md`, which `invalidation-granularity.md` also leans on this doc for); both are root branches, and only they are gated by the open questions at the bottom. Changes 1 and 2 are shippable prefactors; the typing flattening waits only on changes 3 and 4.
 
 "Multiple children" means a place node with several child edges live at once, each an independently active subtree with its own leaf. Both kinds of edge participate:
 
@@ -8,7 +8,7 @@ Downstream of `refactors/past/invalidation.md`, which has landed; the shapes bel
 - Derived children: several data fns in one attribute, `#[derived_children(app_data, app_foo)]` (today's `#[derived_child]`, renamed by change 2).
 - Mixed: one place node carrying both.
 
-The children are visited one at a time — dispatch still holds one `&mut` — in a documented order: field children first, in declaration order, then derived children, in listed order. That order is also claim order. Several children binding the same trigger is expected, not an error: the claim arbitrates the bind rows exactly as it does within one node today (first take wins, the rest complete where they stand), and a row meant to run beside the claimant — a logger — is a post, which ignores the claim. Enum nodes stay single-child: a variant is exclusive by construction. A node with exactly one child edge keeps today's generated body unchanged, so the existing trees are untouched until a node grows a second child.
+The children are visited one at a time — dispatch still holds one `&mut` — in a documented order: field children first, in declaration order, then derived children, in listed order. That order is also claim order. Several children binding the same trigger is expected, not an error: the claim arbitrates the bind rows exactly as it does within one node today (first take wins, the rest complete where they stand), and a row meant to run beside the claimant — a logger — is a post, which ignores the claim. Enum nodes stay single-child: a variant is exclusive by construction. Every place node emits one body shape: the state initialized standing, then one `descend` block per child edge. A leaf is the zero-block case, which is today's leaf body already; a single-child node's emitted code changes shape but not behavior, so the existing trees behave exactly as they do today.
 
 Derived levels themselves are unchanged in one respect: a derived level still cannot carry a `#[child]` field (its `data` dies with the dispatch; the existing rejection stands). A derived level may carry `#[derived_children]`, as it can today.
 
@@ -48,15 +48,15 @@ impl<P: HasStop + CompletesTo<P>> MaybeInvalidated<P>
 where
     Completed<P>: TryIntoAncestor<P>,
 {
-    /// Descend a sibling subtree with this node's path, if the path can still be
-    /// built: lent from a standing state, or recovered from a leave that stopped
-    /// exactly here — in which case the node stays invalidated whatever the
-    /// sibling does. A leave that went above skips the sibling and forwards.
-    pub fn descend_sibling(self, descend: impl FnOnce(P) -> Self) -> Self {
+    /// Descend the next child subtree with this node's path, if the path can
+    /// still be built: lent from a standing state, or recovered from a leave that
+    /// stopped exactly here — in which case the node stays invalidated whatever
+    /// the child does. A leave that went above skips the descent and forwards.
+    pub fn descend(self, f: impl FnOnce(P) -> Self) -> Self {
         match self {
-            Self::NotInvalidated(p) => descend(p),
+            Self::NotInvalidated(p) => f(p),
             Self::Invalidated(completed) => match completed.try_into_ancestor() {
-                Ok(p) => Self::Invalidated(descend(p).complete()),
+                Ok(p) => Self::Invalidated(f(p).complete()),
                 Err(completed) => Self::Invalidated(completed),
             },
         }
@@ -72,22 +72,25 @@ At the root the skip case does not exist. A child-of-root's `Up` payload is the 
 
 ## The generated body at a branch point
 
-Mid-tree branch point with fields `b1: C1`, `b2: C2` and `#[derived_children(d1, d2)]`. The first child's block is today's single-child body; each further child adds one `descend_sibling` block:
+Mid-tree branch point with fields `b1: C1`, `b2: C2` and `#[derived_children(d1, d2)]`. One body shape at every arity: the state starts standing — a leaf's whole body today — and every child edge is one `descend` block, the first included (its match always takes the standing arm):
 
 ```rust
 // opts: all snapped here, before ANY descent, source order — unchanged.
 
-// field children, declaration order; the first block is today's body verbatim
-let c1 = PathMut::from_fn(path, |p| &mut p.get_mut().b1, |p| &p.get().b1);
-let mut state = C1::dispatch(c1, event, effs, claim).into_inner().to_maybe_invalidated();
+let mut state = MaybeInvalidated::NotInvalidated(path); // today's leaf body: the zero-block case
 
-state = state.descend_sibling(|p| {
+// field children, declaration order
+state = state.descend(|p| {
+    let c1 = PathMut::from_fn(p, |p| &mut p.get_mut().b1, |p| &p.get().b1);
+    C1::dispatch(c1, event, effs, claim).into_inner().to_maybe_invalidated()
+});
+state = state.descend(|p| {
     let c2 = PathMut::from_fn(p, |p| &mut p.get_mut().b2, |p| &p.get().b2);
     C2::dispatch(c2, event, effs, claim).into_inner().to_maybe_invalidated()
 });
 
 // derived children, listed order
-state = state.descend_sibling(|p| match d1(&p) {
+state = state.descend(|p| match d1(&p) {
     Some(data) => DispatchIntoTreePath::dispatch_into_tree_path(
         DerivedLevel { parent: p, data },
         event,
@@ -97,7 +100,7 @@ state = state.descend_sibling(|p| match d1(&p) {
     .to_maybe_invalidated(),
     None => MaybeInvalidated::NotInvalidated(p),
 });
-state = state.descend_sibling(|p| match d2(&p) {
+state = state.descend(|p| match d2(&p) {
     Some(data) => DispatchIntoTreePath::dispatch_into_tree_path(
         DerivedLevel { parent: p, data },
         event,
@@ -255,8 +258,8 @@ What this deletes, which is the point: `TypingStack`, the `<Next>` parameter on 
 
 1. Prefactor, shippable now: rename `#[resolve_into]` to `#[child]`. The name says what the field is; `resolve_into` described laserbeam's resolve mechanics, and `into` reads as consumption, which stops being apt when several children coexist. The routed (multi-parent) form becomes `#[child(route = .., up = ..)]`. Mechanical scope: the parsing in `derive_support` (`find_resolve_into` and `parent_route` read the new name; the helper renames to match), `bind_macro`, the doc comments in `laserbeam` and `bind` that name the attribute, mercury (`state/mod.rs`, `state/return_home.rs`), figaro (`model/mod.rs`, `model/always_on.rs`, `model/typing/mod.rs`, `model/typing/kinesis.rs`, `model/typing/laptop.rs`), and the bind tests (every tree fixture, plus renaming `compile_fail/resolve_into_on_derived_level.*` and its stderr text). Behavior-preserving.
 2. Prefactor, shippable now: rename `#[derived_child(f)]` to `#[derived_children(f)]`, parsing a comma-separated list of data-fn paths. `derived_child_fn` becomes `derived_children_fns`, returning `Vec<syn::Path>`; a repeated attribute is still an error; the emitted body still handles exactly one element (a second is rejected until change 3). Call sites: `crates/mercury/src/state/app.rs`, `crates/mercury/src/state/site.rs`, figaro's `src/model/app.rs` and `src/model/site.rs`, `crates/bind/tests/derived.rs`, and the compile-fail stderr text that names the attribute. Behavior-preserving.
-3. laserbeam: `MaybeInvalidated::descend_sibling` as written above, with unit tests driving all three arms (standing, stopped-here with a staying and a leaving sibling, gone-above). Additive; everything it touches (`TryIntoAncestor`, the identity `IntoAncestor`, `MaybeInvalidated::complete`) is landed.
-4. bind_macro: `find_resolve_into`'s at-most-one restriction lifts (every `#[child]` field, declaration order); a place node may carry both fields and `#[derived_children]`. A node with exactly one child edge emits today's body. A node with two or more emits the branch-point body above: first child as today, one `descend_sibling` block per further child, field blocks then derived blocks. Two fields of the same type are legal (the two-keyboards case): `HasPath` is per-type, so both children share one path type and one `parent_path` declaration, and only the projections distinguish them, which dispatch is fine with. A routed or generic child at a multi-child node is rejected with a derive error, mirroring `reject_routed_generic`, until open question 2 is designed. The derived-level rejection of `#[child]` stays.
+3. laserbeam: `MaybeInvalidated::descend` as written above, with unit tests driving all three arms (standing, stopped-here with a staying and a leaving sibling, gone-above). Additive; everything it touches (`TryIntoAncestor`, the identity `IntoAncestor`, `MaybeInvalidated::complete`) is landed.
+4. bind_macro: `find_resolve_into`'s at-most-one restriction lifts (every `#[child]` field, declaration order); a place node may carry both fields and `#[derived_children]`. Every place node emits the uniform body above — the standing init plus one `descend` block per child edge, field blocks then derived blocks; a leaf's emission is unchanged (the init is today's leaf body), and a single-child node's emission changes shape, not behavior. Two fields of the same type are legal (the two-keyboards case): `HasPath` is per-type, so both children share one path type and one `parent_path` declaration, and only the projections distinguish them, which dispatch is fine with. A routed or generic child at a multi-child node is rejected with a derive error, mirroring `reject_routed_generic`, until open question 2 is designed. The derived-level rejection of `#[child]` stays.
 5. figaro: flatten the typing layer as written above.
 
 ## Open questions
