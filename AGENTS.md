@@ -9,7 +9,7 @@ Commit after every change, small and atomically, without being asked. Each logic
 This section is extremely important. A frequent source of frustration is deviations from this protocol. Take it very seriously and frequently refresh your memory on how to write planning documents. 99% of our time is spent iterating on planning documents, so it is extremely important that you do this correctly.
 
 - The primary way we plan things is through documents in the `refactor/` folder.
-- A doc plans changes to its own repo only. Work that spans figaro and freddie is two docs, one per repo, each self-contained for its half and referencing the other's public interface as a dependency; a figaro doc never specifies edits to a freddie crate, and a freddie doc never specifies edits to figaro.
+- A doc plans changes to its own repo only. Work that spans figaro and freddie is two docs, one per repo, each self-contained for its half; they may reference each other for scheduling (this change lands after that doc's change 1) and consume each other's public interfaces, but a figaro doc never specifies edits to a freddie crate, and a freddie doc never specifies edits to figaro.
 - Move a `refactors/pending` doc to `refactors/past` when we will not work on it in the future.
 - Each doc must, at all times that we are actively working on it, conform to several standards:
   - It should describe what we are building. Do not discuss how we came to a conclusion, or what we are not building. Do not narrate your thought process. Do not discuss what has already landed.
