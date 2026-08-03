@@ -19,32 +19,26 @@ pub struct Route {
     pub up: Path,
 }
 
-/// The `#[child]` field of a struct: its name, child type, and, when the
+/// A `#[child]` field of a struct: its name, child type, and, when the
 /// child has multiple parents, the route it hangs on.
 pub type Child = (Member, Type, Option<Route>);
 
-/// Finds the single `#[child]` field of a struct, if any.
+/// Finds the `#[child]` fields of a struct, in declaration order.
 ///
 /// # Errors
 ///
-/// Errors if more than one field carries `#[child]`.
-pub fn find_child(fields: &Fields) -> syn::Result<Option<Child>> {
-    let mut found: Option<Child> = None;
+/// Errors if a field's route attribute is malformed.
+pub fn find_children(fields: &Fields) -> syn::Result<Vec<Child>> {
+    let mut found = Vec::new();
     for (i, f) in fields.iter().enumerate() {
         if !f.attrs.iter().any(|a| a.path().is_ident("child")) {
             continue;
-        }
-        if found.is_some() {
-            return Err(syn::Error::new(
-                f.span(),
-                "at most one `#[child]` field per struct",
-            ));
         }
         let member = f
             .ident
             .clone()
             .map_or_else(|| Member::Unnamed(Index::from(i)), Member::Named);
-        found = Some((member, f.ty.clone(), parent_route(&f.attrs)?));
+        found.push((member, f.ty.clone(), parent_route(&f.attrs)?));
     }
     Ok(found)
 }

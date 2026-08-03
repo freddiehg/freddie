@@ -11,7 +11,7 @@
 //! `derive_support::Edge`, so descent matches `resolve`'s.
 
 use derive_support::{
-    Edge, Route, Via, find_child, is_root, node_parent, parent_route, single_field_ty, unbox,
+    Edge, Route, Via, find_children, is_root, node_parent, parent_route, single_field_ty, unbox,
 };
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -165,16 +165,56 @@ fn derived_children_fns(attrs: &[syn::Attribute]) -> syn::Result<Vec<Path>> {
     Ok(found.unwrap_or_default())
 }
 
-/// The one derived child, until several are emitted.
-fn single_derived_child(attrs: &[syn::Attribute]) -> syn::Result<Option<Path>> {
+/// The one derived child a derived level may hang: the level's `data` dies with the dispatch,
+/// so a second sibling would have nothing to recover its parent from.
+fn derived_level_child(attrs: &[syn::Attribute]) -> syn::Result<Option<Path>> {
     let mut fns = derived_children_fns(attrs)?;
     if fns.len() > 1 {
         return Err(syn::Error::new(
             fns[1].span(),
-            "a second derived child arrives with multiple children",
+            "a derived level has at most one derived child",
         ));
     }
     Ok(fns.pop())
+}
+
+/// A place node's child edges: its `#[child]` fields, declaration order, and its
+/// `#[derived_children]` fns, listed order.
+///
+/// Rejects what the multi-child body does not emit: a routed or generic child beside siblings
+/// (`multiple-children-generic-routed.md`), and derived children on an enum, whose children
+/// are its variants.
+fn place_child_edges(input: &DeriveInput) -> syn::Result<(Vec<derive_support::Child>, Vec<Path>)> {
+    let derived = derived_children_fns(&input.attrs)?;
+    let fields = match &input.data {
+        Data::Struct(s) => find_children(&s.fields)?,
+        Data::Enum(_) if !derived.is_empty() => {
+            return Err(syn::Error::new(
+                input.span(),
+                "an enum place node has no derived children; hang them under its variants' nodes",
+            ));
+        }
+        _ => Vec::new(),
+    };
+    if fields.len() + derived.len() > 1 {
+        let params: Vec<&Ident> = input.generics.type_params().map(|p| &p.ident).collect();
+        for (_, ty, route) in &fields {
+            let (child, _) = unbox(ty);
+            if route.is_some() {
+                return Err(syn::Error::new(
+                    child.span(),
+                    "a routed child may not share a node with other children",
+                ));
+            }
+            if mentions_param(child, &params) {
+                return Err(syn::Error::new(
+                    child.span(),
+                    "a generic child may not share a node with other children",
+                ));
+            }
+        }
+    }
+    Ok((fields, derived))
 }
 
 /// The enum case of [`derived_node_impl`]: one dispatch/accumulate arm per variant, each
@@ -284,7 +324,7 @@ fn derived_node_impl(
         .iter()
         .enumerate()
         .map(|(i, it)| scheduled_block(i, it));
-    let binding = state_binding(items);
+    let binding = state_binding(items, false);
     let triggers = claimed_triggers(items);
     Ok(quote! {
         #[automatically_derived]
@@ -362,7 +402,7 @@ fn derived_state(
     marker: &Path,
     node: &TokenStream2,
 ) -> syn::Result<TokenStream2> {
-    Ok(single_derived_child(&input.attrs)?.map_or_else(
+    Ok(derived_level_child(&input.attrs)?.map_or_else(
         || quote!(::laserbeam::MaybeInvalidated::NotInvalidated(::bind::HasTreePath::into_tree_path(#node))),
         |f| derived_child_state(&f, marker, node),
     ))
@@ -400,7 +440,7 @@ fn derived_child_accumulate(f: &Path, marker: &Path, place: &TokenStream2) -> To
 }
 
 fn derived_accumulate_descent(input: &DeriveInput, marker: &Path) -> syn::Result<TokenStream2> {
-    Ok(single_derived_child(&input.attrs)?.map_or_else(
+    Ok(derived_level_child(&input.attrs)?.map_or_else(
         || quote!(),
         |f| derived_child_accumulate(&f, marker, &quote!(node)),
     ))
@@ -411,6 +451,11 @@ fn derived_accumulate_descent(input: &DeriveInput, marker: &Path) -> syn::Result
 /// It takes a path, exactly as `dispatch` does, and for the same reason: a level whose child
 /// is produced by a function needs a path to call that function with. The two bodies descend
 /// through the same `derive_support::Edge`, so they cannot drift.
+///
+/// A node with several children is not walked: its impl is `Err(BindError::MultiChildNode)`,
+/// so check builds compile everywhere and the check errors at the call for any tree containing
+/// a branch point. The check's eventual rework accumulates into a `Vec`, where a duplicate is
+/// legal because claim order is the semantics.
 fn accumulate_impl(
     input: &DeriveInput,
     name: &Ident,
@@ -418,7 +463,32 @@ fn accumulate_impl(
     items: &[Scheduled],
 ) -> syn::Result<TokenStream2> {
     let root = is_root(&input.attrs);
-    let (recurse, children, needs_mut) = accumulate_body(input, name, marker, root)?;
+    let (fields, derived) = place_child_edges(input)?;
+    if fields.len() + derived.len() > 1 {
+        let (impl_g, ty_g, _) = input.generics.split_for_impl();
+        return Ok(quote! {
+            ::bind::check_only! {
+            #[automatically_derived]
+            #[expect(clippy::implicit_hasher)]
+            impl #impl_g ::bind::AccumulateTriggers<#marker> for #name #ty_g {
+                fn accumulate<'a>(
+                    _path: <Self as ::laserbeam::HasPath>::Path<'a>,
+                    _out: &mut ::std::collections::HashSet<<#marker as ::bind::Bindings>::Trigger>,
+                ) -> ::core::result::Result<
+                    <Self as ::laserbeam::HasPath>::Path<'a>,
+                    ::bind::BindError,
+                >
+                where
+                    Self: 'a,
+                {
+                    ::core::result::Result::Err(::bind::BindError::MultiChildNode)
+                }
+            }
+            }
+        });
+    }
+    let (recurse, children, needs_mut) =
+        accumulate_body(input, name, marker, root, &fields, &derived)?;
     let where_clause = child_where_clause(
         input,
         &children,
@@ -459,31 +529,36 @@ fn accumulate_impl(
 
 /// The accumulate recursion, the child types to bound, and whether the path binding needs
 /// `mut`. Mirrors `dispatch_body`, minus early return: accumulate never stops early.
+///
+/// Called only for a node with at most one child edge; a branch point's impl is the
+/// `MultiChildNode` error and never reaches here.
 fn accumulate_body(
     input: &DeriveInput,
     name: &Ident,
     marker: &Path,
     root: bool,
+    fields: &[derive_support::Child],
+    derived: &[Path],
 ) -> syn::Result<(TokenStream2, Vec<Type>, bool)> {
-    if let Some(f) = single_derived_child(&input.attrs)? {
+    if let Some(f) = derived.first() {
         return Ok((
-            derived_child_accumulate(&f, marker, &quote!(path)),
+            derived_child_accumulate(f, marker, &quote!(path)),
             Vec::new(),
             false,
         ));
     }
     match &input.data {
-        Data::Struct(s) => match find_child(&s.fields)? {
+        Data::Struct(_) => match fields.first() {
             None => Ok((quote!(), Vec::new(), false)),
             Some((field, child_ty, route)) => {
-                let (child, boxed) = unbox(&child_ty);
+                let (child, boxed) = unbox(child_ty);
                 reject_routed_generic(input, child, route.as_ref())?;
                 let edge = Edge {
                     parent: name,
                     is_root: root,
                     route: route.as_ref(),
                     boxed,
-                    via: Via::Field(&field),
+                    via: Via::Field(field),
                 };
                 let child_path = edge.child_path(&quote!(path));
                 let recover = edge.recover_parent(&quote!(child));
@@ -537,8 +612,8 @@ fn accumulate_body(
     }
 }
 
-/// Emits `impl Dispatch<M>`: descend into the active child, then run this node's scheduled
-/// items over what the descent left of its path.
+/// Emits `impl Dispatch<M>`: descend into each child, then run this node's scheduled
+/// items over what the descents left of its path.
 fn dispatch_impl(
     input: &DeriveInput,
     name: &Ident,
@@ -547,14 +622,14 @@ fn dispatch_impl(
 ) -> syn::Result<TokenStream2> {
     let root = is_root(&input.attrs);
     let path = quote!(path);
-    let (state, children) = dispatch_state(input, name, marker, root, &path)?;
+    let (init, child_blocks, children) = dispatch_state(input, name, marker, root, &path)?;
     let where_clause = child_where_clause(input, &children, &quote!(::bind::Dispatch<#marker>));
     let opts = items.iter().enumerate().map(|(i, it)| opt(i, it, &path));
     let blocks = items
         .iter()
         .enumerate()
         .map(|(i, it)| scheduled_block(i, it));
-    let binding = state_binding(items);
+    let binding = state_binding(items, !child_blocks.is_empty());
     let (impl_g, ty_g, _) = input.generics.split_for_impl();
     Ok(quote! {
         #[automatically_derived]
@@ -570,7 +645,8 @@ fn dispatch_impl(
                 <Self as ::laserbeam::HasPath>::Path<'a>: ::laserbeam::HasStop,
             {
                 #(#opts)*
-                let #binding = #state;
+                let #binding = #init;
+                #(#child_blocks)*
                 #(#blocks)*
                 ::laserbeam::MaybeInvalidated::complete(state)
             }
@@ -646,58 +722,54 @@ fn mentions_param(ty: &Type, params: &[&Ident]) -> bool {
     hit
 }
 
-/// The state binding: `mut` only when a scheduled item will rebind it, so a node with nothing
-/// scheduled does not carry a needless `mut`.
-fn state_binding(items: &[Scheduled]) -> TokenStream2 {
-    if items.is_empty() {
+/// The state binding: `mut` only when a child block or a scheduled item will rebind it, so a
+/// leaf with nothing scheduled does not carry a needless `mut`.
+fn state_binding(items: &[Scheduled], has_child_blocks: bool) -> TokenStream2 {
+    if items.is_empty() && !has_child_blocks {
         quote!(state)
     } else {
         quote!(mut state)
     }
 }
 
-/// This node's state after the descent, and the child types to bound.
+/// This node's state: the standing init (or the active enum variant's fold), one `descend`
+/// block per remaining child edge — `#[child]` fields in declaration order, then
+/// `#[derived_children]` fns in listed order — and the child types to bound.
 ///
-/// A leaf's path is untouched, so it starts standing. Everything else descends and folds what
-/// the child completed to: the fold is the child's `Stop`, read at the parent.
+/// One body shape at every arity: a leaf is the init with zero blocks, and each block lends
+/// the path to its child if it can still be built, preserving the join (`MaybeInvalidated::descend`).
 fn dispatch_state(
     input: &DeriveInput,
     name: &Ident,
     marker: &Path,
     root: bool,
     place: &TokenStream2,
-) -> syn::Result<(TokenStream2, Vec<Type>)> {
-    // `#[derived_children(f)]`: the child is not a field, so `f` produces its data and the derive
-    // builds the node. Nothing here names the child's type, and nothing can: the derive has
-    // only `f`'s name.
-    if let Some(f) = single_derived_child(&input.attrs)? {
-        return Ok((derived_child_state(&f, marker, place), Vec::new()));
-    }
-    match &input.data {
-        Data::Struct(s) => match find_child(&s.fields)? {
-            None => Ok((
-                quote!(::laserbeam::MaybeInvalidated::NotInvalidated(#place)),
-                Vec::new(),
-            )),
-            Some((field, child_ty, route)) => {
-                let (child, boxed) = unbox(&child_ty);
+) -> syn::Result<(TokenStream2, Vec<TokenStream2>, Vec<Type>)> {
+    let (fields, derived) = place_child_edges(input)?;
+    let mut blocks = Vec::new();
+    let mut children = Vec::new();
+    let init = match &input.data {
+        Data::Struct(_) => {
+            for (field, child_ty, route) in &fields {
+                let (child, boxed) = unbox(child_ty);
                 reject_routed_generic(input, child, route.as_ref())?;
                 let edge = Edge {
                     parent: name,
                     is_root: root,
                     route: route.as_ref(),
                     boxed,
-                    via: Via::Field(&field),
+                    via: Via::Field(field),
                 };
-                Ok((
-                    child_state(&edge, child, marker, place),
-                    vec![child.clone()],
-                ))
+                let fold = child_state(&edge, child, marker, place);
+                blocks.push(quote! {
+                    state = ::laserbeam::MaybeInvalidated::descend(state, |#place| #fold);
+                });
+                children.push(child.clone());
             }
-        },
+            quote!(::laserbeam::MaybeInvalidated::NotInvalidated(#place))
+        }
         Data::Enum(e) => {
             let mut arms = Vec::new();
-            let mut children = Vec::new();
             for v in &e.variants {
                 let vi = &v.ident;
                 let ty = single_field_ty(&v.fields)?;
@@ -722,13 +794,25 @@ fn dispatch_state(
             } else {
                 quote!(#place.get())
             };
-            Ok((quote!(match #scrutinee { #(#arms)* }), children))
+            quote!(match #scrutinee { #(#arms)* })
         }
-        Data::Union(_) => Err(syn::Error::new(
-            input.span(),
-            "bind does not support unions",
-        )),
+        Data::Union(_) => {
+            return Err(syn::Error::new(
+                input.span(),
+                "bind does not support unions",
+            ));
+        }
+    };
+    // A derived child is not a field, so `f` produces its data and the derive builds the
+    // node. Nothing here names the child's type, and nothing can: the derive has only `f`'s
+    // name.
+    for f in &derived {
+        let fold = derived_child_state(f, marker, place);
+        blocks.push(quote! {
+            state = ::laserbeam::MaybeInvalidated::descend(state, |#place| #fold);
+        });
     }
+    Ok((init, blocks, children))
 }
 
 /// One place edge's state: dispatch the child, unwrap its leave, and read it at this node.
