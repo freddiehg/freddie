@@ -4,26 +4,26 @@
 //! reporting the app back the way the OS watcher would.
 
 use bind::SimpleRunner;
-use freddie_windows::{Frame, Monitor, WindowChange, WindowFrame, WindowId};
-use mercury::ForegroundedApp;
+use freddie_windows::{Frame, Monitor, WindowChange, WindowId};
 use mercury::{
     App, Chord, Copied, HomeLayer, JK_TIMEOUT, Key, KeyEvent, Layer, Mercury, MercuryEffect,
     MercuryEvent, MercuryStruct, ModifierFlags, OVERLAY_DWELL, PLACEMENT_SETTLE, PressType,
-    RETURN_TO_HOME_TIMEOUT, ReturnHomeLayers, UrlPart, WindowEvent, Windows, foreground, key,
-    quit_event, tab,
+    RETURN_TO_HOME_TIMEOUT, ReturnHomeLayers, UrlPart, WindowEvent, Windows, focus_read,
+    foreground, frame_read, key, quit_event, tab,
 };
+use mercury::{FrontApp, Pid, Placement};
 
 // `BOOT_TITLE` is painted on the status item before the model exists, so it is a literal rather
 // than read off the boot layer. This is the guard that keeps the literal honest.
 #[test]
 fn boot_title_matches_the_boot_layer() {
-    let booted = Mercury::new(App::Other, Windows::default());
+    let booted = Mercury::new(Some(FrontApp::new(App::Other, Pid(1))), Windows::default());
     assert_eq!(booted.layer().name(), Mercury::BOOT_TITLE);
 }
 
 // The confirmed front app, `None` while a nav choice's foreground effect is in flight.
 fn front(m: &Mercury) -> Option<App> {
-    m.foreground.as_ref().map(ForegroundedApp::identity)
+    m.foreground.as_ref().map(|front| front.app.identity())
 }
 
 // Entering nav, resize, or the in-app layer arms the return-to-home timer; this is the effect
@@ -74,7 +74,9 @@ const fn return_home(m: &Mercury) -> Option<&ReturnHomeLayers> {
 // A mercury in Home, the command layer. The default is Typing (passthrough), but most per-event
 // tests exercise Home's command bindings, so they start here.
 fn home() -> Mercury {
-    Mercury::with_layer(Layer::Home(HomeLayer))
+    let mut m = Mercury::with_layer(Layer::Home(HomeLayer));
+    let _ = m.handle(&foreground(App::Other, Pid(1)));
+    m
 }
 
 const fn emit(key: Key, press: PressType) -> MercuryEffect {
@@ -143,7 +145,7 @@ fn in_app(mut effects: Vec<MercuryEffect>) -> Vec<MercuryEffect> {
 fn default_boots_into_typing() {
     // A fresh mercury is in typing (passthrough), the login-safe state, not command-mode Home.
     assert!(matches!(
-        Mercury::new(App::Other, Windows::default()).layer(),
+        Mercury::new(Some(FrontApp::new(App::Other, Pid(1))), Windows::default()).layer(),
         Layer::Typing(_)
     ));
 }
@@ -163,7 +165,7 @@ fn every_layer_has_a_name_for_the_menu_bar() {
     assert_eq!(m.layer().name(), "Typing");
 
     let mut m = home();
-    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&foreground(App::Chrome, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(m.layer().name(), "App");
 }
@@ -456,7 +458,7 @@ fn n_c_then_foreground_then_r_refreshes_chrome() {
     );
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
 
-    let _ = m.handle(&foreground(App::Chrome)); // the watcher reports it
+    let _ = m.handle(&foreground(App::Chrome, Pid(7))); // the watcher reports it
     assert_eq!(front(&m), Some(App::Chrome));
     assert_eq!(m.handle(&key(Key::KeyR)), in_app(cmd_r()));
 }
@@ -468,7 +470,7 @@ fn n_c_then_foreground_then_r_refreshes_chrome() {
 fn a_pending_nav_binds_nothing_until_the_foreground_event() {
     let mut m = home();
     // Ghostty is frontmost, an app that has in-app bindings.
-    let _ = m.handle(&foreground(App::Ghostty));
+    let _ = m.handle(&foreground(App::Ghostty, Pid(7)));
     let _ = m.handle(&key(Key::KeyN)); // home -> nav
     let _ = m.handle(&key(Key::KeyC)); // navigate to Chrome; the front app is still Ghostty
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
@@ -478,7 +480,7 @@ fn a_pending_nav_binds_nothing_until_the_foreground_event() {
     // Chrome's `r` does not apply yet either: nothing binds while the nav is pending.
     assert_eq!(m.handle(&key(Key::KeyR)), in_app(vec![]));
 
-    let _ = m.handle(&foreground(App::Chrome)); // the watcher catches up
+    let _ = m.handle(&foreground(App::Chrome, Pid(7))); // the watcher catches up
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(front(&m), Some(App::Chrome));
     assert_eq!(m.handle(&key(Key::KeyR)), in_app(cmd_r()));
@@ -487,7 +489,7 @@ fn a_pending_nav_binds_nothing_until_the_foreground_event() {
 #[test]
 fn foreground_records_the_app_without_changing_layer() {
     let mut m = home();
-    assert_eq!(m.handle(&foreground(App::Zed)), vec![]);
+    assert_eq!(m.handle(&foreground(App::Zed, Pid(7))), vec![]);
     assert_eq!(front(&m), Some(App::Zed));
     assert!(matches!(m.layer(), Layer::Home(_)));
 }
@@ -495,7 +497,7 @@ fn foreground_records_the_app_without_changing_layer() {
 #[test]
 fn i_enters_inapp_for_the_foregrounded_app() {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&foreground(App::Chrome, Pid(7)));
     assert_eq!(
         m.handle(&key(Key::KeyI)),
         vec![shows("App"), return_home_timer()]
@@ -507,7 +509,7 @@ fn i_enters_inapp_for_the_foregrounded_app() {
 // Chrome in the in-app layer, with `url` reported for its front tab.
 fn chrome_showing(url: &str) -> Mercury {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&foreground(App::Chrome, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     let _ = m.handle(&tab(url.to_owned()));
     m
@@ -579,7 +581,7 @@ fn the_three_ls_do_not_shadow_each_other() {
 #[test]
 fn a_copy_with_no_reported_url_asks_chrome() {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&foreground(App::Chrome, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(
         m.handle(&key_with(Key::KeyL, ModifierFlags::SHIFT)),
@@ -609,7 +611,7 @@ fn copying_the_host_of_a_hostless_url_copies_nothing() {
 #[test]
 fn the_ls_are_chromes_alone() {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Ghostty));
+    let _ = m.handle(&foreground(App::Ghostty, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(m.handle(&key(Key::KeyL)), in_app(vec![]));
     assert_eq!(
@@ -655,7 +657,7 @@ fn n_is_claude_ais_alone() {
 #[test]
 fn inapp_s_enters_site() {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&foreground(App::Chrome, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(
         m.handle(&key(Key::KeyS)),
@@ -669,7 +671,7 @@ fn inapp_s_enters_site() {
 #[test]
 fn inapp_n_enters_nav() {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Ghostty));
+    let _ = m.handle(&foreground(App::Ghostty, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(
@@ -682,7 +684,7 @@ fn inapp_n_enters_nav() {
 #[test]
 fn inapp_t_enters_typing() {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&foreground(App::Chrome, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(m.handle(&key(Key::KeyT)), vec![shows("Typing")]);
@@ -695,7 +697,7 @@ fn inapp_t_enters_typing() {
 #[test]
 fn inapp_app_bindings_still_take_precedence() {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Ghostty));
+    let _ = m.handle(&foreground(App::Ghostty, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(
         m.handle(&key(Key::KeyJ)),
@@ -707,7 +709,7 @@ fn inapp_app_bindings_still_take_precedence() {
 #[test]
 fn chrome_r_refreshes() {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&foreground(App::Chrome, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(m.handle(&key(Key::KeyR)), in_app(cmd_r()));
 }
@@ -715,7 +717,7 @@ fn chrome_r_refreshes() {
 #[test]
 fn inapp_other_app_ignores_keys() {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Zed));
+    let _ = m.handle(&foreground(App::Zed, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert!(matches!(front(&m), Some(App::Zed | App::Other)));
@@ -739,7 +741,7 @@ fn tmux(flags: ModifierFlags, command: Key) -> Vec<MercuryEffect> {
 #[test]
 fn i_enters_ghostty_in_app_when_ghostty_is_frontmost() {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Ghostty));
+    let _ = m.handle(&foreground(App::Ghostty, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(front(&m), Some(App::Ghostty));
@@ -748,7 +750,7 @@ fn i_enters_ghostty_in_app_when_ghostty_is_frontmost() {
 #[test]
 fn ghostty_j_is_previous_window_and_k_is_next() {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Ghostty));
+    let _ = m.handle(&foreground(App::Ghostty, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
 
     assert_eq!(
@@ -769,7 +771,7 @@ fn ghostty_j_is_previous_window_and_k_is_next() {
 #[test]
 fn the_tmux_command_is_a_bare_tap() {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Ghostty));
+    let _ = m.handle(&foreground(App::Ghostty, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     let effects = m.handle(&key(Key::KeyJ));
 
@@ -784,7 +786,7 @@ fn the_tmux_command_is_a_bare_tap() {
 #[test]
 fn j_and_k_are_unbound_in_chrome_in_app() {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&foreground(App::Chrome, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(m.handle(&key(Key::KeyJ)), in_app(vec![]));
     assert_eq!(m.handle(&key(Key::KeyK)), in_app(vec![]));
@@ -795,12 +797,12 @@ fn j_and_k_are_unbound_in_chrome_in_app() {
 #[test]
 fn foregrounding_ghostty_retargets_the_inapp_layer() {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&foreground(App::Chrome, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(front(&m), Some(App::Chrome));
 
-    let _ = m.handle(&foreground(App::Ghostty));
+    let _ = m.handle(&foreground(App::Ghostty, Pid(7)));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(front(&m), Some(App::Ghostty));
     assert_eq!(
@@ -821,7 +823,7 @@ fn the_digits_select_a_tmux_window_and_return_home() {
         (Key::Num0, Key::Num0),
     ] {
         let mut m = home();
-        let _ = m.handle(&foreground(App::Ghostty));
+        let _ = m.handle(&foreground(App::Ghostty, Pid(7)));
         let _ = m.handle(&key(Key::KeyI));
 
         assert_eq!(
@@ -854,7 +856,7 @@ fn all_ten_digits_are_bound_in_ghostty() {
     ];
     for digit in digits {
         let mut m = home();
-        let _ = m.handle(&foreground(App::Ghostty));
+        let _ = m.handle(&foreground(App::Ghostty, Pid(7)));
         let _ = m.handle(&key(Key::KeyI));
         assert_eq!(
             m.handle(&key(digit)),
@@ -868,7 +870,7 @@ fn all_ten_digits_are_bound_in_ghostty() {
 #[test]
 fn walking_stays_but_jumping_leaves() {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Ghostty));
+    let _ = m.handle(&foreground(App::Ghostty, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
 
     let _ = m.handle(&key(Key::KeyJ));
@@ -883,7 +885,7 @@ fn walking_stays_but_jumping_leaves() {
 #[test]
 fn inapp_activity_resets_the_return_home_timer() {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Ghostty));
+    let _ = m.handle(&foreground(App::Ghostty, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     // Walking a window stays in-app, so the timer is reset.
     assert_eq!(
@@ -905,7 +907,7 @@ fn the_digits_are_unbound_outside_ghostty() {
     assert_eq!(m.handle(&key(Key::Num1)), vec![]);
 
     let mut m = home();
-    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&foreground(App::Chrome, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(m.handle(&key(Key::Num1)), in_app(vec![]));
 }
@@ -951,9 +953,10 @@ fn the_arrows_place_the_window_and_return_home() {
         assert_eq!(
             m.handle(&key(k)),
             leaves(vec![
-                MercuryEffect::SetFrame(WindowFrame {
+                MercuryEffect::SetFrame(Placement {
                     window: WINDOW,
-                    frame,
+                    from: WINDOW_FRAME,
+                    to: frame,
                 }),
                 settle_timer(),
             ]),
@@ -999,9 +1002,10 @@ fn placing_twice_re_enters_resize() {
     assert_eq!(
         m.handle(&key(Key::UpArrow)),
         leaves(vec![
-            MercuryEffect::SetFrame(WindowFrame {
+            MercuryEffect::SetFrame(Placement {
                 window: WINDOW,
-                frame: SCREEN.visible,
+                from: WINDOW_FRAME,
+                to: SCREEN.visible,
             }),
             settle_timer(),
         ])
@@ -1010,9 +1014,10 @@ fn placing_twice_re_enters_resize() {
     assert_eq!(
         m.handle(&key(Key::LeftArrow)),
         leaves(vec![
-            MercuryEffect::SetFrame(WindowFrame {
+            MercuryEffect::SetFrame(Placement {
                 window: WINDOW,
-                frame: Frame {
+                from: WINDOW_FRAME,
+                to: Frame {
                     width: 800.0,
                     ..SCREEN.visible
                 },
@@ -1038,7 +1043,7 @@ fn the_arrows_are_unbound_in_home() {
 #[test]
 fn r_still_refreshes_chrome_in_app() {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&foreground(App::Chrome, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(m.handle(&key(Key::KeyR)), in_app(cmd_r()));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
@@ -1057,7 +1062,7 @@ fn settle(
     while let Some(effects) = runner.next() {
         for effect in effects {
             if let MercuryEffect::Foreground(app) = &effect {
-                runner.queue_event(foreground(*app));
+                runner.queue_event(foreground(*app, Pid(7)));
             }
             performed.push(effect);
         }
@@ -1126,12 +1131,12 @@ fn reported_bundle_ids_map() {
 fn the_inapp_layers_bindings_follow_the_root_with_no_resync() {
     let mut m = home();
     let _ = m.handle(&key(Key::KeyI)); // enter the in-app layer
-    m.foreground = Some(ForegroundedApp::from_identity(App::Chrome));
+    m.foreground = Some(FrontApp::new(App::Chrome, Pid(7)));
     // Chrome binds `r`.
     assert_eq!(m.handle(&key(Key::KeyR)), in_app(cmd_r()));
 
     // Write the ROOT directly. Nothing touches the layer.
-    m.foreground = Some(ForegroundedApp::from_identity(App::Ghostty));
+    m.foreground = Some(FrontApp::new(App::Ghostty, Pid(7)));
 
     // Chrome's `r` is gone and Ghostty's `j` is live, with no re-entry and no resync.
     assert_eq!(m.handle(&key(Key::KeyR)), in_app(vec![]));
@@ -1141,7 +1146,7 @@ fn the_inapp_layers_bindings_follow_the_root_with_no_resync() {
     );
 
     // An app with no bindings has no level at all.
-    m.foreground = Some(ForegroundedApp::from_identity(App::Zed));
+    m.foreground = Some(FrontApp::new(App::Zed, Pid(7)));
     assert_eq!(m.handle(&key(Key::KeyJ)), in_app(vec![]));
 }
 
@@ -1150,12 +1155,12 @@ fn the_inapp_layers_bindings_follow_the_root_with_no_resync() {
 #[test]
 fn foreground_retargets_the_inapp_layer() {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&foreground(App::Chrome, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(front(&m), Some(App::Chrome));
 
-    assert_eq!(m.handle(&foreground(App::Zed)), vec![]);
+    assert_eq!(m.handle(&foreground(App::Zed, Pid(7))), vec![]);
     assert_eq!(front(&m), Some(App::Zed));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert!(matches!(front(&m), Some(App::Zed | App::Other)));
@@ -1167,12 +1172,12 @@ fn foreground_retargets_the_inapp_layer() {
 #[test]
 fn foreground_back_to_chrome_restores_its_bindings() {
     let mut m = home();
-    let _ = m.handle(&foreground(App::Zed));
+    let _ = m.handle(&foreground(App::Zed, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert!(matches!(front(&m), Some(App::Zed | App::Other)));
 
-    let _ = m.handle(&foreground(App::Chrome));
+    let _ = m.handle(&foreground(App::Chrome, Pid(7)));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(front(&m), Some(App::Chrome));
     assert_eq!(m.handle(&key(Key::KeyR)), in_app(cmd_r()));
@@ -1186,7 +1191,7 @@ fn foreground_outside_inapp_does_not_change_layer() {
     let _ = m.handle(&key(Key::KeyN));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Nav(_))));
 
-    assert_eq!(m.handle(&foreground(App::Chrome)), vec![]);
+    assert_eq!(m.handle(&foreground(App::Chrome, Pid(7))), vec![]);
     assert_eq!(front(&m), Some(App::Chrome));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::Nav(_))));
 }
@@ -1209,7 +1214,7 @@ fn inapp_follows_the_front_app_across_a_switch() {
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert_eq!(front(&m), Some(App::Chrome));
     // The user switches to Zed outside mercury; the watcher reports it.
-    let _ = m.handle(&foreground(App::Zed));
+    let _ = m.handle(&foreground(App::Zed, Pid(7)));
     assert_eq!(front(&m), Some(App::Zed));
     assert!(matches!(return_home(&m), Some(ReturnHomeLayers::InApp(_))));
     assert!(matches!(front(&m), Some(App::Zed | App::Other)));
@@ -1226,7 +1231,7 @@ fn jk_timer() -> MercuryEffect {
 
 // A mercury in typing, the passthrough layer, with the jk run idle.
 fn typing() -> Mercury {
-    Mercury::new(App::Other, Windows::default())
+    Mercury::new(Some(FrontApp::new(App::Other, Pid(1))), Windows::default())
 }
 
 // The jk run, which lives on the typing layer, so asking for it in any other layer is a test bug.
@@ -1549,7 +1554,7 @@ fn the_in_app_keymap_is_the_front_apps() {
         (App::Zed, "  IN-APP"),
     ] {
         let mut m = home();
-        let _ = m.handle(&foreground(app));
+        let _ = m.handle(&foreground(app, Pid(7)));
         let _ = m.handle(&key(Key::KeyI));
         let effects = m.handle(&key(Key::KeyO));
         assert_eq!(shown_heading(&effects), heading, "{app:?}");
@@ -1652,59 +1657,86 @@ const fn windows(change: WindowChange) -> MercuryEvent {
     MercuryEvent::Window(WindowEvent { change })
 }
 
-const fn opened(window: WindowId, frame: Frame) -> WindowChange {
-    WindowChange::Opened(WindowFrame { window, frame })
+// Dispatch a window fact, then land every read it requested with `frame`: the riding half is
+// harvested from the emitted effect and carried home, exercising the real loop.
+fn land_frames(m: &mut Mercury, fx: Vec<MercuryEffect>, frame: Option<Frame>) {
+    for effect in fx {
+        if let MercuryEffect::ReadFrame { window, generation } = effect {
+            let _ = m.handle(&frame_read(window, generation.0, frame));
+        }
+    }
 }
 
-// A mercury told about one screen and one focused window.
+// A window fact whose frame read lands at `frame`.
+fn window_at(m: &mut Mercury, change: WindowChange, frame: Frame) {
+    let fx = m.handle(&windows(change));
+    land_frames(m, fx, Some(frame));
+}
+
+// A focus fact whose read lands on `window`.
+fn focus_lands(m: &mut Mercury, pid: Pid, window: Option<WindowId>) {
+    let fx = m.handle(&windows(WindowChange::FocusChanged(pid)));
+    for effect in fx {
+        if let MercuryEffect::ReadFocus { pid, generation } = effect {
+            let _ = m.handle(&focus_read(pid, generation.0, window));
+        }
+    }
+}
+
+// A mercury told about one screen and one focused window, every read landed.
 fn home_with_a_window() -> Mercury {
     let mut m = home();
     let _ = m.handle(&windows(WindowChange::Screens(vec![SCREEN])));
-    let _ = m.handle(&windows(opened(WINDOW, WINDOW_FRAME)));
-    let _ = m.handle(&windows(WindowChange::Focused(Some(WINDOW))));
+    window_at(&mut m, WindowChange::Opened(WINDOW), WINDOW_FRAME);
+    focus_lands(&mut m, Pid(1), Some(WINDOW));
     m
 }
 
 #[test]
 fn an_opened_window_is_recorded_with_its_frame() {
     let m = home_with_a_window();
-    assert_eq!(
-        m.windows.focused(),
-        Some(WindowFrame {
-            window: WINDOW,
-            frame: WINDOW_FRAME
-        })
-    );
+    assert_eq!(m.windows.focused(Pid(1)), Some((WINDOW, WINDOW_FRAME)));
 }
 
-// A window event records and asks for nothing: the source keeps the state true, and a key is
-// what acts on it.
+// A window fact opens the gap and requests exactly its read; a fact about a window nothing
+// tracks requests nothing.
 #[test]
-fn a_window_change_produces_no_effects() {
+fn a_window_fact_requests_its_read() {
     let mut m = home();
-    assert_eq!(m.handle(&windows(opened(WINDOW, WINDOW_FRAME))), vec![]);
+    let fx = m.handle(&windows(WindowChange::Opened(WINDOW)));
+    assert_eq!(fx.len(), 1);
+    assert!(matches!(
+        fx[0],
+        MercuryEffect::ReadFrame { window: WINDOW, .. }
+    ));
+    assert_eq!(
+        m.handle(&windows(WindowChange::Moved(WindowId(999)))),
+        vec![]
+    );
     assert!(matches!(m.layer(), Layer::Home(_)));
+}
+
+// A stale read names a generation the entry moved past and changes nothing: the second fact's
+// read is the one that lands.
+#[test]
+fn a_stale_frame_read_is_dropped() {
+    let mut m = home_with_a_window();
+    let first = m.handle(&windows(WindowChange::Moved(WINDOW)));
+    let second = m.handle(&windows(WindowChange::Moved(WINDOW)));
+    // The first read comes home late: its riding half no longer matches.
+    land_frames(&mut m, first, Some(SCREEN.visible));
+    assert_eq!(m.windows.focused(Pid(1)), None);
+    land_frames(&mut m, second, Some(SCREEN.visible));
+    assert_eq!(m.windows.focused(Pid(1)), Some((WINDOW, SCREEN.visible)));
 }
 
 // A move and a resize are the same to mercury, which keeps a frame and nothing else.
 #[test]
 fn a_move_and_a_resize_both_replace_the_frame() {
-    for change in [
-        WindowChange::Moved(WindowFrame {
-            window: WINDOW,
-            frame: SCREEN.visible,
-        }),
-        WindowChange::Resized(WindowFrame {
-            window: WINDOW,
-            frame: SCREEN.visible,
-        }),
-    ] {
+    for change in [WindowChange::Moved(WINDOW), WindowChange::Resized(WINDOW)] {
         let mut m = home_with_a_window();
-        let _ = m.handle(&windows(change));
-        assert_eq!(
-            m.windows.focused().expect("still focused").frame,
-            SCREEN.visible
-        );
+        window_at(&mut m, change, SCREEN.visible);
+        assert_eq!(m.windows.focused(Pid(1)), Some((WINDOW, SCREEN.visible)));
     }
 }
 
@@ -1712,31 +1744,43 @@ fn a_move_and_a_resize_both_replace_the_frame() {
 fn a_closed_window_leaves_no_frame_and_no_focus() {
     let mut m = home_with_a_window();
     let _ = m.handle(&windows(WindowChange::Closed(WINDOW)));
-    assert_eq!(m.windows.focused(), None);
+    assert_eq!(m.windows.focused(Pid(1)), None);
 }
 
-// A focus report can name a window no `Opened` ever did, and a window with no frame is not
+// A focus read can name a window no `Opened` ever did, and a window with no frame is not
 // something a placement can start from.
 #[test]
 fn focus_on_an_unknown_window_yields_nothing_focused() {
     let mut m = home_with_a_window();
-    let _ = m.handle(&windows(WindowChange::Focused(Some(WindowId(999)))));
-    assert_eq!(m.windows.focused(), None);
+    focus_lands(&mut m, Pid(1), Some(WindowId(999)));
+    assert_eq!(m.windows.focused(Pid(1)), None);
 }
 
-// Applying a change twice lands where applying it once does, which is what makes the boot
-// ordering safe: a change during boot arrives in the snapshot and again as an event.
+// A focus report for a background pid lands in the map and waits; the projection answers for
+// whichever pid is asked.
+#[test]
+fn a_background_pids_focus_is_stored_not_dropped() {
+    let mut m = home_with_a_window();
+    let other = WindowId(8);
+    window_at(&mut m, WindowChange::Opened(other), SCREEN.visible);
+    focus_lands(&mut m, Pid(2), Some(other));
+    assert_eq!(m.windows.focused(Pid(1)), Some((WINDOW, WINDOW_FRAME)));
+    assert_eq!(m.windows.focused(Pid(2)), Some((other, SCREEN.visible)));
+}
+
+// Applying a report twice lands where applying it once does, which is what makes the boot
+// ordering safe: a change during boot arrives in the install burst and again as an event.
 #[test]
 fn recording_a_change_twice_is_recording_it_once() {
     let mut once = home_with_a_window();
     let mut twice = home_with_a_window();
-    let _ = twice.handle(&windows(opened(WINDOW, WINDOW_FRAME)));
-    assert_eq!(once.windows.focused(), twice.windows.focused());
+    window_at(&mut twice, WindowChange::Opened(WINDOW), WINDOW_FRAME);
+    assert_eq!(once.windows.focused(Pid(1)), twice.windows.focused(Pid(1)));
 
-    let _ = once.handle(&windows(WindowChange::Focused(Some(WINDOW))));
-    let _ = twice.handle(&windows(WindowChange::Focused(Some(WINDOW))));
-    let _ = twice.handle(&windows(WindowChange::Focused(Some(WINDOW))));
-    assert_eq!(once.windows.focused(), twice.windows.focused());
+    focus_lands(&mut once, Pid(1), Some(WINDOW));
+    focus_lands(&mut twice, Pid(1), Some(WINDOW));
+    focus_lands(&mut twice, Pid(1), Some(WINDOW));
+    assert_eq!(once.windows.focused(Pid(1)), twice.windows.focused(Pid(1)));
 }
 
 // A window's corner picks the screen it is on, which is what a placement measures against.
@@ -1786,16 +1830,17 @@ fn a_placement_uses_the_screen_the_window_is_on() {
 
     let mut m = home();
     let _ = m.handle(&windows(WindowChange::Screens(vec![SCREEN, SECOND])));
-    let _ = m.handle(&windows(opened(WINDOW, on_second)));
-    let _ = m.handle(&windows(WindowChange::Focused(Some(WINDOW))));
+    window_at(&mut m, WindowChange::Opened(WINDOW), on_second);
+    focus_lands(&mut m, Pid(1), Some(WINDOW));
     let _ = m.handle(&key(Key::KeyR));
 
     assert_eq!(
         m.handle(&key(Key::UpArrow)),
         leaves(vec![
-            MercuryEffect::SetFrame(WindowFrame {
+            MercuryEffect::SetFrame(Placement {
                 window: WINDOW,
-                frame: SECOND.visible,
+                from: on_second,
+                to: SECOND.visible,
             }),
             settle_timer(),
         ])
@@ -1804,24 +1849,22 @@ fn a_placement_uses_the_screen_the_window_is_on() {
 
 // ---- restore: `r` in resize puts the window back ----
 
-// Maximize, let it land, then `r`: back to the frame it had before the placement.
+// Maximize, let the move land, then `r`: back to the frame it had before the placement.
 #[test]
 fn resize_r_restores_the_frame_from_before_the_placement() {
     let mut m = home_with_a_window();
     let _ = m.handle(&key(Key::KeyR));
     let _ = m.handle(&key(Key::UpArrow));
-    let _ = m.handle(&windows(WindowChange::Moved(WindowFrame {
-        window: WINDOW,
-        frame: SCREEN.visible,
-    })));
+    window_at(&mut m, WindowChange::Moved(WINDOW), SCREEN.visible);
 
     let _ = m.handle(&key(Key::KeyR));
     assert_eq!(
         m.handle(&key(Key::KeyR)),
         leaves(vec![
-            MercuryEffect::SetFrame(WindowFrame {
+            MercuryEffect::SetFrame(Placement {
                 window: WINDOW,
-                frame: WINDOW_FRAME,
+                from: SCREEN.visible,
+                to: WINDOW_FRAME,
             }),
             settle_timer(),
         ])
@@ -1836,10 +1879,7 @@ fn a_second_placement_does_not_move_the_remembered_frame() {
     let mut m = home_with_a_window();
     let _ = m.handle(&key(Key::KeyR));
     let _ = m.handle(&key(Key::UpArrow));
-    let _ = m.handle(&windows(WindowChange::Moved(WindowFrame {
-        window: WINDOW,
-        frame: SCREEN.visible,
-    })));
+    window_at(&mut m, WindowChange::Moved(WINDOW), SCREEN.visible);
     let _ = m.handle(&key(Key::KeyR));
     let _ = m.handle(&key(Key::LeftArrow));
 
@@ -1847,9 +1887,10 @@ fn a_second_placement_does_not_move_the_remembered_frame() {
     assert_eq!(
         m.handle(&key(Key::KeyR)),
         leaves(vec![
-            MercuryEffect::SetFrame(WindowFrame {
+            MercuryEffect::SetFrame(Placement {
                 window: WINDOW,
-                frame: WINDOW_FRAME,
+                from: SCREEN.visible,
+                to: WINDOW_FRAME,
             }),
             settle_timer(),
         ])
@@ -1873,19 +1914,17 @@ fn the_intermediate_frames_of_a_placement_are_not_a_move_by_hand() {
         },
         SCREEN.visible,
     ] {
-        let _ = m.handle(&windows(WindowChange::Moved(WindowFrame {
-            window: WINDOW,
-            frame,
-        })));
+        window_at(&mut m, WindowChange::Moved(WINDOW), frame);
     }
 
     let _ = m.handle(&key(Key::KeyR));
     assert_eq!(
         m.handle(&key(Key::KeyR)),
         leaves(vec![
-            MercuryEffect::SetFrame(WindowFrame {
+            MercuryEffect::SetFrame(Placement {
                 window: WINDOW,
-                frame: WINDOW_FRAME,
+                from: SCREEN.visible,
+                to: WINDOW_FRAME,
             }),
             settle_timer(),
         ])
@@ -1902,23 +1941,18 @@ fn the_target_frame_reported_twice_is_still_not_a_move_by_hand() {
     let _ = m.handle(&key(Key::UpArrow));
 
     for _ in 0..2 {
-        let _ = m.handle(&windows(WindowChange::Moved(WindowFrame {
-            window: WINDOW,
-            frame: SCREEN.visible,
-        })));
-        let _ = m.handle(&windows(WindowChange::Resized(WindowFrame {
-            window: WINDOW,
-            frame: SCREEN.visible,
-        })));
+        window_at(&mut m, WindowChange::Moved(WINDOW), SCREEN.visible);
+        window_at(&mut m, WindowChange::Resized(WINDOW), SCREEN.visible);
     }
 
     let _ = m.handle(&key(Key::KeyR));
     assert_eq!(
         m.handle(&key(Key::KeyR)),
         leaves(vec![
-            MercuryEffect::SetFrame(WindowFrame {
+            MercuryEffect::SetFrame(Placement {
                 window: WINDOW,
-                frame: WINDOW_FRAME,
+                from: SCREEN.visible,
+                to: WINDOW_FRAME,
             }),
             settle_timer(),
         ])
@@ -1935,13 +1969,14 @@ fn a_move_by_hand_forgets_the_remembered_frame() {
     // The settle wait ends, so the window is the user's again.
     let _ = m.handle(&fired(timer_id(&effects)));
 
-    let _ = m.handle(&windows(WindowChange::Moved(WindowFrame {
-        window: WINDOW,
-        frame: Frame {
+    window_at(
+        &mut m,
+        WindowChange::Moved(WINDOW),
+        Frame {
             x: 700.0,
             ..WINDOW_FRAME
         },
-    })));
+    );
 
     let _ = m.handle(&key(Key::KeyR));
     assert_eq!(m.handle(&key(Key::KeyR)), leaves(vec![]));
@@ -1958,6 +1993,16 @@ fn restoring_twice_asks_for_nothing_the_second_time() {
 
     let _ = m.handle(&key(Key::KeyR));
     assert_eq!(m.handle(&key(Key::KeyR)), leaves(vec![]));
+}
+
+// A placement cannot start from a pending frame: the fact opened the gap and its read has not
+// landed, so there is nothing to compute from, and the key places nothing.
+#[test]
+fn a_pending_frame_places_nothing() {
+    let mut m = home_with_a_window();
+    let _ = m.handle(&windows(WindowChange::Moved(WINDOW)));
+    let _ = m.handle(&key(Key::KeyR));
+    assert_eq!(m.handle(&key(Key::UpArrow)), leaves(vec![]));
 }
 
 // `r` in resize is restore, not a second entry into resize.
@@ -1979,8 +2024,8 @@ fn a_closed_window_is_forgotten() {
     let _ = m.handle(&key(Key::UpArrow));
 
     let _ = m.handle(&windows(WindowChange::Closed(WINDOW)));
-    let _ = m.handle(&windows(opened(WINDOW, SCREEN.visible)));
-    let _ = m.handle(&windows(WindowChange::Focused(Some(WINDOW))));
+    window_at(&mut m, WindowChange::Opened(WINDOW), SCREEN.visible);
+    focus_lands(&mut m, Pid(1), Some(WINDOW));
 
     let _ = m.handle(&key(Key::KeyR));
     assert_eq!(m.handle(&key(Key::KeyR)), leaves(vec![]));

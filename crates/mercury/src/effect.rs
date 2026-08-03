@@ -3,7 +3,9 @@
 use freddie::TimerEffect;
 use freddie_keys::{Key, KeyEvent, KeyPress, ModifierFlags, PressType};
 
-use freddie_windows::WindowFrame;
+use freddie::AlwaysEqual;
+use freddie_sync::RidingGeneration;
+use freddie_windows::{Pid, Placement, WindowId};
 
 use crate::MercuryEvent;
 
@@ -64,7 +66,21 @@ pub enum MercuryEffect {
     ///
     /// The sink does not ask what is frontmost, what is focused, or what the screen looks
     /// like. The handler that produced this read all of it out of the model.
-    SetFrame(WindowFrame),
+    SetFrame(Placement),
+    /// Read `window`'s frame off the effect loop; the answer returns as a
+    /// [`FrameRead`](crate::FrameRead) carrying this half. `AlwaysEqual` for the same reason
+    /// a timer's cancel receiver wears it: the tests compare effects, and a token has no
+    /// equality to offer.
+    ReadFrame {
+        window: WindowId,
+        generation: AlwaysEqual<RidingGeneration>,
+    },
+    /// Read `pid`'s focused window; the answer returns as a
+    /// [`FocusRead`](crate::FocusRead) carrying this half.
+    ReadFocus {
+        pid: Pid,
+        generation: AlwaysEqual<RidingGeneration>,
+    },
     /// Put text on the clipboard, replacing what is there.
     Copy(Copied),
     /// Quit the program. The effect handler performs this by exiting.

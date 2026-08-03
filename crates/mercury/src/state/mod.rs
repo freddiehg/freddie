@@ -9,9 +9,10 @@ use std::fmt;
 use std::time::Duration;
 
 use bind::{Bind, if_not_invalidated};
-use freddie::{TimerFired, TimerGuard, timer_effect_and_guard};
+use freddie::{AlwaysEqual, TimerFired, TimerGuard, timer_effect_and_guard};
 use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
-use freddie_windows::{Frame, Monitor, Snapshot, WindowChange, WindowFrame, WindowId};
+use freddie_sync::{GenerationMinter, HeldGeneration, RidingGeneration, Synced};
+use freddie_windows::{Frame, Monitor, Pid, Placement, WindowId};
 use laserbeam::PathMut;
 
 // The derive generates a call to each named handler at its node's definition site below, so
@@ -21,8 +22,8 @@ use crate::effect::emit;
 #[allow(clippy::wildcard_imports)]
 use crate::handlers::*;
 use crate::{
-    AnyKey, App, ForegroundEvent, Foregrounded, MercuryEffect, MercuryEvent, MercuryStruct, Quit,
-    Site, TabEvent, Tabbed, Windowed,
+    AnyKey, App, FocusLanded, ForegroundEvent, Foregrounded, FrameLanded, MercuryEffect,
+    MercuryEvent, MercuryStruct, Quit, Site, TabEvent, Tabbed, Windowed,
 };
 
 mod app;
@@ -65,6 +66,8 @@ pub const OVERLAY_DWELL: Duration = Duration::from_secs(10);
     Foregrounded => if_not_invalidated(record_front_app),
     Tabbed => if_not_invalidated(record_tab_url),
     Windowed => if_not_invalidated(record_windows),
+    FrameLanded => if_not_invalidated(record_frame_read),
+    FocusLanded => if_not_invalidated(record_focus_read),
     Quit => if_not_invalidated(quit),
     |mercury_path| mercury_path.overlay_timer().map(TimerGuard::trigger) => if_not_invalidated(hide_overlay),
     |mercury_path| mercury_path.windows.pending_timer().map(TimerGuard::trigger) => if_not_invalidated(placement_settled),
@@ -80,7 +83,9 @@ pub struct Mercury {
     /// The watcher-confirmed frontmost app, or `None` while a nav choice's `Foreground` effect is
     /// in flight: the choice sets it to `None`, and the watcher's report sets it back to `Some`,
     /// so nothing binds against the app being left in the gap.
-    pub foreground: Option<ForegroundedApp>,
+    pub foreground: Option<FrontApp>,
+    /// The sync tokens' mint (`freddie_sync`): a counter, so minting is a function of state.
+    pub generations: GenerationMinter,
     /// Every window mercury knows about, and the monitors they sit on. See [`Windows`].
     pub windows: Windows,
     /// The physical truth about which modifier keys are down, kept current by the
@@ -168,6 +173,25 @@ impl ForegroundedApp {
     }
 }
 
+/// The frontmost app: its pid, the identity the OS's per-app reports speak, and what mercury
+/// knows about it.
+#[derive(Debug)]
+pub struct FrontApp {
+    pub pid: Pid,
+    pub app: ForegroundedApp,
+}
+
+impl FrontApp {
+    /// The state to hold for a newly foregrounded app, knowing its identity and pid.
+    #[must_use]
+    pub fn new(app: App, pid: Pid) -> Self {
+        Self {
+            pid,
+            app: ForegroundedApp::from_identity(app),
+        }
+    }
+}
+
 /// What mercury knows about the windows on screen.
 ///
 /// Filled entirely by the window source: a snapshot at startup and a change per event after
@@ -175,10 +199,12 @@ impl ForegroundedApp {
 /// state and event like everything else.
 #[derive(Default)]
 pub struct Windows {
-    /// Every open window: where it is, and where it goes back to.
+    /// Every open window: where it is (or the pending gap since its last change fact), and
+    /// where it goes back to.
     open: HashMap<WindowId, WindowState>,
-    /// The focused window, `None` when nothing is focused or its id is unreadable.
-    focused: Option<WindowId>,
+    /// Each app's focused window, keyed by pid, synced in two phases. `Known(None)` is a real
+    /// answer: the app has no focused window with a readable id. Entries leave with `AppGone`.
+    focused: HashMap<Pid, Synced<Option<WindowId>>>,
     /// The monitors, in the order the source reported them.
     screens: Vec<Monitor>,
     /// The placement mercury has asked for and not yet seen land. See [`PendingPlacement`].
@@ -197,11 +223,13 @@ impl fmt::Debug for Windows {
     }
 }
 
-/// One window: where it is now, and where a restore would put it.
-#[derive(Clone, Copy, PartialEq, Debug)]
+/// One window: where it is now (or the pending gap since its last change fact), and where a
+/// restore would put it.
+#[derive(Debug)]
 struct WindowState {
-    /// Where the window is, as the source last reported it.
-    frame: Frame,
+    /// Where the window is: the last committed read, or the pending gap since its last
+    /// change fact.
+    frame: Synced<Frame>,
     /// Where the window was before mercury first moved it. `None` once it is back there, or
     /// once the user has moved it since.
     restore: Option<Frame>,
@@ -227,40 +255,17 @@ struct PendingPlacement {
 pub const PLACEMENT_SETTLE: Duration = Duration::from_millis(250);
 
 impl Windows {
-    /// The state the window source found when it started watching, before any change.
-    #[must_use]
-    pub fn from_snapshot(snapshot: Snapshot) -> Self {
-        Self {
-            open: snapshot
-                .windows
-                .into_iter()
-                .map(|w| {
-                    (
-                        w.window,
-                        WindowState {
-                            frame: w.frame,
-                            restore: None,
-                        },
-                    )
-                })
-                .collect(),
-            focused: snapshot.focused,
-            screens: snapshot.screens,
-            pending: None,
-        }
-    }
-
-    /// The focused window and its frame, which is what every placement starts from.
+    /// The front app's focused window and its frame, which is what every placement starts
+    /// from.
     ///
-    /// `None` when nothing is focused, or when the focused window has no frame on record:
-    /// a focus report can name a window no `Opened` ever did.
+    /// `None` while either sync is pending, when the front app has no focused window, and
+    /// when the focus names a window no `Opened` ever did — every one the same "not now" a
+    /// placement answers by placing nothing.
     #[must_use]
-    pub fn focused(&self) -> Option<WindowFrame> {
-        let window = self.focused?;
-        Some(WindowFrame {
-            window,
-            frame: self.open.get(&window)?.frame,
-        })
+    pub fn focused(&self, front: Pid) -> Option<(WindowId, Frame)> {
+        let window = (*self.focused.get(&front)?.known()?)?;
+        let frame = *self.open.get(&window)?.frame.known()?;
+        Some((window, frame))
     }
 
     /// The monitor a frame's top-left corner is on, or the first monitor if it is on none.
@@ -274,40 +279,76 @@ impl Windows {
             .copied()
     }
 
-    /// Apply one reported change.
-    ///
-    /// Every arm assigns, replaces, or removes. None accumulates, so applying a change twice
-    /// lands where applying it once does, which is what makes the boot ordering safe: see the
-    /// idempotence rule in `CLAUDE.md`.
-    pub(crate) fn record(&mut self, change: &WindowChange) {
-        match change {
-            WindowChange::Opened(w) => {
-                self.open.insert(
-                    w.window,
-                    WindowState {
-                        frame: w.frame,
-                        restore: None,
-                    },
-                );
-            }
-            WindowChange::Moved(w) | WindowChange::Resized(w) => {
-                let ours = self.pending_covers(*w);
-                if let Some(state) = self.open.get_mut(&w.window) {
-                    state.frame = w.frame;
-                    if !ours {
-                        state.restore = None;
-                    }
-                }
-            }
-            WindowChange::Closed(window) => {
-                self.open.remove(window);
-                if self.focused == Some(*window) {
-                    self.focused = None;
-                }
-            }
-            WindowChange::Focused(window) => self.focused = *window,
-            WindowChange::Screens(screens) => self.screens.clone_from(screens),
+    /// A window appeared: its frame starts pending, its read queued by the caller.
+    pub(crate) fn opened(&mut self, window: WindowId, held: HeldGeneration) {
+        self.open.insert(
+            window,
+            WindowState {
+                frame: Synced::Pending(held),
+                restore: None,
+            },
+        );
+    }
+
+    /// A window moved or was resized: its old frame is dead, the new one is in flight.
+    /// Whether the window is tracked, which is whether the caller should request the read;
+    /// an untracked window's halves both die unused.
+    pub(crate) fn frame_change(&mut self, window: WindowId, held: HeldGeneration) -> bool {
+        let ours = self.pending_covers(window);
+        let Some(state) = self.open.get_mut(&window) else {
+            return false;
+        };
+        state.frame.change(held);
+        if !ours {
+            state.restore = None;
         }
+        true
+    }
+
+    /// A frame read landed: committed iff its riding half matches the placeholder's. A read
+    /// that could not answer leaves the entry pending.
+    pub(crate) fn frame_read(
+        &mut self,
+        window: WindowId,
+        riding: &RidingGeneration,
+        frame: Option<Frame>,
+    ) {
+        if let (Some(state), Some(frame)) = (self.open.get_mut(&window), frame) {
+            state.frame.commit(riding, frame);
+        }
+    }
+
+    /// Focus changed in an app: whichever window it lands on is in flight.
+    pub(crate) fn focus_change(&mut self, pid: Pid, held: HeldGeneration) {
+        self.focused.insert(pid, Synced::Pending(held));
+    }
+
+    /// A focus read landed: committed iff its riding half matches the placeholder's.
+    pub(crate) fn focus_read(
+        &mut self,
+        pid: Pid,
+        riding: &RidingGeneration,
+        window: Option<WindowId>,
+    ) {
+        if let Some(entry) = self.focused.get_mut(&pid) {
+            entry.commit(riding, window);
+        }
+    }
+
+    /// A window went away.
+    pub(crate) fn closed(&mut self, window: WindowId) {
+        self.open.remove(&window);
+    }
+
+    /// An app and every entry keyed by its pid are gone.
+    pub(crate) fn app_gone(&mut self, pid: Pid) {
+        self.focused.remove(&pid);
+    }
+
+    /// The monitors changed, with the new arrangement in hand: reading them is synchronous in
+    /// the watcher's callback, so no gap exists and the value rides the event.
+    pub(crate) fn screens_changed(&mut self, screens: &[Monitor]) {
+        self.screens = screens.to_vec();
     }
 
     /// Whether `moved` is a report of mercury's own outstanding placement.
@@ -317,10 +358,10 @@ impl Windows {
     /// twice, so the frame asked for is reported more than once; ending the wait on the
     /// first of them would leave the rest looking like the user dragging the window, and
     /// they would forget the frame the restore needs.
-    fn pending_covers(&self, moved: WindowFrame) -> bool {
+    fn pending_covers(&self, moved: WindowId) -> bool {
         self.pending
             .as_ref()
-            .is_some_and(|pending| pending.window == moved.window)
+            .is_some_and(|pending| pending.window == moved)
     }
 
     /// The guard for the placement still outstanding, for the trigger that matches its
@@ -340,15 +381,15 @@ impl Windows {
     /// The wait is what keeps the moves this causes from counting as the user's. Both
     /// callers need it; what they differ on is the remembered frame, which this leaves
     /// alone.
-    fn asking_for(&mut self, target: WindowFrame) -> Vec<MercuryEffect> {
+    fn asking_for(&mut self, placement: Placement) -> Vec<MercuryEffect> {
         let (timer, effect) =
             timer_effect_and_guard(PLACEMENT_SETTLE, |id| MercuryEvent::Timer(TimerFired(id)));
         self.pending = Some(PendingPlacement {
-            window: target.window,
+            window: placement.window,
             timer,
         });
         vec![
-            MercuryEffect::SetFrame(target),
+            MercuryEffect::SetFrame(placement),
             MercuryEffect::Timer(effect),
         ]
     }
@@ -358,13 +399,12 @@ impl Windows {
     /// The frame it has now becomes the one a restore goes back to, unless one is already
     /// remembered: a run of placements all restore to where the window was before the first
     /// of them.
-    pub(crate) fn placing(&mut self, target: WindowFrame) -> Vec<MercuryEffect> {
-        let Some(state) = self.open.get_mut(&target.window) else {
+    pub(crate) fn placing(&mut self, placement: Placement) -> Vec<MercuryEffect> {
+        let Some(state) = self.open.get_mut(&placement.window) else {
             return Vec::new();
         };
-        let frame = state.frame;
-        state.restore.get_or_insert(frame);
-        self.asking_for(target)
+        state.restore.get_or_insert(placement.from);
+        self.asking_for(placement)
     }
 
     /// Take the focused window's remembered frame, and return the effects that put it back.
@@ -372,18 +412,18 @@ impl Windows {
     /// Empty when nothing is focused or the window has no remembered frame: nothing placed
     /// it, or it is already back. Taking, not reading: a restored window is where it
     /// started, so there is nothing left to put it back to.
-    pub(crate) fn restoring(&mut self) -> Vec<MercuryEffect> {
-        let Some(window) = self.focused else {
+    pub(crate) fn restoring(&mut self, front: Pid) -> Vec<MercuryEffect> {
+        let Some((window, from)) = self.focused(front) else {
             return Vec::new();
         };
-        let Some(frame) = self
+        let Some(to) = self
             .open
             .get_mut(&window)
             .and_then(|state| state.restore.take())
         else {
             return Vec::new();
         };
-        self.asking_for(WindowFrame { window, frame })
+        self.asking_for(Placement { window, from, to })
     }
 }
 
@@ -478,9 +518,10 @@ impl Mercury {
     /// No `Default`, because a `Mercury` that has not been told what is frontmost would
     /// resolve its in-app layer against the wrong app until something corrected it.
     #[must_use]
-    pub fn new(front_app: App, windows: Windows) -> Self {
+    pub fn new(front: Option<FrontApp>, windows: Windows) -> Self {
         Self {
-            foreground: Some(ForegroundedApp::from_identity(front_app)),
+            foreground: front,
+            generations: GenerationMinter::default(),
             windows,
             held: HeldModifiers::default(),
             overlay: None,
@@ -494,7 +535,7 @@ impl Mercury {
     pub fn with_layer(layer: Layer) -> Self {
         Self {
             layer,
-            ..Self::new(App::Other, Windows::default())
+            ..Self::new(None, Windows::default())
         }
     }
 
@@ -519,7 +560,9 @@ impl Mercury {
         if self.overlay.is_some() {
             return self.hide_overlay();
         }
-        let content = self.layer.overlay_content(self.foreground.as_ref());
+        let content = self
+            .layer
+            .overlay_content(self.foreground.as_ref().map(|front| &front.app));
         let (guard, effect) =
             timer_effect_and_guard(OVERLAY_DWELL, |id| MercuryEvent::Timer(TimerFired(id)));
         self.overlay = Some(guard);
@@ -717,8 +760,36 @@ pub const fn key(key: Key) -> MercuryEvent {
 }
 
 #[must_use]
-pub const fn foreground(app: App) -> MercuryEvent {
-    MercuryEvent::Foreground(ForegroundEvent { app })
+pub const fn foreground(app: App, pid: Pid) -> MercuryEvent {
+    MercuryEvent::Foreground(ForegroundEvent { app, pid })
+}
+
+/// A frame read landing, as the performer reports it.
+#[must_use]
+pub const fn frame_read(
+    window: WindowId,
+    generation: RidingGeneration,
+    frame: Option<Frame>,
+) -> MercuryEvent {
+    MercuryEvent::FrameRead(crate::FrameRead {
+        window,
+        generation: AlwaysEqual(generation),
+        frame,
+    })
+}
+
+/// A focus read landing, as the performer reports it.
+#[must_use]
+pub const fn focus_read(
+    pid: Pid,
+    generation: RidingGeneration,
+    window: Option<WindowId>,
+) -> MercuryEvent {
+    MercuryEvent::FocusRead(crate::FocusRead {
+        pid,
+        generation: AlwaysEqual(generation),
+        window,
+    })
 }
 
 /// A tab event, carrying the front tab's URL as the browser reported it.

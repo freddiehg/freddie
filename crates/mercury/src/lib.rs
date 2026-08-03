@@ -53,14 +53,15 @@ mod state;
 
 pub use effect::{Chord, Copied, MercuryEffect, UrlPart};
 pub use external::{DEFAULT_PORT, on_message};
+pub use freddie_windows::{Pid, Placement};
 pub use model::{MercuryEvent, MercuryStruct, MercuryTrigger};
 pub use sources::{
-    AnyKey, App, ForegroundEvent, Foregrounded, Quit, Site, TabEvent, Tabbed, WindowEvent,
-    Windowed, host,
+    AnyKey, App, FocusLanded, FocusRead, ForegroundEvent, Foregrounded, FrameLanded, FrameRead,
+    Quit, Site, TabEvent, Tabbed, WindowEvent, Windowed, host,
 };
 pub use state::{
     AndReturnHome, AppData, AppLayer, ChromeApp, ClaudeAiSite, ForegroundedApp, ForegroundedChrome,
-    GhosttyApp, HomeLayer, JK_TIMEOUT, Layer, Mercury, NavLayer, OVERLAY_DWELL, PLACEMENT_SETTLE,
-    RETURN_TO_HOME_TIMEOUT, ResizeLayer, ReturnHomeLayers, SiteData, SiteLayer, TypingLayer,
-    Windows, foreground, key, quit_event, tab,
+    FrontApp, GhosttyApp, HomeLayer, JK_TIMEOUT, Layer, Mercury, NavLayer, OVERLAY_DWELL,
+    PLACEMENT_SETTLE, RETURN_TO_HOME_TIMEOUT, ResizeLayer, ReturnHomeLayers, SiteData, SiteLayer,
+    TypingLayer, Windows, focus_read, foreground, frame_read, key, quit_event, tab,
 };

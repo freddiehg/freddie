@@ -45,8 +45,8 @@ use freddie_keyboard::Emitter;
 use freddie_overlay::OverlaySink;
 use freddie_windows::WindowSink;
 use mercury::{
-    App, Chord, Copied, Mercury, MercuryEffect, MercuryEvent, UrlPart, WindowEvent, Windows,
-    foreground, host, quit_event,
+    App, Chord, Copied, FrontApp, Mercury, MercuryEffect, MercuryEvent, UrlPart, WindowEvent,
+    Windows, focus_read, foreground, frame_read, host, quit_event,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::sync::oneshot::error::TryRecvError;
@@ -121,36 +121,35 @@ pub(crate) fn run(port: u16) {
     let _app_watcher = freddie_app_nav::watch({
         let event_tx = event_tx.clone();
         move |front| {
-            let _ = event_tx.send(foreground(App::from_bundle_id(&front.bundle_id)));
+            let _ = event_tx.send(foreground(App::from_bundle_id(&front.bundle_id), front.pid));
         }
     });
 
     // The window source. Here rather than in `serve` because a `Watcher` is `!Send` and its
-    // observers register against this thread's run loop. Installed before its snapshot is
-    // taken, which `watch` guarantees by returning both.
+    // observers register against this thread's run loop. Its install pass reports the seed
+    // burst through the same callback, queued as events the model handles after construction.
     let windows = freddie_windows::watch(&waker, {
         let event_tx = event_tx.clone();
         move |change| {
             let _ = event_tx.send(MercuryEvent::Window(WindowEvent { change }));
         }
     });
-    let (window_watcher, window_sink, window_state) = match windows {
-        Ok((watcher, snapshot)) => {
+    let (window_watcher, window_sink) = match windows {
+        Ok(watcher) => {
             let sink = watcher.sink();
-            (Some(watcher), Some(sink), Windows::from_snapshot(snapshot))
+            (Some(watcher), Some(sink))
         }
         Err(e) => {
             error!(error = %e, "window observation unavailable");
-            (None, None, Windows::default())
+            (None, None)
         }
     };
 
     // Everything read from the OS before the main loop turns. After `main_loop.run`, every
     // fact reaches the model as an event; this is the only other way in.
     let boot = Boot {
-        front_app: freddie_app_nav::frontmost()
-            .map_or(App::Other, |front| App::from_bundle_id(&front.bundle_id)),
-        windows: window_state,
+        front: freddie_app_nav::frontmost()
+            .map(|front| FrontApp::new(App::from_bundle_id(&front.bundle_id), front.pid)),
         window_sink,
         overlay: overlay_sink,
     };
@@ -193,12 +192,9 @@ pub(crate) fn run(port: u16) {
 /// `main_loop.run` is going, every fact reaches the model as an event, so anything the
 /// model needs to start from has to be in here.
 struct Boot {
-    /// The app that was already frontmost. `freddie_app_nav::watch` reports changes, and at
-    /// boot nothing has changed yet.
-    front_app: App,
-    /// Every window open when the watcher was installed, which one was focused, and the
-    /// screens. Same reasoning: the observer reports changes, and none has happened yet.
-    windows: Windows,
+    /// The app that was already frontmost, with its pid. `freddie_app_nav::watch` reports
+    /// changes, and at boot nothing has changed yet; `None` when nothing is frontmost.
+    front: Option<FrontApp>,
     /// The handle placements are performed through. `None` when window observation could
     /// not start, in which case a placement has nothing to act on and says so.
     window_sink: Option<WindowSink>,
@@ -286,7 +282,7 @@ async fn serve(
     // `select!` rather than `join!`: the effect loop ends on `Kill`, and the event
     // loop never does, because the tap thread holds a sender for as long as the
     // grab is alive.
-    let mercury = Mercury::new(boot.front_app, boot.windows);
+    let mercury = Mercury::new(boot.front, Windows::default());
 
     // No initial title is sent: `daemon::run` painted `Mercury::BOOT_TITLE` on the item when it
     // created it, and the worker sends only the changes from there.
@@ -384,14 +380,28 @@ fn perform_effect(
             Ok(()) => debug!(key = ?ke.key, press = ?ke.press, "emitted"),
             Err(e) => warn!(key = ?ke.key, press = ?ke.press, error = %e, "emit failed"),
         },
-        MercuryEffect::SetFrame(target) => {
+        MercuryEffect::SetFrame(placement) => {
             if let Some(windows) = windows {
-                if let Err(e) = windows.set_frame(target) {
-                    warn!(?target, error = %e, "set frame failed");
+                if let Err(e) = windows.set_frame(placement) {
+                    warn!(?placement, error = %e, "set frame failed");
                 }
             } else {
-                debug!(?target, "no window sink: nothing to place through");
+                debug!(?placement, "no window sink: nothing to place through");
             }
+        }
+        MercuryEffect::ReadFrame { window, generation } => {
+            let event_tx = event_tx.clone();
+            std::thread::spawn(move || {
+                let frame = freddie_windows::frame_of(window);
+                let _ = event_tx.send(frame_read(window, generation.0, frame));
+            });
+        }
+        MercuryEffect::ReadFocus { pid, generation } => {
+            let event_tx = event_tx.clone();
+            std::thread::spawn(move || {
+                let window = freddie_windows::focused_window_of(pid);
+                let _ = event_tx.send(focus_read(pid, generation.0, window));
+            });
         }
         MercuryEffect::Copy(what) => copy(what),
         MercuryEffect::Kill => {

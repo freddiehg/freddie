@@ -2,7 +2,7 @@
 
 use laserbeam::{Completed, CompletesTo};
 
-use crate::state::{ForegroundedApp, MercuryPath};
+use crate::state::{ForegroundedApp, FrontApp, MercuryPath};
 use crate::{MercuryEffect, TabEvent};
 
 /// The browser reported the front tab's URL: record it on the foregrounded Chrome.
@@ -17,7 +17,11 @@ pub(crate) fn record_tab_url<'x>(
     p: MercuryPath<'x>,
 ) -> (Vec<MercuryEffect>, Completed<MercuryPath<'x>>) {
     let root: MercuryPath<'x> = p;
-    if let Some(ForegroundedApp::Chrome(chrome)) = &mut root.foreground {
+    if let Some(FrontApp {
+        app: ForegroundedApp::Chrome(chrome),
+        ..
+    }) = &mut root.foreground
+    {
         chrome.url = Some(ev.url.clone());
     }
     (Vec::new(), root.complete())

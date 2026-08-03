@@ -35,9 +35,9 @@ use std::process::Command;
 use std::ptr::NonNull;
 
 use block2::RcBlock;
+use freddie_windows_types::Pid;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
-use freddie_windows_types::Pid;
 use objc2_app_kit::{
     NSRunningApplication, NSWorkspace, NSWorkspaceApplicationKey,
     NSWorkspaceDidActivateApplicationNotification,
@@ -117,9 +117,11 @@ pub fn frontmost() -> Option<FrontmostApp> {
     })
 }
 
-/// The frontmost app as macOS reports it: the bundle identifier apps are addressed by, and the
-/// pid the OS's per-app reports speak. An app with no bundle identifier is not reported, as
-/// before pids were carried.
+/// The frontmost app as macOS reports it.
+///
+/// The bundle identifier is what apps are addressed by; the pid is what the OS's per-app
+/// reports speak. An app with no bundle identifier is not reported, as before pids were
+/// carried.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct FrontmostApp {
     pub bundle_id: String,
@@ -242,9 +244,13 @@ mod tests {
     /// look like a bundle id.
     #[test]
     fn frontmost_is_a_bundle_id_or_nothing() {
-        if let Some(id) = frontmost() {
-            assert!(!id.is_empty());
-            assert!(id.contains('.'), "not a bundle id: {id}");
+        if let Some(front) = frontmost() {
+            assert!(!front.bundle_id.is_empty());
+            assert!(
+                front.bundle_id.contains('.'),
+                "not a bundle id: {}",
+                front.bundle_id
+            );
         }
     }
 

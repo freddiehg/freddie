@@ -61,39 +61,37 @@ impl std::fmt::Display for WindowError {
 
 impl std::error::Error for WindowError {}
 
-/// What the windows are doing. One variant per thing the observer can tell you.
+/// What the windows are doing. One variant per fact the watcher can report; the values a fact
+/// invalidates are the consumer's reads to make.
 #[derive(Clone, PartialEq, Debug)]
 pub enum WindowChange {
-    /// A window appeared, with the frame it appeared at.
-    Opened(WindowFrame),
-    /// A window moved, with the frame it moved to.
-    Moved(WindowFrame),
-    /// A window was resized, with the frame it was resized to.
-    Resized(WindowFrame),
-    /// A window went away.
+    /// A window appeared. Its frame is the consumer's read to make.
+    Opened(WindowId),
+    /// A window moved: its old frame is dead, and the new one is the consumer's read to make.
+    Moved(WindowId),
+    /// A window was resized: same contract as [`Moved`](Self::Moved).
+    Resized(WindowId),
+    /// A window went away. Final: a read landing after this names a window the consumer
+    /// already removed.
     Closed(WindowId),
-    /// The focused window changed. `None` when the app that came forward has no focused
-    /// window, or its window has no readable id.
-    Focused(Option<WindowId>),
-    /// The monitors changed: one plugged, unplugged, or rearranged.
+    /// Focus changed in the app with this pid — a notification's report and an activation's
+    /// alike, ungated. Which window focus landed on is the consumer's read to make.
+    FocusChanged(Pid),
+    /// The app and every entry keyed by its pid are gone. Reported after the per-window
+    /// [`Closed`](Self::Closed) reports.
+    AppGone(Pid),
+    /// The monitors changed, with the new arrangement: reading `NSScreen` is synchronous in
+    /// the callback, so no gap exists and the value rides the event.
     Screens(Vec<Monitor>),
 }
 
-/// A window and where it is.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct WindowFrame {
-    pub window: WindowId,
-    pub frame: Frame,
-}
-
-/// Every window open when the watcher was installed, which one was focused, and the
-/// screens they sit on.
+/// A placement: the window, where it is, and where to put it.
 ///
-/// The starting state, for seeding a consumer's model. `watch` returns one; the observer
-/// reports changes, and at boot nothing has changed yet.
-#[derive(Clone, PartialEq, Debug)]
-pub struct Snapshot {
-    pub windows: Vec<WindowFrame>,
-    pub focused: Option<WindowId>,
-    pub screens: Vec<Monitor>,
+/// `from` orders the writes (grow before move, shrink after); the model owns it, since a
+/// placement only fires from a known frame. The payload carries everything performing needs.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Placement {
+    pub window: WindowId,
+    pub from: Frame,
+    pub to: Frame,
 }

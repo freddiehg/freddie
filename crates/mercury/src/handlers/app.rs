@@ -11,7 +11,7 @@ use laserbeam::{Completed, CompletesTo, HasAncestor, HasStop};
 use crate::MercuryEffect;
 use crate::effect::{Copied, UrlPart, tap};
 use crate::sources::host;
-use crate::state::{ForegroundedApp, Mercury, MercuryPath};
+use crate::state::{Mercury, MercuryPath};
 
 /// Chrome's refresh: cmd-r.
 pub(crate) fn tap_cmd_r<E, P: HasStop + CompletesTo<P>>(
@@ -84,7 +84,7 @@ fn copy(root: &Mercury, part: UrlPart) -> Vec<MercuryEffect> {
     let Some(url) = root
         .foreground
         .as_ref()
-        .and_then(ForegroundedApp::chrome)
+        .and_then(|front| front.app.chrome())
         .and_then(|chrome| chrome.url.as_deref())
     else {
         return vec![MercuryEffect::Copy(Copied::FrontTabUrl(part))];

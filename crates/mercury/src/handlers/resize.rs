@@ -5,7 +5,7 @@
 //! `windows`, which lives on the root, so each ends there, and the `go_home` after it ends there
 //! too: two root-enders compose, since the state-level `into_ancestor` is total on both branches.
 
-use freddie_windows::{Frame, WindowFrame};
+use freddie_windows::{Frame, Pid, Placement};
 use laserbeam::{Completed, CompletesTo, HasStop, IntoAncestor};
 
 use crate::MercuryEffect;
@@ -66,11 +66,17 @@ where
     (effects, root.complete())
 }
 
-/// Put the focused window in the frame `within` picks out of its screen's visible frame.
+/// Put the front app's focused window in the frame `within` picks out of its screen's visible
+/// frame.
 ///
-/// The effects are empty when there is no focused window or no screen has been reported.
+/// The effects are empty when no app is confirmed, either sync is pending, or no screen has
+/// been reported — the same "not now" every pending value answers with.
 fn place(root: &mut Mercury, within: impl Fn(Frame) -> Frame) -> Vec<MercuryEffect> {
-    target(&root.windows, within).map_or_else(Vec::new, |target| root.windows.placing(target))
+    let Some(front) = root.foreground.as_ref().map(|front| front.pid) else {
+        return Vec::new();
+    };
+    target(&root.windows, front, within)
+        .map_or_else(Vec::new, |placement| root.windows.placing(placement))
 }
 
 /// Put the focused window back where it was before it was placed, and return home.
@@ -80,18 +86,23 @@ where
     MercuryPath<'a>: CompletesTo<P>,
 {
     let root: MercuryPath<'a> = p.into_ancestor();
-    let mut effects = root.windows.restoring();
+    let mut effects = root
+        .foreground
+        .as_ref()
+        .map(|front| front.pid)
+        .map_or_else(Vec::new, |front| root.windows.restoring(front));
     effects.extend(root.set_layer(HomeLayer::new()));
     (effects, root.complete())
 }
 
-/// The focused window and the frame it is going to.
-fn target(windows: &Windows, within: impl Fn(Frame) -> Frame) -> Option<WindowFrame> {
-    let focused = windows.focused()?;
-    let monitor = windows.monitor_for(focused.frame)?;
-    Some(WindowFrame {
-        window: focused.window,
-        frame: within(monitor.visible),
+/// The front app's focused window, where it is, and where it is going.
+fn target(windows: &Windows, front: Pid, within: impl Fn(Frame) -> Frame) -> Option<Placement> {
+    let (window, from) = windows.focused(front)?;
+    let monitor = windows.monitor_for(from)?;
+    Some(Placement {
+        window,
+        from,
+        to: within(monitor.visible),
     })
 }
 

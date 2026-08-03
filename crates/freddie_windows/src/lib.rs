@@ -38,7 +38,7 @@ use accessibility_sys::{
     AXError, AXIsProcessTrusted, AXObserverAddNotification, AXObserverCreate,
     AXObserverGetRunLoopSource, AXObserverRef, AXUIElementCopyAttributeValue,
     AXUIElementCreateApplication, AXUIElementRef, AXUIElementSetAttributeValue, AXValueCreate,
-    AXValueGetValue, AXValueType, kAXFocusedWindowAttribute, kAXFocusedWindowChangedNotification,
+    AXValueType, kAXFocusedWindowAttribute, kAXFocusedWindowChangedNotification,
     kAXPositionAttribute, kAXSizeAttribute, kAXUIElementDestroyedNotification, kAXValueTypeCGPoint,
     kAXValueTypeCGSize, kAXWindowCreatedNotification, kAXWindowMovedNotification,
     kAXWindowResizedNotification, kAXWindowsAttribute, pid_t,
@@ -46,10 +46,15 @@ use accessibility_sys::{
 use block2::RcBlock;
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFEqual, CFRelease, CFRetain, CFTypeRef, TCFType};
+use core_foundation::dictionary::CFDictionary;
 use core_foundation::runloop::{CFRunLoop, CFRunLoopSource, kCFRunLoopDefaultMode};
 use core_foundation::string::{CFString, CFStringRef};
+use core_graphics::geometry::CGRect;
 use core_graphics::geometry::{CGPoint, CGSize};
-use core_graphics::window::{CGWindowID, kCGNullWindowID};
+use core_graphics::window::{
+    CGWindowID, copy_window_info, kCGNullWindowID, kCGWindowBounds,
+    kCGWindowListOptionIncludingWindow,
+};
 use freddie_main_loop::{MainWaker, WakingSender};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
@@ -64,7 +69,7 @@ use objc2_foundation::{
 };
 
 pub use freddie_windows_types::{
-    Frame, Monitor, Pid, Snapshot, WindowChange, WindowError, WindowFrame, WindowId,
+    Frame, Monitor, Pid, Placement, WindowChange, WindowError, WindowId,
 };
 
 /// An app whose windows a user could be looking at, which is the only kind worth observing.
@@ -142,13 +147,8 @@ impl Element {
 /// A window being watched: the element to address it through, and where it was last reported to
 /// be.
 ///
-/// The frame is kept because a placement needs the size the window currently has in order to order
-/// its writes, and it is already computed for every report. It is the same mirror of external truth
-/// as the rest of the table: seeded at construction, then replaced by whatever the moved and resized
-/// notifications say.
 struct Watched {
     element: Element,
-    frame: Frame,
 }
 
 /// Every window that can be addressed, the element to address it through, and where it is.
@@ -163,7 +163,7 @@ type Elements = HashMap<WindowId, Watched>;
 /// looked up and performed by the thread that owns the table.
 #[derive(Clone)]
 pub struct WindowSink {
-    placements: WakingSender<WindowFrame>,
+    placements: WakingSender<Placement>,
 }
 
 impl WindowSink {
@@ -181,9 +181,9 @@ impl WindowSink {
     /// [`WindowError::NotWatching`] if the watcher has been dropped. A window that is not being
     /// observed cannot be reported here, because the lookup happens after the send;
     /// [`Watcher::pump`] logs it at `debug` instead.
-    pub fn set_frame(&self, target: WindowFrame) -> Result<(), WindowError> {
+    pub fn set_frame(&self, placement: Placement) -> Result<(), WindowError> {
         self.placements
-            .send(target)
+            .send(placement)
             .map_err(|_| WindowError::NotWatching)
     }
 }
@@ -301,45 +301,6 @@ fn copy_attribute(element: AXUIElementRef, name: &str) -> Option<Owned> {
     (status == 0).then(|| Owned::new(value))?
 }
 
-/// Read one `AXValue` attribute of `element`.
-fn ax_value<A: AxAttribute>(element: AXUIElementRef) -> Option<A::Value> {
-    let value = copy_attribute(element, A::NAME)?;
-    let mut out = A::Value::default();
-    // SAFETY: `value` is a live `AXValue`, and the impl pairs `A::KIND` with `A::Value`,
-    // so a successful read writes an `A::Value` into an `A::Value`.
-    #[expect(unsafe_code)]
-    let got = unsafe {
-        AXValueGetValue(
-            value.0.cast_mut().cast(),
-            A::KIND,
-            std::ptr::from_mut(&mut out).cast(),
-        )
-    };
-    if !got {
-        // The attribute did not hold the type it is documented to hold, which is the app's
-        // Accessibility implementation misbehaving. Logged rather than fatal: a daemon that
-        // remaps the keyboard should not die because some app answered oddly.
-        tracing::warn!(
-            attribute = A::NAME,
-            "an AXValue was not the type it should be"
-        );
-    }
-    got.then_some(out)
-}
-
-/// A window's frame, in Accessibility coordinates, or `None` if either half of it
-/// cannot be read.
-fn window_frame(window: AXUIElementRef) -> Option<Frame> {
-    let origin = ax_value::<Position>(window)?;
-    let size = ax_value::<Size>(window)?;
-    Some(Frame {
-        x: origin.x,
-        y: origin.y,
-        width: size.width,
-        height: size.height,
-    })
-}
-
 /// The pid of the frontmost application, if there is one.
 fn frontmost_pid() -> Option<pid_t> {
     Some(
@@ -350,10 +311,6 @@ fn frontmost_pid() -> Option<pid_t> {
 }
 
 /// Whether `pid` names the frontmost application right now.
-fn is_frontmost(pid: Pid) -> bool {
-    frontmost_pid() == Some(pid.0)
-}
-
 /// The focused window of the app with pid `pid`, as a +1 reference the caller releases.
 fn focused_window(pid: pid_t) -> Option<AXUIElementRef> {
     // SAFETY: `pid` names a live process, and `AXUIElementCreateApplication` takes
@@ -508,25 +465,6 @@ impl WatcherState {
         self.elements.borrow_mut().remove(&window).is_some()
     }
 
-    /// Replace where `window` is understood to be. Idempotent, like every report of external truth:
-    /// it assigns and never accumulates.
-    ///
-    /// A window not in the table is not added, because a frame without an element cannot be placed
-    /// through.
-    fn record(&self, window: WindowId, frame: Frame) {
-        if let Some(watched) = self.elements.borrow_mut().get_mut(&window) {
-            watched.frame = frame;
-        }
-    }
-
-    /// Where `window` was last reported to be, if it is being watched.
-    fn frame_of(&self, window: WindowId) -> Option<Frame> {
-        self.elements
-            .borrow()
-            .get(&window)
-            .map(|watched| watched.frame)
-    }
-
     /// Forget whichever window `element` names, and say which it was.
     ///
     /// By identity rather than by id: `kAXUIElementDestroyed` arrives for an element the app has
@@ -630,15 +568,15 @@ unsafe extern "C" fn on_notification(
     // path in a pattern binds rather than matches the moment it stops resolving.
     if name == kAXWindowCreatedNotification {
         observe_window(&state, observer, pid, refcon, element);
-        report_open(&state, element);
+        if let Some(window) = window_id(element) {
+            state.report(WindowChange::Opened(window));
+        }
     } else if name == kAXWindowMovedNotification || name == kAXWindowResizedNotification {
-        if let (Some(window), Some(frame)) = (window_id(element), window_frame(element)) {
-            state.record(window, frame);
-            let moved = WindowFrame { window, frame };
+        if let Some(window) = window_id(element) {
             state.report(if name == kAXWindowMovedNotification {
-                WindowChange::Moved(moved)
+                WindowChange::Moved(window)
             } else {
-                WindowChange::Resized(moved)
+                WindowChange::Resized(window)
             });
         }
     } else if name == kAXUIElementDestroyedNotification {
@@ -650,11 +588,7 @@ unsafe extern "C" fn on_notification(
             state.report(WindowChange::Closed(window));
         }
     } else if name == kAXFocusedWindowChangedNotification {
-        // Only the frontmost app's focused window is what a placement aims at; a background
-        // app changing its own focus is not the window the user is looking at.
-        if is_frontmost(pid) {
-            state.report(WindowChange::Focused(window_id(element)));
-        }
+        state.report(WindowChange::FocusChanged(pid));
     }
 }
 
@@ -699,38 +633,12 @@ fn observe_window(
         add_notification(observer, element, notification, refcon);
     }
 
-    // Read here rather than carried from `report_open`, which reads it again for the event: the two
-    // are one call apart and the element is live for both. A frame that cannot be read has no
-    // default worth inventing, since a placement would then order its writes from a lie, so the
-    // window is not recorded at all.
-    let Some(frame) = window_frame(element) else {
-        return;
-    };
     state.elements.borrow_mut().insert(
         window,
         Watched {
             element: Element(owned),
-            frame,
         },
     );
-}
-
-/// Report a window as newly open, with the frame [`observe_window`] recorded for it.
-///
-/// The frame is carried rather than read again: reading position and size is two IPC round trips
-/// into the app that owns the window, `observe_window` has just made them, and nothing between the
-/// two calls can have moved it.
-///
-/// A window that is not in the table is not announced, which is how a window whose frame could not
-/// be read stays unreported: `observe_window` declined to record it.
-fn report_open(state: &WatcherState, element: AXUIElementRef) {
-    let Some(window) = window_id(element) else {
-        return;
-    };
-    let Some(frame) = state.frame_of(window) else {
-        return;
-    };
-    state.report(WindowChange::Opened(WindowFrame { window, frame }));
 }
 
 /// Subscribe `observer` to one notification on `element`, carrying `refcon`.
@@ -868,6 +776,7 @@ fn forget_app(state: &WatcherState, pid: Pid) {
             state.report(WindowChange::Closed(window));
         }
     }
+    state.report(WindowChange::AppGone(pid));
 }
 
 /// One registered notification observer, deregistered when it drops.
@@ -980,7 +889,7 @@ fn watch_notifications(state: &Rc<WatcherState>) -> Vec<Observation> {
         // focused window is read here. A UI service that can never be frontmost is skipped
         // the same way the observer never watches its windows.
         if let Some(ObservableApp(pid)) = ObservableApp::of(&app) {
-            state.report(WindowChange::Focused(focused_window_id(pid.0)));
+            state.report(WindowChange::FocusChanged(pid));
         }
     }));
 
@@ -1014,9 +923,9 @@ pub struct Watcher {
     /// order.
     _notifications: Vec<Observation>,
     /// Handed to every [`WindowSink`].
-    placements_sender: WakingSender<WindowFrame>,
+    placements_sender: WakingSender<Placement>,
     /// Placements waiting to be performed. Drained by [`Self::pump`] on the main thread.
-    placements: Receiver<WindowFrame>,
+    placements: Receiver<Placement>,
     state: Rc<WatcherState>,
 }
 
@@ -1036,27 +945,30 @@ impl Watcher {
     /// hit; the write is handed to a thread of its own, because it costs tens of milliseconds and
     /// this thread is what every other source is waiting on.
     pub fn pump(&self) {
-        for target in self.placements.try_iter() {
+        for placement in self.placements.try_iter() {
             let found = self
                 .state
                 .elements
                 .borrow()
-                .get(&target.window)
-                .map(|watched| (watched.element.retained(), watched.frame));
-            let Some((element, from)) = found else {
-                tracing::debug!(?target, "no such window to place");
+                .get(&placement.window)
+                .map(|watched| watched.element.retained());
+            let Some(element) = found else {
+                tracing::debug!(?placement, "no such window to place");
                 continue;
             };
             std::thread::spawn(move || {
-                set_frame(element.raw(), from, target.frame);
-                tracing::debug!(?target, ?from, "set a window's frame");
+                set_frame(element.raw(), placement.from, placement.to);
+                tracing::debug!(?placement, "set a window's frame");
             });
         }
     }
 }
 
-/// Report every window change to `on_change`, and return the watcher holding the
-/// registrations that do it, along with the state before any of them.
+/// Report every window change to `on_change`, returning the watcher that does it.
+///
+/// The install pass reports through `on_change` too — one `Screens`, one `Opened` per existing
+/// window, one `FocusChanged` for the frontmost app — so the seed path and the steady-state
+/// path are the same code, and a consumer's model starts empty.
 ///
 /// Observes every running app, and every app that launches while the returned [`Watcher`]
 /// is alive. Registering is cheap and takes no thread: each `AXObserver` contributes a run
@@ -1076,7 +988,7 @@ impl Watcher {
 pub fn watch(
     waker: &MainWaker,
     on_change: impl Fn(WindowChange) + 'static,
-) -> Result<(Watcher, Snapshot), WindowError> {
+) -> Result<Watcher, WindowError> {
     let mtm = MainThreadMarker::new().ok_or(WindowError::NotMainThread)?;
 
     // SAFETY: a plain C predicate over process state; takes no arguments.
@@ -1090,7 +1002,7 @@ pub fn watch(
         apps: RefCell::new(HashMap::new()),
         on_change: Box::new(on_change),
     });
-    let (placements_sender, placements) = waker.channel::<WindowFrame>();
+    let (placements_sender, placements) = waker.channel::<Placement>();
 
     let notifications = watch_notifications(&state);
     for app in NSWorkspace::sharedWorkspace()
@@ -1101,36 +1013,60 @@ pub fn watch(
         observe_app(&state, app);
     }
 
-    let screens = read_monitors(mtm);
-    let windows: Vec<WindowFrame> = state
-        .elements
-        .borrow()
-        .iter()
-        .map(|(window, watched)| WindowFrame {
-            window: *window,
-            frame: watched.frame,
-        })
-        .collect();
-    let snapshot = Snapshot {
-        windows,
-        focused: frontmost_pid().and_then(focused_window_id),
-        screens,
-    };
+    state.report(WindowChange::Screens(read_monitors(mtm)));
+    let windows: Vec<WindowId> = state.elements.borrow().keys().copied().collect();
+    for window in &windows {
+        state.report(WindowChange::Opened(*window));
+    }
+    if let Some(pid) = frontmost_pid() {
+        state.report(WindowChange::FocusChanged(Pid(pid)));
+    }
 
     tracing::debug!(
         apps = state.apps.borrow().len(),
-        windows = snapshot.windows.len(),
+        windows = windows.len(),
         "watching windows"
     );
-    Ok((
-        Watcher {
-            _notifications: notifications,
-            placements_sender,
-            placements,
-            state,
-        },
-        snapshot,
-    ))
+    Ok(Watcher {
+        _notifications: notifications,
+        placements_sender,
+        placements,
+        state,
+    })
+}
+
+/// The focused window of `pid` right now, through Accessibility.
+///
+/// The elements it creates are its own and per call. `None` when the app has no focused
+/// window, its window has no readable id, or it will not answer. Callable from any thread; an
+/// effect performer's read.
+#[must_use]
+pub fn focused_window_of(pid: Pid) -> Option<WindowId> {
+    focused_window_id(pid.0)
+}
+
+/// The frame of `window` right now, by id through the window server. `None` for a window that
+/// is gone or unreadable. Callable from any thread; an effect performer's read.
+#[must_use]
+pub fn frame_of(window: WindowId) -> Option<Frame> {
+    let infos = copy_window_info(kCGWindowListOptionIncludingWindow, window.0)?;
+    let raw = infos.get(0)?;
+    // SAFETY: the array holds window-info dictionaries per `CGWindowListCopyWindowInfo`'s
+    // contract, and `kCGWindowBounds` is an immutable extern static the framework provides.
+    // Both wraps retain, so each releases exactly what it holds.
+    #[expect(unsafe_code)]
+    let bounds = unsafe {
+        let info = CFDictionary::<*const c_void, *const c_void>::wrap_under_get_rule((*raw).cast());
+        let bounds = *info.find(kCGWindowBounds.cast::<c_void>())?;
+        CFDictionary::wrap_under_get_rule(bounds.cast())
+    };
+    let rect = CGRect::from_dict_representation(&bounds)?;
+    Some(Frame {
+        x: rect.origin.x,
+        y: rect.origin.y,
+        width: rect.size.width,
+        height: rect.size.height,
+    })
 }
 
 /// The focused window of the app with pid `pid`, by id.

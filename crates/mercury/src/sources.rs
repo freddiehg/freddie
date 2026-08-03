@@ -1,8 +1,11 @@
 //! The event sources: a keyboard, and the OS reporting a newly foregrounded app.
 
 use bind::EventTrigger;
+use freddie::AlwaysEqual;
 use freddie_keys::KeyEvent;
+use freddie_sync::RidingGeneration;
 use freddie_windows::WindowChange;
+use freddie_windows::{Frame, Pid, WindowId};
 
 /// A keyboard trigger matching every key, modifier or not, on either press.
 ///
@@ -27,6 +30,8 @@ pub struct Foregrounded;
 #[derive(Debug)]
 pub struct ForegroundEvent {
     pub app: App,
+    /// The process the OS's per-app reports speak; `app` is the keymap's lossy classification.
+    pub pid: Pid,
 }
 impl EventTrigger for Foregrounded {
     type Event = ForegroundEvent;
@@ -52,6 +57,47 @@ pub struct WindowEvent {
 impl EventTrigger for Windowed {
     type Event = WindowEvent;
     fn is_matching(&self, _ev: &WindowEvent) -> bool {
+        true
+    }
+}
+
+/// A trigger matching a frame read landing, whichever window it is about.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct FrameLanded;
+
+/// A frame read landed: what the window's frame was when the read ran. Only the performer
+/// creates one; the wire cannot.
+#[cfg_attr(feature = "testing", derive(PartialEq))]
+#[derive(Debug)]
+pub struct FrameRead {
+    pub window: WindowId,
+    pub generation: AlwaysEqual<RidingGeneration>,
+    /// `None` when the read could not answer; the entry stays `Pending`.
+    pub frame: Option<Frame>,
+}
+impl EventTrigger for FrameLanded {
+    type Event = FrameRead;
+    fn is_matching(&self, _ev: &FrameRead) -> bool {
+        true
+    }
+}
+
+/// A trigger matching a focus read landing, whichever app it is about.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct FocusLanded;
+
+/// A focus read landed: the focused window of `pid` when the read ran. Only the performer
+/// creates one; the wire cannot.
+#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
+#[derive(Debug)]
+pub struct FocusRead {
+    pub pid: Pid,
+    pub generation: AlwaysEqual<RidingGeneration>,
+    pub window: Option<WindowId>,
+}
+impl EventTrigger for FocusLanded {
+    type Event = FocusRead;
+    fn is_matching(&self, _ev: &FocusRead) -> bool {
         true
     }
 }

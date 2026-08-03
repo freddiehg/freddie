@@ -4,8 +4,8 @@ use bind::Bindings;
 use freddie_keys::{Key, KeyChord, KeyEvent, KeyPress};
 
 use crate::{
-    AnyKey, ForegroundEvent, Foregrounded, MercuryEffect, Quit, TabEvent, Tabbed, WindowEvent,
-    Windowed,
+    AnyKey, FocusLanded, FocusRead, ForegroundEvent, Foregrounded, FrameLanded, FrameRead,
+    MercuryEffect, Quit, TabEvent, Tabbed, WindowEvent, Windowed,
 };
 use freddie::TimerFired;
 
@@ -19,6 +19,8 @@ pub enum MercuryTrigger {
     Foregrounded(Foregrounded),
     Tabbed(Tabbed),
     Windowed(Windowed),
+    FrameLanded(FrameLanded),
+    FocusLanded(FocusLanded),
     Quit(Quit),
 }
 
@@ -37,6 +39,8 @@ pub enum MercuryEvent {
     Foreground(ForegroundEvent),
     Tab(TabEvent),
     Window(WindowEvent),
+    FrameRead(FrameRead),
+    FocusRead(FocusRead),
     Quit(Quit),
     /// A timer fired, carrying which one. Every timer shares it: what tells them apart is which
     /// node still holds that guard, which its binding matches on.

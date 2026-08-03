@@ -1249,6 +1249,7 @@ dependencies = [
  "freddie_menu_bar",
  "freddie_overlay",
  "freddie_single_instance",
+ "freddie_sync",
  "freddie_windows",
  "futures-util",
  "laserbeam",

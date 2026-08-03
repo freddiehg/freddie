@@ -2,7 +2,7 @@
 
 use laserbeam::{Completed, CompletesTo};
 
-use crate::state::{ForegroundedApp, MercuryPath};
+use crate::state::{FrontApp, MercuryPath};
 use crate::{ForegroundEvent, MercuryEffect};
 
 /// An app was foregrounded: record it at the root and end any pending navigation.
@@ -17,6 +17,6 @@ pub(crate) fn record_front_app<'x>(
     p: MercuryPath<'x>,
 ) -> (Vec<MercuryEffect>, Completed<MercuryPath<'x>>) {
     let root: MercuryPath<'x> = p;
-    root.foreground = Some(ForegroundedApp::from_identity(ev.app));
+    root.foreground = Some(FrontApp::new(ev.app, ev.pid));
     (Vec::new(), root.complete())
 }

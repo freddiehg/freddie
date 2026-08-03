@@ -6,7 +6,7 @@ use laserbeam::HasAncestor;
 use crate::handlers::*;
 use crate::{App, MercuryStruct};
 
-use super::{AppLayerPath, ForegroundedApp, MercuryPath, ReturnHomeLayersPath};
+use super::{AppLayerPath, MercuryPath, ReturnHomeLayersPath};
 
 pub(crate) const CHROME_OVERLAY: &str = include_str!("overlays/chrome.txt");
 pub(crate) const GHOSTTY_OVERLAY: &str = include_str!("overlays/ghostty.txt");
@@ -64,7 +64,7 @@ pub enum AppData {
 /// no level and no struct.
 fn app_data<'a, P: HasAncestor<MercuryPath<'a>>>(path: &P) -> Option<AppData> {
     let root = path.ancestor();
-    match root.foreground.as_ref().map(ForegroundedApp::identity) {
+    match root.foreground.as_ref().map(|front| front.app.identity()) {
         Some(App::Chrome) => Some(AppData::Chrome(ChromeApp::new())),
         Some(App::Ghostty) => Some(AppData::Ghostty(GhosttyApp::new())),
         _ => None,
