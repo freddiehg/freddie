@@ -1,22 +1,16 @@
 # Multiple children
 
-Thoughts on feasibility, not a plan. Downstream of `refactors/past/invalidation.md`, which has landed; the shapes below are the ones in laserbeam and bind today. Background: `derived-child-iterator.md` records the derived-fn arity generalization; `ideas.md` names the motivating case ("Two keyboards, two independent layers. ... Wants multiple `#[resolve_into]`"), and `mercury-post-patterns.md` adds a second: an overlay that binds keys while open is a child of the root beside the layer, which `invalidation-granularity.md` also leans on this doc for.
+Downstream of `refactors/past/invalidation.md`, which has landed; the shapes below are the ones in laserbeam and bind today. The concrete target is figaro's typing layer: the russian-doll chain `TypingLayer<KinesisRemaps<NumberRemaps<SymbolRemaps>>>` becomes one flat struct with three child fields, and the doll pattern for typing is deleted. The other consumers are `ideas.md`'s two-keyboards case ("Two keyboards, two independent layers. ... Wants multiple `#[resolve_into]`") and the overlay that binds keys while open (`mercury-post-patterns.md`, which `invalidation-granularity.md` also leans on this doc for). The typing changes are gated on the compile-check the cap section names; the open questions at the bottom gate the root-branch consumers, not the flattening.
 
-"Multiple children" means a struct node with two `#[resolve_into]` fields live at once, each an independently active subtree with its own leaf:
+"Multiple children" means a place node with several child edges live at once, each an independently active subtree with its own leaf. Both kinds of edge participate:
 
-```rust
-#[derive(Bind)]
-#[node(root)]
-#[binds(MercuryStruct)]
-struct Mercury {
-    #[resolve_into]
-    internal: KeyboardLayers, // the laptop keyboard's layer machine
-    #[resolve_into]
-    external: KeyboardLayers, // the external keyboard's
-}
-```
+- Real children: two or more `#[resolve_into]` fields.
+- Derived children: several data fns in one attribute, `#[derived_children(app_data, app_foo)]`.
+- Mixed: one place node carrying both.
 
-The tree stops having one active path and has one per branch. Dispatch still holds one `&mut`, so the branches are visited one at a time, in field order, each descent consuming the parent and handing it back. Enum nodes stay single-child: a variant is exclusive by construction.
+The children are visited one at a time — dispatch still holds one `&mut` — in a documented order: field children first, in declaration order, then derived children, in listed order. That order is also claim order. Enum nodes stay single-child: a variant is exclusive by construction. A node with exactly one child edge keeps today's generated body unchanged, so the existing trees are untouched until a node grows a second child.
+
+Derived levels themselves are unchanged in one respect: a derived level still cannot carry a `#[resolve_into]` field (its `data` dies with the dispatch; the existing rejection stands). A derived level may carry `#[derived_children]`, as it can today.
 
 ## What invalidation bought
 
@@ -42,26 +36,28 @@ let mut state = C1::dispatch(c1_path, event, effs, claim).into_inner().to_maybe_
 Three cases:
 
 - `NotInvalidated(p)` — branch 1 stayed. Descend `C2` with `p`.
-- `Invalidated(c)` with `c.into_inner() = Stop::Here(p)` — the leave stopped at `P` itself. `p` is recoverable by destructuring; `C2` can still be descended.
+- `Invalidated(c)` with `c.into_inner() = Stop::Here(p)` — the leave stopped at `P` itself. `p` is recoverable; `C2` can still be descended.
 - `Invalidated(c)` with `c.into_inner() = Stop::Up(above)` — the leave peeled past `P`. `PPath` went by value into `above` (a `Completed<Q>`, eventually the bare root). `C2`'s path cannot be built. Skipping the descent violates "every scheduled item runs": branch 2's whole schedule, all the way down, silently does not happen.
 
 `completed-ancestors.md` landed this case split as `TryIntoAncestor`: `state.try_into_ancestor::<PPath>()` is `Ok` in the first two cases and `Err` in the third, so the recover is one call rather than a destructure — and the `Err` arm is still the same dead end.
 
+A derived child's block is the same fold, one conversion shorter. `dispatch_into_tree_path` already returns its leave at the place beneath the derived chain — `Completed<TreePath>`, and at a place node `TreePath` is the place's own path — so the block folds `Completed<PPath>` directly through `Completed::to_maybe_invalidated`, with no `Stop` unwrap. The recover between blocks is the same `TryIntoAncestor` question with the same dead `Err` arm.
+
 This is the "invalidates too high, you're SOL" case, and it is unrecoverable by construction: no fold conjures back a path that was peeled, and re-resolving from the root is exactly the blind re-projection the typed leave exists to prevent (the leave may have swapped an ancestor enum out from under the projection).
 
-At the root the case does not exist. A child-of-root's `Up` payload is the bare `&'a mut R`, and a leave from the root never invalidates it — laserbeam states it twice, in `HasStop for &'a mut R` (always folds `NotInvalidated`) and in the distance-one `TryIntoAncestor<&'a mut R>` impl (`Ok` on both arms: the root is always alive) — so both arms hand the root back and the second descent is always buildable. Root-level multiple children — the two-keyboards case, and the overlay-with-keys case — are mechanically fine under the landed protocol, needing only the derive to allow two fields and emit two descent blocks.
+At the root the case does not exist. A child-of-root's `Up` payload is the bare `&'a mut R`, and a leave from the root never invalidates it — laserbeam states it twice, in `HasStop for &'a mut R` (always folds `NotInvalidated`) and in the distance-one `TryIntoAncestor<&'a mut R>` impl (`Ok` on both arms: the root is always alive) — so both arms hand the root back and the second descent is always buildable. Root-level multiple children — the two-keyboards case, and the overlay-with-keys case — need only the derive changes, no new laserbeam machinery.
 
 There is also a semantic reading of the same fact. Invalidation is single-focus vocabulary: "the leave went above `P`" is a statement about the tree's one active path. With two live branches that statement is false on arrival — branch 2's path runs through `P` and nothing in branch 1 touched it. A leave from inside a branch that peels past the branch point is not a protocol gap to engineer around; it is a claim the type system should refuse to express.
 
 ## The cap: a branch point is a sub-root
 
-Leaves from inside a branch terminate at the branch point. Not a runtime rule — a type: children of a multi-child node are rooted at something root-shaped, so `Above` and `CompletesTo` give their leaves nowhere higher to go, and the parent path provably survives both descents.
+Leaves from inside a branch terminate at the branch point. Not a runtime rule — a type: children of a multi-child node are rooted at something root-shaped, so `Above` and `CompletesTo` give their leaves nowhere higher to go, and the parent path provably survives every descent.
 
 Two mechanisms can produce that shape.
 
-Reborrowing is the cheap one: hand each child a path rooted at `&'b mut N` (the branch point's node, via `p.get_mut()`), so the child path is `PathMut<C1, &'b mut N>` and the existing root impls cap the leave for free; the parent path never leaves the frame, and each branch gets a fresh reborrow. Its cost kills it: `HasAncestor`/`IntoAncestor` top out at `&'b mut N`, so trigger closures and handlers inside the branch cannot read anything above the branch point — not the front app, not the root — and mercury's handlers read the root constantly.
+Reborrowing is the cheap one: hand each child a path rooted at `&'b mut N` (the branch point's node, via `p.get_mut()`), so the child path is `PathMut<C1, &'b mut N>` and the existing root impls cap the leave for free; the parent path never leaves the frame, and each branch gets a fresh reborrow. For the flat typing layer as it stands it would even suffice — no doll handler today reads anything above typing. Its cost is that the wall is permanent: `HasAncestor`/`IntoAncestor` top out at `&'b mut N`, so no trigger closure or handler inside a branch can ever read the front app or `Figaro::held`, and the root-branch consumers (two keyboards, the overlay) do read the root. One mechanism serves every branch point, so it is the one that keeps ancestor reads open.
 
-The version that keeps ancestor reads is a newtype that owns the parent path and mirrors the root's impl family:
+That version is a newtype that owns the parent path and mirrors the root's impl family:
 
 ```rust
 /// A branch point's stand-in root: owns the parent path, so leaves from the
@@ -96,47 +92,219 @@ impl<T, P: HasAncestor<T>> HasAncestor<T> for SubRoot<P> {
 }
 ```
 
-Plus the `CompletesTo` peel-distance impls for a `SubRoot` terminal and the `TryIntoAncestor` terminal impls (a sub-root, like the root, is always alive), each mirroring the `&'a mut R` family; a `From<SubRoot<P>> for Completed<SubRoot<P>>`; and inherent accessors on `SubRoot<PathMut<N, P>>` (`node_mut`/`node`, projecting through `parent.get_mut()`/`parent.get()`) for the derive's child projections to go through. All additive, all in the style the root already uses. The `HasAncestor` forwarding does not overlap the identity impl for the same reason the depth impls do not: unifying them needs `P: HasAncestor<SubRoot<P>>`, a type containing itself, which the occurs check rejects. (These claims want the same compile-check treatment invalidation's types got before anything is committed to.)
+Plus the `CompletesTo` peel-distance impls for a `SubRoot` terminal and the `TryIntoAncestor` terminal impls (a sub-root, like the root, is always alive), each mirroring the `&'a mut R` family; a `From<SubRoot<P>> for Completed<SubRoot<P>>`; inherent accessors on `SubRoot<PathMut<N, P>>` (`node_mut`/`node`, projecting through `parent.get_mut()`/`parent.get()`) for the derive's child projections to go through; and, in bind, the identity `HasTreePath for SubRoot<P>` (mirrors `HasTreePath for &mut R`), so a derived child hangs off a sub-root the way one hangs off the root. All additive, all in the style the root already uses. The `HasAncestor` forwarding does not overlap the identity impl for the same reason the depth impls do not: unifying them needs `P: HasAncestor<SubRoot<P>>`, a type containing itself, which the occurs check rejects. (These claims want the same compile-check treatment invalidation's types got before anything is committed to.)
 
-The generated body at a mid-tree branch point:
+Derived children cap identically. At a branch point the data fn receives the sub-rooted path (`fn(&SubRoot<PPath>) -> Option<Data>` — ancestor reads go through the forwarding impl), the level is built as `DerivedLevel { parent: sub, data }`, and `dispatch_into_tree_path` returns `Completed<SubRoot<PPath>>`, whose `into_inner` is the sub-root itself. The existing derived fns (`app_data`, `site_data` in both mercury and figaro) hang under single-child places and do not change.
+
+## The generated body at a branch point
+
+Mid-tree branch point with fields `b1: C1`, `b2: C2` and `#[derived_children(d1, d2)]`:
 
 ```rust
 // opts: all snapped here, before ANY descent, source order — unchanged.
 
 let sub = SubRoot::new(path);
+
+// field children, declaration order
 let c1 = PathMut::from_fn(sub, |s| &mut s.node_mut().b1, |s| &s.node().b1);
-let (sub, b1_left) = match C1::dispatch(c1, event, effs, claim).into_inner() {
-    Stop::Here(child) => (child.into_parent(), false),
-    Stop::Up(sub) => (sub, true), // the Up payload IS the sub-root: the cap, doing its job
+let sub = match C1::dispatch(c1, event, effs, claim).into_inner() {
+    Stop::Here(child) => child.into_parent(),
+    Stop::Up(sub) => sub, // the Up payload IS the sub-root: the cap, doing its job
 };
 let c2 = PathMut::from_fn(sub, |s| &mut s.node_mut().b2, |s| &s.node().b2);
-let (sub, b2_left) = match C2::dispatch(c2, event, effs, claim).into_inner() { .. };
-let path = sub.into_inner();
+let sub = match C2::dispatch(c2, event, effs, claim).into_inner() {
+    Stop::Here(child) => child.into_parent(),
+    Stop::Up(sub) => sub,
+};
 
+// derived children, listed order
+let sub = match d1(&sub) {
+    Some(data) => DispatchIntoTreePath::dispatch_into_tree_path(
+        DerivedLevel { parent: sub, data },
+        event,
+        effs,
+        claim,
+    )
+    .into_inner(), // HasStop for SubRoot: the Stop IS the sub-root
+    None => sub,
+};
+let sub = match d2(&sub) { /* same shape */ };
+
+let path = sub.into_inner();
 let mut state = MaybeInvalidated::NotInvalidated(path); // children cannot invalidate a branch point
 // scheduled items and MaybeInvalidated::complete(state) as today
 ```
 
-The shape states the guarantee: after both descents the branch point's path is always in hand. `MaybeInvalidated` at a branch point is degenerate with respect to the descent — only the node's own earlier scheduled items can flip it, which is the existing fold. The branch point's own protocol upward is untouched; its own binds leave normally.
+The shape states the guarantee: after every descent the branch point's path is always in hand. `MaybeInvalidated` at a branch point is degenerate with respect to the descents — only the node's own earlier scheduled items can flip it, which is the existing fold. The branch point's own protocol upward is untouched; its own binds leave normally.
+
+At the root the same blocks run over the bare `&'a mut R` with no `SubRoot`, through the impls that already exist. One field block:
+
+```rust
+let c1 = PathMut::from_fn(path, |r| &mut r.b1, |r| &r.b1);
+let path = match C1::dispatch(c1, event, effs, claim).into_inner() {
+    Stop::Here(child) => child.into_parent(),
+    Stop::Up(root) => root, // the root is always alive
+};
+```
+
+and a derived block's `dispatch_into_tree_path` returns `Completed<&'a mut R>`, whose `into_inner` is the root back.
 
 Branch-internal machinery needs nothing new. A branch's return-home timer story lives at the branch's top node exactly as the `A → B` demo (`crates/bind/tests/schedule.rs`) puts it at `A`: `C1`'s own dispatch sees its child's leave as `MaybeInvalidated<C1Path>` and its posts run inside `C1::dispatch`. "Go home" inside a branch is a leave to the branch point, which is today's leave-to-root one level down.
 
+## The typing layer, flat
+
+The dolls exist purely to sequence claims: `KinesisRemaps` does not contain laptop number remaps in any meaningful sense, it just runs before them. Multiple children make the honest shape representable, and the three tables are disjoint by construction (each row is device- and key-scoped), so the field order is free; it reads in overlay order.
+
+`src/model/typing/mod.rs`, before:
+
+```rust
+pub struct TypingLayer<Next> {
+    pub jk: DeviceSequence,
+    pub pending_double: Option<PendingDouble>,
+    #[resolve_into]
+    pub next: Next,
+}
+
+/// The typing stack as figaro composes it. The one place the composition is spelled.
+pub type TypingStack = TypingLayer<KinesisRemaps<NumberRemaps<SymbolRemaps>>>;
+
+impl TypingStack {
+    pub(crate) fn new() -> Self {
+        Self {
+            jk: DeviceSequence::new(DeviceClass::Laptop, JK, JK_TIMEOUT),
+            pending_double: None,
+            next: KinesisRemaps::new(NumberRemaps::new(SymbolRemaps)),
+        }
+    }
+}
+```
+
+after (the `#[bind]` tables on every node are unchanged throughout):
+
+```rust
+pub struct TypingLayer {
+    pub jk: DeviceSequence,
+    pub pending_double: Option<PendingDouble>,
+    #[resolve_into]
+    pub kinesis: KinesisRemaps,
+    #[resolve_into]
+    pub numbers: NumberRemaps,
+    #[resolve_into]
+    pub symbols: SymbolRemaps,
+}
+
+impl TypingLayer {
+    pub(crate) fn new() -> Self {
+        Self {
+            jk: DeviceSequence::new(DeviceClass::Laptop, JK, JK_TIMEOUT),
+            pending_double: None,
+            kinesis: KinesisRemaps::new(),
+            numbers: NumberRemaps,
+            symbols: SymbolRemaps,
+        }
+    }
+}
+```
+
+The children lose their parameters and their tails:
+
+```rust
+// kinesis.rs — was KinesisRemaps<Next> { shift_mirror, motion_hold, #[resolve_into] next: Next }
+#[node(parent_path = TypingSubRoot)]
+pub struct KinesisRemaps {
+    pub shift_mirror: ShiftMirror,
+    pub motion_hold: MotionHold,
+}
+
+// laptop.rs — was NumberRemaps<Next> { #[resolve_into] next: Next } and SymbolRemaps
+#[node(parent_path = TypingSubRoot)]
+pub struct NumberRemaps;
+
+#[node(parent_path = TypingSubRoot)]
+pub struct SymbolRemaps;
+```
+
+The path aliases, before:
+
+```rust
+pub type TypingPath<'a> = PathMut<TypingStack, LayerPath<'a>>;
+pub type KinesisRemapsPath<'a> = PathMut<KinesisRemaps<NumberRemaps<SymbolRemaps>>, TypingPath<'a>>;
+pub type NumberRemapsPath<'a> = PathMut<NumberRemaps<SymbolRemaps>, KinesisRemapsPath<'a>>;
+```
+
+after:
+
+```rust
+pub type TypingPath<'a> = PathMut<TypingLayer, LayerPath<'a>>;
+pub type TypingSubRoot<'a> = SubRoot<TypingPath<'a>>;
+pub type KinesisRemapsPath<'a> = PathMut<KinesisRemaps, TypingSubRoot<'a>>;
+pub type NumberRemapsPath<'a> = PathMut<NumberRemaps, TypingSubRoot<'a>>;
+pub type SymbolRemapsPath<'a> = PathMut<SymbolRemaps, TypingSubRoot<'a>>;
+```
+
+A kinesis row's ascent to typing state becomes a walk to the sub-root, which holds the typing path. `fn_key`, before:
+
+```rust
+type KPath<'a, Next> = PathMut<KinesisRemaps<Next>, TypingPath<'a>>;
+type KDone<'a, Next> = (Vec<FigaroEffect>, Completed<KPath<'a, Next>>);
+
+pub(crate) fn fn_key<'x, Next: 'static>(
+    out: Out,
+) -> impl Fn(&DeviceKey, (), KPath<'x, Next>) -> KDone<'x, Next> {
+    move |ev, _snap, p| {
+        let mut tp = p.into_parent();
+        let mut effects = if ev.key.press == PressType::Down {
+            flush_pending(tp.get_mut())
+        } else {
+            Vec::new()
+        };
+        effects.push(out.event(ev.key.press));
+        (effects, tp.complete())
+    }
+}
+```
+
+after:
+
+```rust
+type KPath<'a> = KinesisRemapsPath<'a>;
+type KDone<'a> = (Vec<FigaroEffect>, Completed<KPath<'a>>);
+
+pub(crate) fn fn_key<'x>(out: Out) -> impl Fn(&DeviceKey, (), KPath<'x>) -> KDone<'x> {
+    move |ev, _snap, p| {
+        let mut sub = p.into_parent();
+        let mut effects = if ev.key.press == PressType::Down {
+            flush_pending(sub.node_mut())
+        } else {
+            Vec::new()
+        };
+        effects.push(out.event(ev.key.press));
+        (effects, sub.complete())
+    }
+}
+```
+
+`sub.complete()` completes the leave that began at `KPath` with the focus at the sub-root, through the mirrored distance-one `CompletesTo` impl; the call site's `KDone` return type pins the origin, as everywhere else. Every other kinesis row (`kinesis`, `motion_hold_toggle`, `motion`, `kinesis_ending_hold`, `shift_mirror_toggle`, `double`) makes the same two-token change: `Next: 'static` deleted, `tp.get_mut()` → `sub.node_mut()`. `flush_pending<Next>(typing: &mut TypingLayer<Next>)` becomes `flush_pending(typing: &mut TypingLayer)`. The laptop handlers (`invert_shift`, `invert_command`) are generic over `P: HasStop + CompletesTo<P>` and do not change at all. Typing's own handlers (`pass_through`, `swallow_kinesis`, `jk_timeout`, `double_timeout`) drop `<Next>` and keep their paths; `pass_through`'s `into_ancestor::<FigaroPath>()` leave is the branch point's own bind and is untouched.
+
+What this deletes, which is the point: `TypingStack`, the `<Next>` parameter on `TypingLayer`/`KinesisRemaps`/`NumberRemaps`, the `Next: 'static` bound on every kinesis row constructor and typing handler, the two-parameter `KPath`/`KDone`, and the nesting diagram. `Layer::Typing(TypingStack)` becomes `Layer::Typing(TypingLayer)` and `TypingStack::new()` call sites become `TypingLayer::new()`. The generic-doll pattern (`refactors/past/generic-doll-nodes.md`) stops being how typing composes; it remains for shells that genuinely wrap one child (`AlwaysOnRemaps<Layer>`, mercury's `AndReturnHome<Next>`).
+
+## Changes, ordered
+
+1. Prefactor, shippable now: rename `#[derived_child(f)]` to `#[derived_children(f)]`, parsing a comma-separated list of data-fn paths. `derived_child_fn` becomes `derived_children_fns`, returning `Vec<syn::Path>`; a repeated attribute is still an error; the emitted body still handles exactly one element (a second is rejected until change 3). Call sites: `crates/mercury/src/state/app.rs`, `crates/mercury/src/state/site.rs`, figaro's `src/model/app.rs` and `src/model/site.rs`, `crates/bind/tests/derived.rs`, and the compile-fail stderr text that names the attribute. Behavior-preserving.
+2. laserbeam, additive: `SubRoot` and its impl family as written above, with unit tests in the style the root impls have; bind's `HasTreePath for SubRoot<P>` identity rides along.
+3. bind_macro: `find_resolve_into` lifts to return every `#[resolve_into]` field in declaration order; a place node may carry both fields and `#[derived_children]`. A node with exactly one child edge emits today's body. A node with two or more emits the branch-point body: `SubRoot` wrapping mid-tree, bare-root blocks at the root, field blocks then derived blocks. Two fields of the same type are legal (the two-keyboards case): `HasPath` is per-type, so both children share one path type and one `parent_path` declaration, and only the projections distinguish them, which dispatch is fine with. The derived-level rejection of `#[resolve_into]` stays.
+4. figaro: flatten the typing layer as written above.
+
 ## Open questions
 
-1. Per-branch outcomes at the branch point. A post like the return-home cancel, generalized, keys on "did branch i leave", and that is visible only at the branch point. The pre cannot carry it (pres run before the descent), so it has to enter on the ascend side: either `AscendState` at a branch point carries the outcomes beside the state, or per-branch posts are a scheduled kind of their own. This changes the handler signature at branch points and needs its own design.
+1. Per-branch outcomes at the branch point. A post like the return-home cancel, generalized, keys on "did branch i leave", and that is visible only at the branch point. The pre cannot carry it (pres run before the descent), so it has to enter on the ascend side: either `AscendState` at a branch point carries the outcomes beside the state, or per-branch posts are a scheduled kind of their own. This changes the handler signature at branch points and needs its own design. The typing case does not need it (typing's posts key on its own state), so it does not gate changes 1–4.
 
-2. Cross-branch triggers. Both branches binding the same trigger resolves by claim order: branch 1's leaf beats branch 2's leaf beats the parent, in field order. For per-keyboard branches the triggers are disjoint by construction (the event carries its device), but nothing enforces disjointness — the check does not ship (`check` feature) and is slated for retirement — so field order would be the documented rule, like source order for scheduled items.
+2. Cross-branch triggers. Several children binding the same trigger resolves by claim order: earlier child's leaf first, the parent last. Nothing enforces disjointness — the check does not ship (`check` feature) and is slated for retirement — so the declared order is the documented rule, like source order for scheduled items. Typing's three tables are disjoint by device and key; the per-keyboard branches are disjoint because the event carries its device.
 
-3. Cross-branch writes. A handler inside branch 1 cannot mutate branch 2 or the root: `IntoAncestor` stops at the sub-root. That is the cap working, but it moves some bindings: "reset both keyboards" lives on the branch point (which holds both fields), or arrives as a follow-up event. Likewise a handler bounded `P: IntoAncestor<MercuryPath<'a>>` will not bind inside a branch — the bound is unsatisfiable there, so the restriction surfaces at compile time rather than at dispatch.
+3. Cross-branch writes. A handler inside branch 1 cannot mutate branch 2 or anything above the branch point: `IntoAncestor` stops at the sub-root. That is the cap working, and typing never hits it (no doll handler reaches above typing today). Where it binds, "reset both keyboards" lives on the branch point (which holds both fields) or arrives as a follow-up event, and a handler bounded `P: IntoAncestor<FigaroPath<'a>>` will not bind inside a branch — the bound is unsatisfiable there, so the restriction surfaces at compile time rather than at dispatch.
 
-4. Reads above the cap take a hop. The shape impls give a branch path `HasAncestor<SubRoot<PPath>>`; the forwarding impl continues from there, so reaching the root reads as `path.ancestor::<SubRoot<PPath>>().ancestor::<MercuryPath>()`. Collapsing that to one hop needs a composing impl family with its own coherence argument; whether the two-hop spelling is acceptable is a judgment call for the design.
+4. Reads above the cap take a hop. The shape impls give a branch path `HasAncestor<SubRoot<PPath>>`; the forwarding impl continues from there, so reaching the root reads as `path.ancestor::<TypingSubRoot>().ancestor::<FigaroPath>()`. No typing child reads an ancestor today, so no call site pays it in change 4; collapsing to one hop needs a composing impl family with its own coherence argument, deferred until a call site wants it.
 
-5. The single active leaf. `set_layer`, the menu bar title, and the overlay all speak of "the" layer. Two branches have two leaves; which one the title shows, and whether the overlay is per-device, is mercury's question rather than laserbeam's, but it has to be answered before the two-keyboards case ships.
+5. The single active leaf, for the root-branch consumers only. `set_layer`, the menu bar title, and the overlay all speak of "the" layer; two keyboards mean two leaves, and which one the title shows is mercury's (or figaro's) question to answer before that case ships. The flat typing layer does not touch it: the `Layer` enum sits above the branch point and stays single.
 
-6. The derive. `find_resolve_into` errors on a second `#[resolve_into]` field today; lifting that, emitting one descent block per field, and handling two fields of the same type (both paths share a type; only the projection distinguishes them — `Path<'a>` and the declared path alias are per-type and identical for both, which dispatch is fine with) is macro work. Derived-child edges under a branch, a branch point that is itself a derived level, a routed (multi-parent) child under a branch (`#[resolve_into(route = .., up = ..)]`, whose fold matches the consumer's `Up` enum), and a generic child under a branch (the `for<'q>` path-equality bound from `generic-doll-nodes.md`) are unexamined.
-
-## Answer
-
-- At the root: yes, the landed protocol gets us essentially all the way. A root child's leave always hands the root back, so two root descents compose once the derive allows them. Both motivating cases — two keyboards, and the overlay that binds keys while open — are root branches, so they are in this half.
-- Mid-tree: the SOL diagnosis is correct and unrecoverable by design — the path goes by value into the leave, and no fold gets it back. The resolution is the cap, not recovery: `SubRoot` makes a past-the-branch-point leave unrepresentable from inside a branch, in additive laserbeam machinery mirroring the root's existing impl family.
-- Nothing in the landed protocol needs to change to keep this door open. The linear body, leaves-as-data, and posts-run-regardless landed exactly as the prerequisites need them; the branch-point body replaces one `#state` expression with a per-child fold and layers on after.
+6. The derive's other edges under a branch: a routed (multi-parent) child (`#[resolve_into(route = .., up = ..)]`, whose fold matches the consumer's `Up` enum) and a generic child (the `for<'q>` path-equality bound from `generic-doll-nodes.md`) at a branch point are unexamined. Neither occurs in the typing case: the flattening removes typing's generic children rather than adding any.
