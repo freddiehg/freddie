@@ -143,7 +143,7 @@ The model stores every report under its own key and projects at read time. Nothi
     focused: HashMap<Pid, Synced<Option<WindowId>>>,
 ```
 
-The handler arms are `Synced`'s two calls: `Opened` inserts the window's state with `frame: Synced::Pending(gen)`, `Moved`/`Resized` do `frame.changed(gen)`, and `Frame` does `frame.landed(gen, f)` when the report carries one and nothing when it carries `None`; `FocusChanged` inserts `Synced::Pending(gen)` at the pid, `Focus` does `landed(gen, window)`; `Closed` removes the window, `AppGone` removes the pid's focus entry. No arm consults the foreground.
+The handler arms are `Synced`'s two calls: `Opened` inserts the window's state with `frame: Synced::Pending(gen)`, `Moved`/`Resized` do `frame.change(gen)`, and `Frame` does `frame.land(gen, f)` when the report carries one and nothing when it carries `None`; `FocusChanged` inserts `Synced::Pending(gen)` at the pid, `Focus` does `land(gen, window)`; `Closed` removes the window, `AppGone` removes the pid's focus entry. No arm consults the foreground.
 
 The reads are projections joining the mirror:
 
@@ -157,7 +157,7 @@ The reads are projections joining the mirror:
 
 and every placement that used `focused` calls it with the mirrored `FrontApp`'s pid; a placement that gets `None`, or finds a target frame `Pending`, computes nothing — the missing value is modeled, and the response to missing is a no-op.
 
-Tests: the existing window tests respell to dispatch fact-then-value pairs; new tests pin the stale drops for frames and focus (`changed(n)`, `changed(n+1)`, `landed(n, v)` leaves `Pending(n+1)`), the pending placement no-op, `AppGone` emptying a pid's focus entry, and the ordering independence itself: a `FocusChanged`/`Focus` pair dispatched before the `Foreground` event that moves the mirror still lands in the map, and the projection answers it the moment the mirror catches up.
+Tests: the existing window tests respell to dispatch fact-then-value pairs; new tests pin the stale drops for frames and focus (`change(n)`, `change(n+1)`, `land(n, v)` leaves `Pending(n+1)`), the pending placement no-op, `AppGone` emptying a pid's focus entry, and the ordering independence itself: a `FocusChanged`/`Focus` pair dispatched before the `Foreground` event that moves the mirror still lands in the map, and the projection answers it the moment the mirror catches up.
 
 ## Change 2: nothing
 

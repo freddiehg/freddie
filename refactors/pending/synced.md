@@ -46,14 +46,14 @@ pub enum Synced<V> {
 
 impl<V> Synced<V> {
     /// The fact: the old value dies, this generation's read is awaited.
-    pub fn changed(&mut self, gen: Gen) {
+    pub fn change(&mut self, gen: Gen) {
         *self = Self::Pending(gen);
     }
 
     /// The value: applied iff the entry still awaits exactly this generation. A slow read that
     /// lands after a newer fact names a generation the entry has moved past and changes
     /// nothing; applying the same landing twice equals once (the second finds `Known`).
-    pub fn landed(&mut self, gen: Gen, value: V) {
+    pub fn land(&mut self, gen: Gen, value: V) {
         if matches!(self, Self::Pending(g) if *g == gen) {
             *self = Self::Known(value);
         }
@@ -71,7 +71,7 @@ impl<V> Synced<V> {
 }
 ```
 
-Per-key collections are plain maps of `Synced<V>`: the fact arm inserts `Pending(gen)` (which is what `changed` is, so a map needs no entry-API dance), the value arm does `entry.landed(gen, v)` against an existing entry, and the key's disappearance removes the entry — removal is the map's, staleness is the entry's, and neither needs the other's logic.
+Per-key collections are plain maps of `Synced<V>`: the fact arm inserts `Pending(gen)` (which is what `change` is, so a map needs no entry-API dance), the value arm does `entry.land(gen, v)` against an existing entry, and the key's disappearance removes the entry — removal is the map's, staleness is the entry's, and neither needs the other's logic.
 
 Tests, in `sync.rs`: the happy pair lands; a landing after a newer fact changes nothing; the same landing twice equals once; a landing on a removed-and-reinserted entry (fresh `Pending`, new generation) changes nothing — the alias the global mint exists to kill.
 
