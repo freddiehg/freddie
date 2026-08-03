@@ -49,7 +49,21 @@ pub enum WindowChange {
 }
 ```
 
-`Snapshot` is deleted from the vocabulary; nothing carries a frame to a consumer any more, and the seed is not a struct (below). `WindowFrame` stays: it is the placement payload — the direction that runs consumer to crate (`SetFrame(WindowFrame)`, `sink.set_frame`) — and this change touches only the reporting direction. `is_frontmost` is deleted from the watcher; `frontmost_pid` survives only to aim the install burst's `FocusChanged`.
+`Snapshot` and `WindowFrame` are deleted from the vocabulary; nothing carries a frame to a consumer any more, and the seed is not a struct (below). The placement payload grows instead: ordering a placement's writes needs the window's current frame, which the watcher used to cache and the model now owns (a placement only fires from a `Known` frame), so the effect carries everything and the watcher's frame cache dies with the reports:
+
+```rust
+/// A placement: the window, where it is, and where to put it. `from` orders the writes (grow
+/// before move, shrink after); the model owns it, since a placement only fires from a `Known`
+/// frame. The payload carries everything performing needs.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Placement {
+    pub window: WindowId,
+    pub from: Frame,
+    pub to: Frame,
+}
+```
+
+`sink.set_frame` takes a `Placement`; `pump` looks up only the element. `is_frontmost` is deleted from the watcher; `frontmost_pid` survives only to aim the install burst's `FocusChanged`.
 
 ### The callback
 
@@ -131,6 +145,8 @@ The handler arms, all on the root's windows handler:
 - `FocusChanged(pid)`: mint; insert `Synced::Pending(held)` at the pid; emit `ReadFocus`.
 - `FocusRead`: the pid's entry `commit(&ev.generation, ev.window)`.
 - `Closed(id)`: remove the window; `AppGone(pid)`: remove the pid's focus entry; `Screens(monitors)`: assign, as today.
+
+A placement arm reads its window's `Synced<Frame>`: `Known(frame)` is the `from` its `Placement` carries, and `Pending` places nothing.
 
 No arm consults the foreground; nothing is filtered on the write path. The performers are dumb threads: `ReadFrame` runs `freddie_windows::frame_of` and sends `FrameRead`; `ReadFocus` runs `focused_window_of` and sends `FocusRead`; each moves its riding half through and into the event.
 
