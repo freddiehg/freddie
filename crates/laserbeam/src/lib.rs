@@ -495,6 +495,26 @@ impl<P: HasStop + CompletesTo<P>> MaybeInvalidated<P> {
     }
 }
 
+impl<P: HasStop + CompletesTo<P>> MaybeInvalidated<P>
+where
+    Completed<P>: TryIntoAncestor<P>,
+{
+    /// Descend the next child subtree with this node's path, if the path can
+    /// still be built: lent from a standing state, or recovered from a leave that
+    /// stopped exactly here — in which case the node stays invalidated whatever
+    /// the child does. A leave that went above skips the descent and forwards.
+    #[must_use]
+    pub fn descend(self, f: impl FnOnce(P) -> Self) -> Self {
+        match self {
+            Self::NotInvalidated(p) => f(p),
+            Self::Invalidated(completed) => match completed.try_into_ancestor() {
+                Ok(p) => Self::Invalidated(f(p).complete()),
+                Err(completed) => Self::Invalidated(completed),
+            },
+        }
+    }
+}
+
 impl<P: HasStop> MaybeInvalidated<P> {
     /// Walk this state to `Target` by shared reference, on either branch.
     #[must_use]
@@ -1322,6 +1342,80 @@ mod maybe_invalidated_tests {
             root.hits = 5;
         }
         assert_eq!(app.hits, 5);
+    }
+
+    /// A sibling descent from a standing state: the path is lent, and the
+    /// sibling's own outcome is the state.
+    #[test]
+    fn descend_lends_a_standing_path() {
+        let mut app = tree(7, 0);
+        let out = MaybeInvalidated::NotInvalidated(layer_path(&mut app)).descend(|mut layer| {
+            layer.get_mut().nav.hits = 8;
+            MaybeInvalidated::NotInvalidated(layer)
+        });
+        let MaybeInvalidated::NotInvalidated(layer) = out else {
+            panic!("a standing path stays standing when the sibling stays");
+        };
+        assert_eq!(layer.get().nav.hits, 8);
+    }
+
+    /// A leave that stopped here still descends the sibling, and the node stays
+    /// invalidated whatever the sibling does.
+    #[test]
+    fn descend_recovers_a_stopped_here_leave_and_stays_invalidated() {
+        let mut app = tree(7, 0);
+        let stopped_here: MaybeInvalidated<LayerPath<'_>> =
+            MaybeInvalidated::Invalidated(layer_path(&mut app).complete());
+        let out = stopped_here.descend(|mut layer| {
+            layer.get_mut().nav.hits = 8;
+            MaybeInvalidated::NotInvalidated(layer)
+        });
+        let MaybeInvalidated::Invalidated(completed) = out else {
+            panic!("a stopped-here leave is preserved past the sibling");
+        };
+        let Stop::Here(layer) = completed.into_inner() else {
+            panic!("the preserved leave still stops here");
+        };
+        assert_eq!(layer.get().nav.hits, 8);
+    }
+
+    /// A sibling that leaves higher replaces a stopped-here leave.
+    #[test]
+    fn descend_lets_a_higher_leave_replace_a_stopped_here_one() {
+        let mut app = tree(0, 0);
+        {
+            let stopped_here: MaybeInvalidated<LayerPath<'_>> =
+                MaybeInvalidated::Invalidated(layer_path(&mut app).complete());
+            let out = stopped_here
+                .descend(|layer| MaybeInvalidated::Invalidated(layer.into_parent().complete()));
+            let MaybeInvalidated::Invalidated(completed) = out else {
+                panic!("the higher leave is the state");
+            };
+            let Stop::Up(root) = completed.into_inner() else {
+                panic!("the higher leave went above the layer");
+            };
+            root.hits = 6;
+        }
+        assert_eq!(app.hits, 6);
+    }
+
+    /// A leave that went above skips the sibling: it is never descended.
+    #[test]
+    fn descend_skips_when_the_leave_went_above() {
+        let mut app = tree(0, 0);
+        {
+            let gone: MaybeInvalidated<LayerPath<'_>> =
+                MaybeInvalidated::Invalidated(layer_path(&mut app).into_parent().complete());
+            let out = gone.descend(|_layer| panic!("the sibling is not descended"));
+            let MaybeInvalidated::Invalidated(completed) = out else {
+                panic!("the leave forwards");
+            };
+            let Stop::Up(root) = completed.into_inner() else {
+                panic!("the leave still points above the layer");
+            };
+            root.hits = 9;
+        }
+        assert_eq!(app.hits, 9);
     }
 }
 
