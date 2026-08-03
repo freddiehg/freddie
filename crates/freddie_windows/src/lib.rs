@@ -63,9 +63,9 @@ use objc2_foundation::{
     MainThreadMarker, NSNotification, NSNotificationCenter, NSNotificationName,
 };
 
-/// A running app, by process id. `pid_t` is an `i32`, and an `i32` is not a process.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct Pid(pub pid_t);
+pub use freddie_windows_types::{
+    Frame, Monitor, Pid, Snapshot, WindowChange, WindowError, WindowFrame, WindowId,
+};
 
 /// An app whose windows a user could be looking at, which is the only kind worth observing.
 ///
@@ -93,13 +93,6 @@ impl ObservableApp {
             .then(|| Self(Pid(app.processIdentifier())))
     }
 }
-
-/// A window's `CGWindowID`: the identity that outlives any one `AXUIElement` naming it.
-///
-/// Elements are created per call, so two for the same window are different pointers and
-/// the element itself cannot be the key.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct WindowId(pub CGWindowID);
 
 // SAFETY: `_AXUIElementGetWindow` is exported by HIServices, inside ApplicationServices,
 // which this crate already links against for the rest of the Accessibility API. It reads
@@ -194,56 +187,6 @@ impl WindowSink {
             .map_err(|_| WindowError::NotWatching)
     }
 }
-
-/// A rectangle in Accessibility coordinates: origin top-left, y increasing down.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Frame {
-    pub x: f64,
-    pub y: f64,
-    pub width: f64,
-    pub height: f64,
-}
-
-impl Frame {
-    /// Whether `(x, y)` lies in this frame. Half-open: the left and top edges are in, the
-    /// right and bottom are not, so abutting frames do not both claim a point.
-    #[must_use]
-    pub const fn contains(self, x: f64, y: f64) -> bool {
-        x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
-    }
-}
-
-/// A monitor: its full frame, for locating a window, and its visible frame, the area
-/// a placement fills (the full frame minus the menu bar and the dock). Both in
-/// Accessibility coordinates.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Monitor {
-    pub full: Frame,
-    pub visible: Frame,
-}
-
-/// Placing a window failed.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum WindowError {
-    /// [`watch`] was called off the main thread.
-    NotMainThread,
-    /// The Accessibility permission has not been granted.
-    NotTrusted,
-    /// The watcher has been dropped, so nothing is being observed at all.
-    NotWatching,
-}
-
-impl std::fmt::Display for WindowError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::NotMainThread => "freddie_windows::watch must run on the main thread",
-            Self::NotTrusted => "Accessibility is not granted",
-            Self::NotWatching => "not watching windows",
-        })
-    }
-}
-
-impl std::error::Error for WindowError {}
 
 /// Reads every monitor's full and visible frame, in Accessibility coordinates.
 ///
@@ -536,210 +479,7 @@ fn set_frame(window: AXUIElementRef, from: Frame, to: Frame) {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{Extent, Frame, Writes, writes_for};
-
-    #[test]
-    fn contains_is_half_open() {
-        let f = Frame {
-            x: 0.0,
-            y: 0.0,
-            width: 100.0,
-            height: 50.0,
-        };
-        assert!(f.contains(0.0, 0.0));
-        assert!(f.contains(99.0, 49.0));
-        assert!(!f.contains(100.0, 0.0), "right edge is excluded");
-        assert!(!f.contains(0.0, 50.0), "bottom edge is excluded");
-        assert!(!f.contains(-1.0, 0.0));
-    }
-
-    /// A window's corner picks the monitor it sits on, which is how [`monitor_for`]
-    /// chooses the screen to place within. Two monitors side by side, the second
-    /// shorter, the way an external display next to a laptop is.
-    #[test]
-    fn a_point_picks_the_monitor_it_is_on() {
-        let left = Frame {
-            x: 0.0,
-            y: 0.0,
-            width: 1600.0,
-            height: 900.0,
-        };
-        let right = Frame {
-            x: 1600.0,
-            y: 0.0,
-            width: 1000.0,
-            height: 800.0,
-        };
-        let monitors = [left, right];
-        let pick = |x, y| monitors.iter().position(|m| m.contains(x, y));
-        assert_eq!(pick(10.0, 10.0), Some(0));
-        assert_eq!(pick(1700.0, 10.0), Some(1));
-        assert_eq!(pick(3000.0, 10.0), None, "off both monitors");
-    }
-
-    const FROM: Frame = Frame {
-        x: 1000.0,
-        y: 100.0,
-        width: 600.0,
-        height: 400.0,
-    };
-
-    const fn extent(width: f64, height: f64) -> Extent {
-        Extent { width, height }
-    }
-
-    // Growing while moving left: nothing to shrink, so the move goes first at the old size and the
-    // grow lands at the target origin.
-    #[test]
-    fn a_pure_grow_moves_before_it_grows() {
-        let to = Frame {
-            x: 0.0,
-            y: 0.0,
-            width: 1600.0,
-            height: 900.0,
-        };
-        assert_eq!(
-            writes_for(FROM, to),
-            Writes {
-                shrink: None,
-                grow: Some(extent(1600.0, 900.0))
-            }
-        );
-    }
-
-    // Shrinking while moving right: the shrink goes first, so the intermediate never reaches past
-    // the target's right edge.
-    #[test]
-    fn a_pure_shrink_shrinks_before_it_moves() {
-        let to = Frame {
-            x: 1400.0,
-            y: 100.0,
-            width: 400.0,
-            height: 300.0,
-        };
-        assert_eq!(
-            writes_for(FROM, to),
-            Writes {
-                shrink: Some(extent(400.0, 300.0)),
-                grow: None
-            }
-        );
-    }
-
-    // One axis each way: both size writes happen, and the first shrinks only the axis that shrinks.
-    #[test]
-    fn a_mixed_change_shrinks_then_grows() {
-        let to = Frame {
-            x: 500.0,
-            y: 100.0,
-            width: 400.0,
-            height: 900.0,
-        };
-        assert_eq!(
-            writes_for(FROM, to),
-            Writes {
-                shrink: Some(extent(400.0, 400.0)),
-                grow: Some(extent(400.0, 900.0)),
-            }
-        );
-    }
-
-    // A frame that is already the right size is one write, and it is the move.
-    #[test]
-    fn an_unchanged_size_is_only_a_move() {
-        let to = Frame {
-            x: 0.0,
-            y: 0.0,
-            ..FROM
-        };
-        assert_eq!(
-            writes_for(FROM, to),
-            Writes {
-                shrink: None,
-                grow: None
-            }
-        );
-    }
-
-    // The invariant the order rests on: the shrink never exceeds `from` and the size the move
-    // happens at never exceeds `to`, on both axes, which is why no screen is consulted.
-    #[test]
-    fn no_intermediate_exceeds_its_endpoint() {
-        for to in [
-            Frame {
-                x: 0.0,
-                y: 0.0,
-                width: 1600.0,
-                height: 900.0,
-            },
-            Frame {
-                x: 1400.0,
-                y: 100.0,
-                width: 400.0,
-                height: 300.0,
-            },
-            Frame {
-                x: 500.0,
-                y: 100.0,
-                width: 400.0,
-                height: 900.0,
-            },
-            Frame {
-                x: 0.0,
-                y: 0.0,
-                ..FROM
-            },
-        ] {
-            let writes = writes_for(FROM, to);
-            if let Some(shrink) = writes.shrink {
-                assert!(shrink.width <= FROM.width && shrink.height <= FROM.height);
-            }
-            let moved = writes.shrink.unwrap_or(extent(FROM.width, FROM.height));
-            assert!(moved.width <= to.width && moved.height <= to.height);
-        }
-    }
-}
-
 // ---- observation ----
-
-/// What the windows are doing. One variant per thing the observer can tell you.
-#[derive(Clone, PartialEq, Debug)]
-pub enum WindowChange {
-    /// A window appeared, with the frame it appeared at.
-    Opened(WindowFrame),
-    /// A window moved, with the frame it moved to.
-    Moved(WindowFrame),
-    /// A window was resized, with the frame it was resized to.
-    Resized(WindowFrame),
-    /// A window went away.
-    Closed(WindowId),
-    /// The focused window changed. `None` when the app that came forward has no focused
-    /// window, or its window has no readable id.
-    Focused(Option<WindowId>),
-    /// The monitors changed: one plugged, unplugged, or rearranged.
-    Screens(Vec<Monitor>),
-}
-
-/// A window and where it is.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct WindowFrame {
-    pub window: WindowId,
-    pub frame: Frame,
-}
-
-/// Every window open when the watcher was installed, which one was focused, and the
-/// screens they sit on.
-///
-/// The starting state, for seeding a consumer's model. [`watch`] returns one; the observer
-/// reports changes, and at boot nothing has changed yet.
-#[derive(Clone, PartialEq, Debug)]
-pub struct Snapshot {
-    pub windows: Vec<WindowFrame>,
-    pub focused: Option<WindowId>,
-    pub screens: Vec<Monitor>,
-}
 
 /// What the [`Watcher`] holds, reachable from the callbacks as well as from it.
 ///
@@ -1407,4 +1147,170 @@ fn focused_window_id(pid: pid_t) -> Option<WindowId> {
         CFRelease(window.cast());
     }
     id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Extent, Frame, Writes, writes_for};
+
+    #[test]
+    fn contains_is_half_open() {
+        let f = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+        };
+        assert!(f.contains(0.0, 0.0));
+        assert!(f.contains(99.0, 49.0));
+        assert!(!f.contains(100.0, 0.0), "right edge is excluded");
+        assert!(!f.contains(0.0, 50.0), "bottom edge is excluded");
+        assert!(!f.contains(-1.0, 0.0));
+    }
+
+    /// A window's corner picks the monitor it sits on, which is how [`monitor_for`]
+    /// chooses the screen to place within. Two monitors side by side, the second
+    /// shorter, the way an external display next to a laptop is.
+    #[test]
+    fn a_point_picks_the_monitor_it_is_on() {
+        let left = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 1600.0,
+            height: 900.0,
+        };
+        let right = Frame {
+            x: 1600.0,
+            y: 0.0,
+            width: 1000.0,
+            height: 800.0,
+        };
+        let monitors = [left, right];
+        let pick = |x, y| monitors.iter().position(|m| m.contains(x, y));
+        assert_eq!(pick(10.0, 10.0), Some(0));
+        assert_eq!(pick(1700.0, 10.0), Some(1));
+        assert_eq!(pick(3000.0, 10.0), None, "off both monitors");
+    }
+
+    const FROM: Frame = Frame {
+        x: 1000.0,
+        y: 100.0,
+        width: 600.0,
+        height: 400.0,
+    };
+
+    const fn extent(width: f64, height: f64) -> Extent {
+        Extent { width, height }
+    }
+
+    // Growing while moving left: nothing to shrink, so the move goes first at the old size and the
+    // grow lands at the target origin.
+    #[test]
+    fn a_pure_grow_moves_before_it_grows() {
+        let to = Frame {
+            x: 0.0,
+            y: 0.0,
+            width: 1600.0,
+            height: 900.0,
+        };
+        assert_eq!(
+            writes_for(FROM, to),
+            Writes {
+                shrink: None,
+                grow: Some(extent(1600.0, 900.0))
+            }
+        );
+    }
+
+    // Shrinking while moving right: the shrink goes first, so the intermediate never reaches past
+    // the target's right edge.
+    #[test]
+    fn a_pure_shrink_shrinks_before_it_moves() {
+        let to = Frame {
+            x: 1400.0,
+            y: 100.0,
+            width: 400.0,
+            height: 300.0,
+        };
+        assert_eq!(
+            writes_for(FROM, to),
+            Writes {
+                shrink: Some(extent(400.0, 300.0)),
+                grow: None
+            }
+        );
+    }
+
+    // One axis each way: both size writes happen, and the first shrinks only the axis that shrinks.
+    #[test]
+    fn a_mixed_change_shrinks_then_grows() {
+        let to = Frame {
+            x: 500.0,
+            y: 100.0,
+            width: 400.0,
+            height: 900.0,
+        };
+        assert_eq!(
+            writes_for(FROM, to),
+            Writes {
+                shrink: Some(extent(400.0, 400.0)),
+                grow: Some(extent(400.0, 900.0)),
+            }
+        );
+    }
+
+    // A frame that is already the right size is one write, and it is the move.
+    #[test]
+    fn an_unchanged_size_is_only_a_move() {
+        let to = Frame {
+            x: 0.0,
+            y: 0.0,
+            ..FROM
+        };
+        assert_eq!(
+            writes_for(FROM, to),
+            Writes {
+                shrink: None,
+                grow: None
+            }
+        );
+    }
+
+    // The invariant the order rests on: the shrink never exceeds `from` and the size the move
+    // happens at never exceeds `to`, on both axes, which is why no screen is consulted.
+    #[test]
+    fn no_intermediate_exceeds_its_endpoint() {
+        for to in [
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                width: 1600.0,
+                height: 900.0,
+            },
+            Frame {
+                x: 1400.0,
+                y: 100.0,
+                width: 400.0,
+                height: 300.0,
+            },
+            Frame {
+                x: 500.0,
+                y: 100.0,
+                width: 400.0,
+                height: 900.0,
+            },
+            Frame {
+                x: 0.0,
+                y: 0.0,
+                ..FROM
+            },
+        ] {
+            let writes = writes_for(FROM, to);
+            if let Some(shrink) = writes.shrink {
+                assert!(shrink.width <= FROM.width && shrink.height <= FROM.height);
+            }
+            let moved = writes.shrink.unwrap_or(extent(FROM.width, FROM.height));
+            assert!(moved.width <= to.width && moved.height <= to.height);
+        }
+    }
 }

@@ -682,11 +682,16 @@ dependencies = [
  "core-foundation",
  "core-graphics",
  "freddie_main_loop",
+ "freddie_windows_types",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "tracing",
 ]
+
+[[package]]
+name = "freddie_windows_types"
+version = "0.0.1"
 
 [[package]]
 name = "futures-channel"
