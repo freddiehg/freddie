@@ -1,6 +1,6 @@
 # the windows watcher reports facts; values follow
 
-The windows watcher adopts the two-phase sync `freddie_selection` (`selection-watcher.md`) defines, because it has the same structure: AX notifications carry identity but not values, so today's callback fills the values in by reading the app synchronously on the main run loop, and it decides report relevance by asking the OS who is frontmost. After this doc, the callback reports only what it knows instantly — which window, which pid, what kind of change, at which generation — the value reads run on a worker under a bound, values land as second reports, a stale read names a generation the entry has moved past, and every keep-or-drop decision belongs to the consumer's model. Figaro's consumer half is `figaro/refactors/pending/sync-fixes.md` change 3, which lands after this doc's change 1.
+The windows watcher adopts the two-phase sync `freddie_selection` (`selection-watcher.md`) defines, because it has the same structure: AX notifications carry identity but not values, so today's callback fills the values in by reading the app synchronously on the main run loop, and it decides report relevance by asking the OS who is frontmost. After this doc, the callback reports only what it knows instantly — which window, which pid, what kind of change, at which generation — the value reads run on a worker, values land as second reports, a stale read names a generation the entry has moved past, and every keep-or-drop decision belongs to the consumer's model. Figaro's consumer half is `figaro/refactors/pending/sync-fixes.md` change 3, which lands after this doc's change 1.
 
 ## Change 1: the two-phase protocol
 
@@ -108,13 +108,7 @@ enum ReadRequest {
 struct SentElement(/* +1 AXUIElementRef, with the unsafe Send impl and its SAFETY comment */);
 ```
 
-The worker performs `Frame` by reading position and size through the element and `Focus` by `AXUIElementCreateApplication` + `kAXFocusedWindow` + `window_id`, each element it asks through set to the crate's new bound first:
-
-```rust
-/// How long any read the worker makes may take before it is abandoned. The default is six
-/// seconds; a hung app costs the worker this bound and the main run loop nothing.
-const AX_TIMEOUT_SECONDS: f32 = 1.0;
-```
+The worker performs `Frame` by reading position and size through the element and `Focus` by `AXUIElementCreateApplication` + `kAXFocusedWindow` + `window_id`. A read into a hung app blocks the worker until the OS gives up; the only consequence is entries staying `Pending` longer, which is already modeled, so nothing here tunes it.
 
 The `elements` table stays on the main thread for placement addressing; the worker's retained elements are its own +1 references, so the two never share.
 

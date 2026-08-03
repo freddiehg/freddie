@@ -106,13 +106,6 @@ pub enum Selection {
     Unsupported,
 }
 
-/// How long the watcher's re-read of an app may take before it is abandoned. A selection
-/// notification carries no text, so learning the new value is one `kAXSelectedText` read into
-/// the app that changed — the sync's transport, the way the window watcher re-reads a frame on
-/// every move notification. The read runs on the watcher's worker thread, so a hung app costs
-/// this bound there and nothing on the main loop. Set on the focused element only, so the
-/// process-global timeout every other AX caller in the process runs under stays untouched.
-const AX_TIMEOUT_SECONDS: f32 = 1.0;
 ```
 
 The watcher, on the scaffolding:
@@ -188,7 +181,8 @@ The sync's transport, private to the worker and exported to nobody: a notificati
 /// What `pid`'s focused element answers right now. The worker's half of one sync step: the
 /// notification said the selection changed, this learns what it changed to. One synchronous
 /// round-trip into the app, on the worker thread; the app element is created here from the
-/// pid, so nothing AX crosses a thread.
+/// pid, so nothing AX crosses a thread. A hung app blocks the worker until the OS gives up,
+/// which only leaves the entry `Pending` longer — already modeled, so nothing here tunes it.
 #[must_use]
 fn current_selection(pid: Pid) -> Selection {
     // SAFETY: `pid` names a process; the element is +1, released with the `Owned`.
@@ -200,13 +194,6 @@ fn current_selection(pid: Pid) -> Selection {
     let Some(focused) = copy_attribute(element(&app), kAXFocusedUIElementAttribute) else {
         return Selection::Unsupported;
     };
-    // Best effort: an app that never answers should cost one second, not the default six. A
-    // refusal to set the timeout changes the bound, not the answer, so the status is dropped.
-    // SAFETY: the element is live for the duration of the call.
-    #[expect(unsafe_code)]
-    unsafe {
-        AXUIElementSetMessagingTimeout(element(&focused), AX_TIMEOUT_SECONDS);
-    }
     let Some(value) = copy_attribute(element(&focused), kAXSelectedTextAttribute) else {
         return Selection::Unsupported;
     };
