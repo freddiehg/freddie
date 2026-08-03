@@ -111,7 +111,7 @@ pub enum Selection {
 The watcher, on the scaffolding:
 
 ```rust
-Generations and entries are `freddie::{Generation, GenerationMinter, Synced}` (`synced.md`): the entry type is `Synced<Selection>`, and the watcher mints from one `GenerationMinter` for its whole life, so a reused pid cannot alias a zombie read into a fresh entry.
+Generations and entries are `freddie_sync` (`synced.md`): the entry type is `Synced<Selection>`, and the watcher mints from one `GenerationMinter` for its whole life, so a reused pid cannot alias a zombie read into a fresh entry.
 
 /// What the selection map should learn. One variant per thing the watcher can tell you.
 #[derive(Clone, PartialEq, Eq)]

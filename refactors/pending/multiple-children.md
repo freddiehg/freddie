@@ -64,6 +64,7 @@ where
 }
 ```
 
+
 The skip is semantically honest, not a compromise. A leave that peels past the branch point is leaving the region that contains every sibling, not just the branch it came from: the handler that produced it is replacing an ancestor (`set_layer` swapping the `Layer` variant), and the siblings' subtrees are dropped with the region, their `TimerGuard`s cancelling on drop — the same contract every leave already has with the subtree it exits. So "every scheduled item runs" sharpens to "every scheduled item on a surviving path runs", which is what it always meant: a dropped subtree has nothing left to schedule for. The one edge to know: a handler that consumes to an ancestor and completes there without changing state leaves the siblings standing but unvisited for that event. That is accepted.
 
 A derived child's block is the same fold, one conversion shorter. `dispatch_into_tree_path` already returns its leave at the place beneath the derived chain — `Completed<TreePath>`, and at a place node `TreePath` is the place's own path — so the block folds `Completed<PPath>` directly through `Completed::to_maybe_invalidated`, with no `Stop` unwrap.

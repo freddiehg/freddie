@@ -21,7 +21,7 @@ pub enum WindowChange {
 
 after — facts and values are separate reports, and every payload is a named struct:
 
-Generations are `freddie::Generation`, minted in matched pairs from one `freddie::GenerationMinter` owned by the callback — one half in the fact report, the other riding the read request; one counter for the watcher's life, never per key, so a reused pid or window id cannot alias a zombie read into a fresh entry (`refactors/past/synced.md`).
+Generations are `freddie_sync`'s generations, minted in matched pairs from one `freddie_sync::GenerationMinter` owned by the callback — one half in the fact report, the other riding the read request; one counter for the watcher's life, never per key, so a reused pid or window id cannot alias a zombie read into a fresh entry (`refactors/past/synced.md`).
 
 ```rust
 /// A window fact: something happened to this window, and the value read for it is in flight.
@@ -134,7 +134,7 @@ pub struct Snapshot {
 The model stores every report under its own key and projects at read time. Nothing is filtered on the write path: what gets stored never depends on the ordering between the windows watcher and the foreground watcher, because the join with the mirror happens when a reader asks, against state.
 
 ```rust
-    /// Each watched window's frame, synced in two phases. See `freddie::Synced`.
+    /// Each watched window's frame, synced in two phases. See `freddie_sync::Synced`.
     // WindowState.frame becomes:
     frame: Synced<Frame>,
 
