@@ -12,7 +12,7 @@ use laserbeam::{Completed, PathMut};
 #[binds(Demo)]
 #[bind(Keyboard("o") => outer_key)]
 pub struct Shell<Next> {
-    #[resolve_into]
+    #[child]
     pub next: Next,
 }
 

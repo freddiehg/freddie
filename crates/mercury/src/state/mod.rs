@@ -96,7 +96,7 @@ pub struct Mercury {
     overlay: Option<TimerGuard>,
     /// The active layer. Private, and written only through [`set_layer`](Mercury::set_layer), so
     /// no transition can change the layer without going through the modifier flush.
-    #[resolve_into]
+    #[child]
     layer: Layer,
 }
 

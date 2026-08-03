@@ -22,7 +22,7 @@ use std::collections::HashSet;
 pub struct Root {
     /// The only copy. The layer stores no app.
     pub app: Option<Chrome>,
-    #[resolve_into]
+    #[child]
     pub layer: Shell,
 }
 
@@ -266,7 +266,7 @@ fn the_post_marks_the_layer_when_nothing_left() {
 #[binds(Demo)]
 pub struct Modes {
     pub mode: Option<bool>,
-    #[resolve_into]
+    #[child]
     pub shell: ModeShell,
 }
 

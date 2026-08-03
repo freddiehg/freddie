@@ -23,7 +23,7 @@ impl EventTrigger for Key {
 #[node(root)]
 #[binds(Demo)]
 struct Root {
-    #[resolve_into]
+    #[child]
     shell: Shell,
 }
 
@@ -36,7 +36,7 @@ struct Shell;
 #[derived_node(parent_path = ShellPath)]
 #[binds(Demo)]
 struct Level {
-    #[resolve_into]
+    #[child]
     kept: Kept,
 }
 

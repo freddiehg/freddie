@@ -1,4 +1,4 @@
-//! `#[resolve_into]` on a positional field descends the same as a named one.
+//! `#[child]` on a positional field descends the same as a named one.
 
 mod common;
 
@@ -12,12 +12,12 @@ use laserbeam::PathMut;
 #[node(root)]
 #[binds(Demo)]
 #[bind(Keyboard("esc") => ignore)]
-struct TupleRoot(#[resolve_into] TupleMid);
+struct TupleRoot(#[child] TupleMid);
 
 #[derive(Bind)]
 #[node(parent_path = TupleRootPath)]
 #[binds(Demo)]
-struct TupleMid(#[resolve_into] Box<TupleLeaf>);
+struct TupleMid(#[child] Box<TupleLeaf>);
 
 #[derive(Bind)]
 #[node(parent_path = TupleMidPath)]
@@ -31,7 +31,7 @@ type TupleMidPath<'a> = PathMut<TupleMid, TupleRootPath<'a>>;
 // The leaf binding is reached through `root.0 -> mid.0 (Box) -> leaf`, and the root fallback fires
 // when the subtree misses. `ignore` returns the fired key's length.
 #[test]
-fn positional_resolve_into_descends() {
+fn positional_child_descends() {
     let mut root = TupleRoot(TupleMid(Box::new(TupleLeaf)));
     assert_eq!(
         bind::dispatch::<Demo, TupleRoot, _>(&mut root, &key("g")),
@@ -50,7 +50,7 @@ fn positional_resolve_into_descends() {
 // The check projects through the same `Edge`, so it collects the root's and leaf's triggers across
 // the positional descent.
 #[test]
-fn positional_resolve_into_accumulates() {
+fn positional_child_accumulates() {
     let mut root = TupleRoot(TupleMid(Box::new(TupleLeaf)));
     let set = bind::accumulate::<Demo, TupleRoot>(&mut root).unwrap();
     assert_eq!(set, HashSet::from([kb("esc"), kb("g")]));

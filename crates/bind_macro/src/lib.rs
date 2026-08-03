@@ -3,7 +3,7 @@
 //!
 //! `#[derive(Bind)]` reads `#[binds(Marker)]` for the marker and the node's scheduled items,
 //! `#[bind]` / `#[post]` / `#[pre_post]`, in source order. `accumulate` inserts the node's
-//! triggers and recurses into its `#[resolve_into]` fields and active enum variant.
+//! triggers and recurses into its `#[child]` fields and active enum variant.
 //!
 //! `dispatch` is one linear body at every node: snap each item's trigger and pre, descend into
 //! the active child, fold what the child completed to into this node's state, run every
@@ -11,7 +11,7 @@
 //! `derive_support::Edge`, so descent matches `resolve`'s.
 
 use derive_support::{
-    Edge, Route, Via, find_resolve_into, is_root, node_parent, parent_route, single_field_ty, unbox,
+    Edge, Route, Via, find_child, is_root, node_parent, parent_route, single_field_ty, unbox,
 };
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
@@ -22,16 +22,7 @@ use syn::{Data, DeriveInput, Expr, Fields, Ident, Path, Token, Type, parse_macro
 
 #[proc_macro_derive(
     Bind,
-    attributes(
-        binds,
-        bind,
-        post,
-        pre_post,
-        resolve_into,
-        derived_child,
-        derived_node,
-        node
-    )
+    attributes(binds, bind, post, pre_post, child, derived_child, derived_node, node)
 )]
 pub fn derive_bind(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -178,7 +169,7 @@ fn derived_enum_node_impl(
     for v in &e.variants {
         let vi = &v.ident;
         single_field_ty(&v.fields)?; // one Data per variant
-        reject_resolve_into(&v.fields)?;
+        reject_child(&v.fields)?;
         dispatch_arms.push(quote! {
             #name::#vi(data) => ::bind::DispatchIntoTreePath::<#marker>::dispatch_into_tree_path(
                 ::bind::DerivedLevel { parent, data },
@@ -250,7 +241,7 @@ fn derived_node_impl(
         return derived_enum_node_impl(input, name, parent, marker, items, e);
     }
     if let Data::Struct(s) = &input.data {
-        reject_resolve_into(&s.fields)?;
+        reject_child(&s.fields)?;
     }
 
     let node = quote!(node);
@@ -347,12 +338,12 @@ fn derived_state(
 
 /// A derived level cannot hang a place child: its `data` is rebuilt every dispatch and dies with
 /// it, so a place below it would have to fold through a `DerivedLevel`, which is not a path.
-fn reject_resolve_into(fields: &Fields) -> syn::Result<()> {
+fn reject_child(fields: &Fields) -> syn::Result<()> {
     for f in fields {
-        if let Some(attr) = f.attrs.iter().find(|a| a.path().is_ident("resolve_into")) {
+        if let Some(attr) = f.attrs.iter().find(|a| a.path().is_ident("child")) {
             return Err(syn::Error::new(
                 attr.span(),
-                "a derived level cannot have a `#[resolve_into]` child: its `data` dies with the \
+                "a derived level cannot have a `#[child]` field: its `data` dies with the \
                  dispatch. Persist the state in the tree at a real place the derived level reads, \
                  or hang a fresh level with `#[derived_child]`.",
             ));
@@ -450,7 +441,7 @@ fn accumulate_body(
         ));
     }
     match &input.data {
-        Data::Struct(s) => match find_resolve_into(&s.fields)? {
+        Data::Struct(s) => match find_child(&s.fields)? {
             None => Ok((quote!(), Vec::new(), false)),
             Some((field, child_ty, route)) => {
                 let (child, boxed) = unbox(&child_ty);
@@ -651,7 +642,7 @@ fn dispatch_state(
         return Ok((derived_child_state(&f, marker, place), Vec::new()));
     }
     match &input.data {
-        Data::Struct(s) => match find_resolve_into(&s.fields)? {
+        Data::Struct(s) => match find_child(&s.fields)? {
             None => Ok((
                 quote!(::laserbeam::MaybeInvalidated::NotInvalidated(#place)),
                 Vec::new(),

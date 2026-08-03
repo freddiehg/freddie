@@ -98,7 +98,7 @@ const fn key(k: &'static str) -> DemoEvent {
 #[pre_post(AnyKey => (snap_return_home, return_home_deadline))] // opt_0
 #[bind(Key("esc") => flash)] // opt_1
 pub struct A {
-    #[resolve_into]
+    #[child]
     pub b: B,
 }
 
@@ -263,7 +263,7 @@ fn a_pre_snaps_before_the_descent_mutates() {
 #[bind(Key("t") => trap_root)]
 pub struct Trap {
     pub open: bool,
-    #[resolve_into]
+    #[child]
     pub child: TrapChild,
 }
 
@@ -323,7 +323,7 @@ fn the_deepest_binding_takes_the_claim_and_the_ancestors_is_skipped() {
 #[post(AnyKey => witness)] // opt_0: sees what the descent did
 #[post(AnyKey => witness)] // opt_1: sees what opt_0 left
 pub struct Top {
-    #[resolve_into]
+    #[child]
     pub mid: Mid,
 }
 
@@ -333,7 +333,7 @@ pub struct Top {
 #[node(parent_path = TopPath)]
 #[binds(M)]
 pub struct Mid {
-    #[resolve_into]
+    #[child]
     pub leaf: Leaf,
 }
 

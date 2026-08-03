@@ -442,7 +442,7 @@ pub trait AccumulateDerivedTriggers<M: Bindings>: Sized {
     ///
     /// - The root: a level derived straight off the root has `Parent = &'a mut Root`, the
     ///   root's own path.
-    /// - A place reached through `#[resolve_into]`: claude.ai's site level is rebuilt as
+    /// - A place reached through `#[child]`: claude.ai's site level is rebuilt as
     ///   `DerivedLevel<SiteLayerPath<'a>, ClaudeAiSite>`, so its `Parent` is
     ///   `SiteLayerPath<'a>`, the `PathMut` alias of the place above. The data came from the
     ///   root's foreground; the parent is where the level sits.

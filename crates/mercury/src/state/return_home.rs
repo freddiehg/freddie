@@ -28,7 +28,7 @@ use super::{
 #[post(AnyKey => if_not_invalidated(home_deadline))]
 #[bind(|path| path.get().guard.trigger() => if_not_invalidated(go_home))]
 pub struct AndReturnHome<Next> {
-    #[resolve_into]
+    #[child]
     layers: Next,
     /// Read by the trigger matching its firing, and held for its `Drop`: dropping the guard
     /// cancels the return-home timer, which is how every rearm and every layer swap cancels.

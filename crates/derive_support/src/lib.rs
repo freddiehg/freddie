@@ -1,5 +1,5 @@
 //! Shared syn helpers for the laserbeam and bind derives. They locate a node's
-//! descent edges (the `#[resolve_into]` field of a struct, the single-field
+//! descent edges (the `#[child]` field of a struct, the single-field
 //! payload of an enum variant), unwrap `Box`, and build the child-`Path`
 //! construction that `resolve` and `dispatch` descend through identically.
 
@@ -19,25 +19,25 @@ pub struct Route {
     pub up: Path,
 }
 
-/// The `#[resolve_into]` field of a struct: its name, child type, and, when the
+/// The `#[child]` field of a struct: its name, child type, and, when the
 /// child has multiple parents, the route it hangs on.
-pub type ResolveInto = (Member, Type, Option<Route>);
+pub type Child = (Member, Type, Option<Route>);
 
-/// Finds the single `#[resolve_into]` field of a struct, if any.
+/// Finds the single `#[child]` field of a struct, if any.
 ///
 /// # Errors
 ///
-/// Errors if more than one field carries `#[resolve_into]`.
-pub fn find_resolve_into(fields: &Fields) -> syn::Result<Option<ResolveInto>> {
-    let mut found: Option<ResolveInto> = None;
+/// Errors if more than one field carries `#[child]`.
+pub fn find_child(fields: &Fields) -> syn::Result<Option<Child>> {
+    let mut found: Option<Child> = None;
     for (i, f) in fields.iter().enumerate() {
-        if !f.attrs.iter().any(|a| a.path().is_ident("resolve_into")) {
+        if !f.attrs.iter().any(|a| a.path().is_ident("child")) {
             continue;
         }
         if found.is_some() {
             return Err(syn::Error::new(
                 f.span(),
-                "at most one `#[resolve_into]` field per struct",
+                "at most one `#[child]` field per struct",
             ));
         }
         let member = f
@@ -49,15 +49,15 @@ pub fn find_resolve_into(fields: &Fields) -> syn::Result<Option<ResolveInto>> {
     Ok(found)
 }
 
-/// The route named by `#[resolve_into(route = Enum, up = UpEnum)]`, if present. A bare
-/// `#[resolve_into]` (or no attribute) is a single-parent child.
+/// The route named by `#[child(route = Enum, up = UpEnum)]`, if present. A bare
+/// `#[child]` (or no attribute) is a single-parent child.
 ///
 /// # Errors
 ///
 /// Errors if the attribute list contains anything other than `parent = ..` and `up = ..`, or
 /// if one of the two is given without the other.
 pub fn parent_route(attrs: &[syn::Attribute]) -> syn::Result<Option<Route>> {
-    let Some(attr) = attrs.iter().find(|a| a.path().is_ident("resolve_into")) else {
+    let Some(attr) = attrs.iter().find(|a| a.path().is_ident("child")) else {
         return Ok(None);
     };
     let mut parent = None;
@@ -80,11 +80,11 @@ pub fn parent_route(attrs: &[syn::Attribute]) -> syn::Result<Option<Route>> {
         (Some(parent), Some(up)) => Ok(Some(Route { parent, up })),
         (Some(_), None) => Err(syn::Error::new(
             attr.span(),
-            "`#[resolve_into(route = ..)]` needs `up = ..`, the route enum's `Above::Up` half",
+            "`#[child(route = ..)]` needs `up = ..`, the route enum's `Above::Up` half",
         )),
         (None, Some(_)) => Err(syn::Error::new(
             attr.span(),
-            "`#[resolve_into(up = ..)]` needs `parent = ..`, the route enum itself",
+            "`#[child(up = ..)]` needs `parent = ..`, the route enum itself",
         )),
     }
 }
@@ -181,7 +181,7 @@ pub fn node_parent(attrs: &[syn::Attribute]) -> syn::Result<Option<Path>> {
 
 /// How a child hangs off its parent node, for building the descent projection.
 pub enum Via<'a> {
-    /// A struct `#[resolve_into]` field, named (`.field`) or positional (`.0`).
+    /// A struct `#[child]` field, named (`.field`) or positional (`.0`).
     Field(&'a Member),
     /// A single-field enum variant `Parent::Variant(Child)`.
     Variant(&'a Ident),

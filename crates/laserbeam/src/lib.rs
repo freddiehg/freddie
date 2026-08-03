@@ -425,7 +425,7 @@ pub trait HasPath {
     ///
     /// - The root, `#[node(root)]`: `Mercury`'s is `&'a mut Mercury` — the bare exclusive
     ///   borrow, since there is nothing above to thread through.
-    /// - A node reached through `#[resolve_into]`, `#[node(parent_path = ..)]`: `TypingLayer`'s
+    /// - A node reached through `#[child]`, `#[node(parent_path = ..)]`: `TypingLayer`'s
     ///   is `PathMut<TypingLayer, LayerPath<'a>>`, its declared `TypingLayerPath` alias — the
     ///   node over its parent's path, recursively, so the whole ancestry rides along.
     /// - A derived level (`ClaudeAiSite`) has no path and does not implement this trait: its

@@ -62,7 +62,7 @@ fn enum_binding_fires() {
     assert_eq!(out, vec![2]); // "f1"
 }
 
-// Through the other enum variant, and on through the boxed `#[resolve_into]`.
+// Through the other enum variant, and on through the boxed `#[child]`.
 #[test]
 fn through_typing_variant() {
     let mut app = typing_app();

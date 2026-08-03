@@ -185,7 +185,7 @@ pub fn ignore<P: HasStop + CompletesTo<P>>(
 #[bind(Keyboard("esc") => on_esc)]
 pub struct App {
     pub hits: u32,
-    #[resolve_into]
+    #[child]
     pub layer: Layer,
 }
 
@@ -212,7 +212,7 @@ pub struct Nav {
 #[bind(Keyboard("bksp") => on_bksp)]
 pub struct Typing {
     pub hits: u32,
-    #[resolve_into]
+    #[child]
     pub deep: Box<Deep>,
 }
 
@@ -237,7 +237,7 @@ pub type DeepPath<'a> = PathMut<Deep, TypingPath<'a>>;
 #[binds(Demo)]
 #[bind(Keyboard("dup") => ignore)]
 pub struct Clash {
-    #[resolve_into]
+    #[child]
     pub child: ClashChild,
 }
 
@@ -270,7 +270,7 @@ pub enum Media {
 #[binds(Demo)]
 #[bind(Keyboard("a") => ignore)]
 pub struct Album {
-    #[resolve_into(route = TitleParent, up = TitleParentUp)]
+    #[child(route = TitleParent, up = TitleParentUp)]
     pub title: Title,
 }
 
@@ -279,7 +279,7 @@ pub struct Album {
 #[binds(Demo)]
 #[bind(Keyboard("s") => ignore)]
 pub struct Song {
-    #[resolve_into(route = TitleParent, up = TitleParentUp)]
+    #[child(route = TitleParent, up = TitleParentUp)]
     pub title: Title,
 }
 
@@ -409,7 +409,7 @@ pub struct Armed {
     /// What the CHILD's parent-reading binding watches for, kept separate so it cannot collide
     /// with this node's own trigger.
     pub for_child: Option<&'static str>,
-    #[resolve_into]
+    #[child]
     pub child: ArmedChild,
 }
 

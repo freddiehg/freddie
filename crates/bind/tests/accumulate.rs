@@ -1,4 +1,4 @@
-//! Accumulation over the shared tree: through an enum, through a `#[resolve_into]`
+//! Accumulation over the shared tree: through an enum, through a `#[child]`
 //! field (boxed and non-boxed), the duplicate-trigger error, and a no-binds node.
 
 mod common;
@@ -9,9 +9,9 @@ use common::{
     App, Armed, ArmedChild, Clash, ClashChild, Deep, Demo, Empty, Layer, Nav, Typing, fg, kb,
 };
 
-// Through the Layer enum and the non-boxed `#[resolve_into]` App -> Layer.
+// Through the Layer enum and the non-boxed `#[child]` App -> Layer.
 #[test]
-fn through_enum_and_resolve_into() {
+fn through_enum_and_child() {
     let mut app = App {
         hits: 0,
         layer: Layer::Nav(Nav { hits: 0 }),
@@ -23,9 +23,9 @@ fn through_enum_and_resolve_into() {
     );
 }
 
-// Through the boxed `#[resolve_into]` Typing -> Box<Deep>.
+// Through the boxed `#[child]` Typing -> Box<Deep>.
 #[test]
-fn through_boxed_resolve_into() {
+fn through_boxed_child() {
     let mut app = App {
         hits: 0,
         layer: Layer::Typing(Typing {
