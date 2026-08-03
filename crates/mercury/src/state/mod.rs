@@ -279,7 +279,6 @@ impl Windows {
             .copied()
     }
 
-    /// A window appeared: its frame starts pending, its read queued by the caller.
     pub(crate) fn opened(&mut self, window: WindowId, held: HeldGeneration) {
         self.open.insert(
             window,
@@ -290,7 +289,6 @@ impl Windows {
         );
     }
 
-    /// A window moved or was resized: its old frame is dead, the new one is in flight.
     /// Whether the window is tracked, which is whether the caller should request the read;
     /// an untracked window's halves both die unused.
     pub(crate) fn frame_change(&mut self, window: WindowId, held: HeldGeneration) -> bool {
@@ -305,8 +303,6 @@ impl Windows {
         true
     }
 
-    /// A frame read landed: committed iff its riding half matches the placeholder's. A read
-    /// that could not answer leaves the entry pending.
     pub(crate) fn frame_read(
         &mut self,
         window: WindowId,
@@ -318,12 +314,10 @@ impl Windows {
         }
     }
 
-    /// Focus changed in an app: whichever window it lands on is in flight.
     pub(crate) fn focus_change(&mut self, pid: Pid, held: HeldGeneration) {
         self.focused.insert(pid, Synced::Pending(held));
     }
 
-    /// A focus read landed: committed iff its riding half matches the placeholder's.
     pub(crate) fn focus_read(
         &mut self,
         pid: Pid,
@@ -335,12 +329,10 @@ impl Windows {
         }
     }
 
-    /// A window went away.
     pub(crate) fn closed(&mut self, window: WindowId) {
         self.open.remove(&window);
     }
 
-    /// An app and every entry keyed by its pid are gone.
     pub(crate) fn app_gone(&mut self, pid: Pid) {
         self.focused.remove(&pid);
     }
