@@ -1,12 +1,16 @@
-# the windows watcher reports facts; values follow
+# the windows watcher reports facts; the model requests the values
 
-The windows watcher adopts the two-phase sync `freddie_selection` (`selection-watcher.md`) defines, because it has the same structure: AX notifications carry identity but not values, so today's callback fills the values in by reading the app synchronously on the main run loop, and it decides report relevance by asking the OS who is frontmost. After this doc, the callback reports only what it knows instantly — which window, which pid, what kind of change, at which generation — the value reads run on a worker, values land as second reports, a stale read names a generation the entry has moved past, and every keep-or-drop decision belongs to the consumer's model. Figaro's consumer half is `figaro/refactors/pending/sync-fixes.md` change 3, which lands after this doc's change 1.
+The watcher stops doing two jobs. Today its callback both notices a change and fetches the new value — reading the app synchronously on the main run loop — and it decides report relevance by asking the OS who is frontmost. After this doc it only notices: every report carries what the source already holds, the consumer's model requests each missing value as a read effect, and the read's result comes back as an event that must bring the matching token half home (`freddie_sync`).
 
-## Change 1: the two-phase protocol
+The criterion, which `figaro/refactors/pending/sync-fixes.md` states as doctrine: an event carries the value when the source holds it or the callback can produce it synchronously, because then no gap exists between knowing-it-changed and knowing-it; a cross-process read is asynchronous by refusal to block the callback, so its gap is modeled — `Pending` with the held half, the read effect with the riding half, `commit` as the meeting. Frames and the focused window are cross-process reads; the monitor list is a synchronous in-process read, so `Screens` keeps its value in the event.
+
+mercury's consumer half is below; figaro's is `sync-fixes.md` change 3, which lands after this doc's change 1.
+
+## Change 1: facts out, reads on demand of the model
 
 ### The reports
 
-`freddie_windows`'s change vocabulary, before:
+In `freddie_windows_types` (the vocabulary crate), before:
 
 ```rust
 pub enum WindowChange {
@@ -19,133 +23,118 @@ pub enum WindowChange {
 }
 ```
 
-after — facts and values are separate reports, and every payload is a named struct:
-
-Generations are `freddie_sync`'s generations, minted in matched pairs from one `freddie_sync::GenerationMinter` owned by the callback — one half in the fact report, the other riding the read request; one counter for the watcher's life, never per key, so a reused pid or window id cannot alias a zombie read into a fresh entry (`refactors/past/synced.md`).
+after:
 
 ```rust
-/// A window fact: something happened to this window, and the value read for it is in flight.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct WindowPending {
-    pub window: WindowId,
-    pub generation: Generation,
-}
-
-/// A frame read landed: what the window's frame was when the read at `generation` ran. `None` when
-/// the app would not answer, which a consumer models as the frame staying unknown.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct FrameReport {
-    pub window: WindowId,
-    pub generation: Generation,
-    pub frame: Option<Frame>,
-}
-
-/// A focus fact: focus changed in the app with this pid; which window it landed on is in flight.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct FocusPending {
-    pub pid: Pid,
-    pub generation: Generation,
-}
-
-/// A focus read landed: the focused window of `pid` when the read at `generation` ran. `None` when
-/// the app has no focused window, its window has no readable id, or it would not answer.
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub struct FocusReport {
-    pub pid: Pid,
-    pub generation: Generation,
-    pub window: Option<WindowId>,
-}
-
 pub enum WindowChange {
-    /// A window appeared. Its first frame follows as a [`Frame`](Self::Frame) report.
-    Opened(WindowPending),
-    /// A window moved: its old frame is dead, the new one is in flight.
-    Moved(WindowPending),
+    /// A window appeared. Its frame is the consumer's read to make.
+    Opened(WindowId),
+    /// A window moved: its old frame is dead, and the new one is the consumer's read to make.
+    Moved(WindowId),
     /// A window was resized: same contract as [`Moved`](Self::Moved).
-    Resized(WindowPending),
-    Frame(FrameReport),
-    /// A window went away. Final: no read is in flight for a closed window, and a `Frame`
-    /// report racing the close names a window the consumer already removed.
+    Resized(WindowId),
+    /// A window went away. Final: a read landing after this names a window the consumer
+    /// already removed.
     Closed(WindowId),
-    /// Focus changed in an app — a notification's report and an activation's alike, ungated:
-    /// the watcher no longer asks the OS whether the app is frontmost, it says whose focus
-    /// changed and the consumer's model judges it against its own mirror.
-    FocusChanged(FocusPending),
-    Focus(FocusReport),
+    /// Focus changed in the app with this pid — a notification's report and an activation's
+    /// alike, ungated: the watcher does not ask the OS whether the app is frontmost. Which
+    /// window focus landed on is the consumer's read to make.
+    FocusChanged(Pid),
     /// The app and every entry keyed by its pid are gone. Reported by `forget_app` after the
-    /// per-window `Closed` reports, so pid-keyed maps remove their entries.
+    /// per-window `Closed` reports.
     AppGone(Pid),
+    /// The monitors changed, with the new arrangement: reading `NSScreen` is synchronous in
+    /// the callback, so no gap exists and the value rides the event.
     Screens(Vec<Monitor>),
 }
 ```
 
-`is_frontmost` is deleted. `frontmost_pid` stays for the snapshot's seed. `Pid` is `pub`.
+`WindowFrame` and `Snapshot` are deleted from the vocabulary; nothing carries a frame to a consumer any more, and the seed is not a struct (below). `is_frontmost` is deleted from the watcher; `frontmost_pid` survives only to aim the install burst's `FocusChanged`.
 
-### The callback and the worker
+### The callback
 
-The callback keeps only identity resolution (`window_id(element)`, which resolves from the element in hand) and generation minting; every attribute read into the app moves to the worker. One invariant, stated on `Synced` and owed here: the fact is reported through `on_change` before its read request is sent to the worker, so a value can never reach the consumer's queue ahead of its fact. Every attribute read runs on the worker, the shape `freddie_selection`'s watch specifies — one worker owning a request channel, coalescing queued requests a later generation for the same key has superseded, reporting from its own thread:
+Identity and reporting only. `window_id(element)` resolves from the element in hand; everything else is gone: no frame reads, no `focused_window_id` on activation, no per-app gate. The move/resize/create/destroy arms and the activation observation each report their fact and return.
 
-- Move/resize notification: mint the pair, report `Moved`/`Resized(WindowPending)` with one half, queue the frame read with the other.
-- Window created: register as today, mint the pair, report `Opened(WindowPending)`, queue the frame read.
-- Focus notification and workspace activation: mint the pair, report `FocusChanged(FocusPending)`, queue the focus read. (The activation path thereby loses its inline `focused_window_id` read; both focus sources speak one shape.)
-- Destroyed / app gone: `Closed`, as today — identity only, nothing to read.
+### The seed is the burst
 
-The requests:
+`watch` returns only the `Watcher`. Its install pass reports, through `on_change` like everything else: one `Screens` with the current monitors, one `Opened(id)` per existing window, and one `FocusChanged(frontmost_pid)`. Those queue as events, dispatch after the consumer's model is constructed (watchers before seeds, as always), and the model's own minting fills its maps — the seed path and the steady-state path are the same code.
 
-```rust
-/// One value read the worker owes. `Frame` carries the retained window element; `Focus`
-/// carries only the pid, the worker creates its own app element.
-enum ReadRequest {
-    Frame(WindowId, Generation, SentElement),
-    Focus(Pid, Generation),
-}
+### The reads
 
-/// A retained `AXUIElement` handed to the worker. `Send` by an explicit claim: CoreFoundation
-/// objects are thread-safe to retain, release, and call, and the AX calls this crate makes off
-/// the main thread are the same ones `freddie_selection`'s worker makes; the worker releases
-/// it when the read is done.
-struct SentElement(/* +1 AXUIElementRef, with the unsafe Send impl and its SAFETY comment */);
-```
-
-The worker performs `Frame` by reading position and size through the element and `Focus` by `AXUIElementCreateApplication` + `kAXFocusedWindow` + `window_id`. A read into a hung app blocks the worker until the OS gives up; the only consequence is entries staying `Pending` longer, which is already modeled, so nothing here tunes it.
-
-The `elements` table stays on the main thread for placement addressing; the worker's retained elements are its own +1 references, so the two never share.
-
-### The seed
-
-`watch`'s install pass stops reading frames: the `Snapshot` seeds every discovered window as pending, with the reads already queued, exactly as `freddie_selection::watch` seeds its map:
+Two functions, called by effect performers and nobody else — never by dispatch, never by the watcher:
 
 ```rust
-/// Every window open when the watcher was installed — each pending its first frame report —
-/// which one was focused, and the screens.
-pub struct Snapshot {
-    pub windows: Vec<WindowPending>,
-    pub focused: Option<WindowId>,
-    pub screens: Vec<Monitor>,
-}
+/// The frame of `window` right now, by id through the window server. `None` for a window that
+/// is gone or unreadable. Callable from any thread; an effect performer's read.
+#[must_use]
+pub fn frame_of(window: WindowId) -> Option<Frame>;
+
+/// The focused window of `pid` right now, through Accessibility; the elements it creates are
+/// its own and per call. `None` when the app has no focused window, its window has no readable
+/// id, or it will not answer. Callable from any thread; an effect performer's read.
+#[must_use]
+pub fn focused_window_of(pid: Pid) -> Option<WindowId>;
 ```
 
-(`focused` keeps its boot read: it is the seed half of the pattern, one read at install, and `frontmost_pid` feeds it.)
+`frame_of` reads through `CGWindowListCopyWindowInfo` filtered to the id, so it needs no element and no main thread. The watcher's element table stays exactly what it is today: the placement path's addressing, untouched by any of this.
 
-### mercury's half
+## Change 2 (mercury): the model mints, requests, and commits
 
 `ForegroundEvent` gains the pid, mirrored as `FrontApp { pid, app }`, with the mechanical respells and the constructor's added pid, exactly as figaro's `sync-fixes.md` change 2 spells it for figaro.
 
-The model stores every report under its own key and projects at read time. Nothing is filtered on the write path: what gets stored never depends on the ordering between the windows watcher and the foreground watcher, because the join with the mirror happens when a reader asks, against state.
+The root gains the mint, and the windows model holds the gaps:
 
 ```rust
-    /// Each watched window's frame, synced in two phases. See `freddie_sync::Synced`.
+    /// The sync tokens' mint (`freddie_sync`): a counter, so minting is a function of state.
+    pub generations: GenerationMinter,
+```
+
+```rust
     // WindowState.frame becomes:
     frame: Synced<Frame>,
 
-    /// Each app's focused window, keyed by pid, synced the same way. `Known(None)` is a real
-    /// answer: the app has no focused window with a readable id. Entries leave with `AppGone`.
+    /// Each app's focused window, keyed by pid. `Known(None)` is a real answer: the app has
+    /// no focused window with a readable id. Entries leave with `AppGone`.
     focused: HashMap<Pid, Synced<Option<WindowId>>>,
 ```
 
-The handler arms are `Synced`'s two calls: `Opened` inserts the window's state with `frame: Synced::Pending(generation)`, `Moved`/`Resized` do `frame.change(generation)`, and `Frame` does `frame.commit(&generation, f)` when the report carries one and nothing when it carries `None`; `FocusChanged` inserts `Synced::Pending(generation)` at the pid, `Focus` does `commit(&generation, window)`; `Closed` removes the window, `AppGone` removes the pid's focus entry. No arm consults the foreground.
+Two effects and two value events:
 
-The reads are projections joining the mirror:
+```rust
+    /// Read `window`'s frame off the effect loop; the answer returns as [`FrameRead`] carrying
+    /// this half.
+    ReadFrame { window: WindowId, generation: RidingGeneration },
+    /// Read `pid`'s focused window; the answer returns as [`FocusRead`] carrying this half.
+    ReadFocus { pid: Pid, generation: RidingGeneration },
+```
+
+```rust
+pub struct FrameRead {
+    pub window: WindowId,
+    pub generation: RidingGeneration,
+    /// `None` when the read could not answer; the entry stays `Pending`.
+    pub frame: Option<Frame>,
+}
+
+pub struct FocusRead {
+    pub pid: Pid,
+    pub generation: RidingGeneration,
+    pub window: Option<WindowId>,
+}
+```
+
+The handler arms, all on the root's windows handler:
+
+- `Opened(id)`: mint; insert the window's state with `frame: Synced::Pending(held)`; emit `ReadFrame { window: id, generation: riding }`.
+- `Moved(id)` / `Resized(id)`: mint; `frame.change(held)`; emit the same `ReadFrame`.
+- `FrameRead`: `frame.commit(&ev.generation, frame)` when the report carries one; nothing when it carries `None`.
+- `FocusChanged(pid)`: mint; insert `Synced::Pending(held)` at the pid; emit `ReadFocus`.
+- `FocusRead`: the pid's entry `commit(&ev.generation, ev.window)`.
+- `Closed(id)`: remove the window; `AppGone(pid)`: remove the pid's focus entry; `Screens(monitors)`: assign, as today.
+
+No arm consults the foreground; nothing is filtered on the write path. The performers are dumb threads: `ReadFrame` runs `freddie_windows::frame_of` and sends `FrameRead`; `ReadFocus` runs `focused_window_of` and sends `FocusRead`; each moves its riding half through and into the event.
+
+The reads are projections joining the mirror, unchanged from the previous revision:
 
 ```rust
     /// The front app's focused window: the focus entry at `front`, if it has landed. `None`
@@ -155,14 +144,10 @@ The reads are projections joining the mirror:
     }
 ```
 
-and every placement that used `focused` calls it with the mirrored `FrontApp`'s pid; a placement that gets `None`, or finds a target frame `Pending`, computes nothing — the missing value is modeled, and the response to missing is a no-op.
+and a placement that gets `None`, or finds a target frame `Pending`, computes nothing.
 
-Tests: the existing window tests respell to dispatch fact-then-value pairs; new tests pin the stale drops for frames and focus (`change(n)`, `change(n+1)`, `commit(n, v)` leaves `Pending(n+1)`), the pending placement no-op, `AppGone` emptying a pid's focus entry, and the ordering independence itself: a `FocusChanged`/`Focus` pair dispatched before the `Foreground` event that moves the mirror still lands in the map, and the projection answers it the moment the mirror catches up.
-
-## Change 2: nothing
-
-The former change 2 — bounding the synchronous callback reads — dissolves into change 1: the callback no longer reads, and how long the worker's reads take is not the model's concern.
+Tests: each fact arm asserts its `Pending` insert and its emitted read effect; each value arm asserts the commit; the stale interleaving (`Moved`, `Moved`, first `FrameRead`) asserts the first riding half no longer matches; a `FocusRead` for a background pid still lands in the map and the projection answers only when the mirror points at it; the seed burst dispatched in order leaves a fully pending model that converges as the reads return.
 
 ## Order of changes
 
-One change: the protocol, the worker, the seed, and mercury's half land together — the variant shapes and their consumer cannot be split.
+Two: change 1 (the vocabulary, the callback, the burst, the read functions — with mercury's compile fixed in the same commit, since the variant shapes change under it) and change 2 (mercury's minting model). Figaro's half rides `sync-fixes.md` and lands after change 1.

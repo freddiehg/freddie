@@ -1,6 +1,6 @@
 # the selection watcher
 
-Two freddie changes: the per-app observer scaffolding extracted from `freddie_windows`, and `freddie_selection` built on it. The figaro consumer half — the map on the model, the event, the projection — is `figaro/refactors/pending/read-selection.md`, which lands after this doc and after `figaro/refactors/pending/sync-fixes.md`'s pid mirror.
+Two freddie changes: the per-app observer scaffolding extracted from `freddie_windows`, and `freddie_selection` built on it — a watcher that reports facts, and a read the consumer's effect performers call. The figaro consumer half — the map, the minting, the read effect, the projection — is `figaro/refactors/pending/read-selection.md`, which lands after this doc and after `figaro/refactors/pending/sync-fixes.md`'s pid mirror.
 
 ## Change 1 (prefactor): `freddie_ax_observer`
 
@@ -111,63 +111,33 @@ pub enum Selection {
 The watcher, on the scaffolding:
 
 ```rust
-Generations and entries are `freddie_sync` (`synced.md`): the entry type is `Synced<Selection>`, and the watcher mints from one `GenerationMinter` for its whole life, so a reused pid cannot alias a zombie read into a fresh entry.
+The watcher reports facts and answers reads; the sync machinery — minting, `Pending`, `commit` — is the consumer's (`figaro/refactors/pending/read-selection.md`, on `freddie_sync`).
 
-/// What the selection map should learn. One variant per thing the watcher can tell you.
-#[derive(Clone, PartialEq, Eq)]
+```rust
+/// What the watcher can tell you. Facts only: no values, no tokens — the consumer's model
+/// requests the value as a read effect when it hears a fact.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SelectionChange {
-    /// A change notification fired: the entry becomes `Synced::Pending` at this
-    /// generation, and a re-read is queued carrying it.
-    Changed(Pid, Generation),
-    /// The re-read queued at this generation landed. Applied only if the entry still holds
-    /// `Synced::Pending` at the same generation; anything else means a newer change superseded the
-    /// read, and the answer describes a selection that no longer exists.
-    Reported(Pid, Generation, Selection),
+    /// This app's selection changed (or its focus moved between elements): whatever the
+    /// consumer knew for this pid is dead.
+    Changed(Pid),
     /// The app is gone: remove the entry.
     AppGone(Pid),
 }
 
-impl fmt::Debug for SelectionChange {
-    /// `Reported` without its payload: a change dispatches into the model, so its `Debug` is
-    /// what the dispatch record prints, and the record should say a read landed, not carry the
-    /// text it landed with.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Changed(pid, generation) => write!(f, "Changed({pid:?}, {generation:?})"),
-            Self::Reported(pid, generation, _) => write!(f, "Reported({pid:?}, {generation:?})"),
-            Self::AppGone(pid) => write!(f, "AppGone({pid:?})"),
-        }
-    }
-}
-
-/// Watch every app's selection. Returns the seed — every observed app as
-/// `Synced::Pending`, its first read already queued — and the watch that keeps
-/// `on_change` fed. Installed on the main thread, like `freddie_windows::watch`; `on_change`
-/// is called from the watcher's threads.
-pub fn watch(
-    on_change: impl Fn(SelectionChange) + Send + 'static,
-) -> (HashMap<Pid, Synced<Selection>>, SelectionWatch);
+/// Watch every app's selection. Installed on the main thread, like `freddie_windows::watch`.
+pub fn watch(on_change: impl Fn(SelectionChange) + 'static) -> SelectionWatch;
 ```
 
-Internally, the sync is two-phase so the notification callback never waits on the app:
+Built on `watch_apps`: `on_app` registers `kAXSelectedTextChangedNotification` and `kAXFocusedUIElementChangedNotification` on the app element and reports `Changed(pid)` — which, during the install pass, is also the seed: one burst of `Changed` for every running app, queued as events that dispatch after the consumer's model exists, so the seed path and the steady-state path are the same code and the consumer's map starts empty and honest. The notification callback reports `Changed(pid)` and returns; `on_app_gone` reports `AppGone`. `SelectionWatch` is the `AppWatch` newtype, held for its `Drop`.
 
-- The main-thread callback, for either notification, mints the pair, reports `Changed(pid, generation)` carrying one half, and only then sends the pid and the other half down a channel to the worker — the fact-before-request invariant `Synced` states, so a value can never reach the consumer's queue ahead of its fact. `on_app` does the same for its registration pass, which is also the seed path: an app enters the map as `Pending` at its first generation and its first `Reported` follows. `on_app_gone` reports `AppGone`.
-- The worker owns the receiving end. For each `(pid, generation)` it drains — dropping queued pairs a later generation for the same pid has superseded, so a drag's burst of notifications costs one read — it runs `current_selection(pid)` (below) and reports `Reported(pid, generation, selection)`.
-
-The generation is what makes the interleavings safe without any claim about scheduling: a notification firing mid-read produces `Changed(pid, n+1)` before `Reported(pid, n, …)` can land, the model sees the generations disagree and drops the stale answer, and the read queued at `n+1` delivers the real one.
-
-`SelectionWatch` holds the `AppWatch` and the worker's sender; dropping it closes the channel, which ends the worker.
-
-The sync's transport, private to the worker and exported to nobody: a notification carries no text, so this one bounded read is how a change becomes a value. Nothing outside the watcher can call it; the only read surface any consumer has is the model's state.
+The read, called by the consumer's effect performers and nobody else — never by dispatch, never by this watcher:
 
 ```rust
-/// What `pid`'s focused element answers right now. The worker's half of one sync step: the
-/// notification said the selection changed, this learns what it changed to. One synchronous
-/// round-trip into the app, on the worker thread; the app element is created here from the
-/// pid, so nothing AX crosses a thread. A hung app blocks the worker until the OS gives up,
-/// which only leaves the entry `Pending` longer — already modeled, so nothing here tunes it.
+/// What `pid`'s focused element answers right now. One synchronous round-trip into the app;
+/// callable from any thread, and the app element it creates is its own and per call.
 #[must_use]
-fn current_selection(pid: Pid) -> Selection {
+pub fn current_selection(pid: Pid) -> Selection {
     // SAFETY: `pid` names a process; the element is +1, released with the `Owned`.
     #[expect(unsafe_code)]
     let app = unsafe { AXUIElementCreateApplication(pid.0) };
