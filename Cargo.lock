@@ -583,11 +583,16 @@ version = "0.0.1"
 dependencies = [
  "block2",
  "core-graphics",
+ "freddie_displays_types",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "tracing",
 ]
+
+[[package]]
+name = "freddie_displays_types"
+version = "0.0.1"
 
 [[package]]
 name = "freddie_event_socket"

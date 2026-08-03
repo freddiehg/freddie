@@ -1,0 +1,10 @@
+[package]
+name = "freddie_displays_types"
+description = "The display watcher's reported vocabulary, importable without the watcher."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
