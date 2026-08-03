@@ -49,7 +49,7 @@ pub enum WindowChange {
 }
 ```
 
-`WindowFrame` and `Snapshot` are deleted from the vocabulary; nothing carries a frame to a consumer any more, and the seed is not a struct (below). `is_frontmost` is deleted from the watcher; `frontmost_pid` survives only to aim the install burst's `FocusChanged`.
+`Snapshot` is deleted from the vocabulary; nothing carries a frame to a consumer any more, and the seed is not a struct (below). `WindowFrame` stays: it is the placement payload — the direction that runs consumer to crate (`SetFrame(WindowFrame)`, `sink.set_frame`) — and this change touches only the reporting direction. `is_frontmost` is deleted from the watcher; `frontmost_pid` survives only to aim the install burst's `FocusChanged`.
 
 ### The callback
 
