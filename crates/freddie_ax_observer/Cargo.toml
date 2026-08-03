@@ -1,6 +1,6 @@
 [package]
-name = "freddie_windows"
-description = "Placing the focused window on screen, for freddie (the macOS window-management sink)."
+name = "freddie_ax_observer"
+description = "One AXObserver per observable app, for freddie (the per-app observer scaffolding)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,14 +8,11 @@ repository.workspace = true
 
 [dependencies]
 freddie_windows_types = { path = "../freddie_windows_types", version = "0.0.1" }
-freddie_ax_observer = { path = "../freddie_ax_observer", version = "0.0.1" }
 accessibility-sys = "0.1"
 block2 = "0.6"
 core-foundation = { version = "0.10", features = ["link"] }
-core-graphics = { version = "0.25", features = ["link"] }
-freddie_main_loop = { path = "../freddie_main_loop", version = "0.0.1" }
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSScreen", "NSWorkspace", "NSRunningApplication", "NSApplication", "NSResponder"] }
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication", "NSApplication", "NSResponder"] }
 objc2-foundation = { version = "0.3", features = ["NSNotification"] }
 tracing = "0.1"
 

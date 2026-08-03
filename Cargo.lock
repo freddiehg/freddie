@@ -566,6 +566,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "freddie_ax_observer"
+version = "0.0.1"
+dependencies = [
+ "accessibility-sys",
+ "block2",
+ "core-foundation",
+ "freddie_windows_types",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "tracing",
+]
+
+[[package]]
 name = "freddie_cli"
 version = "0.0.1"
 dependencies = [
@@ -691,6 +705,7 @@ dependencies = [
  "block2",
  "core-foundation",
  "core-graphics",
+ "freddie_ax_observer",
  "freddie_main_loop",
  "freddie_windows_types",
  "objc2",

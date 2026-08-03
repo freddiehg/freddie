@@ -30,24 +30,20 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::mpsc::Receiver;
 
 use accessibility_sys::{
-    AXError, AXIsProcessTrusted, AXObserverAddNotification, AXObserverCreate,
-    AXObserverGetRunLoopSource, AXObserverRef, AXUIElementCopyAttributeValue,
+    AXError, AXIsProcessTrusted, AXObserverRef, AXUIElementCopyAttributeValue,
     AXUIElementCreateApplication, AXUIElementRef, AXUIElementSetAttributeValue, AXValueCreate,
     AXValueType, kAXFocusedWindowAttribute, kAXFocusedWindowChangedNotification,
     kAXPositionAttribute, kAXSizeAttribute, kAXUIElementDestroyedNotification, kAXValueTypeCGPoint,
     kAXValueTypeCGSize, kAXWindowCreatedNotification, kAXWindowMovedNotification,
     kAXWindowResizedNotification, kAXWindowsAttribute, pid_t,
 };
-use block2::RcBlock;
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFEqual, CFRelease, CFRetain, CFTypeRef, TCFType};
 use core_foundation::dictionary::CFDictionary;
-use core_foundation::runloop::{CFRunLoop, CFRunLoopSource, kCFRunLoopDefaultMode};
 use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::geometry::CGRect;
 use core_graphics::geometry::{CGPoint, CGSize};
@@ -55,49 +51,20 @@ use core_graphics::window::{
     CGWindowID, copy_window_info, kCGNullWindowID, kCGWindowBounds,
     kCGWindowListOptionIncludingWindow,
 };
+use freddie_ax_observer::{
+    AppSeen, AppWatch, ObservableApp, Observation, add_notification, notified_app,
+    observe_notification, watch_apps,
+};
 use freddie_main_loop::{MainWaker, WakingSender};
-use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2_app_kit::{
-    NSApplicationActivationPolicy, NSApplicationDidChangeScreenParametersNotification,
-    NSRunningApplication, NSScreen, NSWorkspace, NSWorkspaceApplicationKey,
-    NSWorkspaceDidActivateApplicationNotification, NSWorkspaceDidLaunchApplicationNotification,
-    NSWorkspaceDidTerminateApplicationNotification,
+    NSApplicationDidChangeScreenParametersNotification, NSScreen, NSWorkspace,
+    NSWorkspaceDidActivateApplicationNotification,
 };
-use objc2_foundation::{
-    MainThreadMarker, NSNotification, NSNotificationCenter, NSNotificationName,
-};
+use objc2_foundation::{MainThreadMarker, NSNotificationCenter};
 
 pub use freddie_windows_types::{
     Frame, Monitor, Pid, Placement, WindowChange, WindowError, WindowId,
 };
-
-/// An app whose windows a user could be looking at, which is the only kind worth observing.
-///
-/// macOS runs UI services alongside the apps: `CursorUIViewService` draws the text cursor and
-/// `Open and Save Panel Service` draws a file dialog, and each of them owns real windows with
-/// real ids. Those windows post the same Accessibility notifications an app's windows do, so a
-/// watcher that observes every process records one of them as the focused window whenever the
-/// user puts a cursor in a text field, and a placement then moves an invisible 64x64 box
-/// instead of the window in front of the user.
-///
-/// Their activation policy is what separates them: `prohibited` means macOS will not let the
-/// user bring the app forward at all, so nothing it owns can be what a placement is aimed at.
-/// Accessory apps stay in, because a menu bar app has no Dock icon but does have windows, and
-/// its settings window is placed like any other.
-///
-/// Built only by [`Self::of`], so an app that has not been vetted cannot reach
-/// [`observe_app`].
-#[derive(Clone, Copy, Debug)]
-struct ObservableApp(Pid);
-
-impl ObservableApp {
-    /// `app` if its windows can be looked at, `None` if it is one of the UI services.
-    fn of(app: &NSRunningApplication) -> Option<Self> {
-        (app.activationPolicy() != NSApplicationActivationPolicy::Prohibited)
-            .then(|| Self(Pid(app.processIdentifier())))
-    }
-}
 
 // SAFETY: `_AXUIElementGetWindow` is exported by HIServices, inside ApplicationServices,
 // which this crate already links against for the rest of the Accessibility API. It reads
@@ -144,11 +111,12 @@ impl Element {
     }
 }
 
-/// A window being watched: the element to address it through, and where it was last reported to
-/// be.
-///
+/// A window being watched: the element to address it through, and the app it belongs to.
 struct Watched {
     element: Element,
+    /// Which app registered it, so [`watch`]'s app-gone hook can report every window the
+    /// app took with it.
+    pid: Pid,
 }
 
 /// Every window that can be addressed, the element to address it through, and where it is.
@@ -446,9 +414,6 @@ struct WatcherState {
     /// Every window being watched. A `RefCell` and not a `Mutex`: nothing off the main thread
     /// reaches it.
     elements: RefCell<Elements>,
-    /// One entry per observed app. Held here rather than on the [`Watcher`] because the
-    /// launch and terminate callbacks are `'static` closures that cannot borrow it.
-    apps: RefCell<HashMap<Pid, AppObserver>>,
     on_change: Box<dyn Fn(WindowChange)>,
 }
 
@@ -486,48 +451,16 @@ impl WatcherState {
     }
 }
 
-/// One app's observer, and the `refcon` its callbacks reach the [`Watcher`]'s state through.
-struct AppObserver {
-    observer: AXObserverRef,
-    /// The `refcon` every notification for this app carries. Boxed so its address is
-    /// stable, and owned here so it is freed exactly when the observer naming it is.
-    _registration: Box<Registration>,
-    /// Window ids this observer registered. Used by [`forget_app`] when the app quits without
-    /// (or before) individual destroy notifications. Destroy itself removes from the element
-    /// table via [`WatcherState::forget_element`]; this list may then name ids already gone, and
-    /// [`WatcherState::forget`] returning false is what keeps them from being reported twice.
-    window_ids: Vec<WindowId>,
-}
-
-impl Drop for AppObserver {
-    /// Removes the run loop source and releases the observer, in that order: the source
-    /// must be gone before the `Registration` that its callbacks dereference is dropped.
-    fn drop(&mut self) {
-        // SAFETY: `observer` is live and was created by `AXObserverCreate`. Getting its
-        // source takes no ownership; removing it and releasing the observer is the
-        // documented teardown.
-        #[expect(unsafe_code)]
-        unsafe {
-            let source = AXObserverGetRunLoopSource(self.observer);
-            CFRunLoop::get_main().remove_source(
-                &CFRunLoopSource::wrap_under_get_rule(source),
-                kCFRunLoopDefaultMode,
-            );
-            CFRelease(self.observer.cast());
-        }
-    }
-}
-
 /// What a notification callback needs: the observer to register a new window on, the pid of
 /// the app it is for, and the state to report into. A C callback has this instead of a closure.
 ///
-/// `observer` is held so a window created later is registered without going back through
-/// `apps` for it. `pid` is what a focus-changed notification is gated on, so only the frontmost
-/// app's focused window is reported and a background app changing its own focus is ignored, and
-/// it is also which app's `AppObserver` a new window belongs to.
+/// `observer` is held so a window created later is registered without a lookup. `pid` is
+/// which app a notification is about, which is what a focus report names and which app a new
+/// window belongs to.
 ///
-/// [`Weak`](std::rc::Weak), not [`Rc`]: [`WatcherState`] owns `apps`, an [`AppObserver`] owns its
-/// registration, so a strong reference here would be a cycle that never frees.
+/// [`Weak`](std::rc::Weak), not [`Rc`]: the [`AppWatch`] owns the registration and outlives
+/// nothing the [`Watcher`] does not also own, so the weak reference adds no lifetime and a
+/// stale callback upgrades to nothing instead of keeping the state alive.
 struct Registration {
     observer: AXObserverRef,
     pid: Pid,
@@ -545,10 +478,7 @@ unsafe extern "C" fn on_notification(
     notification: CFStringRef,
     refcon: *mut c_void,
 ) {
-    // Copy every `Copy` field out and end the `&Registration` borrow before any branch
-    // runs. `observe_window` does `apps.borrow_mut()` and pushes into the same
-    // `AppObserver` the app `refcon` points into; holding that reference across the push
-    // would alias.
+    // Copy every `Copy` field out and end the `&Registration` borrow before any branch runs.
     let (state, observer, pid, refcon) = {
         // SAFETY: `refcon` is the `Box<Registration>` this app's `AppObserver` still owns. The
         // observer's source is removed before the box is dropped, so no notification can arrive
@@ -603,7 +533,7 @@ unsafe extern "C" fn on_notification(
 /// `kAXUIElementDestroyed` returns success and never fires. Move and resize keep the app's
 /// `refcon`; the live element still answers for its id.
 fn observe_window(
-    state: &Rc<WatcherState>,
+    state: &WatcherState,
     observer: AXObserverRef,
     pid: Pid,
     refcon: *mut c_void,
@@ -621,117 +551,22 @@ fn observe_window(
         return;
     };
 
-    {
-        let mut apps = state.apps.borrow_mut();
-        let Some(app) = apps.get_mut(&pid) else {
-            return;
-        };
-        app.window_ids.push(window);
-    }
-
     for notification in [kAXWindowMovedNotification, kAXWindowResizedNotification] {
-        add_notification(observer, element, notification, refcon);
+        // SAFETY: `observer` and `element` are live, and `refcon` is the boxed registration
+        // the app's observer owns, freed only after the observer stops delivering.
+        #[expect(unsafe_code)]
+        unsafe {
+            add_notification(observer, element, notification, refcon);
+        }
     }
 
     state.elements.borrow_mut().insert(
         window,
         Watched {
             element: Element(owned),
+            pid,
         },
     );
-}
-
-/// Subscribe `observer` to one notification on `element`, carrying `refcon`.
-///
-/// A failure is logged and skipped: an app that will not answer for one notification is
-/// still worth observing for the rest.
-fn add_notification(
-    observer: AXObserverRef,
-    element: AXUIElementRef,
-    notification: &str,
-    refcon: *mut c_void,
-) {
-    let name = CFString::new(notification);
-    // SAFETY: `observer` and `element` are live, `name` lives for the call, and `refcon` is
-    // either null or the stable address of a `Registration` outliving the observer.
-    #[expect(unsafe_code)]
-    let status =
-        unsafe { AXObserverAddNotification(observer, element, name.as_concrete_TypeRef(), refcon) };
-    if status != 0 {
-        tracing::debug!(notification, status, "could not add a notification");
-    }
-}
-
-/// Watch one app: its focus changes, its new windows, and every window it already has.
-///
-/// An app that refuses Accessibility, or has not finished launching, fails
-/// `AXObserverCreate`. Logged at `debug` and skipped: its windows are never reported and
-/// cannot be addressed, and every other app goes on being observed.
-fn observe_app(state: &Rc<WatcherState>, ObservableApp(pid): ObservableApp) {
-    if state.apps.borrow().contains_key(&pid) {
-        return;
-    }
-
-    // Before the observer, so the one early return between the two `Create` calls happens
-    // while there is still nothing to release.
-    // SAFETY: `pid` names a live process and the element is +1, released with the `Owned`.
-    #[expect(unsafe_code)]
-    let app = unsafe { AXUIElementCreateApplication(pid.0) };
-    let Some(app) = Owned::new(app.cast()) else {
-        return;
-    };
-    let app_element: AXUIElementRef = app.0.cast_mut().cast();
-
-    let mut observer: AXObserverRef = std::ptr::null_mut();
-    // SAFETY: `pid` names a process; the out-parameter receives a +1 observer on success
-    // and is untouched otherwise.
-    #[expect(unsafe_code)]
-    let status = unsafe { AXObserverCreate(pid.0, on_notification, &raw mut observer) };
-    if status != 0 || observer.is_null() {
-        tracing::debug!(?pid, status, "could not observe an app");
-        return;
-    }
-
-    let registration = Box::new(Registration {
-        observer,
-        pid,
-        state: Rc::downgrade(state),
-    });
-    let refcon = std::ptr::from_ref(registration.as_ref()).cast_mut().cast();
-
-    for notification in [
-        kAXFocusedWindowChangedNotification,
-        kAXWindowCreatedNotification,
-        // On the app element, not on each window: a window-element registration for this one
-        // returns success and never fires.
-        kAXUIElementDestroyedNotification,
-    ] {
-        add_notification(observer, app_element, notification, refcon);
-    }
-
-    // SAFETY: `observer` is live; its source is owned by the observer and added at +0.
-    #[expect(unsafe_code)]
-    unsafe {
-        let source = AXObserverGetRunLoopSource(observer);
-        CFRunLoop::get_main().add_source(
-            &CFRunLoopSource::wrap_under_get_rule(source),
-            kCFRunLoopDefaultMode,
-        );
-    }
-
-    state.apps.borrow_mut().insert(
-        pid,
-        AppObserver {
-            observer,
-            _registration: registration,
-            window_ids: Vec::new(),
-        },
-    );
-
-    // After the insert: `observe_window` records each window id on the entry this made.
-    for window in app_windows(app_element) {
-        observe_window(state, observer, pid, refcon, window.raw());
-    }
 }
 
 /// Every window an app has right now, each retained.
@@ -755,127 +590,13 @@ fn app_windows(app: AXUIElementRef) -> Vec<Element> {
         .collect()
 }
 
-/// Stop watching an app, reporting every window it took with it.
-///
-/// The windows are the ones this app registered, so a window another app still has open is not
-/// reported closed. A window whose destroy notification already arrived was forgotten then, and
-/// `forget` returning false is what keeps it from being reported twice. With destroy reporting
-/// for real this path is the fallback: it catches windows whose destroy never arrived, and an
-/// app that quits outright takes its windows down without individual notifications.
-///
-/// The observer is dropped before any `Closed` is reported: that removes its run loop source
-/// so a late notification cannot run against an `apps` map that no longer holds it.
-fn forget_app(state: &WatcherState, pid: Pid) {
-    let Some(mut observer) = state.apps.borrow_mut().remove(&pid) else {
-        return;
-    };
-    let windows = std::mem::take(&mut observer.window_ids);
-    drop(observer);
-    for window in windows {
-        if state.forget(window) {
-            state.report(WindowChange::Closed(window));
-        }
-    }
-    state.report(WindowChange::AppGone(pid));
-}
-
-/// One registered notification observer, deregistered when it drops.
-///
-/// The center is held with the token because deregistering needs the same one that
-/// registered: app launches come from `NSWorkspace`'s center and screen changes from the
-/// default one.
-struct Observation {
-    center: Retained<NSNotificationCenter>,
-    token: Retained<ProtocolObject<dyn NSObjectProtocol>>,
-    /// Held so the callback outlives the observation. The center copies the block, but the
-    /// closure it wraps is ours to keep alive.
-    _block: RcBlock<dyn Fn(NonNull<NSNotification>)>,
-}
-
-impl Drop for Observation {
-    fn drop(&mut self) {
-        let observer: &AnyObject = (*self.token).as_ref();
-        // SAFETY: `token` is what `addObserverForName...` returned on `center` and is still
-        // registered, so this is the documented way to deregister it.
-        #[expect(unsafe_code)]
-        unsafe {
-            self.center.removeObserver(observer);
-        }
-    }
-}
-
-/// Register `on_notification` for `name` on `center`.
-fn observe_notification(
-    center: &Retained<NSNotificationCenter>,
-    name: &NSNotificationName,
-    on_notification: impl Fn(&NSNotification) + 'static,
-) -> Observation {
-    let block = RcBlock::new(move |notif: NonNull<NSNotification>| {
-        // SAFETY: Foundation hands the block a valid notification, live for this call.
-        #[expect(unsafe_code)]
-        let notif = unsafe { notif.as_ref() };
-        on_notification(notif);
-    });
-
-    // SAFETY: `name` is an immutable extern static. The block is invoked on the main
-    // thread, which is where the state it captures lives, and `Observation` owns both the
-    // token and the block and deregisters before either is dropped.
-    #[expect(unsafe_code)]
-    let token = unsafe {
-        center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block)
-    };
-
-    Observation {
-        center: center.clone(),
-        token,
-        _block: block,
-    }
-}
-
-/// The app a launch or terminate notification is about.
-fn notified_app(notif: &NSNotification) -> Option<Retained<NSRunningApplication>> {
-    let info = notif.userInfo()?;
-    // SAFETY: `NSWorkspaceApplicationKey` is an immutable extern static `NSString` that
-    // AppKit initializes before any notification can be delivered.
-    #[expect(unsafe_code)]
-    let key = unsafe { NSWorkspaceApplicationKey };
-    info.objectForKey(key)?
-        .downcast::<NSRunningApplication>()
-        .ok()
-}
-
-/// Watch what the workspace and the screens do: apps coming and going, so a window opened
-/// in an app launched later is still reported, and the monitor arrangement changing.
+/// Watch what activation and the screens do: the frontmost app changing, which posts no
+/// focus-changed notification of its own, and the monitor arrangement changing. App launches
+/// and terminations are [`watch_apps`]'s to observe.
 fn watch_notifications(state: &Rc<WatcherState>) -> Vec<Observation> {
     let workspace = NSWorkspace::sharedWorkspace().notificationCenter();
     let default = NSNotificationCenter::defaultCenter();
     let mut observations = Vec::new();
-
-    for (name, launched) in [
-        // SAFETY: both are immutable extern statics AppKit initializes at startup.
-        #[expect(unsafe_code)]
-        (unsafe { NSWorkspaceDidLaunchApplicationNotification }, true),
-        #[expect(unsafe_code)]
-        (
-            unsafe { NSWorkspaceDidTerminateApplicationNotification },
-            false,
-        ),
-    ] {
-        let state = Rc::downgrade(state);
-        observations.push(observe_notification(&workspace, name, move |notif| {
-            let (Some(state), Some(app)) = (state.upgrade(), notified_app(notif)) else {
-                return;
-            };
-            if launched {
-                // ObservableApp::of drops UI services: they have no windows a placement aims at.
-                if let Some(app) = ObservableApp::of(&app) {
-                    observe_app(&state, app);
-                }
-            } else {
-                forget_app(&state, Pid(app.processIdentifier()));
-            }
-        }));
-    }
 
     let activation_state = Rc::downgrade(state);
     // SAFETY: an immutable extern static AppKit initializes at startup.
@@ -911,17 +632,20 @@ fn watch_notifications(state: &Rc<WatcherState>) -> Vec<Observation> {
 /// Holds every registration that makes windows report. While one of these is alive,
 /// changes reach the `on_change` it was built with; dropping it stops them.
 ///
-/// Dropping it is all it takes: `apps` goes, which releases every `AXObserver` and removes
-/// its run loop source, and the placement receiver goes, which is how a live [`WindowSink`]
-/// learns it is over. No `Drop` impl needed.
+/// Dropping it is all it takes: the [`AppWatch`] goes, which releases every `AXObserver` and
+/// removes its run loop source, and the placement receiver goes, which is how a live
+/// [`WindowSink`] learns it is over. No `Drop` impl needed.
 ///
 /// `!Send`, like `freddie_menu_bar`'s `MenuBar`: it holds main-thread-only state and stays
 /// on the thread that built it.
 pub struct Watcher {
-    /// The workspace and screen observations. Held for their `Drop`, and declared first so
+    /// The activation and screen observations. Held for their `Drop`, and declared first so
     /// they stop before the state they write into is torn down: fields drop in declaration
     /// order.
     _notifications: Vec<Observation>,
+    /// The per-app observers, kept current as apps launch and quit. Declared before `state`
+    /// for the same reason as the observations.
+    _apps: AppWatch<Registration>,
     /// Handed to every [`WindowSink`].
     placements_sender: WakingSender<Placement>,
     /// Placements waiting to be performed. Drained by [`Self::pump`] on the main thread.
@@ -999,19 +723,68 @@ pub fn watch(
 
     let state = Rc::new(WatcherState {
         elements: RefCell::new(HashMap::new()),
-        apps: RefCell::new(HashMap::new()),
         on_change: Box::new(on_change),
     });
     let (placements_sender, placements) = waker.channel::<Placement>();
 
     let notifications = watch_notifications(&state);
-    for app in NSWorkspace::sharedWorkspace()
-        .runningApplications()
-        .iter()
-        .filter_map(|app| ObservableApp::of(&app))
-    {
-        observe_app(&state, app);
-    }
+    let apps = {
+        let registration_state = Rc::downgrade(&state);
+        let install_state = Rc::clone(&state);
+        let gone_state = Rc::clone(&state);
+        watch_apps(
+            on_notification,
+            move |seen| Registration {
+                observer: seen.observer,
+                pid: seen.pid,
+                state: registration_state.clone(),
+            },
+            move |seen: &AppSeen, refcon| {
+                for notification in [
+                    kAXFocusedWindowChangedNotification,
+                    kAXWindowCreatedNotification,
+                    // On the app element, not on each window: a window-element registration
+                    // for this one returns success and never fires.
+                    kAXUIElementDestroyedNotification,
+                ] {
+                    // SAFETY: `seen` is live for this callback, and `refcon` is the boxed
+                    // registration the app's observer owns, freed only after the observer
+                    // stops delivering.
+                    #[expect(unsafe_code)]
+                    unsafe {
+                        add_notification(seen.observer, seen.app_element, notification, refcon);
+                    }
+                }
+                for window in app_windows(seen.app_element) {
+                    observe_window(
+                        &install_state,
+                        seen.observer,
+                        seen.pid,
+                        refcon,
+                        window.raw(),
+                    );
+                }
+            },
+            // The app is gone: report every window it took with it, then the app itself. A
+            // window whose destroy notification already arrived was forgotten then; only the
+            // ones still in the table report here.
+            move |pid| {
+                let windows: Vec<WindowId> = gone_state
+                    .elements
+                    .borrow()
+                    .iter()
+                    .filter(|(_, watched)| watched.pid == pid)
+                    .map(|(id, _)| *id)
+                    .collect();
+                for window in windows {
+                    if gone_state.forget(window) {
+                        gone_state.report(WindowChange::Closed(window));
+                    }
+                }
+                gone_state.report(WindowChange::AppGone(pid));
+            },
+        )
+    };
 
     state.report(WindowChange::Screens(read_monitors(mtm)));
     let windows: Vec<WindowId> = state.elements.borrow().keys().copied().collect();
@@ -1022,13 +795,10 @@ pub fn watch(
         state.report(WindowChange::FocusChanged(Pid(pid)));
     }
 
-    tracing::debug!(
-        apps = state.apps.borrow().len(),
-        windows = windows.len(),
-        "watching windows"
-    );
+    tracing::debug!(windows = windows.len(), "watching windows");
     Ok(Watcher {
         _notifications: notifications,
+        _apps: apps,
         placements_sender,
         placements,
         state,
