@@ -271,7 +271,7 @@ pub enum BindError {
     /// A trigger was bound at more than one node on the active path.
     DuplicateTrigger,
     /// The tree holds a node with several children, which the check does not
-    /// walk yet (`refactors/pending/multiple-children.md`).
+    /// walk yet (`refactors/past/multiple-children.md`).
     MultiChildNode,
 }
 
