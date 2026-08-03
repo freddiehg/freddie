@@ -690,6 +690,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "freddie_selection"
+version = "0.0.1"
+dependencies = [
+ "accessibility-sys",
+ "core-foundation",
+ "freddie_ax_observer",
+ "freddie_selection_types",
+ "tracing",
+]
+
+[[package]]
+name = "freddie_selection_types"
+version = "0.0.1"
+dependencies = [
+ "freddie_windows_types",
+]
+
+[[package]]
 name = "freddie_single_instance"
 version = "0.0.1"
 

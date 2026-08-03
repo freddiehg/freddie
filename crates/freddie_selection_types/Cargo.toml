@@ -1,0 +1,13 @@
+[package]
+name = "freddie_selection_types"
+description = "The selection watcher's reported vocabulary, importable without the watcher."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+freddie_windows_types = { path = "../freddie_windows_types", version = "0.0.1" }
+
+[lints]
+workspace = true
