@@ -1,11 +1,11 @@
 # Multiple children
 
-Downstream of `refactors/past/invalidation.md`, which has landed; the shapes below are the ones in laserbeam and bind today, and the one laserbeam addition (`descend`, change 3) is a method over machinery that landed with `completed-ancestors.md`. The concrete target is figaro's typing layer: the russian-doll chain `TypingLayer<KinesisRemaps<NumberRemaps<SymbolRemaps>>>` becomes one flat struct with three child fields, and the doll pattern for typing is deleted. The other consumers are `ideas.md`'s two-keyboards case ("Two keyboards, two independent layers. ... Wants multiple `#[resolve_into]`") and the overlay that binds keys while open (`mercury-post-patterns.md`, which `invalidation-granularity.md` also leans on this doc for); both are root branches, and only they are gated by the open questions at the bottom. Changes 1 and 2 are shippable prefactors; the typing flattening waits only on changes 3 and 4.
+Downstream of `refactors/past/invalidation.md`, which has landed; the shapes below are the ones in laserbeam and bind today, and the one laserbeam addition (`descend`, change 2) is a method over machinery that landed with `completed-ancestors.md`. The concrete target is figaro's typing layer: the russian-doll chain `TypingLayer<KinesisRemaps<NumberRemaps<SymbolRemaps>>>` becomes one flat struct with three child fields, and the doll pattern for typing is deleted. The other consumers are `ideas.md`'s two-keyboards case ("Two keyboards, two independent layers. ... Wants multiple `#[resolve_into]`") and the overlay that binds keys while open (`mercury-post-patterns.md`, which `invalidation-granularity.md` also leans on this doc for); both are root branches, and only they are gated by the open questions at the bottom. Change 1 is a shippable prefactor; the typing flattening waits only on changes 2 and 3.
 
 "Multiple children" means a place node with several child edges live at once, each an independently active subtree with its own leaf. Both kinds of edge participate:
 
-- Real children: two or more `#[child]` fields (today's `#[resolve_into]`, renamed by change 1).
-- Derived children: several data fns in one attribute, `#[derived_children(app_data, app_foo)]` (today's `#[derived_child]`, renamed by change 2).
+- Real children: two or more `#[child]` fields.
+- Derived children: several data fns in one attribute, `#[derived_children(app_data, app_foo)]` (today's `#[derived_child]`, renamed by change 1).
 - Mixed: one place node carrying both.
 
 The children are visited one at a time — dispatch still holds one `&mut` — in a documented order: field children first, in declaration order, then derived children, in listed order. That order is also claim order. Several children binding the same trigger is expected, not an error: the claim arbitrates the bind rows exactly as it does within one node today (first take wins, the rest complete where they stand), and a row meant to run beside the claimant — a logger — is a post, which ignores the claim. Enum nodes stay single-child: a variant is exclusive by construction. Every place node emits one body shape: the state initialized standing, then one `descend` block per child edge. A leaf is the zero-block case, which is today's leaf body already; a single-child node's emitted code changes shape but not behavior, so the existing trees behave exactly as they do today.
@@ -129,7 +129,7 @@ The dolls exist purely to sequence claims: `KinesisRemaps` does not contain lapt
 pub struct TypingLayer<Next> {
     pub jk: DeviceSequence,
     pub pending_double: Option<PendingDouble>,
-    #[resolve_into]
+    #[child]
     pub next: Next,
 }
 
@@ -177,14 +177,14 @@ impl TypingLayer {
 The children lose their parameters and their tails, and all three parent themselves on `TypingPath`:
 
 ```rust
-// kinesis.rs — was KinesisRemaps<Next> { shift_mirror, motion_hold, #[resolve_into] next: Next }
+// kinesis.rs — was KinesisRemaps<Next> { shift_mirror, motion_hold, #[child] next: Next }
 #[node(parent_path = TypingPath)]
 pub struct KinesisRemaps {
     pub shift_mirror: ShiftMirror,
     pub motion_hold: MotionHold,
 }
 
-// laptop.rs — was NumberRemaps<Next> { #[resolve_into] next: Next } and SymbolRemaps
+// laptop.rs — was NumberRemaps<Next> { #[child] next: Next } and SymbolRemaps
 #[node(parent_path = TypingPath)]
 pub struct NumberRemaps;
 
@@ -257,14 +257,13 @@ What this deletes, which is the point: `TypingStack`, the `<Next>` parameter on 
 
 ## Changes, ordered
 
-1. Prefactor, shippable now: rename `#[resolve_into]` to `#[child]`. The name says what the field is; `resolve_into` described laserbeam's resolve mechanics, and `into` reads as consumption, which stops being apt when several children coexist. The routed (multi-parent) form becomes `#[child(route = .., up = ..)]`. Mechanical scope: the parsing in `derive_support` (`find_resolve_into` and `parent_route` read the new name; the helper renames to match), `bind_macro`, the doc comments in `laserbeam` and `bind` that name the attribute, mercury (`state/mod.rs`, `state/return_home.rs`), figaro (`model/mod.rs`, `model/always_on.rs`, `model/typing/mod.rs`, `model/typing/kinesis.rs`, `model/typing/laptop.rs`), and the bind tests (every tree fixture, plus renaming `compile_fail/resolve_into_on_derived_level.*` and its stderr text). Behavior-preserving.
-2. Prefactor, shippable now: rename `#[derived_child(f)]` to `#[derived_children(f)]`, parsing a comma-separated list of data-fn paths. `derived_child_fn` becomes `derived_children_fns`, returning `Vec<syn::Path>`; a repeated attribute is still an error; the emitted body still handles exactly one element (a second is rejected until change 3). Call sites: `crates/mercury/src/state/app.rs`, `crates/mercury/src/state/site.rs`, figaro's `src/model/app.rs` and `src/model/site.rs`, `crates/bind/tests/derived.rs`, and the compile-fail stderr text that names the attribute. Behavior-preserving.
-3. laserbeam: `MaybeInvalidated::descend` as written above, with unit tests driving all three arms (standing, stopped-here with a staying and a leaving sibling, gone-above). Additive; everything it touches (`TryIntoAncestor`, the identity `IntoAncestor`, `MaybeInvalidated::complete`) is landed.
-4. bind_macro: `find_resolve_into`'s at-most-one restriction lifts (every `#[child]` field, declaration order); a place node may carry both fields and `#[derived_children]`. Every place node emits the uniform body above — the standing init plus one `descend` block per child edge, field blocks then derived blocks; a leaf's emission is unchanged (the init is today's leaf body), and a single-child node's emission changes shape, not behavior. Two fields of the same type are legal (the two-keyboards case): `HasPath` is per-type, so both children share one path type and one `parent_path` declaration, and only the projections distinguish them, which dispatch is fine with. A routed or generic child at a multi-child node is rejected with a derive error, mirroring `reject_routed_generic`, until open question 2 is designed. The derived-level rejection of `#[child]` stays.
-5. figaro: flatten the typing layer as written above.
+1. Prefactor, shippable now: rename `#[derived_child(f)]` to `#[derived_children(f)]`, parsing a comma-separated list of data-fn paths. `derived_child_fn` becomes `derived_children_fns`, returning `Vec<syn::Path>`; a repeated attribute is still an error; the emitted body still handles exactly one element (a second is rejected until change 3). Call sites: `crates/mercury/src/state/app.rs`, `crates/mercury/src/state/site.rs`, figaro's `src/model/app.rs` and `src/model/site.rs`, `crates/bind/tests/derived.rs`, and the compile-fail stderr text that names the attribute. Behavior-preserving.
+2. laserbeam: `MaybeInvalidated::descend` as written above, with unit tests driving all three arms (standing, stopped-here with a staying and a leaving sibling, gone-above). Additive; everything it touches (`TryIntoAncestor`, the identity `IntoAncestor`, `MaybeInvalidated::complete`) is landed.
+3. bind_macro: `find_child`'s at-most-one restriction lifts (every `#[child]` field, declaration order); a place node may carry both fields and `#[derived_children]`. Every place node emits the uniform body above — the standing init plus one `descend` block per child edge, field blocks then derived blocks; a leaf's emission is unchanged (the init is today's leaf body), and a single-child node's emission changes shape, not behavior. Two fields of the same type are legal (the two-keyboards case): `HasPath` is per-type, so both children share one path type and one `parent_path` declaration, and only the projections distinguish them, which dispatch is fine with. A routed or generic child at a multi-child node is rejected with a derive error, mirroring `reject_routed_generic`, until open question 2 is designed. The derived-level rejection of `#[child]` stays.
+4. figaro: flatten the typing layer as written above.
 
 ## Open questions
 
-1. Per-branch outcomes at the branch point. A post like the return-home cancel, generalized, keys on "did branch i leave", and that is visible only at the branch point. The join keeps whether any branch's leave reached the node, but not which branch, and the pre cannot carry it (pres run before the descent), so it has to enter on the ascend side: either `AscendState` at a branch point carries the outcomes beside the state, or per-branch posts are a scheduled kind of their own. This changes the handler signature at branch points and needs its own design. The typing case does not need it (typing's posts key on its own state), so it does not gate changes 1–5.
+1. Per-branch outcomes at the branch point. A post like the return-home cancel, generalized, keys on "did branch i leave", and that is visible only at the branch point. The join keeps whether any branch's leave reached the node, but not which branch, and the pre cannot carry it (pres run before the descent), so it has to enter on the ascend side: either `AscendState` at a branch point carries the outcomes beside the state, or per-branch posts are a scheduled kind of their own. This changes the handler signature at branch points and needs its own design. The typing case does not need it (typing's posts key on its own state), so it does not gate changes 1–4.
 
 2. The derive's other edges under a branch: a routed (multi-parent) child (`#[child(route = .., up = ..)]`, whose fold matches the consumer's `Up` enum) and a generic child (the `for<'q>` path-equality bound from `generic-doll-nodes.md`) at a branch point are unexamined. Neither occurs in the typing case: the flattening removes typing's generic children rather than adding any.
