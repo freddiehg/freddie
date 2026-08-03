@@ -37,6 +37,7 @@ use std::ptr::NonNull;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
+use freddie_windows_types::Pid;
 use objc2_app_kit::{
     NSRunningApplication, NSWorkspace, NSWorkspaceApplicationKey,
     NSWorkspaceDidActivateApplicationNotification,
@@ -108,16 +109,25 @@ const fn open_args(bundle_id: &str) -> [&str; 2] {
 /// the workspace notification machinery refreshes, so polling it in a loop returns
 /// the app that was frontmost at process start, forever. Use [`watch`] for changes.
 #[must_use]
-pub fn frontmost() -> Option<String> {
-    NSWorkspace::sharedWorkspace()
-        .frontmostApplication()?
-        .bundleIdentifier()
-        .map(|id| id.to_string())
+pub fn frontmost() -> Option<FrontmostApp> {
+    let app = NSWorkspace::sharedWorkspace().frontmostApplication()?;
+    Some(FrontmostApp {
+        bundle_id: app.bundleIdentifier()?.to_string(),
+        pid: Pid(app.processIdentifier()),
+    })
 }
 
-/// The bundle identifier of the app a `didActivateApplication` notification is
-/// about.
-fn activated_bundle_id(notif: &NSNotification) -> Option<String> {
+/// The frontmost app as macOS reports it: the bundle identifier apps are addressed by, and the
+/// pid the OS's per-app reports speak. An app with no bundle identifier is not reported, as
+/// before pids were carried.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FrontmostApp {
+    pub bundle_id: String,
+    pub pid: Pid,
+}
+
+/// The app a `didActivateApplication` notification is about.
+fn activated_app(notif: &NSNotification) -> Option<FrontmostApp> {
     let info = notif.userInfo()?;
     // SAFETY: `NSWorkspaceApplicationKey` is an immutable extern static `NSString`
     // that AppKit initializes before any notification can be delivered.
@@ -127,7 +137,10 @@ fn activated_bundle_id(notif: &NSNotification) -> Option<String> {
         .objectForKey(key)?
         .downcast::<NSRunningApplication>()
         .ok()?;
-    app.bundleIdentifier().map(|id| id.to_string())
+    Some(FrontmostApp {
+        bundle_id: app.bundleIdentifier()?.to_string(),
+        pid: Pid(app.processIdentifier()),
+    })
 }
 
 /// Calls `on_change` with the bundle identifier of each app as it becomes
@@ -147,16 +160,16 @@ fn activated_bundle_id(notif: &NSNotification) -> Option<String> {
 #[must_use = "dropping the watcher deregisters the observer; hold it to keep receiving events"]
 pub fn watch<F>(on_change: F) -> Watcher
 where
-    F: Fn(&str) + Send + 'static,
+    F: Fn(&FrontmostApp) + Send + 'static,
 {
     let block = RcBlock::new(move |notif: NonNull<NSNotification>| {
         // SAFETY: Foundation hands the block a valid, retained notification, live
         // for the duration of this call.
         #[expect(unsafe_code)]
         let notif = unsafe { notif.as_ref() };
-        if let Some(bundle_id) = activated_bundle_id(notif) {
-            tracing::debug!(app = %bundle_id, "frontmost app changed");
-            on_change(&bundle_id);
+        if let Some(front) = activated_app(notif) {
+            tracing::debug!(app = %front.bundle_id, pid = front.pid.0, "frontmost app changed");
+            on_change(&front);
         }
     });
 

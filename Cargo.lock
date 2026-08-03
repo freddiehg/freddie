@@ -558,6 +558,7 @@ name = "freddie_app_nav"
 version = "0.0.1"
 dependencies = [
  "block2",
+ "freddie_windows_types",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",

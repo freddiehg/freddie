@@ -120,8 +120,8 @@ pub(crate) fn run(port: u16) {
     // because dropping it deregisters.
     let _app_watcher = freddie_app_nav::watch({
         let event_tx = event_tx.clone();
-        move |bundle_id| {
-            let _ = event_tx.send(foreground(App::from_bundle_id(bundle_id)));
+        move |front| {
+            let _ = event_tx.send(foreground(App::from_bundle_id(&front.bundle_id)));
         }
     });
 
@@ -149,7 +149,7 @@ pub(crate) fn run(port: u16) {
     // fact reaches the model as an event; this is the only other way in.
     let boot = Boot {
         front_app: freddie_app_nav::frontmost()
-            .map_or(App::Other, |bundle_id| App::from_bundle_id(&bundle_id)),
+            .map_or(App::Other, |front| App::from_bundle_id(&front.bundle_id)),
         windows: window_state,
         window_sink,
         overlay: overlay_sink,
