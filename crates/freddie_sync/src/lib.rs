@@ -11,11 +11,14 @@
 pub struct HeldGeneration(u64);
 
 /// The travelling half: minted beside its [`HeldGeneration`] twin, moved once into the read
-/// effect the model emits, carried home by the read's value event, and consumed by the one
-/// [`Synced::commit`] it is used in.
+/// effect the model emits, and carried home by the read's value event.
 ///
-/// Opaque like its twin. Single-use: an attempt to use it spends it, whether or not it
-/// matches, so a riding half can never be tried twice or against two placeholders.
+/// Opaque like its twin, and not publicly comparable: the only thing that can be done with one
+/// is handing it to [`Synced::commit`]. It is used by reference, not consumed, because an
+/// event may be handled multiple times, so dispatch hands every handler `&E` and nothing can
+/// move a payload out of an event. Its single use is behavioral instead: it lives only inside
+/// its value event, which dispatches once and is dropped, and a repeat meeting finds `Known`
+/// or a mismatched `Pending` and does nothing.
 #[derive(Debug)]
 pub struct RidingGeneration(u64);
 
@@ -59,12 +62,10 @@ impl<V> Synced<V> {
         *self = Self::Pending(held);
     }
 
-    /// The value: applied iff the riding half it spends matches the placeholder's. A slow read
-    /// that lands after a newer fact spends a half whose twin was replaced and changes
-    /// nothing; either way the riding half is used up by the attempt.
-    pub fn commit(&mut self, riding: RidingGeneration, value: V) {
-        let RidingGeneration(spent) = riding;
-        if matches!(self, Self::Pending(HeldGeneration(held)) if *held == spent) {
+    /// The value: applied iff the riding half matches the placeholder's. A slow read that
+    /// lands after a newer fact brings a half whose twin was replaced and changes nothing.
+    pub fn commit(&mut self, riding: &RidingGeneration, value: V) {
+        if matches!(self, Self::Pending(HeldGeneration(held)) if *held == riding.0) {
             *self = Self::Known(value);
         }
     }
@@ -89,7 +90,7 @@ mod tests {
         let mut mint = GenerationMinter::default();
         let (held, riding) = mint.mint();
         let mut entry: Synced<u32> = Synced::Pending(held);
-        entry.commit(riding, 7);
+        entry.commit(&riding, 7);
         assert_eq!(entry.known(), Some(&7));
     }
 
@@ -100,9 +101,9 @@ mod tests {
         let mut entry: Synced<u32> = Synced::Pending(first_held);
         let (second_held, second_riding) = mint.mint();
         entry.change(second_held);
-        entry.commit(first_riding, 7);
+        entry.commit(&first_riding, 7);
         assert_eq!(entry.known(), None);
-        entry.commit(second_riding, 9);
+        entry.commit(&second_riding, 9);
         assert_eq!(entry.known(), Some(&9));
     }
 
@@ -112,18 +113,18 @@ mod tests {
         let (held, _riding) = mint.mint();
         let (_other_held, other_riding) = mint.mint();
         let mut entry: Synced<u32> = Synced::Pending(held);
-        entry.commit(other_riding, 7);
+        entry.commit(&other_riding, 7);
         assert_eq!(entry.known(), None);
     }
 
     #[test]
-    fn a_commit_on_a_known_entry_spends_the_half_for_nothing() {
+    fn a_late_half_meets_a_known_entry_and_nothing_moves() {
         let mut mint = GenerationMinter::default();
         let (held, riding) = mint.mint();
         let mut entry: Synced<u32> = Synced::Pending(held);
-        entry.commit(riding, 7);
+        entry.commit(&riding, 7);
         let (_late_held, late_riding) = mint.mint();
-        entry.commit(late_riding, 8);
+        entry.commit(&late_riding, 8);
         assert_eq!(entry.known(), Some(&7));
     }
 }
