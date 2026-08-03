@@ -5,23 +5,23 @@ Every mirror that syncs in two phases — a fact event saying the old value died
 `crates/freddie/src/sync.rs`, exported from the crate root:
 
 ```rust
-/// The generation of one synced value: minted by a watcher from its [`GenMinter`], globally
+/// The generation of one synced value: minted by a watcher from its [`GenerationMinter`], globally
 /// monotonic within that watcher for the life of the process. A generation never repeats, so a
 /// stale value — however late it lands, whatever key reuse happened meanwhile — names a
 /// generation no entry can be waiting for.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Gen(u64);
+pub struct Generation(u64);
 
 /// A watcher's generation mint. One per watcher, never per key: per-key counters restart when
 /// a key (a pid, a window id) is reused by the OS, and a restarted counter can alias a zombie
 /// read into a fresh entry. One counter makes that unrepresentable.
 #[derive(Default, Debug)]
-pub struct GenMinter(u64);
+pub struct GenerationMinter(u64);
 
-impl GenMinter {
-    pub fn next(&mut self) -> Gen {
+impl GenerationMinter {
+    pub fn next(&mut self) -> Generation {
         self.0 += 1;
-        Gen(self.0)
+        Generation(self.0)
     }
 }
 
@@ -39,22 +39,22 @@ impl GenMinter {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Synced<V> {
     /// The fact at this generation arrived; its value is in flight. No current value exists.
-    Pending(Gen),
+    Pending(Generation),
     /// What the last landed read answered.
     Known(V),
 }
 
 impl<V> Synced<V> {
     /// The fact: the old value dies, this generation's read is awaited.
-    pub fn change(&mut self, gen: Gen) {
-        *self = Self::Pending(gen);
+    pub fn change(&mut self, generation: Generation) {
+        *self = Self::Pending(generation);
     }
 
     /// The value: applied iff the entry still awaits exactly this generation. A slow read that
     /// lands after a newer fact names a generation the entry has moved past and changes
     /// nothing; applying the same landing twice equals once (the second finds `Known`).
-    pub fn land(&mut self, gen: Gen, value: V) {
-        if matches!(self, Self::Pending(g) if *g == gen) {
+    pub fn commit(&mut self, generation: Generation, value: V) {
+        if matches!(self, Self::Pending(g) if *g == generation) {
             *self = Self::Known(value);
         }
     }
@@ -71,13 +71,13 @@ impl<V> Synced<V> {
 }
 ```
 
-Per-key collections are plain maps of `Synced<V>`: the fact arm inserts `Pending(gen)` (which is what `change` is, so a map needs no entry-API dance), the value arm does `entry.land(gen, v)` against an existing entry, and the key's disappearance removes the entry — removal is the map's, staleness is the entry's, and neither needs the other's logic.
+Per-key collections are plain maps of `Synced<V>`: the fact arm inserts `Pending(generation)` (which is what `change` is, so a map needs no entry-API dance), the value arm does `entry.commit(generation, v)` against an existing entry, and the key's disappearance removes the entry — removal is the map's, staleness is the entry's, and neither needs the other's logic.
 
 Tests, in `sync.rs`: the happy pair lands; a landing after a newer fact changes nothing; the same landing twice equals once; a landing on a removed-and-reinserted entry (fresh `Pending`, new generation) changes nothing — the alias the global mint exists to kill.
 
 ## Adopters
 
-The pending watcher docs are written against this: `selection-watcher.md`'s entries are `Synced<Selection>` and its watcher mints from one `GenMinter`; `windows-watcher-fixes.md`'s frames and focus likewise; both state the fact-before-request invariant at their callbacks. figaro's `read-selection.md` and `sync-fixes.md` consume `freddie::{Gen, Synced}` through the same events.
+The pending watcher docs are written against this: `selection-watcher.md`'s entries are `Synced<Selection>` and its watcher mints from one `GenerationMinter`; `windows-watcher-fixes.md`'s frames and focus likewise; both state the fact-before-request invariant at their callbacks. figaro's `read-selection.md` and `sync-fixes.md` consume `freddie::{Generation, Synced}` through the same events.
 
 ## Order of changes
 

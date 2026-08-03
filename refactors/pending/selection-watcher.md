@@ -111,18 +111,18 @@ pub enum Selection {
 The watcher, on the scaffolding:
 
 ```rust
-Generations and entries are `freddie::{Gen, GenMinter, Synced}` (`synced.md`): the entry type is `Synced<Selection>`, and the watcher mints from one `GenMinter` for its whole life, so a reused pid cannot alias a zombie read into a fresh entry.
+Generations and entries are `freddie::{Generation, GenerationMinter, Synced}` (`synced.md`): the entry type is `Synced<Selection>`, and the watcher mints from one `GenerationMinter` for its whole life, so a reused pid cannot alias a zombie read into a fresh entry.
 
 /// What the selection map should learn. One variant per thing the watcher can tell you.
 #[derive(Clone, PartialEq, Eq)]
 pub enum SelectionChange {
     /// A change notification fired: the entry becomes `Synced::Pending` at this
     /// generation, and a re-read is queued carrying it.
-    Changed(Pid, Gen),
+    Changed(Pid, Generation),
     /// The re-read queued at this generation landed. Applied only if the entry still holds
     /// `Synced::Pending` at the same generation; anything else means a newer change superseded the
     /// read, and the answer describes a selection that no longer exists.
-    Reported(Pid, Gen, Selection),
+    Reported(Pid, Generation, Selection),
     /// The app is gone: remove the entry.
     AppGone(Pid),
 }
@@ -133,8 +133,8 @@ impl fmt::Debug for SelectionChange {
     /// text it landed with.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Changed(pid, gen) => write!(f, "Changed({pid:?}, {gen:?})"),
-            Self::Reported(pid, gen, _) => write!(f, "Reported({pid:?}, {gen:?})"),
+            Self::Changed(pid, generation) => write!(f, "Changed({pid:?}, {generation:?})"),
+            Self::Reported(pid, generation, _) => write!(f, "Reported({pid:?}, {generation:?})"),
             Self::AppGone(pid) => write!(f, "AppGone({pid:?})"),
         }
     }
@@ -151,8 +151,8 @@ pub fn watch(
 
 Internally, the sync is two-phase so the notification callback never waits on the app:
 
-- The main-thread callback, for either notification, mints the next generation, reports `Changed(pid, gen)`, and only then sends `(pid, gen)` down a channel to the worker — the fact-before-request invariant `Synced` states, so a value can never reach the consumer's queue ahead of its fact. `on_app` does the same for its registration pass, which is also the seed path: an app enters the map as `Pending` at its first generation and its first `Reported` follows. `on_app_gone` reports `AppGone`.
-- The worker owns the receiving end. For each `(pid, gen)` it drains — dropping queued pairs a later generation for the same pid has superseded, so a drag's burst of notifications costs one read — it runs `current_selection(pid)` (below) and reports `Reported(pid, gen, selection)`.
+- The main-thread callback, for either notification, mints the next generation, reports `Changed(pid, generation)`, and only then sends `(pid, generation)` down a channel to the worker — the fact-before-request invariant `Synced` states, so a value can never reach the consumer's queue ahead of its fact. `on_app` does the same for its registration pass, which is also the seed path: an app enters the map as `Pending` at its first generation and its first `Reported` follows. `on_app_gone` reports `AppGone`.
+- The worker owns the receiving end. For each `(pid, generation)` it drains — dropping queued pairs a later generation for the same pid has superseded, so a drag's burst of notifications costs one read — it runs `current_selection(pid)` (below) and reports `Reported(pid, generation, selection)`.
 
 The generation is what makes the interleavings safe without any claim about scheduling: a notification firing mid-read produces `Changed(pid, n+1)` before `Reported(pid, n, …)` can land, the model sees the generations disagree and drops the stale answer, and the read queued at `n+1` delivers the real one.
 
