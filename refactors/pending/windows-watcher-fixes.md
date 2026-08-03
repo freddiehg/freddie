@@ -21,7 +21,7 @@ pub enum WindowChange {
 
 after — facts and values are separate reports, and every payload is a named struct:
 
-Generations are `freddie::Generation`, minted from one `freddie::GenerationMinter` owned by the callback — one counter for the watcher's life, never per key, so a reused pid or window id cannot alias a zombie read into a fresh entry (`synced.md`).
+Generations are `freddie::Generation`, minted in matched pairs from one `freddie::GenerationMinter` owned by the callback — one half in the fact report, the other riding the read request; one counter for the watcher's life, never per key, so a reused pid or window id cannot alias a zombie read into a fresh entry (`refactors/past/synced.md`).
 
 ```rust
 /// A window fact: something happened to this window, and the value read for it is in flight.
@@ -85,9 +85,9 @@ pub enum WindowChange {
 
 The callback keeps only identity resolution (`window_id(element)`, which resolves from the element in hand) and generation minting; every attribute read into the app moves to the worker. One invariant, stated on `Synced` and owed here: the fact is reported through `on_change` before its read request is sent to the worker, so a value can never reach the consumer's queue ahead of its fact. Every attribute read runs on the worker, the shape `freddie_selection`'s watch specifies — one worker owning a request channel, coalescing queued requests a later generation for the same key has superseded, reporting from its own thread:
 
-- Move/resize notification: mint the window's next `Generation`, report `Moved`/`Resized(WindowPending)`, queue a frame read.
-- Window created: register as today, mint, report `Opened(WindowPending)`, queue a frame read.
-- Focus notification and workspace activation: mint the pid's next `Generation`, report `FocusChanged(FocusPending)`, queue a focus read. (The activation path thereby loses its inline `focused_window_id` read; both focus sources speak one shape.)
+- Move/resize notification: mint the pair, report `Moved`/`Resized(WindowPending)` with one half, queue the frame read with the other.
+- Window created: register as today, mint the pair, report `Opened(WindowPending)`, queue the frame read.
+- Focus notification and workspace activation: mint the pair, report `FocusChanged(FocusPending)`, queue the focus read. (The activation path thereby loses its inline `focused_window_id` read; both focus sources speak one shape.)
 - Destroyed / app gone: `Closed`, as today — identity only, nothing to read.
 
 The requests:
@@ -143,7 +143,7 @@ The model stores every report under its own key and projects at read time. Nothi
     focused: HashMap<Pid, Synced<Option<WindowId>>>,
 ```
 
-The handler arms are `Synced`'s two calls: `Opened` inserts the window's state with `frame: Synced::Pending(generation)`, `Moved`/`Resized` do `frame.change(generation)`, and `Frame` does `frame.commit(generation, f)` when the report carries one and nothing when it carries `None`; `FocusChanged` inserts `Synced::Pending(generation)` at the pid, `Focus` does `commit(generation, window)`; `Closed` removes the window, `AppGone` removes the pid's focus entry. No arm consults the foreground.
+The handler arms are `Synced`'s two calls: `Opened` inserts the window's state with `frame: Synced::Pending(generation)`, `Moved`/`Resized` do `frame.change(generation)`, and `Frame` does `frame.commit(&generation, f)` when the report carries one and nothing when it carries `None`; `FocusChanged` inserts `Synced::Pending(generation)` at the pid, `Focus` does `commit(&generation, window)`; `Closed` removes the window, `AppGone` removes the pid's focus entry. No arm consults the foreground.
 
 The reads are projections joining the mirror:
 

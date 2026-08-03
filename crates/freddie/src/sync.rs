@@ -1,11 +1,16 @@
 //! [`Synced`]: one type for the two-phase sync of a mirrored value.
 
-/// The generation of one synced value: minted by a watcher from its [`GenerationMinter`],
-/// globally monotonic within that watcher for the life of the process.
+/// One half of a correlation token: minted only in pairs by [`GenerationMinter`], compared and
+/// nothing else.
 ///
-/// A generation never repeats, so a stale value — however late it lands, whatever key reuse
-/// happened meanwhile — names a generation no entry can be waiting for.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// Opaque and deliberately not `Copy`: one half lives in the entry that awaits a read, the
+/// other rides the read and comes home in its report, and `commit` is the two halves meeting.
+/// A generation never repeats within its minter, so a stale value — however late it lands,
+/// whatever key reuse happened meanwhile — carries a half no entry can be holding.
+///
+/// `Clone` exists for exactly one hop: an event is dispatched by reference, so the half a fact
+/// event carries is cloned once into the entry. It is not a license to fan out.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Generation(u64);
 
 /// A watcher's generation mint.
@@ -17,9 +22,10 @@ pub struct Generation(u64);
 pub struct GenerationMinter(u64);
 
 impl GenerationMinter {
-    pub fn mint(&mut self) -> Generation {
+    /// The matched pair: one half for the fact, one to ride the value read home.
+    pub fn mint(&mut self) -> (Generation, Generation) {
         self.0 += 1;
-        Generation(self.0)
+        (Generation(self.0), Generation(self.0))
     }
 }
 
@@ -34,7 +40,7 @@ impl GenerationMinter {
 /// the consumer before the value read is queued, so the value can never reach the consumer's
 /// queue ahead of its fact. A value arriving with no matching `Pending` is dropped, which is
 /// correct for a superseded read and would wedge the entry for a reordered one.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Synced<V> {
     /// The fact at this generation arrived; its value is in flight. No current value exists.
     Pending(Generation),
@@ -51,8 +57,8 @@ impl<V> Synced<V> {
     /// The value: applied iff the entry still awaits exactly this generation. A slow read that
     /// lands after a newer fact names a generation the entry has moved past and changes
     /// nothing; applying the same landing twice equals once (the second finds `Known`).
-    pub fn commit(&mut self, generation: Generation, value: V) {
-        if matches!(self, Self::Pending(g) if *g == generation) {
+    pub fn commit(&mut self, generation: &Generation, value: V) {
+        if matches!(self, Self::Pending(g) if g == generation) {
             *self = Self::Known(value);
         }
     }
@@ -77,32 +83,32 @@ mod tests {
     #[test]
     fn the_happy_pair_lands() {
         let mut mint = GenerationMinter::default();
-        let generation = mint.mint();
-        let mut entry: Synced<u32> = Synced::Pending(generation);
-        entry.commit(generation, 7);
+        let (held, riding) = mint.mint();
+        let mut entry: Synced<u32> = Synced::Pending(held);
+        entry.commit(&riding, 7);
         assert_eq!(entry.known(), Some(&7));
     }
 
     #[test]
     fn a_commit_after_a_newer_fact_changes_nothing() {
         let mut mint = GenerationMinter::default();
-        let first = mint.mint();
-        let mut entry: Synced<u32> = Synced::Pending(first);
-        let second = mint.mint();
-        entry.change(second);
-        entry.commit(first, 7);
-        assert_eq!(entry, Synced::Pending(second));
-        entry.commit(second, 9);
+        let (first_held, first_riding) = mint.mint();
+        let mut entry: Synced<u32> = Synced::Pending(first_held);
+        let (second_held, second_riding) = mint.mint();
+        entry.change(second_held);
+        entry.commit(&first_riding, 7);
+        assert_eq!(entry.known(), None);
+        entry.commit(&second_riding, 9);
         assert_eq!(entry.known(), Some(&9));
     }
 
     #[test]
     fn the_same_commit_twice_equals_once() {
         let mut mint = GenerationMinter::default();
-        let generation = mint.mint();
-        let mut entry: Synced<u32> = Synced::Pending(generation);
-        entry.commit(generation, 7);
-        entry.commit(generation, 8);
+        let (held, riding) = mint.mint();
+        let mut entry: Synced<u32> = Synced::Pending(held);
+        entry.commit(&riding, 7);
+        entry.commit(&riding, 8);
         assert_eq!(entry.known(), Some(&7));
     }
 
@@ -110,14 +116,14 @@ mod tests {
     fn a_commit_on_a_reinserted_entry_changes_nothing() {
         let mut mint = GenerationMinter::default();
         let mut map: HashMap<&str, Synced<u32>> = HashMap::new();
-        let old = mint.mint();
-        map.insert("key", Synced::Pending(old));
+        let (old_held, old_riding) = mint.mint();
+        map.insert("key", Synced::Pending(old_held));
         map.remove("key");
-        let fresh = mint.mint();
-        map.insert("key", Synced::Pending(fresh));
+        let (fresh_held, _fresh_riding) = mint.mint();
+        map.insert("key", Synced::Pending(fresh_held));
         map.get_mut("key")
             .expect("the entry was just inserted")
-            .commit(old, 7);
-        assert_eq!(map["key"], Synced::Pending(fresh));
+            .commit(&old_riding, 7);
+        assert_eq!(map["key"].known(), None);
     }
 }

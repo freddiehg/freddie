@@ -151,7 +151,7 @@ pub fn watch(
 
 Internally, the sync is two-phase so the notification callback never waits on the app:
 
-- The main-thread callback, for either notification, mints the next generation, reports `Changed(pid, generation)`, and only then sends `(pid, generation)` down a channel to the worker — the fact-before-request invariant `Synced` states, so a value can never reach the consumer's queue ahead of its fact. `on_app` does the same for its registration pass, which is also the seed path: an app enters the map as `Pending` at its first generation and its first `Reported` follows. `on_app_gone` reports `AppGone`.
+- The main-thread callback, for either notification, mints the pair, reports `Changed(pid, generation)` carrying one half, and only then sends the pid and the other half down a channel to the worker — the fact-before-request invariant `Synced` states, so a value can never reach the consumer's queue ahead of its fact. `on_app` does the same for its registration pass, which is also the seed path: an app enters the map as `Pending` at its first generation and its first `Reported` follows. `on_app_gone` reports `AppGone`.
 - The worker owns the receiving end. For each `(pid, generation)` it drains — dropping queued pairs a later generation for the same pid has superseded, so a drag's burst of notifications costs one read — it runs `current_selection(pid)` (below) and reports `Reported(pid, generation, selection)`.
 
 The generation is what makes the interleavings safe without any claim about scheduling: a notification firing mid-read produces `Changed(pid, n+1)` before `Reported(pid, n, …)` can land, the model sees the generations disagree and drops the stale answer, and the read queued at `n+1` delivers the real one.
