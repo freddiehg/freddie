@@ -21,18 +21,14 @@ pub enum WindowChange {
 
 after — facts and values are separate reports, and every payload is a named struct:
 
-```rust
-/// The generation of one entry's sync: minted by the callback, incremented per key on every
-/// fact it reports. The value read queued by a fact carries the fact's generation, which is
-/// what makes a stale read harmless: it names a generation the entry has moved past.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct ReadGen(u64);
+Generations are `freddie::Gen`, minted from one `freddie::GenMinter` owned by the callback — one counter for the watcher's life, never per key, so a reused pid or window id cannot alias a zombie read into a fresh entry (`synced.md`).
 
+```rust
 /// A window fact: something happened to this window, and the value read for it is in flight.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct WindowPending {
     pub window: WindowId,
-    pub gen: ReadGen,
+    pub gen: Gen,
 }
 
 /// A frame read landed: what the window's frame was when the read at `gen` ran. `None` when
@@ -40,7 +36,7 @@ pub struct WindowPending {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct FrameReport {
     pub window: WindowId,
-    pub gen: ReadGen,
+    pub gen: Gen,
     pub frame: Option<Frame>,
 }
 
@@ -48,7 +44,7 @@ pub struct FrameReport {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct FocusPending {
     pub pid: Pid,
-    pub gen: ReadGen,
+    pub gen: Gen,
 }
 
 /// A focus read landed: the focused window of `pid` when the read at `gen` ran. `None` when
@@ -56,7 +52,7 @@ pub struct FocusPending {
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct FocusReport {
     pub pid: Pid,
-    pub gen: ReadGen,
+    pub gen: Gen,
     pub window: Option<WindowId>,
 }
 
@@ -76,6 +72,9 @@ pub enum WindowChange {
     /// changed and the consumer's model judges it against its own mirror.
     FocusChanged(FocusPending),
     Focus(FocusReport),
+    /// The app and every entry keyed by its pid are gone. Reported by `forget_app` after the
+    /// per-window `Closed` reports, so pid-keyed maps remove their entries.
+    AppGone(Pid),
     Screens(Vec<Monitor>),
 }
 ```
@@ -84,11 +83,11 @@ pub enum WindowChange {
 
 ### The callback and the worker
 
-The callback keeps only identity resolution (`window_id(element)`, which resolves from the element in hand) and generation minting; every attribute read into the app moves to the worker, the shape `freddie_selection`'s watch specifies — one worker owning a request channel, coalescing queued requests a later generation for the same key has superseded, reporting from its own thread:
+The callback keeps only identity resolution (`window_id(element)`, which resolves from the element in hand) and generation minting; every attribute read into the app moves to the worker. One invariant, stated on `Synced` and owed here: the fact is reported through `on_change` before its read request is sent to the worker, so a value can never reach the consumer's queue ahead of its fact. Every attribute read runs on the worker, the shape `freddie_selection`'s watch specifies — one worker owning a request channel, coalescing queued requests a later generation for the same key has superseded, reporting from its own thread:
 
-- Move/resize notification: mint the window's next `ReadGen`, report `Moved`/`Resized(WindowPending)`, queue a frame read.
+- Move/resize notification: mint the window's next `Gen`, report `Moved`/`Resized(WindowPending)`, queue a frame read.
 - Window created: register as today, mint, report `Opened(WindowPending)`, queue a frame read.
-- Focus notification and workspace activation: mint the pid's next `ReadGen`, report `FocusChanged(FocusPending)`, queue a focus read. (The activation path thereby loses its inline `focused_window_id` read; both focus sources speak one shape.)
+- Focus notification and workspace activation: mint the pid's next `Gen`, report `FocusChanged(FocusPending)`, queue a focus read. (The activation path thereby loses its inline `focused_window_id` read; both focus sources speak one shape.)
 - Destroyed / app gone: `Closed`, as today — identity only, nothing to read.
 
 The requests:
@@ -97,8 +96,8 @@ The requests:
 /// One value read the worker owes. `Frame` carries the retained window element; `Focus`
 /// carries only the pid, the worker creates its own app element.
 enum ReadRequest {
-    Frame(WindowId, ReadGen, SentElement),
-    Focus(Pid, ReadGen),
+    Frame(WindowId, Gen, SentElement),
+    Focus(Pid, Gen),
 }
 
 /// A retained `AXUIElement` handed to the worker. `Send` by an explicit claim: CoreFoundation
@@ -132,52 +131,33 @@ pub struct Snapshot {
 
 `ForegroundEvent` gains the pid, mirrored as `FrontApp { pid, app }`, with the mechanical respells and the constructor's added pid, exactly as figaro's `sync-fixes.md` change 2 spells it for figaro.
 
-The windows model holds the gap instead of a value:
+The model stores every report under its own key and projects at read time. Nothing is filtered on the write path: what gets stored never depends on the ordering between the windows watcher and the foreground watcher, because the join with the mirror happens when a reader asks, against state.
 
 ```rust
-/// One watched window's frame: known, or dead-and-in-flight since the fact at this generation.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum FrameEntry {
-    Pending(ReadGen),
-    Known(Frame),
-}
+    /// Each watched window's frame, synced in two phases. See `freddie::Synced`.
+    // WindowState.frame becomes:
+    frame: Synced<Frame>,
+
+    /// Each app's focused window, keyed by pid, synced the same way. `Known(None)` is a real
+    /// answer: the app has no focused window with a readable id. Entries leave with `AppGone`.
+    focused: HashMap<Pid, Synced<Option<WindowId>>>,
 ```
 
-`WindowState.frame` becomes a `FrameEntry`. The handler arms are the selection shape: `Opened`/`Moved`/`Resized` assign `Pending(gen)`; `Frame` assigns `Known(frame)` only if the entry still holds `Pending(gen)` (a `None` frame leaves it pending); `Closed` removes, and a `Frame` report for a removed window matches nothing. A placement that finds `Pending` computes nothing — the missing value is modeled, and the response to missing is a no-op.
+The handler arms are `Synced`'s two calls: `Opened`/`Moved`/`Resized` do `frame.changed(gen)` (inserting for a new window), `Frame` does `frame.landed(gen, f)` when the report carries one and nothing when it carries `None`; `FocusChanged` does `focused.entry(pid).changed(gen)`, `Focus` does `landed(gen, window)`; `Closed` removes the window, `AppGone` removes the pid's focus entry. No arm consults the foreground.
 
-`focused` holds the same gap: the fact says the old answer is dead, the value read is in flight, and nothing in between shows the stale window.
+The reads are projections joining the mirror:
 
 ```rust
-/// The focused window: known, or dead-and-in-flight since the focus fact at this generation.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum FocusEntry {
-    Pending(ReadGen),
-    /// `None` is a real answer: the front app has no focused window with a readable id.
-    Known(Option<WindowId>),
-}
+    /// The front app's focused window: the focus entry at `front`, if it has landed. `None`
+    /// while the sync is pending, for an unreported app, and for a landed "no focused window".
+    pub fn focused_window(&self, front: Pid) -> Option<WindowId> {
+        *self.focused.get(&front)?.known()?
+    }
 ```
 
-Both focus rows gate on the mirror through state-produced triggers, so reports about background apps die unmatched and the handlers check nothing:
+and every placement that used `focused` calls it with the mirrored `FrontApp`'s pid; a placement that gets `None`, or finds a target frame `Pending`, computes nothing — the missing value is modeled, and the response to missing is a no-op.
 
-```rust
-/// A focus fact about this pid. Produced from the mirrored foreground, so the row exists
-/// exactly while an app is confirmed, and matches exactly its facts.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct FocusChangedFor(pub Pid);
-
-/// A focus value about this pid. The same production, matching `Focus(FocusReport { pid, .. })`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct FocusedFor(pub Pid);
-```
-
-```rust
-    |mercury_path| mercury_path.foreground.as_ref().map(|f| FocusChangedFor(f.pid)) => if_not_invalidated(focus_pending),
-    |mercury_path| mercury_path.foreground.as_ref().map(|f| FocusedFor(f.pid)) => if_not_invalidated(record_focused),
-```
-
-`focus_pending` assigns `focused = FocusEntry::Pending(gen)`; `record_focused` assigns `Known(window)` only if the entry still holds `Pending(gen)`. Whatever reads `focused` treats `Pending` as no focused window — the no-op during the gap, same as every other pending value.
-
-Tests: the existing window tests respell to dispatch fact-then-value pairs; new tests pin the stale-frame drop (`Moved(w, n)`, `Moved(w, n+1)`, `Frame(w, n, f)` leaves `Pending(n+1)`), the same interleaving for focus, the pending placement no-op, and a `Focus` report for a background pid dying unmatched.
+Tests: the existing window tests respell to dispatch fact-then-value pairs; new tests pin the stale drops for frames and focus (`changed(n)`, `changed(n+1)`, `landed(n, v)` leaves `Pending(n+1)`), the pending placement no-op, `AppGone` emptying a pid's focus entry, and the ordering independence itself: a `FocusChanged`/`Focus` pair dispatched before the `Foreground` event that moves the mirror still lands in the map, and the projection answers it the moment the mirror catches up.
 
 ## Change 2: nothing
 
