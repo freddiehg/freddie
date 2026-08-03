@@ -19,7 +19,7 @@ pub struct Generation(u64);
 pub struct GenerationMinter(u64);
 
 impl GenerationMinter {
-    pub fn next(&mut self) -> Generation {
+    pub fn mint(&mut self) -> Generation {
         self.0 += 1;
         Generation(self.0)
     }
