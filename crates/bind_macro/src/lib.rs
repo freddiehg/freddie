@@ -22,7 +22,16 @@ use syn::{Data, DeriveInput, Expr, Fields, Ident, Path, Token, Type, parse_macro
 
 #[proc_macro_derive(
     Bind,
-    attributes(binds, bind, post, pre_post, child, derived_child, derived_node, node)
+    attributes(
+        binds,
+        bind,
+        post,
+        pre_post,
+        child,
+        derived_children,
+        derived_node,
+        node
+    )
 )]
 pub fn derive_bind(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -125,24 +134,47 @@ fn derived_node_parent(attrs: &[syn::Attribute]) -> syn::Result<Option<Path>> {
     Ok(found)
 }
 
-/// The fn named by `#[derived_child(f)]`, if this node's child is not a field.
+/// The fns named by `#[derived_children(f, g)]`, listed order, for the children of this node
+/// that are not fields.
 ///
-/// `f` is `fn(&Parent) -> Option<Data>`. A shared reference, so it cannot mutate the tree and
-/// cannot consume the parent.
-fn derived_child_fn(attrs: &[syn::Attribute]) -> syn::Result<Option<Path>> {
-    let mut found = None;
+/// Each fn is `fn(&Parent) -> Option<Data>`. A shared reference, so it cannot mutate the tree
+/// and cannot consume the parent.
+fn derived_children_fns(attrs: &[syn::Attribute]) -> syn::Result<Vec<Path>> {
+    let mut found: Option<Vec<Path>> = None;
     for attr in attrs {
-        if attr.path().is_ident("derived_child") {
+        if attr.path().is_ident("derived_children") {
             if found.is_some() {
                 return Err(syn::Error::new(
                     attr.span(),
-                    "expected one `#[derived_child(..)]`",
+                    "expected one `#[derived_children(..)]`",
                 ));
             }
-            found = Some(attr.parse_args::<Path>()?);
+            let fns: Vec<Path> = attr
+                .parse_args_with(Punctuated::<Path, Token![,]>::parse_terminated)?
+                .into_iter()
+                .collect();
+            if fns.is_empty() {
+                return Err(syn::Error::new(
+                    attr.span(),
+                    "`#[derived_children(..)]` names at least one fn",
+                ));
+            }
+            found = Some(fns);
         }
     }
-    Ok(found)
+    Ok(found.unwrap_or_default())
+}
+
+/// The one derived child, until several are emitted.
+fn single_derived_child(attrs: &[syn::Attribute]) -> syn::Result<Option<Path>> {
+    let mut fns = derived_children_fns(attrs)?;
+    if fns.len() > 1 {
+        return Err(syn::Error::new(
+            fns[1].span(),
+            "a second derived child arrives with multiple children",
+        ));
+    }
+    Ok(fns.pop())
 }
 
 /// The enum case of [`derived_node_impl`]: one dispatch/accumulate arm per variant, each
@@ -295,7 +327,7 @@ fn derived_node_impl(
     })
 }
 
-/// The `#[derived_child]` edge's state, for dispatch. Emitted on a PLACE and on a DERIVED level
+/// A `#[derived_children]` edge's state, for dispatch. Emitted on a PLACE and on a DERIVED level
 /// alike, because both reach a child the same way once they hold it.
 ///
 /// `f` is `fn(&Parent) -> Option<Data>`: a shared reference, so what it reads decides whether
@@ -323,14 +355,14 @@ fn derived_child_state(f: &Path, marker: &Path, place: &TokenStream2) -> TokenSt
     }
 }
 
-/// A derived level's own `#state`: the edge above when it has a `#[derived_child]`, and the
+/// A derived level's own `#state`: the edge above when it has a `#[derived_children]`, and the
 /// node flattened to its place when it has nothing below it.
 fn derived_state(
     input: &DeriveInput,
     marker: &Path,
     node: &TokenStream2,
 ) -> syn::Result<TokenStream2> {
-    Ok(derived_child_fn(&input.attrs)?.map_or_else(
+    Ok(single_derived_child(&input.attrs)?.map_or_else(
         || quote!(::laserbeam::MaybeInvalidated::NotInvalidated(::bind::HasTreePath::into_tree_path(#node))),
         |f| derived_child_state(&f, marker, node),
     ))
@@ -345,7 +377,7 @@ fn reject_child(fields: &Fields) -> syn::Result<()> {
                 attr.span(),
                 "a derived level cannot have a `#[child]` field: its `data` dies with the \
                  dispatch. Persist the state in the tree at a real place the derived level reads, \
-                 or hang a fresh level with `#[derived_child]`.",
+                 or hang a fresh level with `#[derived_children]`.",
             ));
         }
     }
@@ -368,7 +400,7 @@ fn derived_child_accumulate(f: &Path, marker: &Path, place: &TokenStream2) -> To
 }
 
 fn derived_accumulate_descent(input: &DeriveInput, marker: &Path) -> syn::Result<TokenStream2> {
-    Ok(derived_child_fn(&input.attrs)?.map_or_else(
+    Ok(single_derived_child(&input.attrs)?.map_or_else(
         || quote!(),
         |f| derived_child_accumulate(&f, marker, &quote!(node)),
     ))
@@ -433,7 +465,7 @@ fn accumulate_body(
     marker: &Path,
     root: bool,
 ) -> syn::Result<(TokenStream2, Vec<Type>, bool)> {
-    if let Some(f) = derived_child_fn(&input.attrs)? {
+    if let Some(f) = single_derived_child(&input.attrs)? {
         return Ok((
             derived_child_accumulate(&f, marker, &quote!(path)),
             Vec::new(),
@@ -635,10 +667,10 @@ fn dispatch_state(
     root: bool,
     place: &TokenStream2,
 ) -> syn::Result<(TokenStream2, Vec<Type>)> {
-    // `#[derived_child(f)]`: the child is not a field, so `f` produces its data and the derive
+    // `#[derived_children(f)]`: the child is not a field, so `f` produces its data and the derive
     // builds the node. Nothing here names the child's type, and nothing can: the derive has
     // only `f`'s name.
-    if let Some(f) = derived_child_fn(&input.attrs)? {
+    if let Some(f) = single_derived_child(&input.attrs)? {
         return Ok((derived_child_state(&f, marker, place), Vec::new()));
     }
     match &input.data {

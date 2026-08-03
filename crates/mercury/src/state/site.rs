@@ -30,7 +30,7 @@ pub(crate) const fn overlay_for(site: Option<Site>) -> &'static str {
 #[derive(Bind, Debug)]
 #[node(parent_path = ReturnHomeLayersPath)]
 #[binds(MercuryStruct)]
-#[derived_child(site_data)]
+#[derived_children(site_data)]
 pub struct SiteLayer;
 
 impl SiteLayer {

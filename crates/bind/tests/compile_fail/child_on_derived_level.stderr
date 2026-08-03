@@ -1,4 +1,4 @@
-error: a derived level cannot have a `#[child]` field: its `data` dies with the dispatch. Persist the state in the tree at a real place the derived level reads, or hang a fresh level with `#[derived_child]`.
+error: a derived level cannot have a `#[child]` field: its `data` dies with the dispatch. Persist the state in the tree at a real place the derived level reads, or hang a fresh level with `#[derived_children]`.
   --> tests/compile_fail/child_on_derived_level.rs:39:5
    |
 39 |     #[child]

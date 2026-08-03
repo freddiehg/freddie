@@ -1,6 +1,6 @@
 //! A level that is not in the tree.
 //!
-//! `#[derived_child(f)]` on a node whose child is no field; `#[derived_node(parent_path = ..)]` on
+//! `#[derived_children(f)]` on a node whose child is no field; `#[derived_node(parent_path = ..)]` on
 //! the struct that child fn returns. `f` is `fn(&Parent) -> Option<Data>`: a shared reference,
 //! so it cannot mutate, and it never holds the parent, so it cannot lose it.
 //!
@@ -33,7 +33,7 @@ pub struct Chrome {
 #[derive(Bind)]
 #[node(parent_path = RootPath)]
 #[binds(Demo)]
-#[derived_child(app_data)]
+#[derived_children(app_data)]
 #[post(Keyboard("q") => log_leave)]
 #[bind(Keyboard("esc") => on_esc)]
 pub struct Shell {
@@ -44,7 +44,7 @@ pub struct Shell {
 #[derive(Bind)]
 #[derived_node(parent_path = ShellPath)]
 #[binds(Demo)]
-#[derived_child(tab_data)]
+#[derived_children(tab_data)]
 #[pre_post(Keyboard("r") => (snap_tab, exclusive(on_r)))]
 #[bind(Keyboard("q") => app_home)]
 pub struct AppData {
@@ -69,7 +69,7 @@ pub enum R<'a> {
     Shell(ShellPath<'a>),
 }
 
-/// `#[derived_child]`. It reads root state that is not on its path, and returns only the DATA.
+/// `#[derived_children]`. It reads root state that is not on its path, and returns only the DATA.
 fn app_data(path: &ShellPath) -> Option<AppData> {
     let chrome = path.parent().app.as_ref()?;
     Some(AppData {
@@ -273,7 +273,7 @@ pub struct Modes {
 #[derive(Bind)]
 #[node(parent_path = ModesPath)]
 #[binds(Demo)]
-#[derived_child(mode_data)]
+#[derived_children(mode_data)]
 pub struct ModeShell {
     pub log: String,
 }

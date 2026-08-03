@@ -32,7 +32,7 @@ pub(crate) const fn overlay_for(app: App) -> &'static str {
 #[derive(Bind, Debug)]
 #[node(parent_path = ReturnHomeLayersPath)]
 #[binds(MercuryStruct)]
-#[derived_child(app_data)]
+#[derived_children(app_data)]
 #[bind(
     Key::KeyN.down() => if_not_invalidated(enter_nav),
     Key::KeyS.down() => if_not_invalidated(enter_site),
