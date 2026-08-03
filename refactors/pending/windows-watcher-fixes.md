@@ -143,7 +143,7 @@ The model stores every report under its own key and projects at read time. Nothi
     focused: HashMap<Pid, Synced<Option<WindowId>>>,
 ```
 
-The handler arms are `Synced`'s two calls: `Opened`/`Moved`/`Resized` do `frame.changed(gen)` (inserting for a new window), `Frame` does `frame.landed(gen, f)` when the report carries one and nothing when it carries `None`; `FocusChanged` does `focused.entry(pid).changed(gen)`, `Focus` does `landed(gen, window)`; `Closed` removes the window, `AppGone` removes the pid's focus entry. No arm consults the foreground.
+The handler arms are `Synced`'s two calls: `Opened` inserts the window's state with `frame: Synced::Pending(gen)`, `Moved`/`Resized` do `frame.changed(gen)`, and `Frame` does `frame.landed(gen, f)` when the report carries one and nothing when it carries `None`; `FocusChanged` inserts `Synced::Pending(gen)` at the pid, `Focus` does `landed(gen, window)`; `Closed` removes the window, `AppGone` removes the pid's focus entry. No arm consults the foreground.
 
 The reads are projections joining the mirror:
 
@@ -161,7 +161,7 @@ Tests: the existing window tests respell to dispatch fact-then-value pairs; new 
 
 ## Change 2: nothing
 
-The former change 2 — bounding the synchronous callback reads — dissolves into change 1: the callback no longer reads, and the worker's reads carry the bound.
+The former change 2 — bounding the synchronous callback reads — dissolves into change 1: the callback no longer reads, and how long the worker's reads take is not the model's concern.
 
 ## Order of changes
 

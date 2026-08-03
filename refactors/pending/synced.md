@@ -71,18 +71,13 @@ impl<V> Synced<V> {
 }
 ```
 
-Per-key collections are plain maps of `Synced<V>`: the fact arm does `entry.changed(gen)` (inserting `Pending(gen)` for a new key), the value arm `entry.landed(gen, v)` against an existing entry, and the key's disappearance removes the entry — removal is the map's, staleness is the entry's, and neither needs the other's logic.
+Per-key collections are plain maps of `Synced<V>`: the fact arm inserts `Pending(gen)` (which is what `changed` is, so a map needs no entry-API dance), the value arm does `entry.landed(gen, v)` against an existing entry, and the key's disappearance removes the entry — removal is the map's, staleness is the entry's, and neither needs the other's logic.
 
 Tests, in `sync.rs`: the happy pair lands; a landing after a newer fact changes nothing; the same landing twice equals once; a landing on a removed-and-reinserted entry (fresh `Pending`, new generation) changes nothing — the alias the global mint exists to kill.
 
 ## Adopters
 
-The pending watcher docs consume this instead of their bespoke pieces, amended in the same commit that lands this crate change:
-
-- `selection-watcher.md`: `SelectionGen` and `SelectionEntry` are replaced by `Gen` and `Synced<Selection>`; the watcher's per-pid counter table is replaced by one `GenMinter`; its callback section states the fact-before-request invariant.
-- `windows-watcher-fixes.md`: `ReadGen`, `FrameEntry`, and `FocusEntry` likewise; same minter, same invariant.
-
-figaro's `read-selection.md` and `sync-fixes.md` consume `freddie::{Gen, Synced}` through the same events.
+The pending watcher docs are written against this: `selection-watcher.md`'s entries are `Synced<Selection>` and its watcher mints from one `GenMinter`; `windows-watcher-fixes.md`'s frames and focus likewise; both state the fact-before-request invariant at their callbacks. figaro's `read-selection.md` and `sync-fixes.md` consume `freddie::{Gen, Synced}` through the same events.
 
 ## Order of changes
 

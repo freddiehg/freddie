@@ -41,7 +41,7 @@ The same split for `freddie_displays`: `Display`, `DisplayId`, and whatever else
 >
 > A platform crate's reported vocabulary — the types its events, snapshots, and effects carry — lives in a sibling `_types` crate that depends on nothing and forbids `unsafe`. The platform crate re-exports it wholesale, so its own consumers import one name. The split exists for consumers that must not be able to reach the OS: a model crate depending only on `_types` crates has no platform symbol in its dependency graph, which turns "handlers do not call macOS APIs" from a review rule into a link error. A new platform crate starts with its types crate; an existing one grows it the first time a pure consumer wants its vocabulary.
 
-The two pending crate docs follow it: `selection-watcher.md`'s vocabulary (`Selection`, `SelectionEntry`, `SelectionChange`, `SelectionGen`) lands in `freddie_selection_types` with `freddie_selection` re-exporting, and `freddie_ax_observer` re-exports `Pid` from `freddie_windows_types`. Each doc gets that one-line amendment when this lands.
+The two pending crate docs follow it: `selection-watcher.md`'s vocabulary (`Selection`, `SelectionChange`) lands in `freddie_selection_types` with `freddie_selection` re-exporting, and `freddie_ax_observer` re-exports `Pid` from `freddie_windows_types`. (`Gen` and `Synced` are `freddie`'s, already pure.) Each doc gets that one-line amendment when this lands.
 
 ## Order of changes
 
