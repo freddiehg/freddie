@@ -49,3 +49,7 @@ Private symbols are acceptable when they are the only route, and should be isola
 Work that must happen on main, from a thread that is not main, goes through a channel drained in `freddie_main_loop`'s `on_wake`. Build the channel with `MainWaker::channel`: the sender wakes the run loop on each send, so the value is applied at once rather than when the next real event arrives. The receiver stays on main with whatever non-`Send` handle it mutates (an `NSStatusItem` title, an `NSPanel`). That is how the menu-bar title and the overlay reach main from the worker.
 
 Reading OS state is something you do while constructing, before `main_loop.run`. After that every fact arrives as an event. See the seed rule in `CLAUDE.md` and `refactors/past/seed-at-construction.md`.
+
+## The vocabulary is a separate crate
+
+A platform crate's reported vocabulary — the types its events, snapshots, and effects carry — lives in a sibling `_types` crate that depends on nothing and forbids `unsafe`. The platform crate re-exports it wholesale, so its own consumers import one name. The split exists for consumers that must not be able to reach the OS: a model crate depending only on `_types` crates has no platform symbol in its dependency graph, which turns "handlers do not call macOS APIs" from a review rule into a link error. A new platform crate starts with its types crate; an existing one grows it the first time a pure consumer wants its vocabulary.

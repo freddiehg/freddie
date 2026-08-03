@@ -8,7 +8,7 @@ The per-app observer scaffolding moves out of `freddie_windows` into a shared cr
 
 `crates/freddie_ax_observer`, carrying the `unsafe_code = "deny"`-with-`#[expect]` lint table (it is an AX boundary crate). What moves in, verbatim except for the genericized seams:
 
-- `Pid` and `ObservableApp` (with `ObservableApp::of`, the UI-service filter).
+- `ObservableApp` (with `ObservableApp::of`, the UI-service filter). `Pid` is not defined here: it lives in `freddie_windows_types` (`pure-type-crates.md`, landed), and this crate re-exports it.
 - `Observation`, `observe_notification`, `notified_app`: the `NSNotificationCenter` registration plumbing.
 - `add_notification`: the logged-and-skipped single registration.
 - The launch/terminate halves of `watch_notifications`, as the crate's own wiring.
@@ -52,7 +52,7 @@ pub fn watch_apps<R: 'static>(
 
 ## Change 2: `freddie_selection`
 
-`crates/freddie_selection`, beside `freddie_windows`: the Accessibility calls are raw C, so they live in a freddie platform crate behind safe functions, per `docs/platform-apis.md`. The workspace `members` list gains the crate.
+`crates/freddie_selection`, beside `freddie_windows`: the Accessibility calls are raw C, so they live in a freddie platform crate behind safe functions, per `docs/platform-apis.md`. The workspace `members` list gains the crate. Per the vocabulary convention (`pure-type-crates.md`), `Selection` and `SelectionChange` live in a sibling `freddie_selection_types` crate that `freddie_selection` re-exports wholesale; the code below is shown in one listing, with those two types belonging to the types crate.
 
 ```toml
 # crates/freddie_selection/Cargo.toml
