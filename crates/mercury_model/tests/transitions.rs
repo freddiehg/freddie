@@ -6,10 +6,10 @@
 use bind::SimpleRunner;
 use freddie_windows_types::{Frame, Monitor, WindowChange, WindowId};
 use mercury_model::{
-    App, Chord, Copied, HomeLayer, JK_TIMEOUT, Key, KeyEvent, Layer, Mercury, MercuryEffect,
-    MercuryEvent, MercuryStruct, ModifierFlags, OVERLAY_DWELL, PLACEMENT_SETTLE, PressType,
-    RETURN_TO_HOME_TIMEOUT, ReturnHomeLayers, UrlPart, WindowEvent, Windows, focus_read,
-    foreground, frame_read, key, quit_event, tab,
+    App, Chord, HomeLayer, JK_TIMEOUT, Key, KeyEvent, Layer, Mercury, MercuryEffect, MercuryEvent,
+    MercuryStruct, ModifierFlags, OVERLAY_DWELL, PLACEMENT_SETTLE, PressType,
+    RETURN_TO_HOME_TIMEOUT, ReturnHomeLayers, WindowEvent, Windows, focus_read, foreground,
+    frame_read, key, quit_event, tab,
 };
 use mercury_model::{FrontApp, Pid, Placement};
 
@@ -516,7 +516,7 @@ fn chrome_showing(url: &str) -> Mercury {
 }
 
 fn copies(text: &str) -> MercuryEffect {
-    MercuryEffect::Copy(Copied::Text(text.to_owned()))
+    MercuryEffect::Copy(text.to_owned())
 }
 
 // `l` focuses the address bar and lands in typing, so the URL you type gets there.
@@ -576,28 +576,24 @@ fn the_three_ls_do_not_shadow_each_other() {
     }
 }
 
-// With no URL reported there is nothing to copy out of the state, so the copy asks Chrome instead.
-// Which is the case for a tab the extension never saw, or no extension at all.
+// With no URL reported there is nothing to copy out of the state, so the key does nothing:
+// mercury copies what it holds, and it holds nothing until the extension reports.
 #[test]
-fn a_copy_with_no_reported_url_asks_chrome() {
+fn a_copy_with_no_reported_url_copies_nothing() {
     let mut m = home();
     let _ = m.handle(&foreground(App::Chrome, Pid(7)));
     let _ = m.handle(&key(Key::KeyI));
     assert_eq!(
         m.handle(&key_with(Key::KeyL, ModifierFlags::SHIFT)),
-        in_app(vec![MercuryEffect::Copy(Copied::FrontTabUrl(
-            UrlPart::Whole
-        ))])
+        in_app(vec![])
     );
     assert_eq!(
         m.handle(&key_with(Key::KeyL, ModifierFlags::COMMAND)),
-        in_app(vec![MercuryEffect::Copy(Copied::FrontTabUrl(
-            UrlPart::Host
-        ))])
+        in_app(vec![])
     );
 }
 
-// A URL with no host has no host to copy, and asking Chrome would get the same answer back.
+// A URL with no host has no host to copy.
 #[test]
 fn copying_the_host_of_a_hostless_url_copies_nothing() {
     let mut m = chrome_showing("about:blank");

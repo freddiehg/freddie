@@ -9,7 +9,7 @@ use freddie_keys::{Key, ModifierFlags};
 use laserbeam::{Completed, CompletesTo, HasAncestor, HasStop};
 
 use crate::MercuryEffect;
-use crate::effect::{Copied, UrlPart, tap};
+use crate::effect::{UrlPart, tap};
 use crate::sources::host;
 use crate::state::{Mercury, MercuryPath};
 
@@ -77,9 +77,8 @@ where
 /// effect carries it. Nothing typed at Chrome and nothing read back out of it: the copy does not
 /// touch the address bar, so what you were part-way through typing there survives it.
 ///
-/// Without a reported URL there is nothing to take a host from, and asking Chrome is the only way
-/// to answer at all, so that case falls back to [`Copied::FrontTabUrl`]. A URL with no host
-/// (`about:blank`, `file:///...`) has no answer either way, and copies nothing.
+/// Without a reported URL there is nothing to copy, and the key does nothing until the extension
+/// reports. A URL with no host (`about:blank`, `file:///...`) has no host and copies nothing.
 fn copy(root: &Mercury, part: UrlPart) -> Vec<MercuryEffect> {
     let Some(url) = root
         .foreground
@@ -87,13 +86,13 @@ fn copy(root: &Mercury, part: UrlPart) -> Vec<MercuryEffect> {
         .and_then(|front| front.app.chrome())
         .and_then(|chrome| chrome.url.as_deref())
     else {
-        return vec![MercuryEffect::Copy(Copied::FrontTabUrl(part))];
+        return Vec::new();
     };
     let text = match part {
         UrlPart::Whole => Some(url),
         UrlPart::Host => host(url),
     };
-    text.map(|text| MercuryEffect::Copy(Copied::Text(text.to_owned())))
+    text.map(|text| MercuryEffect::Copy(text.to_owned()))
         .into_iter()
         .collect()
 }

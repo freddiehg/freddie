@@ -30,21 +30,6 @@ pub enum UrlPart {
     Host,
 }
 
-/// The text a copy puts on the clipboard, and where it comes from.
-#[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
-#[derive(Debug)]
-pub enum Copied {
-    /// Text mercury already holds. The extension reports the front tab's URL as it changes, so
-    /// this is the usual case for a copy, and it costs a string.
-    Text(String),
-    /// The front Chrome tab's URL, read back out of Chrome, and the part of it to keep.
-    ///
-    /// The fallback for when nothing reported one: no extension connected, or a page it never
-    /// sees. It asks the app rather than the model, so it is a subprocess and an Apple Events
-    /// permission, which is why it is not the way this normally works.
-    FrontTabUrl(UrlPart),
-}
-
 /// What a handler asks the consumer to do. Inert data; performing it is the consumer's job,
 /// and it never mutates Mercury's state directly.
 // Effect equality is only ever asked for by the tests (dispatch never compares effects), so the
@@ -82,7 +67,7 @@ pub enum MercuryEffect {
         generation: AlwaysEqual<RidingGeneration>,
     },
     /// Put text on the clipboard, replacing what is there.
-    Copy(Copied),
+    Copy(String),
     /// Quit the program. The effect handler performs this by exiting.
     Kill,
     /// Put the overlay up, showing `text`. Replaces whatever it was showing.
