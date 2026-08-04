@@ -6,7 +6,7 @@ use laserbeam::{Completed, CompletesTo};
 use crate::state::MercuryPath;
 use crate::{FocusRead, FrameRead, MercuryEffect, WindowEvent};
 use freddie::AlwaysEqual;
-use freddie_windows::WindowChange;
+use freddie_windows_types::WindowChange;
 
 /// A window fact: record what died, and request the read that fills it, the riding half in
 /// the effect. An untracked window's fact requests nothing.

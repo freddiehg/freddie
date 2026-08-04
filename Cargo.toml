@@ -26,6 +26,7 @@ members = [
     "crates/freddie_single_instance",
     "crates/freddie_cli",
     "crates/mercury",
+    "crates/mercury_model",
 ]
 
 [workspace.package]

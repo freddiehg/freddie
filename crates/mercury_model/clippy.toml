@@ -1,0 +1,14 @@
+disallowed-methods = [
+    { path = "std::process::Command::new", reason = "the model cannot run a subprocess; effects carry data and the binary performs them" },
+    { path = "std::thread::spawn", reason = "the model runs on the dispatch thread; concurrency belongs to the sources and performers" },
+    { path = "std::time::SystemTime::now", reason = "the clock is the outside world; time arrives as timer events" },
+    { path = "std::time::Instant::now", reason = "the clock is the outside world; time arrives as timer events" },
+]
+
+disallowed-types = [
+    { path = "std::fs::File", reason = "the model does not touch the filesystem" },
+    { path = "std::fs::OpenOptions", reason = "the model does not touch the filesystem" },
+    { path = "std::net::TcpStream", reason = "the model does not touch the network" },
+    { path = "std::net::TcpListener", reason = "the model does not touch the network" },
+    { path = "std::net::UdpSocket", reason = "the model does not touch the network" },
+]

@@ -5,7 +5,7 @@ use freddie_keys::{Key, KeyEvent, KeyPress, ModifierFlags, PressType};
 
 use freddie::AlwaysEqual;
 use freddie_sync::RidingGeneration;
-use freddie_windows::{Pid, Placement, WindowId};
+use freddie_windows_types::{Pid, Placement, WindowId};
 
 use crate::MercuryEvent;
 

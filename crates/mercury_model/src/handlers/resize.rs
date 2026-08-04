@@ -5,7 +5,7 @@
 //! `windows`, which lives on the root, so each ends there, and the `go_home` after it ends there
 //! too: two root-enders compose, since the state-level `into_ancestor` is total on both branches.
 
-use freddie_windows::{Frame, Pid, Placement};
+use freddie_windows_types::{Frame, Pid, Placement};
 use laserbeam::{Completed, CompletesTo, HasStop, IntoAncestor};
 
 use crate::MercuryEffect;

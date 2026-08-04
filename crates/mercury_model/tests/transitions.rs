@@ -4,14 +4,14 @@
 //! reporting the app back the way the OS watcher would.
 
 use bind::SimpleRunner;
-use freddie_windows::{Frame, Monitor, WindowChange, WindowId};
-use mercury::{
+use freddie_windows_types::{Frame, Monitor, WindowChange, WindowId};
+use mercury_model::{
     App, Chord, Copied, HomeLayer, JK_TIMEOUT, Key, KeyEvent, Layer, Mercury, MercuryEffect,
     MercuryEvent, MercuryStruct, ModifierFlags, OVERLAY_DWELL, PLACEMENT_SETTLE, PressType,
     RETURN_TO_HOME_TIMEOUT, ReturnHomeLayers, UrlPart, WindowEvent, Windows, focus_read,
     foreground, frame_read, key, quit_event, tab,
 };
-use mercury::{FrontApp, Pid, Placement};
+use mercury_model::{FrontApp, Pid, Placement};
 
 // `BOOT_TITLE` is painted on the status item before the model exists, so it is a literal rather
 // than read off the boot layer. This is the guard that keeps the literal honest.

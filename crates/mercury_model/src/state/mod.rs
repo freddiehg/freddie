@@ -12,7 +12,7 @@ use bind::{Bind, if_not_invalidated};
 use freddie::{AlwaysEqual, TimerFired, TimerGuard, timer_effect_and_guard};
 use freddie_keys::{Key, KeyEvent, ModifierFlags, PressType};
 use freddie_sync::{GenerationMinter, HeldGeneration, RidingGeneration, Synced};
-use freddie_windows::{Frame, Monitor, Pid, Placement, WindowId};
+use freddie_windows_types::{Frame, Monitor, Pid, Placement, WindowId};
 use laserbeam::PathMut;
 
 // The derive generates a call to each named handler at its node's definition site below, so

@@ -1287,6 +1287,7 @@ dependencies = [
  "futures-util",
  "laserbeam",
  "mercury",
+ "mercury_model",
  "plist",
  "serde",
  "serde_json",
@@ -1294,6 +1295,20 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "ts-rs",
+]
+
+[[package]]
+name = "mercury_model"
+version = "0.0.1"
+dependencies = [
+ "bind",
+ "derive_more",
+ "freddie",
+ "freddie_keys",
+ "freddie_sync",
+ "freddie_windows_types",
+ "laserbeam",
+ "mercury_model",
 ]
 
 [[package]]

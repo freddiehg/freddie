@@ -4,8 +4,8 @@ use bind::EventTrigger;
 use freddie::AlwaysEqual;
 use freddie_keys::KeyEvent;
 use freddie_sync::RidingGeneration;
-use freddie_windows::WindowChange;
-use freddie_windows::{Frame, Pid, WindowId};
+use freddie_windows_types::WindowChange;
+use freddie_windows_types::{Frame, Pid, WindowId};
 
 /// A keyboard trigger matching every key, modifier or not, on either press.
 ///

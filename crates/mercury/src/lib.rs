@@ -42,26 +42,7 @@
 //!
 //! Run it with `cargo run -p mercury`, or the tests with `cargo test -p mercury`.
 
-pub use freddie_keys::{Key, KeyEvent, KeyPress, ModifierFlags, PressType};
-
-mod effect;
 mod external;
-mod handlers;
-mod model;
-mod sources;
-mod state;
 
-pub use effect::{Chord, Copied, MercuryEffect, UrlPart};
 pub use external::{DEFAULT_PORT, on_message};
-pub use freddie_windows::{Pid, Placement};
-pub use model::{MercuryEvent, MercuryStruct, MercuryTrigger};
-pub use sources::{
-    AnyKey, App, FocusLanded, FocusRead, ForegroundEvent, Foregrounded, FrameLanded, FrameRead,
-    Quit, Site, TabEvent, Tabbed, WindowEvent, Windowed, host,
-};
-pub use state::{
-    AndReturnHome, AppData, AppLayer, ChromeApp, ClaudeAiSite, ForegroundedApp, ForegroundedChrome,
-    FrontApp, GhosttyApp, HomeLayer, JK_TIMEOUT, Layer, Mercury, NavLayer, OVERLAY_DWELL,
-    PLACEMENT_SETTLE, RETURN_TO_HOME_TIMEOUT, ResizeLayer, ReturnHomeLayers, SiteData, SiteLayer,
-    TypingLayer, Windows, focus_read, foreground, frame_read, key, quit_event, tab,
-};
+pub use mercury_model::*;

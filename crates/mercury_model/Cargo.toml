@@ -1,0 +1,34 @@
+[package]
+name = "mercury_model"
+description = "mercury's model: a pure function of state and event, unable to reach the OS."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+freddie_sync = { path = "../freddie_sync", version = "0.0.1" }
+laserbeam = { path = "../laserbeam", version = "0.0.1" }
+bind = { path = "../bind", version = "0.0.1", default-features = false }
+freddie = { path = "../freddie", version = "0.0.1" }
+freddie_keys = { path = "../freddie_keys", version = "0.0.1" }
+freddie_windows_types = { path = "../freddie_windows_types", version = "0.0.1" }
+derive_more = { version = "2", features = ["from", "try_into"] }
+
+[features]
+# Derives the tests need and the normal build does not: effect equality, for asserting what a
+# dispatch produced. Turned on for this crate's own tests through the self dev-dependency below,
+# and kept out of `cargo build` by resolver 3.
+testing = ["freddie/testing"]
+
+[dev-dependencies]
+# Turns the check on for TESTS only. With resolver 3 a dev-dependency's features do not leak
+# into the normal build.
+bind = { path = "../bind", version = "0.0.1", features = ["check"] }
+# Turns `testing` on for this crate's own tests, the same way.
+mercury_model = { path = ".", features = ["testing"] }
+# The transitions tests rebuild a timer effect to assert what entering nav produced.
+freddie = { path = "../freddie", version = "0.0.1" }
+
+[lints]
+workspace = true

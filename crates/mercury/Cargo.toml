@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 freddie_sync = { path = "../freddie_sync", version = "0.0.1" }
+mercury_model = { path = "../mercury_model", version = "0.0.1" }
 laserbeam = { path = "../laserbeam", version = "0.0.1" }
 bind = { path = "../bind", version = "0.0.1", default-features = false }
 freddie = { path = "../freddie", version = "0.0.1" }
@@ -44,7 +45,7 @@ typescript = ["dep:ts-rs"]
 # Derives the tests need and the normal build does not: effect equality, for asserting what a
 # dispatch produced. Turned on for this crate's own tests through the self dev-dependency below,
 # and, like `bind`'s `check`, kept out of `cargo build -p mercury` by resolver 3.
-testing = ["freddie/testing"]
+testing = ["mercury_model/testing"]
 ts-rs = ["dep:ts-rs"]
 
 [dev-dependencies]
