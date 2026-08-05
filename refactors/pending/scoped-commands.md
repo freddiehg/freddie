@@ -55,7 +55,7 @@ pub enum ClaudeAiCommand {
 }
 
 /// Which settings page. The extension maps this to the site's route, so mercury names a section
-/// and never spells a URL.
+/// and never writes out a URL.
 #[cfg_attr(feature = "testing", derive(PartialEq, Eq))]
 #[derive(Clone, Copy, serde::Serialize, Debug)]
 #[cfg_attr(feature = "typescript", derive(ts_rs::TS))]

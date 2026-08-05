@@ -62,7 +62,7 @@ enum Signal {
 }
 
 impl Signal {
-    /// How `/bin/kill` spells it.
+    /// The name `/bin/kill` uses for it.
     #[cfg(unix)]
     const fn flag(self) -> &'static str {
         match self {

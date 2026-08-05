@@ -1,5 +1,5 @@
 //! A shell node generic over its child: the doll shape, `Shell<Inner>`, where the child
-//! exists only for separation and the composition is spelled at the instantiation.
+//! exists only for separation and the composition is written at the instantiation.
 
 mod common;
 

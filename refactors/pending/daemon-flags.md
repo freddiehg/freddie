@@ -12,7 +12,7 @@ Three things follow, and each is a question this doc is answering rather than a 
 
 A setting is not a config file. Two sources of truth for one value need a rule about which wins, a parse, a schema, and an answer to whether a running daemon re-reads the file. The last one is the expensive part: re-reading means a watcher and a staleness question for a value the daemon consumed at construction, and not re-reading is what a flag already is with none of the parsing. `--help` also stops being the list of what can be set. The plist already is the persistent configuration for an installed daemon, and `install` writes it rather than a person editing it.
 
-A setting is not primarily an environment variable, because clap's `env` attribute makes every flag one for free. `--port` already spells this:
+A setting is not primarily an environment variable, because clap's `env` attribute makes every flag one for free. `--port` already states this:
 
 ```rust
 // crates/mercury/src/main.rs
@@ -24,7 +24,7 @@ pub struct MercuryArgs {
 }
 ```
 
-One declaration, one name in `--help`, and both spellings resolve to the same field.
+One declaration, one name in `--help`, and both forms resolve to the same field.
 
 `LOG_LEVEL` stays a variable and does not become a flag. The reason is already written where it is declared, and it is a reason about terminals rather than about variables:
 
@@ -96,7 +96,7 @@ impl TypedArgs<'_> {
 After:
 
 ```rust
-/// Which of the values this invocation resolved a re-emission has to spell out.
+/// Which of the values this invocation resolved a re-emission has to write out.
 ///
 /// The two consumers differ in what the process on the other end starts with, so this is a
 /// property of that process rather than a preference at the call site.
@@ -114,7 +114,7 @@ pub enum Inherits {
 
 impl Inherits {
     /// Whether a value from `source` has to be re-emitted.
-    const fn must_spell_out(self, source: Option<ValueSource>) -> bool {
+    const fn must_write_out(self, source: Option<ValueSource>) -> bool {
         match self {
             Self::Environment => matches!(source, Some(ValueSource::CommandLine)),
             Self::Nothing => matches!(
@@ -137,7 +137,7 @@ impl TypedArgs<'_> {
     /// Re-emit one arg set's flags onto `argv`.
     fn push_typed(&self, argv: &mut Vec<String>, ids: &[clap::Id], inherits: Inherits) {
         for id in ids {
-            if inherits.must_spell_out(self.matches.value_source(id.as_str())) {
+            if inherits.must_write_out(self.matches.value_source(id.as_str())) {
                 // …
             }
         }
@@ -159,8 +159,8 @@ After:
 
 ```rust
 /// All three stdio streams go to /dev/null. The daemon's terminal tracing layer then has nowhere
-/// to write, which is why `LOG_LEVEL` is not spelled out: it governs a terminal this child does
-/// not have, and the child inherits the variable anyway. `--log-file-level` is spelled out, because
+/// to write, which is why `LOG_LEVEL` is not written out: it governs a terminal this child does
+/// not have, and the child inherits the variable anyway. `--log-file-level` is written out, because
 /// the file is the sink a child with no terminal writes to.
 ```
 
@@ -211,7 +211,7 @@ After:
     /// The agent that runs `program` with `flags`.
     ///
     /// The flags follow the verb, which is where clap wants a subcommand's arguments, and they are
-    /// spelled out rather than left to the environment: launchd starts the job with none of the
+    /// written out rather than left to the environment: launchd starts the job with none of the
     /// environment `install` was run in.
     fn running(program: &Path, flags: Vec<String>) -> Self {
         let mut program_arguments = vec![
@@ -584,7 +584,7 @@ after:
 `crates/mercury`, added:
 
 - `Agent::running` puts the flags after the verb, and a plist round-trips with them.
-- `install` with no flags writes the defaults spelled out rather than an empty tail, since the job resolves nothing from the environment.
+- `install` with no flags writes the defaults out rather than an empty tail, since the job resolves nothing from the environment.
 
 ## changes
 

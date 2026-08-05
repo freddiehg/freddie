@@ -461,7 +461,7 @@ fn a_leave_ends_the_chain() {
     );
 }
 
-/// The flat spelling runs all three, in order, under the one claim, identically to the
+/// The flat form runs all three, in order, under the one claim, identically to the
 /// hand-nested `and(a, and(b, c))` it expands to.
 #[test]
 fn and_nests() {

@@ -188,7 +188,7 @@ where
     }
 }
 
-/// `and!(a, b, c)` is `and(a, and(b, c))`: the flat spelling of a gesture's unit list.
+/// `and!(a, b, c)` is `and(a, and(b, c))`: the flat form of a gesture's unit list.
 ///
 /// A macro over the fn rather than a collection, so each unit keeps its own type: closures and
 /// parameterized units like `tmux_window(1)` survive, where a slice would force one element type

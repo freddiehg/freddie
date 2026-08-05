@@ -103,7 +103,7 @@ Mercury is the live keyboard remapper on this machine: while it is stopped, the 
 
 Stopping and restarting it is what the verbs are for, and they work. Say what you are doing to it, and leave one running when you are done.
 
-- `mercury` starts one detached and says its pid, or says which one is already running. `mercury start` is the same thing spelled out.
+- `mercury` starts one detached and says its pid, or says which one is already running. `mercury start` is the same thing written out.
 - `mercury restart` replaces the running one, which is what a rebuild wants. `--force` destroys the old one rather than asking it to quit.
 - `mercury stop` ends it through the model, so the modifiers a command layer swallowed are reopened.
 - `mercury status` reports the running one and its pid; `mercury logs` follows the log. Neither touches the process.

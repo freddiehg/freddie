@@ -546,7 +546,7 @@ impl KeyPress {
     /// A trigger matching this press only when no modifier is held.
     ///
     /// The counterpart to [`with`](Self::with): a node that binds one key at several modifier
-    /// combinations spells every one of them as a chord, so no two of its triggers can match the
+    /// combinations writes every one of them as a chord, so no two of its triggers can match the
     /// same event and which one wins is not a question about declaration order.
     #[must_use]
     pub const fn bare(self) -> KeyChord {
@@ -866,7 +866,7 @@ mod tests {
     }
 
     // A plain press ignores the flags, which is why a node binding one key at several modifier
-    // combinations has to spell every one of them as a chord.
+    // combinations has to write every one of them as a chord.
     #[test]
     fn a_press_matches_whatever_modifiers_are_held() {
         let trigger = Key::KeyL.down();

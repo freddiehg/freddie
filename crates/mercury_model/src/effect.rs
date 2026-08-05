@@ -9,7 +9,7 @@ use freddie_windows_types::{Pid, Placement, WindowId};
 
 use crate::MercuryEvent;
 
-/// One key carrying its modifiers as flags, which is how Mercury spells a chord.
+/// One key carrying its modifiers as flags, which is how Mercury writes a chord.
 ///
 /// `cmd`-`r` is `Chord { key: KeyR, flags: COMMAND }`: one key event with the modifier as a flag,
 /// not a synthetic `cmd` down and up around it. A synthetic modifier event would strand the

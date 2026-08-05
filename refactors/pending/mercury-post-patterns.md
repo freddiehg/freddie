@@ -76,7 +76,7 @@ where
 
 Both units receive the same event and the same snap (hence the `Copy` bounds; in bind position the snap is `()`).
 
-The flat spelling is a macro over the same fn — it expands to the nested calls, so closures and generic units survive and nothing goes dynamic (a slice would force one element type: fn-pointer coercion breaks a parameterized unit like `tmux_window(1)`, and `&dyn` buys vtables and per-element `&`):
+The flat form is a macro over the same fn — it expands to the nested calls, so closures and generic units survive and nothing goes dynamic (a slice would force one element type: fn-pointer coercion breaks a parameterized unit like `tmux_window(1)`, and `&dyn` buys vtables and per-element `&`):
 
 ```rust
 /// `and!(a, b, c)` is `and(a, and(b, c))`.

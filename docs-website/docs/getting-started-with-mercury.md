@@ -22,7 +22,7 @@ mercury
 
 ```bash
 mercury           # start one in the background
-mercury start     # the same thing, spelled out
+mercury start     # the same thing, written out
 mercury restart   # replace the running one
 mercury stop      # end it through the model
 mercury status    # report the running one and its pid

@@ -310,7 +310,7 @@ impl<Node, Parent> PathMut<Node, Parent> {
     /// `path.into_ancestor::<T>()` on the trait method alone does not compile: the
     /// method takes no generic arguments. The inherent method does take them, so
     /// `path.into_ancestor::<T>()` lands here. Without this you would name the
-    /// target on the left, `let layer: LayerPath = path.into_ancestor();`, or spell
+    /// target on the left, `let layer: LayerPath = path.into_ancestor();`, or write
     /// out `<HomeLayerPath as IntoAncestor<LayerPath>>::into_ancestor(path)`.
     #[must_use]
     pub fn into_ancestor<Target>(self) -> Target

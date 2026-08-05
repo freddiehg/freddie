@@ -1110,7 +1110,7 @@ fn bundle_id_round_trips() {
 }
 
 // The bundle ids the OS actually reports. Unlike display names, these do not vary
-// with who is asked, so there is one spelling and it is this one.
+// with who is asked, so there is one form and it is this one.
 #[test]
 fn reported_bundle_ids_map() {
     assert_eq!(App::from_bundle_id("com.google.Chrome"), App::Chrome);

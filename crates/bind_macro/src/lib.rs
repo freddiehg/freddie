@@ -297,7 +297,7 @@ fn derived_enum_node_impl(
 /// place emits, over `node` instead of `path`, ascending at the place beneath it.
 ///
 /// It never names its own node type, and it cannot name its place either: a level whose parent
-/// is another derived level knows only that parent's `DerivedLevel` alias. Both are spelled through the
+/// is another derived level knows only that parent's `DerivedLevel` alias. Both are written through the
 /// `HasTreePath` projection, which resolves because `#parent` is concrete at the impl.
 fn derived_node_impl(
     input: &DeriveInput,

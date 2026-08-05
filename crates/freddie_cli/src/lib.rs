@@ -181,7 +181,7 @@ pub(crate) struct TypedArgs<'a>(Option<&'a ArgMatches>);
 impl<'a> TypedArgs<'a> {
     /// The flags the invocation typed, wherever the app's parser put them.
     ///
-    /// Taken through `subcommand` so no verb's name is spelled here.
+    /// Taken through `subcommand` so no verb's name is written here.
     fn of(matches: &'a ArgMatches) -> Self {
         Self(matches.subcommand().map(|(_name, verb)| verb))
     }

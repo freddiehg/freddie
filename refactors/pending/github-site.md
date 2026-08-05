@@ -567,7 +567,7 @@ pub(crate) fn checkout_pull_request<E>(
 }
 ```
 
-Neither handler is generic over its path. A `Node` inside a `Node` is not something `Ascend` walks, so the ascent is spelled out: `parent` is `GithubSitePath`, `parent.parent` is the `SiteLayerPath`, and that ascends to the root. Naming the level in the signature is also what keeps a handler for one page from being bound on another.
+Neither handler is generic over its path. A `Node` inside a `Node` is not something `Ascend` walks, so the ascent is written out: `parent` is `GithubSitePath`, `parent.parent` is the `SiteLayerPath`, and that ascends to the root. Naming the level in the signature is also what keeps a handler for one page from being bound on another.
 
 `crates/mercury/src/handlers/mod.rs` gains `mod github;` and `pub(crate) use github::*;`.
 

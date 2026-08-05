@@ -52,7 +52,7 @@ pub type LayerPath<'a> = PathMut<Layer, MercuryPath<'a>>;
 pub type AppLayerPath<'a> = PathMut<AppLayer, LayerPath<'a>>;
 ```
 
-A path type therefore spells out the whole route from the root, and a handler's parameter type says where in the tree the binding sits.
+A path type therefore writes out the whole route from the root, and a handler's parameter type says where in the tree the binding sits.
 
 A `PathMut` is not a reference to the node it addresses. It owns the parent and a pair of projections, one `&mut Parent -> &mut Node` and one `&Parent -> &Node`, and re-derives the node each time you call `get_mut` or `get`. The parent's own `dispatch` builds it on the way down with `PathMut::from_fn`: a `#[resolve_into]` field projects to that field, an enum projects through whichever variant is active.
 

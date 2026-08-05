@@ -6,7 +6,7 @@ The verbs are the same because none of them looks inside the process. They read 
 
 `freddie_cli` is a new crate holding the whole command surface. An app supplies its name, what names one of its daemons, its daemon body, and whatever extra flags that body takes; it gets `start`, `restart`, `status`, `logs`, `stop`, and the hidden `daemon` for free, each keyed to the daemon the command line named and writing to that daemon's own log file. mercury becomes an implementation of one trait, plus a command line of its own with those verbs folded into it.
 
-The name of the binary is the app's, not mercury's, and nothing in `freddie_cli` spells "mercury". An app names the block of lifecycle verbs where it flattens them in, and never one of the verbs inside it.
+The name of the binary is the app's, not mercury's, and nothing in `freddie_cli` says "mercury". An app names the block of lifecycle verbs where it flattens them in, and never one of the verbs inside it.
 
 A new crate rather than a dependency, and that is settled rather than assumed: `refactors/past/reuse-existing-crates.md` audited `single-instance`, `service-manager`, and `daemonize` against what these verbs need and none of them fit. `single-instance` cannot probe without acquiring or report a pid, so `status` and `stop` have nothing to build on; `service-manager` cannot express `SuccessfulExit=false`, which is the key the daemon's exit code is tuned to. Whoever forks this gets the lifecycle from here or writes it again themselves.
 
@@ -443,7 +443,7 @@ impl<TApp: App> Verb<TApp> {
 impl<'a> TypedArgs<'a> {
     /// The flags the invocation typed, wherever the app's parser put them.
     ///
-    /// Taken through `subcommand` so no verb's name is spelled here. `None` is the bare binary,
+    /// Taken through `subcommand` so no verb's name is written here. `None` is the bare binary,
     /// which typed nothing.
     fn of(matches: &'a ArgMatches) -> Self {
         Self(matches.subcommand().map(|(_name, verb)| verb))
@@ -537,7 +537,7 @@ fn spawn_daemon<TApp: App>(typed: TypedArgs<'_>) -> io::Result<Pid> {
 
 `--log-level` is not forwarded, and for the reason `spawn_daemon` already gives: it governs a terminal a detached child does not have.
 
-The hidden verb's name is spelled here and nowhere else, so an app writing a launch agent has something to point at rather than a string of its own:
+The hidden verb's name is written here and nowhere else, so an app writing a launch agent has something to point at rather than a string of its own:
 
 ```rust
 /// What the daemon verb is called, for an app building an argv that has to reach it.
@@ -617,13 +617,13 @@ It returns nothing now: it was handing back the path so `logs` could follow it, 
 
 ## The client verbs
 
-`crates/mercury/src/client.rs` becomes `freddie_cli`'s `client` module, apart from what `install` and `uninstall` need: `Agent`, `KeepAlive`, `label`, `plist_path`, `domain`, `bootout`, `launchctl`, `users_uid`, `NotInstalled`, and the `TRANSIENT` and `ID` constants all stay in mercury, in `agent.rs`. A launch agent says which session type it loads in, when launchd should revive it, and what its label is, and those are answers about one app rather than about daemons. mercury reaches them through its own two verbs, which is what owning its command line is for. The label keeps its `hg.freddie.` prefix, mercury's to choose now that no shared crate spells it.
+`crates/mercury/src/client.rs` becomes `freddie_cli`'s `client` module, apart from what `install` and `uninstall` need: `Agent`, `KeepAlive`, `label`, `plist_path`, `domain`, `bootout`, `launchctl`, `users_uid`, `NotInstalled`, and the `TRANSIENT` and `ID` constants all stay in mercury, in `agent.rs`. A launch agent says which session type it loads in, when launchd should revive it, and what its label is, and those are answers about one app rather than about daemons. mercury reaches them through its own two verbs, which is what owning its command line is for. The label keeps its `hg.freddie.` prefix, mercury's to choose now that no shared crate names it.
 
 What does move is every verb that only reads a lock, spawns a binary, signals a pid, or tails a log. No verb changes what it does, what it prints, or what it exits with. Four things change throughout:
 
 - `const APP: &str = "mercury"` is deleted. Five of its use sites become the instance the verb was given; the two under `label` stay in mercury with the launch agent.
 - Every function that reads the instance, or calls one that does, takes an `&Instance`, and the `holder`/`acquire`/`await_free` calls become their `_at` counterparts, which take the path the instance already resolved.
-- Every message that spells "mercury" spells `instance.display_name()`, which is what makes both a fork's output its own and a multi-daemon app's name the one it means.
+- Every message that says "mercury" says `instance.display_name()`, which is what makes both a fork's output its own and a multi-daemon app's name the one it means.
 - The `logging::init` call at the top of each verb is deleted: `run_lifecycle_verb` does it once, before any of them runs.
 - `start` and `restart` take a `TypedArgs<'_>` and pass it down to `spawn_daemon`, which forwards the id along with the flags.
 

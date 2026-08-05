@@ -125,7 +125,7 @@ import type { TabId } from "../wire/TabId";
 
 const HOST = "claude.ai";
 
-/** The site's route for each section, which is the one place a URL is spelled. */
+/** The site's route for each section, which is the one place a URL is written. */
 const SECTION_ROUTE: Record<SettingsSection["kind"], string> = {
   "SettingsSection.General": "settings/general",
 };

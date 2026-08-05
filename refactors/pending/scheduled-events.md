@@ -29,7 +29,7 @@ use jiff::civil::{Date, DateTime, Time, Weekday};
 ///
 /// A set rather than a list, so a day cannot appear twice, and built only from the constructors
 /// below, so it cannot be empty: a schedule that fires on no day is a schedule that does nothing,
-/// and there is no way to spell one.
+/// and there is no way to write one.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Weekdays(u8);
 
