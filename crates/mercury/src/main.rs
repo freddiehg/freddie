@@ -5,8 +5,8 @@ use std::process::ExitCode;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use freddie_cli::{App, Instance, NoArgs};
 
-mod agent;
 mod daemon;
+mod launch_agent;
 
 #[derive(Parser)]
 #[command(name = "mercury", version, about = "A layered keyboard remapper.", long_about = None)]
@@ -25,7 +25,7 @@ enum MercuryVerb {
 
     /// mercury's own: the launch agent.
     #[command(flatten)]
-    Agent(agent::MercuryVerb),
+    Agent(launch_agent::MercuryVerb),
 }
 
 /// The loopback port the event socket listens on, and nothing else mercury needs from a flag.
@@ -67,8 +67,8 @@ fn main() -> ExitCode {
         Some(MercuryVerb::Lifecycle(verb)) => {
             freddie_cli::run_lifecycle_verb::<Mercury>(verb, &matches)
         }
-        Some(MercuryVerb::Agent(agent::MercuryVerb::Install)) => agent::install(),
-        Some(MercuryVerb::Agent(agent::MercuryVerb::Uninstall)) => agent::uninstall(),
+        Some(MercuryVerb::Agent(launch_agent::MercuryVerb::Install)) => launch_agent::install(),
+        Some(MercuryVerb::Agent(launch_agent::MercuryVerb::Uninstall)) => launch_agent::uninstall(),
         None => freddie_cli::run_lifecycle_verb::<Mercury>(
             freddie_cli::verb_for_bare_invocation::<Mercury>(),
             &matches,
