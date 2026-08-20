@@ -30,12 +30,13 @@ pub(crate) const DEFAULT_LOG_LEVEL: &str = "info";
 const FILE_LEVEL: LevelFilter = LevelFilter::DEBUG;
 
 /// Wraps a writer so every record carries the pid of the process that wrote it, and the
-/// app's tracing target in place of this crate's module path.
+/// app name as `target` in place of the app crate's module path.
 ///
 /// The file has as many writers as there are processes on one daemon, and a record says
 /// which module emitted it but not which process. Two clients running at once are
 /// otherwise the same line. The target is rewritten here because tracing's `target:` is a
-/// compile-time callsite string, so a library cannot name the app at the macro.
+/// compile-time callsite string, so a library cannot name the app at the macro. This crate's
+/// own records keep their module path, so `logs` can tell the daemon from the verbs around it.
 struct WithPid<W> {
     inner: W,
     target: String,
@@ -92,9 +93,9 @@ impl<W: io::Write> io::Write for PidStamped<'_, W> {
 
 const TARGET_KEY: &[u8] = b"\"target\":\"";
 
-/// Replace the JSON `target` value with `target`. The formatter writes this crate's module
-/// path; the file should name the app.
-fn put_target(line: &mut Vec<u8>, target: &str) {
+/// Replace the JSON `target` when it is the app crate's module path (`isograph_cli`,
+/// `figaro::daemon`) with the app name.
+fn put_target(line: &mut Vec<u8>, app: &str) {
     let Some(key_at) = line.windows(TARGET_KEY.len()).position(|w| w == TARGET_KEY) else {
         return;
     };
@@ -102,7 +103,19 @@ fn put_target(line: &mut Vec<u8>, target: &str) {
     let Some(value_len) = line[value_at..].iter().position(|&b| b == b'"') else {
         return;
     };
-    line.splice(value_at..value_at + value_len, target.bytes());
+    if !app_crate(&line[value_at..value_at + value_len], app) {
+        return;
+    }
+    line.splice(value_at..value_at + value_len, app.bytes());
+}
+
+/// tracing's default target is the module path. The app crate is the app name, optionally
+/// then `::` (a module) or `_` (a crate like `isograph_cli`).
+fn app_crate(current: &[u8], app: &str) -> bool {
+    let Some(rest) = current.strip_prefix(app.as_bytes()) else {
+        return false;
+    };
+    matches!(rest, [] | [b':', b':', ..] | [b'_', ..])
 }
 
 thread_local! {
@@ -238,6 +251,7 @@ mod tests {
             .finish();
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!(
+                target: "mercury::daemon",
                 event = "Key(KeyR)",
                 effects = "[]",
                 state = "Mercury { .. }",
@@ -276,12 +290,40 @@ mod tests {
     }
 
     #[test]
-    fn put_target_replaces_the_json_target_value() {
+    fn put_target_rewrites_the_app_crate_to_the_app_name() {
+        let mut line =
+            br#"{"pid":1,"target":"isograph_cli","message":"hello from isograph"}"#.to_vec();
+        super::put_target(&mut line, "isograph");
+        assert_eq!(
+            line,
+            br#"{"pid":1,"target":"isograph","message":"hello from isograph"}"#
+        );
+    }
+
+    #[test]
+    fn put_target_rewrites_a_module_under_the_app() {
+        let mut line = br#"{"pid":1,"target":"figaro::daemon","message":"dispatch"}"#.to_vec();
+        super::put_target(&mut line, "figaro");
+        assert_eq!(line, br#"{"pid":1,"target":"figaro","message":"dispatch"}"#);
+    }
+
+    #[test]
+    fn put_target_leaves_this_crate_as_the_module_path() {
         let mut line = br#"{"pid":1,"target":"freddie_cli::daemon","message":"logging"}"#.to_vec();
         super::put_target(&mut line, "isograph");
         assert_eq!(
             line,
-            br#"{"pid":1,"target":"isograph","message":"logging"}"#
+            br#"{"pid":1,"target":"freddie_cli::daemon","message":"logging"}"#
+        );
+    }
+
+    #[test]
+    fn put_target_leaves_an_explicit_target() {
+        let mut line = br#"{"pid":1,"target":"keystroke","message":"tapped"}"#.to_vec();
+        super::put_target(&mut line, "figaro");
+        assert_eq!(
+            line,
+            br#"{"pid":1,"target":"keystroke","message":"tapped"}"#
         );
     }
 }

@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 pub struct Instance {
     slug: String,
     display_name: String,
-    /// Written as the log record's `target`, so `logs` and `LOG_LEVEL` name the app.
+    /// Written as the log record's `target` on the app crate's records, so `logs` and
+    /// `LOG_LEVEL` name the app.
     tracing_target: String,
     lock_file: PathBuf,
     log_dir: PathBuf,
