@@ -30,13 +30,14 @@ pub(crate) const DEFAULT_LOG_LEVEL: &str = "info";
 const FILE_LEVEL: LevelFilter = LevelFilter::DEBUG;
 
 /// Wraps a writer so every record carries the pid of the process that wrote it, and the
-/// app name as `target` in place of the app crate's module path.
+/// app name as `target` in place of a crate module path.
 ///
 /// The file has as many writers as there are processes on one daemon, and a record says
 /// which module emitted it but not which process. Two clients running at once are
 /// otherwise the same line. The target is rewritten here because tracing's `target:` is a
 /// compile-time callsite string, so a library cannot name the app at the macro. This crate's
-/// own records keep their module path, so `logs` can tell the daemon from the verbs around it.
+/// records keep the module (`::client`, `::daemon`) under the app name, so `logs` can tell
+/// the daemon from the verbs around it.
 struct WithPid<W> {
     inner: W,
     target: String,
@@ -92,9 +93,21 @@ impl<W: io::Write> io::Write for PidStamped<'_, W> {
 }
 
 const TARGET_KEY: &[u8] = b"\"target\":\"";
+const FREDDIE_CLI: &[u8] = b"freddie_cli";
 
-/// Replace the JSON `target` when it is the app crate's module path (`isograph_cli`,
-/// `figaro::daemon`) with the app name.
+/// What kind of tracing target a record carried, and therefore how [`put_target`] rewrites it.
+enum RecordTarget {
+    /// The app crate's module path (`isograph_cli`, `figaro::daemon`): the whole value
+    /// becomes the app name.
+    AppCrate,
+    /// This crate's module path (`freddie_cli::client`): `freddie_cli` becomes the app name
+    /// and the module stays, so the record reads as `isograph::client`.
+    FreddieCli,
+    /// An explicit `target:` or a foreign crate.
+    Other,
+}
+
+/// Rewrite a crate module path so `logs` and `LOG_LEVEL` name the app.
 fn put_target(line: &mut Vec<u8>, app: &str) {
     let Some(key_at) = line.windows(TARGET_KEY.len()).position(|w| w == TARGET_KEY) else {
         return;
@@ -103,19 +116,29 @@ fn put_target(line: &mut Vec<u8>, app: &str) {
     let Some(value_len) = line[value_at..].iter().position(|&b| b == b'"') else {
         return;
     };
-    if !app_crate(&line[value_at..value_at + value_len], app) {
-        return;
+    match record_target(&line[value_at..value_at + value_len], app) {
+        RecordTarget::AppCrate => {
+            line.splice(value_at..value_at + value_len, app.bytes());
+        }
+        RecordTarget::FreddieCli => {
+            line.splice(value_at..value_at + FREDDIE_CLI.len(), app.bytes());
+        }
+        RecordTarget::Other => {}
     }
-    line.splice(value_at..value_at + value_len, app.bytes());
 }
 
-/// tracing's default target is the module path. The app crate is the app name, optionally
-/// then `::` (a module) or `_` (a crate like `isograph_cli`).
-fn app_crate(current: &[u8], app: &str) -> bool {
-    let Some(rest) = current.strip_prefix(app.as_bytes()) else {
-        return false;
-    };
-    matches!(rest, [] | [b':', b':', ..] | [b'_', ..])
+fn record_target(current: &[u8], app: &str) -> RecordTarget {
+    if let Some(rest) = current.strip_prefix(app.as_bytes())
+        && matches!(rest, [] | [b':', b':', ..] | [b'_', ..])
+    {
+        return RecordTarget::AppCrate;
+    }
+    if let Some(rest) = current.strip_prefix(FREDDIE_CLI)
+        && matches!(rest, [] | [b':', b':', ..])
+    {
+        return RecordTarget::FreddieCli;
+    }
+    RecordTarget::Other
 }
 
 thread_local! {
@@ -308,12 +331,23 @@ mod tests {
     }
 
     #[test]
-    fn put_target_leaves_this_crate_as_the_module_path() {
+    fn put_target_rewrites_this_crate_under_the_app_name() {
         let mut line = br#"{"pid":1,"target":"freddie_cli::daemon","message":"logging"}"#.to_vec();
         super::put_target(&mut line, "isograph");
         assert_eq!(
             line,
-            br#"{"pid":1,"target":"freddie_cli::daemon","message":"logging"}"#
+            br#"{"pid":1,"target":"isograph::daemon","message":"logging"}"#
+        );
+    }
+
+    #[test]
+    fn put_target_rewrites_a_client_record_under_the_app_name() {
+        let mut line =
+            br#"{"pid":1,"target":"freddie_cli::client","message":"isograph started"}"#.to_vec();
+        super::put_target(&mut line, "isograph");
+        assert_eq!(
+            line,
+            br#"{"pid":1,"target":"isograph::client","message":"isograph started"}"#
         );
     }
 
