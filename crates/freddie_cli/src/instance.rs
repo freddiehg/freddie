@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 pub struct Instance {
     slug: String,
     display_name: String,
+    /// Written as the log record's `target`, so `logs` and `LOG_LEVEL` name the app.
+    tracing_target: String,
     lock_file: PathBuf,
     log_dir: PathBuf,
     log_file_name: String,
@@ -51,6 +53,7 @@ impl Instance {
             log_dir: log_dir(app)?,
             log_file_name: format!("{slug}.log"),
             display_name: display_name.into(),
+            tracing_target: app.to_owned(),
             slug,
         })
     }
@@ -86,6 +89,19 @@ impl Instance {
     #[must_use]
     pub fn display_name(&self) -> &str {
         &self.display_name
+    }
+
+    /// The tracing target written into this daemon's log records.
+    #[must_use]
+    pub fn tracing_target(&self) -> &str {
+        &self.tracing_target
+    }
+
+    /// Use `target` as the tracing target instead of the app name.
+    #[must_use]
+    pub fn with_tracing_target(mut self, target: impl Into<String>) -> Self {
+        self.tracing_target = target.into();
+        self
     }
 
     /// What this daemon's files are keyed to.
@@ -155,6 +171,7 @@ mod tests {
         let instance = Instance::global("testapp").expect("HOME is set in a test run");
         assert_eq!(instance.slug(), "testapp");
         assert_eq!(instance.display_name(), "testapp");
+        assert_eq!(instance.tracing_target(), "testapp");
         assert_eq!(instance.log_file_name(), "testapp.log");
     }
 
@@ -173,5 +190,15 @@ mod tests {
     fn the_display_name_is_what_was_typed() {
         let instance = Instance::named("testapp", "testapp-a", "./a.json").expect("HOME is set");
         assert_eq!(instance.display_name(), "./a.json");
+    }
+
+    #[test]
+    fn the_tracing_target_is_the_app_name_until_replaced() {
+        let instance = Instance::named("testapp", "testapp-a", "./a.json").expect("HOME is set");
+        assert_eq!(instance.tracing_target(), "testapp");
+        assert_eq!(
+            instance.with_tracing_target("other").tracing_target(),
+            "other"
+        );
     }
 }

@@ -29,26 +29,37 @@ pub(crate) const DEFAULT_LOG_LEVEL: &str = "info";
 /// never quiet it.
 const FILE_LEVEL: LevelFilter = LevelFilter::DEBUG;
 
-/// Wraps a writer so every record carries the pid of the process that wrote it.
+/// Wraps a writer so every record carries the pid of the process that wrote it, and the
+/// app's tracing target in place of this crate's module path.
 ///
 /// The file has as many writers as there are processes on one daemon, and a record says
 /// which module emitted it but not which process. Two clients running at once are
-/// otherwise the same line.
-struct WithPid<W>(W);
+/// otherwise the same line. The target is rewritten here because tracing's `target:` is a
+/// compile-time callsite string, so a library cannot name the app at the macro.
+struct WithPid<W> {
+    inner: W,
+    target: String,
+}
 
 impl<'a, W: MakeWriter<'a>> MakeWriter<'a> for WithPid<W> {
-    type Writer = PidStamped<W::Writer>;
+    type Writer = PidStamped<'a, W::Writer>;
 
     fn make_writer(&'a self) -> Self::Writer {
-        PidStamped(self.0.make_writer())
+        PidStamped {
+            inner: self.inner.make_writer(),
+            target: self.target.as_str(),
+        }
     }
 }
 
 /// The stamped writer. `fmt` calls `write` once per record, so this stamps once per
 /// record.
-struct PidStamped<W>(W);
+struct PidStamped<'a, W> {
+    inner: W,
+    target: &'a str,
+}
 
-impl<W: io::Write> io::Write for PidStamped<W> {
+impl<W: io::Write> io::Write for PidStamped<'_, W> {
     /// One `write_all` for the stamp and the record together.
     ///
     /// Two calls would be two appends, and another process may append between them,
@@ -65,17 +76,33 @@ impl<W: io::Write> io::Write for PidStamped<W> {
                 Some(rest) => {
                     line.extend_from_slice(stamp().as_bytes());
                     line.extend_from_slice(rest);
+                    put_target(line, self.target);
                 }
                 None => line.extend_from_slice(record),
             }
-            self.0.write_all(line)
+            self.inner.write_all(line)
         })?;
         Ok(record.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
+        self.inner.flush()
     }
+}
+
+const TARGET_KEY: &[u8] = b"\"target\":\"";
+
+/// Replace the JSON `target` value with `target`. The formatter writes this crate's module
+/// path; the file should name the app.
+fn put_target(line: &mut Vec<u8>, target: &str) {
+    let Some(key_at) = line.windows(TARGET_KEY.len()).position(|w| w == TARGET_KEY) else {
+        return;
+    };
+    let value_at = key_at + TARGET_KEY.len();
+    let Some(value_len) = line[value_at..].iter().position(|&b| b == b'"') else {
+        return;
+    };
+    line.splice(value_at..value_at + value_len, target.bytes());
 }
 
 thread_local! {
@@ -118,10 +145,10 @@ pub(crate) fn init(instance: &Instance, terminal: Terminal) {
         .flatten_event(true)
         .with_current_span(false)
         .with_span_list(false)
-        .with_writer(WithPid(tracing_appender::rolling::never(
-            dir,
-            instance.log_file_name(),
-        )))
+        .with_writer(WithPid {
+            inner: tracing_appender::rolling::never(dir, instance.log_file_name()),
+            target: instance.tracing_target().to_owned(),
+        })
         .with_ansi(false)
         .with_filter(FILE_LEVEL);
 
@@ -204,7 +231,10 @@ mod tests {
             .with_current_span(false)
             .with_span_list(false)
             .with_ansi(false)
-            .with_writer(WithPid(file))
+            .with_writer(WithPid {
+                inner: file,
+                target: "mercury".to_owned(),
+            })
             .finish();
         tracing::subscriber::with_default(subscriber, || {
             tracing::info!(
@@ -221,7 +251,7 @@ mod tests {
         assert_eq!(record["pid"], serde_json::json!(std::process::id()));
         assert!(record["timestamp"].is_string());
         assert_eq!(record["level"], serde_json::json!("INFO"));
-        assert!(record["target"].is_string());
+        assert_eq!(record["target"], serde_json::json!("mercury"));
         assert_eq!(record["message"], serde_json::json!("dispatch"));
         assert_eq!(record["event"], serde_json::json!("Key(KeyR)"));
         assert_eq!(record["state"], serde_json::json!("Mercury { .. }"));
@@ -236,10 +266,23 @@ mod tests {
     #[test]
     fn a_line_that_is_not_an_object_is_written_through() {
         let mut written = Vec::new();
-        PidStamped(&mut written)
-            .write_all(b"a stray line")
-            .expect("writing to a Vec");
+        PidStamped {
+            inner: &mut written,
+            target: "mercury",
+        }
+        .write_all(b"a stray line")
+        .expect("writing to a Vec");
         assert_eq!(written, b"a stray line");
+    }
+
+    #[test]
+    fn put_target_replaces_the_json_target_value() {
+        let mut line = br#"{"pid":1,"target":"freddie_cli::daemon","message":"logging"}"#.to_vec();
+        super::put_target(&mut line, "isograph");
+        assert_eq!(
+            line,
+            br#"{"pid":1,"target":"isograph","message":"logging"}"#
+        );
     }
 }
 
