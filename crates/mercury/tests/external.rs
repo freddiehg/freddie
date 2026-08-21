@@ -13,25 +13,18 @@ use tokio_tungstenite::tungstenite::Message;
 
 const SETTLE: Duration = Duration::from_millis(250);
 
-fn free_port() -> u16 {
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
-    let port = probe.local_addr().expect("a bound address").port();
-    drop(probe);
-    port
-}
-
 /// A listener wired to mercury's vocabulary, and the channel the events land on.
 fn listen_for_events() -> (
     freddie_event_socket::EventSocket,
     u16,
     UnboundedReceiver<MercuryEvent>,
 ) {
-    let port = free_port();
     let (event_tx, event_rx) = unbounded_channel();
-    let socket = freddie_event_socket::listen(port, move |text| {
+    let socket = freddie_event_socket::listen(0, move |text| {
         mercury::on_message(text, &event_tx);
     })
-    .expect("binding a free port");
+    .expect("binding an OS-assigned port");
+    let port = socket.local_addr().port();
     (socket, port, event_rx)
 }
 

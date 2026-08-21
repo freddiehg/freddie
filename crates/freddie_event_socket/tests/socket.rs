@@ -38,14 +38,10 @@ fn seen(recorded: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
 /// A listener on an OS-assigned port, and the URL to reach it.
 fn listen_anywhere<F>(on_message: F) -> (freddie_event_socket::EventSocket, u16, String)
 where
-    F: Fn(&str) + Send + Sync + 'static,
+    F: Fn(&str) + Send + 'static,
 {
-    // Port 0 twice: once to learn a free port, then again to bind it for real. `listen` takes a
-    // port rather than a listener, and this is the one place that difference has to be bridged.
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
-    let port = probe.local_addr().expect("a bound address").port();
-    drop(probe);
-    let socket = freddie_event_socket::listen(port, on_message).expect("binding the free port");
+    let socket = freddie_event_socket::listen(0, on_message).expect("binding an OS-assigned port");
+    let port = socket.local_addr().port();
     (socket, port, format!("ws://127.0.0.1:{port}"))
 }
 
@@ -222,4 +218,35 @@ async fn dropping_the_socket_closes_clients_and_frees_the_port() {
     tokio::time::sleep(SETTLE).await;
     assert_eq!(seen(&again), vec!["after"]);
     drop(socket);
+}
+
+#[tokio::test]
+async fn listen_zero_reports_localhost_and_a_nonzero_port() {
+    let (recorded, on_message) = collector();
+    let socket = freddie_event_socket::listen(0, on_message).expect("binding an OS-assigned port");
+    let addr = socket.local_addr();
+    assert_eq!(
+        addr.ip(),
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+    );
+    assert_ne!(addr.port(), 0);
+
+    let url = format!("ws://127.0.0.1:{}", addr.port());
+    let mut ws = connect(&url).await;
+    ws.send(Message::Text("via assigned port".into()))
+        .await
+        .expect("sending");
+    tokio::time::sleep(SETTLE).await;
+    assert_eq!(seen(&recorded), vec!["via assigned port"]);
+}
+
+#[tokio::test]
+async fn two_listen_zero_binds_are_two_ports() {
+    let (_a_seen, a_cb) = collector();
+    let (_b_seen, b_cb) = collector();
+    let a = freddie_event_socket::listen(0, a_cb).expect("first bind");
+    let b = freddie_event_socket::listen(0, b_cb).expect("second bind");
+    assert_ne!(a.local_addr().port(), b.local_addr().port());
+    assert_ne!(a.local_addr().port(), 0);
+    assert_ne!(b.local_addr().port(), 0);
 }

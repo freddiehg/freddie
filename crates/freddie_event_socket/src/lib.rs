@@ -32,6 +32,18 @@ const MAX_FRAME_BYTES: usize = 64 * 1024;
 /// them is waiting on. There is nothing to abort by hand.
 pub struct EventSocket {
     _shutdown: watch::Sender<()>,
+    local_addr: SocketAddr,
+}
+
+impl EventSocket {
+    /// The loopback address this socket is accepting on.
+    ///
+    /// Captured at bind, so `listen(0, ...)` is how a caller learns the OS-assigned port:
+    /// `socket.local_addr().port()`.
+    #[must_use]
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local_addr
+    }
 }
 
 /// Bind `127.0.0.1:port` and call `on_message` for each text frame any client sends.
@@ -41,7 +53,8 @@ pub struct EventSocket {
 /// task that owns `on_message`, so the calls are serialized and it need not be `Sync`.
 ///
 /// The bind is synchronous, through `std`, so a busy port is an `Err` from this call rather than a
-/// failure inside a spawned task that the caller would have to go looking for.
+/// failure inside a spawned task that the caller would have to go looking for. A caller that passed
+/// `0` reads the assigned port from [`EventSocket::local_addr`].
 ///
 /// # Errors
 ///
@@ -56,6 +69,7 @@ where
 {
     let std_listener = StdTcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))?;
     std_listener.set_nonblocking(true)?;
+    let local_addr = std_listener.local_addr()?;
     let listener = TcpListener::from_std(std_listener)?;
 
     let (shutdown, mut closed) = watch::channel(());
@@ -92,6 +106,7 @@ where
 
     Ok(EventSocket {
         _shutdown: shutdown,
+        local_addr,
     })
 }
 
