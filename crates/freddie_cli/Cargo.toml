@@ -15,5 +15,24 @@ tracing-appender = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 
-[lints]
-workspace = true
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Console"] }
+
+# Not `workspace = true`: the workspace forbids `unsafe_code`, and `forbid` cannot
+# be relaxed from inside the crate. Isolating parent stdio on Windows is SetHandleInformation.
+[lints.rust]
+unsafe_code = "deny"
+unused = { level = "deny", priority = -1 }
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+multiple_crate_versions = "allow"
+cargo_common_metadata = "allow"
+missing_const_for_fn = "allow"
+redundant_pub_crate = "allow"
+ignored_unit_patterns = "allow"
+mut_mut = "allow"
+empty_structs_with_brackets = "deny"

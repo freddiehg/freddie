@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use freddie_single_instance::{Held, LockError, Pid};
 use tracing::{Level, debug, info, warn};
 
+use crate::stdio_inherit::IsolateParentStdio;
 use crate::{App, DAEMON_VERB, Instance, TypedArgs};
 
 /// How often [`find_daemon`] re-probes a lock whose holder has not named itself yet.
@@ -286,7 +287,9 @@ fn spawn_daemon<TApp: App>(typed: TypedArgs<'_>) -> io::Result<Pid> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let child = detach(&mut command).spawn()?;
+    detach(&mut command);
+    let _parent_stdio = IsolateParentStdio::enter()?;
+    let child = command.spawn()?;
     Ok(Pid(child.id()))
 }
 

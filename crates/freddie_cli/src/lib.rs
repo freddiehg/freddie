@@ -19,6 +19,7 @@ mod client;
 mod daemon;
 mod instance;
 mod logging;
+mod stdio_inherit;
 mod verb;
 
 pub use instance::{Instance, NoUserDir};
