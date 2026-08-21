@@ -52,6 +52,7 @@ impl EventSocket {
     ///
     /// Captured at bind, so `listen(0, ...)` is how a caller learns the OS-assigned port:
     /// `socket.local_addr().port()`.
+    #[must_use]
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
@@ -98,6 +99,7 @@ pub struct EventSocket {
 }
 
 impl EventSocket {
+    #[must_use]
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
